@@ -274,4 +274,29 @@ class ManualCostPersistenceTest {
         assertThatThrownBy(() -> save(first.id(), tampered)).hasMessageContaining("原始来源");
         assertThat(store.entry("T1", "LOGISTICS", first.id(), "cost:read").revision()).isEqualTo(2);
     }
+    @Test void procurementSourceRetryNeverDuplicatesOrOverwritesManualActualCosts() {
+        for(String column:List.of("transport_purpose_code","delivery_mode_code","carrier_code","tracking_no","cost_month","origin_biz_key")) jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN "+column+" VARCHAR(150)");
+        jdbc.execute("CREATE UNIQUE INDEX origin_unique ON order_logistics_cost(tenant_id,origin_biz_key)");
+        when(scope.predicate(anyString(),any(String[].class))).thenReturn(new LogisticsWarehouseDataScope.Predicate("1=1",List.of()));
+        var source=new com.rigour.erp.api.v1.model.ProcurementCostSource("PO1",1,java.time.LocalDate.of(2026,11,3),"SUP1","华东食品供应有限公司","厂家地址","李经理","13800000000",7,"WH1","武汉城市仓","C1","张三","13800000001","收货地址","BUYER",new java.math.BigDecimal("18"));
+        var draft=com.rigour.order.application.service.cost.ProcurementFreightDraft.from(source);
+        var manual=save(null,command(1,"10",""));
+        var first=store.upsertProcurementFreight("T1",draft);
+        long version=jdbc.queryForObject("SELECT version FROM order_logistics_cost_guard WHERE tenant_id='T1'",Long.class);
+        assertThat(store.upsertProcurementFreight("T1",draft).id()).isEqualTo(first.id());
+        assertThat(jdbc.queryForObject("SELECT version FROM order_logistics_cost_guard WHERE tenant_id='T1'",Long.class)).isEqualTo(version);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_logistics_cost",Long.class)).isEqualTo(2);
+        var old=first.data().ledger().sourceSync();
+        var trusted=new LogisticsCostLedger.SourceSync(old.originBizKey(),old.originVersion(),old.lastAppliedFingerprint(),true,old.lastSeenVersion(),old.lastSeenFingerprint(),false);
+        var edit=first.data().withLedger(first.data().ledger().withSourceSync(trusted),first.data().amount());
+        edit=new LogisticsCostCommand(edit.requestId(),first.revision(),edit.title(),edit.typeCode(),edit.cityCode(),edit.cityName(),null,null,edit.costDate(),edit.amount(),edit.paymentStatusCode(),null,edit.remark(),"已核实实际运费",edit.ledger());
+        var edited=store.save("T1","LOGISTICS",first.id(),edit,List.of(),null,null,"U","cost:write");
+        var next=new com.rigour.erp.api.v1.model.ProcurementCostSource("PO1",2,source.purchaseDate(),source.supplierCode(),source.supplierName(),source.supplierAddress(),source.supplierContact(),source.supplierPhone(),source.warehouseId(),source.warehouseCode(),source.warehouseName(),source.cityCode(),source.receiverName(),source.receiverPhone(),source.receivingAddress(),"BUYER",new java.math.BigDecimal("88"));
+        var preserved=store.upsertProcurementFreight("T1",com.rigour.order.application.service.cost.ProcurementFreightDraft.from(next));
+        assertThat(preserved.data().amount()).isEqualByComparingTo("18");assertThat(preserved.data().ledger().sourceSync().differencePending()).isTrue();
+        assertThat(store.entry("T1","LOGISTICS",manual.id(),"cost:read").data().amount()).isEqualByComparingTo("10");
+        assertThat(store.upsertProcurementFreight("T1",com.rigour.order.application.service.cost.ProcurementFreightDraft.from(next)).revision()).isEqualTo(preserved.revision());
+        assertThat(preserved.revision()).isGreaterThan(edited.revision());
+    }
+
 }

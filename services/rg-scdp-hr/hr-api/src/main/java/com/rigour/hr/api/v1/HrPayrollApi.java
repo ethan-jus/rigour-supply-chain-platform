@@ -109,6 +109,10 @@ public interface HrPayrollApi {
     @GetMapping(BASE_PATH + "/export")
     ApiResponse<List<PayrollDetailView>> export(@ModelAttribute PayrollQuery query);
 
+    /** Read-only export query; selected IDs belong in the body to avoid URL length limits. */
+    @PostMapping(BASE_PATH + "/export")
+    ApiResponse<List<PayrollDetailView>> exportQuery(@RequestBody PayrollQuery query);
+
     @PostMapping(BASE_PATH + "/{id}/reopen")
     ApiResponse<PayrollDetailView> reopen(
             @PathVariable String id, @RequestBody PayrollActionCommand command);

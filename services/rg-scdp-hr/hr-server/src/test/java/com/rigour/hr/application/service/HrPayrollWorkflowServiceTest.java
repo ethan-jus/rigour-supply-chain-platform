@@ -50,6 +50,58 @@ class HrPayrollWorkflowServiceTest {
     }
 
     @Test
+    void selectedIdsBindFromTheExportRequestWithoutChangingOtherFilters() {
+        var request = new org.springframework.mock.web.MockHttpServletRequest();
+        request.setParameter("begin", "0");
+        request.setParameter("step", "200");
+        request.setParameter("month", "2026-10");
+        request.setParameter("employeeName", "李怀伦");
+        request.setParameter("payrollIds", "P1,P2");
+        var binder = new org.springframework.web.bind.ServletRequestDataBinder(null);
+        binder.setTargetType(org.springframework.core.ResolvableType.forClass(PayrollQuery.class));
+        binder.setConversionService(new org.springframework.format.support.DefaultFormattingConversionService());
+        binder.construct(request);
+        assertThat(binder.getBindingResult().hasErrors()).isFalse();
+        var query = (PayrollQuery) binder.getTarget();
+        assertThat(query.payrollIds()).containsExactly("P1", "P2");
+        assertThat(query.employeeName()).isEqualTo("李怀伦");
+        assertThat(query.month()).isEqualTo("2026-10");
+        var json = tools.jackson.databind.json.JsonMapper.builder().build();
+        assertThat(json.readValue(json.writeValueAsString(query), PayrollQuery.class).payrollIds())
+                .containsExactly("P1", "P2");
+    }
+
+    @Test
+    void exportKeepsSelectedIdsAndRequiresTheEntireAuthorizedSelection() {
+        var query = new PayrollQuery(0, 200, "2026-10", null, null, null,
+                null, null, null, List.of("P1"));
+        var row = new PayrollDetailView("P1", "2026-10", "E1", "员工", 1L, "武汉市", "武汉",
+                "READY", 1, null, Instant.EPOCH);
+        when(store.export(anyString(), eq(query), eq("hr:payroll:read"))).thenReturn(List.of(row));
+        assertThat(service.export(query)).containsExactly(row);
+        verify(store).export(eq(AuthorizationContext.requireCurrent().tenantId().toString()), eq(query), eq("hr:payroll:read"));
+        when(store.export(anyString(), eq(query), eq("hr:payroll:read"))).thenReturn(List.of());
+        assertThatThrownBy(() -> service.export(query)).hasMessageContaining("部分勾选工资单已变更或无访问权限");
+        when(store.export(anyString(), eq(query), eq("hr:payroll:read")))
+                .thenReturn(List.of(row, new PayrollDetailView("P2", "2026-10", "E2", "其他员工",
+                        1L, "武汉市", "武汉", "READY", 1, null, Instant.EPOCH)));
+        assertThatThrownBy(() -> service.export(query)).hasMessageContaining("部分勾选工资单已变更或无访问权限");
+    }
+
+    @Test
+    void invalidSelectionsNeverBecomeUnrestrictedExports() {
+        var selections = List.of(List.<String>of(), List.of(""), List.of("P1", "P1"),
+                java.util.stream.IntStream.range(0, 201).mapToObj(i -> "P" + i).toList());
+        for (var ids : selections) {
+            var query = new PayrollQuery(0, 200, "2026-10", null, null, null,
+                    null, null, null, ids);
+            assertThatThrownBy(() -> service.export(query))
+                    .isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        }
+        verify(store, never()).export(anyString(), any(), anyString());
+    }
+
+    @Test
     void attendanceGateIsEnforcedBeforeRecordingPayment() {
         var gate = mock(PayrollAttendanceGate.class);
         service.setAttendanceGate(gate);

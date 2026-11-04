@@ -232,7 +232,19 @@ public class HrPayrollWorkflowService {
     public List<PayrollDetailView> export(PayrollQuery q) {
         var a = actor("hr:payroll:read");
         month(q.month());
-        return store.export(a.tenantId().toString(), q, "hr:payroll:read");
+        var ids = q.payrollIds();
+        if (ids != null) {
+            if (ids.isEmpty() || ids.size() > 200) throw bad("每次请选择1至200张工资单导出");
+            for (var id : ids) required(id, 64, "工资单ID");
+            if (new HashSet<>(ids).size() != ids.size()) throw bad("勾选工资单不能重复");
+        }
+        var rows = store.export(a.tenantId().toString(), q, "hr:payroll:read");
+        if (ids != null && !rows.stream().map(PayrollDetailView::id)
+                .collect(Collectors.toSet()).equals(new HashSet<>(ids)))
+            throw new com.rigour.shared.core.exception.BusinessException(
+                    com.rigour.shared.core.api.ErrorCode.NOT_FOUND,
+                    "部分勾选工资单已变更或无访问权限，请刷新列表后重新选择", List.of());
+        return rows;
     }
 
     public PayrollDetailView reopen(String id, PayrollActionCommand c) {

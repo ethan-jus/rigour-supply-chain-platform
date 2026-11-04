@@ -68,6 +68,22 @@ public final class ErpWarehouseDataScope {
     }
 
     public Predicate predicate(String action, String... fields) {
+        if (action.startsWith("erp:procurement:")
+                && fields.length == 1
+                && "target_warehouse_id".equals(fields[0])) {
+            var p = predicate(policy(action), "scope_warehouse.id");
+            if ("1=1".equals(p.sql())) return p;
+            return new Predicate(
+                    "EXISTS (SELECT 1 FROM erp_inventory_warehouse scope_warehouse WHERE"
+                        + " scope_warehouse.tenant_id COLLATE utf8mb4_general_ci=erp_procurement_order.tenant_id AND"
+                        + " (scope_warehouse.warehouse_code COLLATE"
+                        + " utf8mb4_general_ci=erp_procurement_order.target_warehouse_code OR"
+                        + " (erp_procurement_order.target_warehouse_code IS NULL AND"
+                        + " scope_warehouse.id=erp_procurement_order.target_warehouse_id)) AND "
+                            + p.sql()
+                            + ")",
+                    p.args());
+        }
         return predicate(policy(action), fields);
     }
 

@@ -1,11 +1,13 @@
 package com.rigour.erp.api.v1;
 
+import com.rigour.erp.api.v1.model.InternalProcurementConfirmationCommand;
 import com.rigour.erp.api.v1.model.InternalProcurementOrderCommand;
 import com.rigour.erp.api.v1.model.InternalProcurementOrderDetailView;
-import com.rigour.erp.api.v1.model.InternalProcurementOrderSummaryView;
+import com.rigour.erp.api.v1.model.InternalProcurementOrderPageView;
+import com.rigour.erp.api.v1.model.InternalProcurementProductView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.shared.core.api.ApiResponse;
-import java.time.Instant;
+
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -13,6 +15,8 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
+
+import java.time.Instant;
 
 /**
  * ERP 采购订单接口。
@@ -24,7 +28,7 @@ public interface ErpProcurementOrderApi {
     String BASE_PATH = "/api/v1/erp/procurement-orders";
 
     @GetMapping(BASE_PATH)
-    ApiResponse<MasterDataPageView<InternalProcurementOrderSummaryView>> procurementOrders(
+    ApiResponse<InternalProcurementOrderPageView> procurementOrders(
             @RequestParam(defaultValue = "0") int begin,
             @RequestParam(defaultValue = "20") int step,
             @RequestParam(required = false) String procurementNo,
@@ -32,7 +36,20 @@ public interface ErpProcurementOrderApi {
             @RequestParam(required = false) Long targetWarehouseId,
             @RequestParam(required = false) String statusCode,
             @RequestParam(required = false) Instant expectedArrivalFrom,
-            @RequestParam(required = false) Instant expectedArrivalTo);
+            @RequestParam(required = false) Instant expectedArrivalTo,
+            @RequestParam(required = false) String supplierCode,
+            @RequestParam(required = false) String targetWarehouseCode,
+            @RequestParam(required = false) String confirmationStatusCode,
+            @RequestParam(required = false) java.time.LocalDate purchaseDateFrom,
+            @RequestParam(required = false) java.time.LocalDate purchaseDateTo);
+
+    @GetMapping(BASE_PATH + "/products")
+    ApiResponse<MasterDataPageView<InternalProcurementProductView>> procurementProducts(
+            @RequestParam(defaultValue = "0") int begin,
+            @RequestParam(defaultValue = "20") int step,
+            @RequestParam(required = false) String productName,
+            @RequestParam(required = false) String productCode,
+            @RequestParam(required = false) String variantCode);
 
     @GetMapping(BASE_PATH + "/{id}")
     ApiResponse<InternalProcurementOrderDetailView> procurementOrder(@PathVariable("id") Long id);
@@ -46,6 +63,12 @@ public interface ErpProcurementOrderApi {
             @PathVariable("id") Long id,
             @RequestBody InternalProcurementOrderCommand command);
 
+    @PostMapping(BASE_PATH + "/{id}/confirmation")
+    ApiResponse<InternalProcurementOrderDetailView> confirmProcurementOrder(
+            @PathVariable("id") Long id,
+            @RequestBody InternalProcurementConfirmationCommand command);
+
     @DeleteMapping(BASE_PATH + "/{id}")
-    ApiResponse<Void> deleteProcurementOrder(@PathVariable("id") Long id, @RequestParam int revision);
+    ApiResponse<Void> deleteProcurementOrder(
+            @PathVariable("id") Long id, @RequestParam int revision);
 }

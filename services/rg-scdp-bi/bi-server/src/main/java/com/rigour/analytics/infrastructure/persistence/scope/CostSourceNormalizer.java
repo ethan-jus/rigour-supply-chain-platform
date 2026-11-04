@@ -179,7 +179,7 @@ public final class CostSourceNormalizer {
                 || (departmentMatches.size() > 1
                         && !("HR".equals(source) && codeMatches.size() == 1)))
             mapping = "AMBIGUOUS";
-        else if (!"HR".equals(source)
+        else if (text(data, "_ledgerPartition") == null && !"HR".equals(source)
                 && codeMatches.size() == 1
                 && departmentMatches.size() == 1
                 && !codeMatches.getFirst().code().equals(departmentMatches.getFirst().code()))
@@ -193,8 +193,14 @@ public final class CostSourceNormalizer {
             mapping = "DEPARTMENT";
         }
         Map<String, Dimension> dims = new LinkedHashMap<>();
+        if (text(data, "_ledgerRootId") != null) {
+            dims.put("rootSourceId", new Dimension(text(data, "_ledgerRootId"), text(data, "_ledgerRootId"), false));
+            dims.put("ledgerPartition", new Dimension(text(data, "_ledgerPartition"), text(data, "_ledgerPartition"), false));
+        }
+        if (text(data,"_procurementOrderCode") != null) dims.put("procurementOrderCode",new Dimension(text(data,"_procurementOrderCode"),text(data,"_procurementOrderCode"),false));
+        if (text(data,"_costTreatment") != null) dims.put("costTreatment",new Dimension(text(data,"_costTreatment"),Objects.toString(text(data,"_costTreatmentReason"),"待核对"),false));
         String costMonth = text(data, "costMonth");
-        boolean monthly =
+        boolean monthly = text(data, "_ledgerPartition") != null ||
                 "PAYROLL".equals(r.get("category_code"))
                         || "RENTAL".equals(r.get("category_code"))
                         || expense
@@ -265,13 +271,13 @@ public final class CostSourceNormalizer {
                 "leg",
                 dimension(
                         first(
-                                text(data, "logistics", "legCode"),
+                                first(text(data, "ledger", "transportPurposeCode"), text(data, "logistics", "legCode")),
                                 text(data, "expense", "freightLeg")),
                         first(
                                 text(data, "logistics", "legCode"),
                                 text(data, "expense", "freightLeg")),
                         "code"));
-        dims.put("carrier", dimension(null, text(data, "logistics", "carrierName"), "carrier"));
+        dims.put("carrier", dimension(text(data, "ledger", "carrierCode"), first(text(data, "ledger", "carrierCode"), text(data, "logistics", "carrierName")), "carrier"));
         String sender = text(data, "logistics", "senderName");
         String receiver = text(data, "logistics", "receiverName");
         dims.put(
@@ -307,7 +313,7 @@ public final class CostSourceNormalizer {
                         r.get("warehouse_id"),
                         first(text(data, "rental", "premisesName"), r.get("warehouse_name")),
                         "warehouse"));
-        dims.put("contract", dimension(null, text(data, "rental", "contractNo"), "contract"));
+        dims.put("contract", dimension(null, first(text(data, "warehouseLedger", "contractNo"), text(data, "rental", "contractNo")), "contract"));
         dims.put("channel", dimension(null, text(data, "marketing", "channelName"), "channel"));
         dims.put(
                 "supplier",

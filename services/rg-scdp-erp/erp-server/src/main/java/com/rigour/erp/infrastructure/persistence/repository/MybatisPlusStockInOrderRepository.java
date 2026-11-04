@@ -66,6 +66,7 @@ public class MybatisPlusStockInOrderRepository
     private final InternalInventoryWarehouseMapper warehouseMapper;
     private final Clock clock;
     private final ErpWarehouseDataScope scopes;
+    private final ProcurementReadModel readModel;
 
     public MybatisPlusStockInOrderRepository(
             InternalStockInOrderMapper mapper,
@@ -77,7 +78,9 @@ public class MybatisPlusStockInOrderRepository
             InternalSupplierProfileMapper supplierMapper,
             InternalInventoryWarehouseMapper warehouseMapper,
             Clock erpClock,
-            ErpWarehouseDataScope scopes) {
+            ErpWarehouseDataScope scopes,
+            ProcurementReadModel readModel) {
+        this.readModel = readModel;
         this.baseMapper = mapper;
         this.stockInLineMapper = stockInLineMapper;
         this.procurementOrderMapper = procurementOrderMapper;
@@ -144,21 +147,49 @@ public class MybatisPlusStockInOrderRepository
                                 .eq(InternalProcurementOrderEntity::getDeleted, 0)
                                 .last("LIMIT 1"));
         if (order == null) return Optional.empty();
-        List<ProcurementOrderLineSnapshot> lineSnapshots =
-                procurementLines(tenantId, procurementOrderId).stream()
-                        .map(MybatisPlusStockInOrderRepository::procurementLineSnapshot)
+        return Optional.of(snapshot(tenantId, order));
+    }
+
+    private ProcurementOrderSnapshot snapshot(
+            String tenantId, InternalProcurementOrderEntity order) {
+        var parties = readModel.parties(tenantId, List.of(order)).get(order.getId());
+        var lineSnapshots =
+                readModel.lines(tenantId, order).stream()
+                        .map(
+                                resolved -> {
+                                    var l = resolved.view();
+                                    return new ProcurementOrderLineSnapshot(
+                                            l.id(),
+                                            l.lineNo(),
+                                            l.productId(),
+                                            l.productVariantId(),
+                                            l.productCode(),
+                                            l.variantCode(),
+                                            l.productName(),
+                                            l.unitCode(),
+                                            l.quantity(),
+                                            l.unitPrice(),
+                                            l.lineAmount(),
+                                            l.receivedQuantity(),
+                                            l.baseUnitCode(),
+                                            l.conversionRate(),
+                                            resolved.inventoryUnitCode(),
+                                            resolved.inventoryRate(),
+                                            l.receivedBaseQuantity(),
+                                            Boolean.TRUE.equals(l.receiptProgressVerified()));
+                                })
                         .toList();
-        return Optional.of(
-                new ProcurementOrderSnapshot(
-                        order.getId(),
-                        order.getProcurementNo(),
-                        order.getSourceSystemCode(),
-                        order.getSourceDocumentNo(),
-                        order.getSupplierId(),
-                        order.getTargetWarehouseId(),
-                        order.getStatusCode(),
-                        order.getRevision(),
-                        lineSnapshots));
+        return new ProcurementOrderSnapshot(
+                order.getId(),
+                order.getProcurementNo(),
+                order.getSourceSystemCode(),
+                order.getSourceDocumentNo(),
+                parties.supplier().id(),
+                parties.warehouse().id(),
+                order.getStatusCode(),
+                order.getRevision(),
+                lineSnapshots,
+                order.getConfirmationStatusCode());
     }
 
     @Override
@@ -184,6 +215,48 @@ public class MybatisPlusStockInOrderRepository
     @Transactional(rollbackFor = Exception.class)
     public InternalStockInOrderDetailView confirmProcurementStockIn(
             String tenantId, String stockInNo, ProcurementStockInWrite command, String actorId) {
+        // 锁必须先于事务内的普通查询，避免RR快照在等待采购锁之前建立。
+        var current =
+                procurementOrderMapper.selectOne(
+                        Wrappers.<InternalProcurementOrderEntity>lambdaQuery()
+                                .eq(InternalProcurementOrderEntity::getTenantId, tenantId)
+                                .eq(
+                                        InternalProcurementOrderEntity::getId,
+                                        command.procurementOrderId())
+                                .eq(InternalProcurementOrderEntity::getDeleted, 0)
+                                .last("FOR UPDATE"));
+        if (current == null
+                || !java.util.Objects.equals(current.getRevision(), command.procurementRevision())
+                || !"CONFIRMED".equals(current.getConfirmationStatusCode())
+                || !java.util.Set.of("SUBMITTED", "PARTIAL_IN").contains(current.getStatusCode())
+                || current.getSourceSystemCode() != null
+                        && !current.getSourceSystemCode().isBlank())
+            throw conflict("采购订单状态已变化，请刷新后重试");
+        var locked = snapshot(tenantId, current);
+        if (!java.util.Objects.equals(locked.targetWarehouseId(), command.warehouseId())
+                || !java.util.Objects.equals(locked.supplierId(), command.supplierId()))
+            throw conflict("采购关联档案已变化");
+        for (var line : command.lines()) {
+            var source =
+                    locked.lines().stream()
+                            .filter(x -> x.id().equals(line.procurementOrderLineId()))
+                            .findFirst()
+                            .orElseThrow(() -> conflict("采购明细已变化"));
+            var factor = source.conversionRate() == null ? BigDecimal.ONE : source.conversionRate();
+            var base = source.baseUnitCode() == null ? source.unitCode() : source.baseUnitCode();
+            if (!source.receiptProgressVerified()
+                    || source.inventoryRate() == null
+                    || !java.util.Objects.equals(base, line.unitCode())
+                    || source.quantity()
+                                    .multiply(factor)
+                                    .subtract(zeroIfNull(source.receivedBaseQuantity()))
+                                    .compareTo(line.quantity())
+                            < 0
+                    || line.quantity()
+                                    .compareTo(
+                                            line.stockQuantity().multiply(source.inventoryRate()))
+                            != 0) throw conflict("入库数量或单位配置已变化，请刷新后重试");
+        }
         scopes.requireWarehouse(tenantId, command.warehouseId(), "erp:stock-in:confirm");
         LocalDateTime now = now();
         InternalStockInOrderEntity order =
@@ -191,16 +264,15 @@ public class MybatisPlusStockInOrderRepository
         try {
             getBaseMapper().insert(order);
             for (ProcurementStockInLineWrite line : command.lines()) {
-                insertStockInLine(tenantId, order.getId(), line, actorId, now);
-                updateProcurementLineReceived(
-                        tenantId, command.procurementOrderId(), line, actorId, now);
+                insertStockInLine(
+                        tenantId, order.getId(), command.procurementNo(), line, actorId, now);
                 StockQuantityChange quantityChange =
                         increaseStockBalance(
                                 tenantId,
                                 command.warehouseId(),
                                 line.productId(),
                                 line.productVariantId(),
-                                line.quantity(),
+                                line.stockQuantity(),
                                 actorId,
                                 now);
                 insertStockFlow(
@@ -218,60 +290,6 @@ public class MybatisPlusStockInOrderRepository
             throw conflict("入库单号已存在或入库引用数据无效");
         }
         return rawStockInOrder(tenantId, order.getId()).orElseThrow(() -> notFound("入库单不存在"));
-    }
-
-    private void updateProcurementLineReceived(
-            String tenantId,
-            Long procurementOrderId,
-            ProcurementStockInLineWrite line,
-            String actorId,
-            LocalDateTime now) {
-        InternalProcurementOrderLineEntity current =
-                procurementLineMapper.selectOne(
-                        Wrappers.<InternalProcurementOrderLineEntity>lambdaQuery()
-                                .eq(InternalProcurementOrderLineEntity::getTenantId, tenantId)
-                                .eq(
-                                        InternalProcurementOrderLineEntity::getId,
-                                        line.procurementOrderLineId())
-                                .eq(
-                                        InternalProcurementOrderLineEntity::getProcurementOrderId,
-                                        procurementOrderId)
-                                .eq(InternalProcurementOrderLineEntity::getDeleted, 0)
-                                .last("LIMIT 1"));
-        if (current == null) throw conflict("采购订单明细已变化，请刷新后重试");
-        BigDecimal beforeReceived = zeroIfNull(current.getReceivedQuantity());
-        BigDecimal afterReceived = beforeReceived.add(line.quantity());
-        if (afterReceived.compareTo(current.getQuantity()) > 0) {
-            throw conflict("采购入库数量不能超过未入库数量");
-        }
-        int updated =
-                procurementLineMapper.update(
-                        null,
-                        Wrappers.<InternalProcurementOrderLineEntity>lambdaUpdate()
-                                .set(
-                                        InternalProcurementOrderLineEntity::getReceivedQuantity,
-                                        afterReceived)
-                                .set(
-                                        InternalProcurementOrderLineEntity::getRevision,
-                                        current.getRevision() == null
-                                                ? 1
-                                                : current.getRevision() + 1)
-                                .set(
-                                        InternalProcurementOrderLineEntity::getUpdatedBy,
-                                        auditActor(actorId))
-                                .set(InternalProcurementOrderLineEntity::getUpdatedTime, now)
-                                .eq(InternalProcurementOrderLineEntity::getTenantId, tenantId)
-                                .eq(
-                                        InternalProcurementOrderLineEntity::getId,
-                                        line.procurementOrderLineId())
-                                .eq(
-                                        InternalProcurementOrderLineEntity::getProcurementOrderId,
-                                        procurementOrderId)
-                                .eq(
-                                        InternalProcurementOrderLineEntity::getReceivedQuantity,
-                                        beforeReceived)
-                                .eq(InternalProcurementOrderLineEntity::getDeleted, 0));
-        if (updated != 1) throw conflict("采购订单明细已被其他人入库，请刷新后重试");
     }
 
     private StockQuantityChange increaseStockBalance(
@@ -361,6 +379,7 @@ public class MybatisPlusStockInOrderRepository
     private void insertStockInLine(
             String tenantId,
             Long stockInOrderId,
+            String procurementNo,
             ProcurementStockInLineWrite line,
             String actorId,
             LocalDateTime now) {
@@ -368,7 +387,9 @@ public class MybatisPlusStockInOrderRepository
         entity.setTenantId(tenantId);
         entity.setStockInOrderId(stockInOrderId);
         entity.setLineNo(line.lineNo());
-        entity.setProcurementOrderLineId(line.procurementOrderLineId());
+        entity.setProcurementOrderLineId(null);
+        entity.setProcurementNo(procurementNo);
+        entity.setProcurementVariantCode(line.variantCode());
         entity.setProductId(line.productId());
         entity.setProductVariantId(line.productVariantId());
         entity.setProductCodeSnapshot(line.productCode());
@@ -406,7 +427,7 @@ public class MybatisPlusStockInOrderRepository
         entity.setBusinessTypeCode(ErpStockFlowType.PURCHASE_IN.code());
         entity.setBusinessOrderId(stockInOrderId);
         entity.setBusinessOrderNo(stockInNo);
-        entity.setQuantityDelta(line.quantity());
+        entity.setQuantityDelta(line.stockQuantity());
         entity.setBeforeQuantity(quantityChange.beforeQuantity());
         entity.setAfterQuantity(quantityChange.afterQuantity());
         entity.setRemark(line.remark());
@@ -429,7 +450,7 @@ public class MybatisPlusStockInOrderRepository
         entity.setTenantId(tenantId);
         entity.setStockInNo(stockInNo);
         entity.setStockInTypeCode(command.stockInTypeCode());
-        entity.setProcurementOrderId(command.procurementOrderId());
+        entity.setProcurementOrderId(null);
         entity.setProcurementNo(command.procurementNo());
         entity.setWarehouseId(command.warehouseId());
         entity.setSupplierId(command.supplierId());
@@ -526,19 +547,6 @@ public class MybatisPlusStockInOrderRepository
                         .orderByAsc(InternalStockInOrderLineEntity::getId));
     }
 
-    private List<InternalProcurementOrderLineEntity> procurementLines(
-            String tenantId, Long procurementOrderId) {
-        return procurementLineMapper.selectList(
-                Wrappers.<InternalProcurementOrderLineEntity>lambdaQuery()
-                        .eq(InternalProcurementOrderLineEntity::getTenantId, tenantId)
-                        .eq(
-                                InternalProcurementOrderLineEntity::getProcurementOrderId,
-                                procurementOrderId)
-                        .eq(InternalProcurementOrderLineEntity::getDeleted, 0)
-                        .orderByAsc(InternalProcurementOrderLineEntity::getLineNo)
-                        .orderByAsc(InternalProcurementOrderLineEntity::getId));
-    }
-
     private Optional<InternalStockInOrderEntity> selectActive(String tenantId, Long id) {
         return Optional.ofNullable(
                 getBaseMapper()
@@ -583,9 +591,25 @@ public class MybatisPlusStockInOrderRepository
             query.eq(InternalStockInOrderEntity::getStockInTypeCode, criteria.stockInTypeCode());
         }
         if (criteria.procurementOrderId() != null) {
-            query.eq(
-                    InternalStockInOrderEntity::getProcurementOrderId,
-                    criteria.procurementOrderId());
+            var purchase =
+                    procurementOrderMapper.selectOne(
+                            Wrappers.<InternalProcurementOrderEntity>lambdaQuery()
+                                    .eq(InternalProcurementOrderEntity::getTenantId, tenantId)
+                                    .eq(
+                                            InternalProcurementOrderEntity::getId,
+                                            criteria.procurementOrderId())
+                                    .last("LIMIT 1"));
+            if (purchase == null) query.apply("1=0");
+            else
+                query.and(
+                        q ->
+                                q.eq(
+                                                InternalStockInOrderEntity::getProcurementNo,
+                                                purchase.getProcurementNo())
+                                        .or()
+                                        .eq(
+                                                InternalStockInOrderEntity::getProcurementOrderId,
+                                                criteria.procurementOrderId()));
         }
         if (criteria.warehouseId() != null) {
             query.eq(InternalStockInOrderEntity::getWarehouseId, criteria.warehouseId());
@@ -722,23 +746,6 @@ public class MybatisPlusStockInOrderRepository
 
     private static <T> T mapValue(Map<Long, T> values, Long key) {
         return key == null ? null : values.get(key);
-    }
-
-    private static ProcurementOrderLineSnapshot procurementLineSnapshot(
-            InternalProcurementOrderLineEntity line) {
-        return new ProcurementOrderLineSnapshot(
-                line.getId(),
-                line.getLineNo(),
-                line.getProductId(),
-                line.getProductVariantId(),
-                line.getProductCodeSnapshot(),
-                line.getVariantCodeSnapshot(),
-                line.getProductNameSnapshot(),
-                line.getUnitCode(),
-                line.getQuantity(),
-                line.getUnitPrice(),
-                line.getLineAmount(),
-                line.getReceivedQuantity());
     }
 
     private static LineMetrics metrics(List<InternalStockInOrderLineEntity> lines) {

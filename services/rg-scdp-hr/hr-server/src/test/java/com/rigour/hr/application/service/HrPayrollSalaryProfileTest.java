@@ -9,6 +9,8 @@ import com.rigour.hr.application.port.out.*;
 import com.rigour.shared.context.*;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.math.BigDecimal;
 import java.time.*;
@@ -115,8 +117,9 @@ class HrPayrollSalaryProfileTest {
         return service.calculate(new PayrollCalculateCommand("2026-09", List.of("E1"))).getFirst();
     }
 
-    @Test
-    void batchSkipsLockedRowsBeforeLoadingSources() {
+    @ParameterizedTest
+    @ValueSource(strings = {"CONFIRMED", "PAID"})
+    void batchSkipsLockedRowsBeforeLoadingSources(String status) {
         when(store.byMonth(anyString(), eq("E1"), eq("2026-09")))
                 .thenReturn(
                         Optional.of(
@@ -128,7 +131,7 @@ class HrPayrollSalaryProfileTest {
                                         10L,
                                         "销售部",
                                         "城市",
-                                        "CONFIRMED",
+                                        status,
                                         2,
                                         null,
                                         Instant.EPOCH)));

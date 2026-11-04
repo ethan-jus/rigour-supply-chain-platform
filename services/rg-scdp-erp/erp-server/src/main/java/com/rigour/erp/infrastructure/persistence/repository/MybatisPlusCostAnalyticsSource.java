@@ -46,8 +46,11 @@ public class MybatisPlusCostAnalyticsSource {
         this.mapper = mapper;
     }
 
+    private com.rigour.erp.application.port.out.ProcurementGoodsCosts goods;
+    @org.springframework.beans.factory.annotation.Autowired
+    void procurementGoods(com.rigour.erp.application.port.out.ProcurementGoodsCosts goods) { this.goods=goods; }
     public String version(String tenant) {
-        return mapper.analyticsVersion(tenant);
+        return mapper.analyticsVersion(tenant) + (goods==null ? "" : ":"+goods.version(tenant));
     }
 
     @Transactional(readOnly = true)
@@ -68,9 +71,16 @@ public class MybatisPlusCostAnalyticsSource {
         for (var row : mapper.selectMaps(query)) {
             Map<String, String> values = new LinkedHashMap<>();
             for (String column : COLUMNS) values.put(column, exact(row.get(column)));
+            if (goods!=null && "PURCHASE".equals(values.get("category_code"))) values.put("data_json",goods.reconcileLegacy(tenant,values.get("data_json")));
             items.add(values);
         }
-        return new Page(version, items);
+        if(goods!=null) for(var row:goods.page(tenant,cursor)) {
+            Map<String,String> values=new LinkedHashMap<>();
+            for(String column:COLUMNS) values.put(column,row.get(column));
+            items.add(values);
+        }
+        items.sort(Comparator.comparing(v->v.get("id")));
+        return new Page(version, items.stream().limit(1000).toList());
     }
 
     private static String exact(Object v) {

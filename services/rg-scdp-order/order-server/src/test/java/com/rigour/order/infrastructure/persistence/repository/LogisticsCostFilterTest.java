@@ -62,6 +62,7 @@ public class LogisticsCostFilterTest {
                             + "'");
         }
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN source_system VARCHAR(20)");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN tracking_no VARCHAR(100)");
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(OrderLogisticsCostMapper.class);

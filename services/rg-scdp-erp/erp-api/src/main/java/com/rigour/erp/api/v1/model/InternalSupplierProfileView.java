@@ -18,5 +18,8 @@ public record InternalSupplierProfileView(
         String createdBy,
         Instant createdTime,
         String updatedBy,
-        Instant updatedTime) {
+        Instant updatedTime,
+        String accountName,
+        String invoiceTitle,
+        String taxpayerNumber) {
 }

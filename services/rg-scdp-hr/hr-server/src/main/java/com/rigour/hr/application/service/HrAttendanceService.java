@@ -654,10 +654,11 @@ public class HrAttendanceService {
     private static void validateAssessmentOverride(
             com.rigour.hr.api.v1.model.AttendanceAssessmentOverride adjustment) {
         if (adjustment == null) return;
-        if (adjustment.missingCheckins() == null && adjustment.missingVisits() == null)
-            throw bad("请填写核定缺卡或缺拜访次数");
-        for (var count : new Integer[] {adjustment.missingCheckins(), adjustment.missingVisits()})
-            if (count != null && (count < 0 || count > 100000)) throw bad("核定缺失次数须为0至100000之间的整数");
+        var counts = new Integer[] {adjustment.missingCheckins(), adjustment.missingVisits(), adjustment.actualCheckins(),
+                adjustment.actualVisits(), adjustment.expectedCheckins(), adjustment.expectedVisits()};
+        if (java.util.Arrays.stream(counts).allMatch(java.util.Objects::isNull)) throw bad("请填写至少一项核定次数");
+        for (var count : counts)
+            if (count != null && (count < 0 || count > 100000)) throw bad("核定次数须为0至100000之间的整数");
         if (adjustment.reason() == null
                 || adjustment.reason().isBlank()
                 || adjustment.reason().length() > 500) throw bad("手工核定次数时，请填写500字以内的核定说明");

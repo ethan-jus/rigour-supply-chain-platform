@@ -3,6 +3,7 @@ package com.rigour.erp.application.port.out;
 import com.rigour.erp.api.v1.model.InternalStockInOrderDetailView;
 import com.rigour.erp.api.v1.model.InternalStockInOrderSummaryView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -46,7 +47,31 @@ public interface ErpStockInOrderStore {
             Long targetWarehouseId,
             String statusCode,
             Integer revision,
-            List<ProcurementOrderLineSnapshot> lines) {
+            List<ProcurementOrderLineSnapshot> lines,
+            String confirmationStatusCode) {
+        public ProcurementOrderSnapshot(
+                Long id,
+                String procurementNo,
+                String sourceSystemCode,
+                String sourceDocumentNo,
+                Long supplierId,
+                Long targetWarehouseId,
+                String statusCode,
+                Integer revision,
+                List<ProcurementOrderLineSnapshot> lines) {
+            this(
+                    id,
+                    procurementNo,
+                    sourceSystemCode,
+                    sourceDocumentNo,
+                    supplierId,
+                    targetWarehouseId,
+                    statusCode,
+                    revision,
+                    lines,
+                    "DRAFT".equals(statusCode) ? "UNCONFIRMED" : "CONFIRMED");
+        }
+
         public ProcurementOrderSnapshot {
             lines = lines == null ? List.of() : List.copyOf(lines);
         }
@@ -65,7 +90,46 @@ public interface ErpStockInOrderStore {
             BigDecimal quantity,
             BigDecimal unitPrice,
             BigDecimal lineAmount,
-            BigDecimal receivedQuantity) {
+            BigDecimal receivedQuantity,
+            String baseUnitCode,
+            BigDecimal conversionRate,
+            String inventoryUnitCode,
+            BigDecimal inventoryRate,
+            BigDecimal receivedBaseQuantity,
+            boolean receiptProgressVerified) {
+        public ProcurementOrderLineSnapshot(
+                Long id,
+                Integer lineNo,
+                Long productId,
+                Long productVariantId,
+                String productCode,
+                String variantCode,
+                String productName,
+                String unitCode,
+                BigDecimal quantity,
+                BigDecimal unitPrice,
+                BigDecimal lineAmount,
+                BigDecimal receivedQuantity) {
+            this(
+                    id,
+                    lineNo,
+                    productId,
+                    productVariantId,
+                    productCode,
+                    variantCode,
+                    productName,
+                    unitCode,
+                    quantity,
+                    unitPrice,
+                    lineAmount,
+                    receivedQuantity,
+                    null,
+                    BigDecimal.ONE,
+                    unitCode,
+                    BigDecimal.ONE,
+                    receivedQuantity,
+                    true);
+        }
     }
 
     /** 采购入库聚合写入模型；Service 已完成超收、重复行和状态流转校验。 */
@@ -100,6 +164,37 @@ public interface ErpStockInOrderStore {
             BigDecimal unitPrice,
             BigDecimal amount,
             String flowNo,
-            String remark) {
+            String remark,
+            BigDecimal stockQuantity) {
+        public ProcurementStockInLineWrite(
+                Integer lineNo,
+                Long procurementOrderLineId,
+                Long productId,
+                Long productVariantId,
+                String productCode,
+                String variantCode,
+                String productName,
+                String unitCode,
+                BigDecimal quantity,
+                BigDecimal unitPrice,
+                BigDecimal amount,
+                String flowNo,
+                String remark) {
+            this(
+                    lineNo,
+                    procurementOrderLineId,
+                    productId,
+                    productVariantId,
+                    productCode,
+                    variantCode,
+                    productName,
+                    unitCode,
+                    quantity,
+                    unitPrice,
+                    amount,
+                    flowNo,
+                    remark,
+                    quantity);
+        }
     }
 }

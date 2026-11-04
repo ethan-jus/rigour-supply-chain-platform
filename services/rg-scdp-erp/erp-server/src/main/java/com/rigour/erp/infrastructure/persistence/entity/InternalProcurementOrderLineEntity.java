@@ -3,6 +3,7 @@ package com.rigour.erp.infrastructure.persistence.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -53,6 +54,12 @@ public class InternalProcurementOrderLineEntity {
     /** 删除标识：0未删除，1已删除。 */
     private Integer deleted;
 
+    private String procurementNo;
+    private String productCode;
+    private String variantCode;
+    private String baseUnitCode;
+    private BigDecimal conversionRate;
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public String getTenantId() { return tenantId; }
@@ -95,4 +102,44 @@ public class InternalProcurementOrderLineEntity {
     public void setUpdatedTime(LocalDateTime updatedTime) { this.updatedTime = updatedTime; }
     public Integer getDeleted() { return deleted; }
     public void setDeleted(Integer deleted) { this.deleted = deleted; }
+
+    public String getProcurementNo() {
+        return procurementNo;
+    }
+
+    public void setProcurementNo(String value) {
+        this.procurementNo = value;
+    }
+
+    public String getProductCode() {
+        return productCode;
+    }
+
+    public void setProductCode(String value) {
+        this.productCode = value;
+    }
+
+    public String getVariantCode() {
+        return variantCode;
+    }
+
+    public void setVariantCode(String value) {
+        this.variantCode = value;
+    }
+
+    public String getBaseUnitCode() {
+        return baseUnitCode;
+    }
+
+    public void setBaseUnitCode(String value) {
+        this.baseUnitCode = value;
+    }
+
+    public BigDecimal getConversionRate() {
+        return conversionRate;
+    }
+
+    public void setConversionRate(BigDecimal value) {
+        this.conversionRate = value;
+    }
 }

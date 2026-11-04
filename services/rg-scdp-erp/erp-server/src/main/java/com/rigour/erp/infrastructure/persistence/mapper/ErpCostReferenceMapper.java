@@ -41,12 +41,16 @@ public interface ErpCostReferenceMapper extends BaseMapper<InternalInventoryWare
                 + " senderCode,s.supplier_name senderName,w.warehouse_code"
                 + " receiverCode,w.warehouse_name receiverName,d.status_code statusCode,"
                 + " COALESCE(NULLIF(d.source_system_code,''),'SYSTEM') sourceSystem,"
-                + " d.source_document_no originalNo, NULL documentDate, s.address originAddress,"
-                + " w.address destinationAddress, NULL warehouseTypeCode, w.warehouse_type_code"
-                + " targetWarehouseTypeCode FROM erp_procurement_order d JOIN erp_supplier_profile"
-                + " s ON s.tenant_id=d.tenant_id AND s.id=d.supplier_id AND s.deleted=0 JOIN"
-                + " erp_inventory_warehouse w ON w.tenant_id=d.tenant_id AND"
-                + " w.id=d.target_warehouse_id AND w.deleted=0 ${ew.customSqlSegment}")
+                + " d.source_document_no originalNo, d.purchase_date documentDate, s.address"
+                + " originAddress, COALESCE(d.receiving_address,w.address) destinationAddress, NULL"
+                + " warehouseTypeCode, w.warehouse_type_code targetWarehouseTypeCode FROM"
+                + " erp_procurement_order d JOIN erp_supplier_profile s ON s.tenant_id=d.tenant_id"
+                + " AND (s.supplier_code COLLATE utf8mb4_general_ci=d.supplier_code OR"
+                + " (d.supplier_code IS NULL AND s.id=d.supplier_id)) AND s.deleted=0 JOIN"
+                + " erp_inventory_warehouse w ON w.tenant_id COLLATE utf8mb4_general_ci=d.tenant_id AND (w.warehouse_code"
+                + " COLLATE utf8mb4_general_ci=d.target_warehouse_code OR (d.target_warehouse_code"
+                + " IS NULL AND w.id=d.target_warehouse_id)) AND w.deleted=0"
+                + " ${ew.customSqlSegment}")
     List<ErpCostSourceView> purchaseSources(@Param(Constants.WRAPPER) Wrapper<?> query);
 
     @Select(
@@ -54,7 +58,7 @@ public interface ErpCostReferenceMapper extends BaseMapper<InternalInventoryWare
                 + " warehouseId,w.id targetWarehouseId,s.warehouse_code senderCode,s.warehouse_name"
                 + " senderName,w.warehouse_code receiverCode,w.warehouse_name"
                 + " receiverName,d.status_code statusCode, 'SYSTEM' sourceSystem, d.transfer_no"
-                + " originalNo, NULL documentDate, s.address originAddress, w.address"
+                + " originalNo, DATE(DATE_ADD(COALESCE(d.stock_out_time,d.created_time),INTERVAL 8 HOUR)) documentDate, s.address originAddress, w.address"
                 + " destinationAddress, s.warehouse_type_code warehouseTypeCode,"
                 + " w.warehouse_type_code targetWarehouseTypeCode FROM erp_transfer_order d JOIN"
                 + " erp_inventory_warehouse s ON s.tenant_id=d.tenant_id AND"

@@ -512,6 +512,10 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
         // 姓名和编号是独立条件，组合查询采用 AND；keyword 保留给已有调用方。
         if (text(c.employeeName())) q.like("employee_name", c.employeeName().trim());
         if (text(c.employeeCode())) q.like("employee_code", c.employeeCode().trim());
+        if (c.payrollIds() != null) {
+            if (c.payrollIds().isEmpty()) q.apply("1=0");
+            else q.in("id", c.payrollIds());
+        }
         return q;
     }
 

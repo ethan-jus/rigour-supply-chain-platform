@@ -29,7 +29,40 @@ public record ErpCostQuery(
         String payeeName,
         String landlordName,
         String productName,
+        String specification,
+        String ledgerFeeType,
+        String warehouseCode) {
+    public ErpCostQuery(
+        int begin,
+        int step,
+        String documentNo,
+        String title,
+        String remark,
+        String contractNo,
+        String typeCode,
+        String cityCode,
+        String statusCode,
+        String paymentStatusCode,
+        LocalDate dateFrom,
+        LocalDate dateTo,
+        Long warehouseId,
+        String ownerEmployeeCode,
+        String costMonth,
+        String objectName,
+        Long departmentId,
+        String sourceSystem,
+        String sourceDocumentNo,
+        Boolean missingAmount,
+        String supplierName,
+        String lossReason,
+        String ownerName,
+        String payeeName,
+        String landlordName,
+        String productName,
         String specification) {
+        this(begin, step, documentNo, title, remark, contractNo, typeCode, cityCode, statusCode, paymentStatusCode, dateFrom, dateTo, warehouseId, ownerEmployeeCode, costMonth, objectName, departmentId, sourceSystem, sourceDocumentNo, missingAmount, supplierName, lossReason, ownerName, payeeName, landlordName, productName, specification, null, null);
+    }
+
     public ErpCostQuery(int begin, int step, String documentNo, String title, String remark, String contractNo, String typeCode, String cityCode, String statusCode, String paymentStatusCode, LocalDate dateFrom, LocalDate dateTo, Long warehouseId, String ownerEmployeeCode, String costMonth, String objectName, Long departmentId, String sourceSystem, String sourceDocumentNo, Boolean missingAmount, String supplierName, String lossReason, String ownerName, String payeeName, String landlordName) {
         this(begin, step, documentNo, title, remark, contractNo, typeCode, cityCode, statusCode, paymentStatusCode, dateFrom, dateTo, warehouseId, ownerEmployeeCode, costMonth, objectName, departmentId, sourceSystem, sourceDocumentNo, missingAmount, supplierName, lossReason, ownerName, payeeName, landlordName, null, null);
     }

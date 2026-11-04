@@ -39,6 +39,7 @@ public class ConfiguredCommissionService {
             List<PayrollRuleView> assignments) {
         List<String> issues = new ArrayList<>();
         List<PayrollCommissionDetailView> details = new ArrayList<>();
+        Map<String, String> historical = new HashMap<>();
         var released =
                 payroll.releasedForCalculation(tenant, employee.employeeCode(), month.toString());
         // 只有已整单付清的订单进入计提，未付清商品也不要求提前匹配经济标准。
@@ -68,19 +69,38 @@ public class ConfiguredCommissionService {
                         .collect(Collectors.toMap(ErpPayrollCategoryView::id, c -> c));
         for (var fact : facts) {
             if (Objects.equals(employee.employeeCode(), fact.employeeCode())) {
+                int issueCount = issues.size();
+                Long orderDepartment = fact.departmentId() != null
+                        ? fact.departmentId()
+                        : payroll.departmentAt(tenant, employee.employeeCode(), fact.orderDate());
                 var execution =
                         execution(
                                 tenant,
                                 employee.employeeCode(),
-                                fact.departmentId() != null
-                                        ? fact.departmentId()
-                                        : payroll.departmentAt(
-                                                tenant, employee.employeeCode(), fact.orderDate()),
+                                orderDepartment,
                                 fact.orderDate(),
                                 selected,
                                 versions,
                                 issues,
                                 fact.orderNo());
+                // 已确认的存量销售订单口径：只有订单日确实没有政策时，才允许使用
+                // 付清日生效且明确按付清日期取值的政策。停用、冲突不能视为未配置。
+                boolean missingOnly = issues.size() > issueCount
+                        && issues.subList(issueCount, issues.size()).stream()
+                        .allMatch(i -> i.equals(fact.orderNo() + "：提成规则未配置"));
+                if (execution == null && missingOnly) {
+                    var paidPolicy = execution(tenant, employee.employeeCode(),
+                            payroll.departmentAt(tenant, employee.employeeCode(), fact.fullyPaidDate()),
+                            fact.fullyPaidDate(), selected, versions, issues, fact.orderNo());
+                    if (paidPolicy != null && "FULLY_PAID_DATE".equals(paidPolicy.definition().commission().standardDate())
+                            && (orderDepartment == null
+                                    || fact.orderDate().isBefore(paidPolicy.definition().effectiveFrom()))) {
+                        execution = paidPolicy;
+                        historical.put(fact.lineId(), orderDepartment == null
+                                ? "订单日任职部门未记录" : "订单日未配置政策");
+                        issues.subList(issueCount, issues.size()).removeIf(i -> i.equals(fact.orderNo() + "：提成规则未配置"));
+                    }
+                }
                 add(
                         tenant,
                         employee,
@@ -95,6 +115,13 @@ public class ConfiguredCommissionService {
                         details,
                         issues);
             }
+            // Only this employee's possible managerial entitlement can block their payroll.
+            // Other managers' assignment conflicts must not invalidate earned sales commission.
+            boolean possibleManager = java.util.stream.Stream.of(fact.orderDate(), fact.fullyPaidDate())
+                    .filter(Objects::nonNull)
+                    .flatMap(date -> assignmentsAt(assignments, fact.cityCode(), date).stream())
+                    .anyMatch(row -> employee.employeeCode().equals(row.data().employeeCode()));
+            if (!possibleManager) continue;
             var atOrder = assignmentsAt(assignments, fact.cityCode(), fact.orderDate());
             if (atOrder.size() > 1) {
                 issues.add(fact.orderNo() + "：订单日城市总任职重叠");
@@ -130,6 +157,8 @@ public class ConfiguredCommissionService {
                             : fact.orderDate();
             if (date == null) continue;
             var recipients = assignmentsAt(assignments, fact.cityCode(), date);
+            if (recipients.stream().noneMatch(row ->
+                    employee.employeeCode().equals(row.data().employeeCode()))) continue;
             if (recipients.size() != 1) {
                 issues.add(fact.orderNo() + "：归属时点城市总任职缺失或重叠");
                 continue;
@@ -211,7 +240,10 @@ public class ConfiguredCommissionService {
                             d.ruleRevision(),
                             d.accrued(),
                             d.released(),
-                            d.message(),
+                            d.message() + (historical.containsKey(d.sourceLineId()) && d.released() != null
+                                    && "SALES".equals(d.recipientRoleCode())
+                                    ? "；历史订单补算：" + historical.get(d.sourceLineId())
+                                            + "，按整单付清日任职部门及有效规则取值，保留订单原销售归属" : ""),
                             d.sourceEmployeeCode(),
                             trace);
                 });

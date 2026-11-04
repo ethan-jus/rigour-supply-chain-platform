@@ -400,6 +400,54 @@ class PayrollPersistenceWorkflowTest {
     }
 
     @Test
+    void fullExportAndIndividualDetailsKeepTheSameCommissionSnapshots() {
+        var json = JsonMapper.builder().build();
+        var amounts = java.util.Arrays.asList(new BigDecimal("559.10"), BigDecimal.ZERO, null);
+        for (int i = 0; i < amounts.size(); i++) {
+            var code = "EXPORT-" + i;
+            var amount = amounts.get(i);
+            var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(calculation(code));
+            node.set("commission", json.valueToTree(amount));
+            var total = amount == null ? null : new BigDecimal("3000").add(amount);
+            node.set("grossPay", json.valueToTree(total));
+            node.set("netPay", json.valueToTree(total));
+            node.set("issues", json.valueToTree(amount == null ? List.of("SO1：提成标准未配置") : List.of()));
+            node.set("details", json.valueToTree(List.of(new PayrollCommissionDetailView(
+                    "LINE-" + i, "SALES", "SO-" + i, "商品", "BOX", BigDecimal.ONE,
+                    "RULE1", "商品提成", 1, amount, amount, ""))));
+            var employee = new PayrollEmployeeView(code, "员工" + i, 10L, "销售部", "武汉市",
+                    LocalDate.of(2020, 1, 1), null, "SALES");
+            payroll.saveCalculation("T1", code, "2026-09", employee,
+                    json.treeToValue(node, PayrollCalculationView.class), "HR");
+        }
+        payroll.saveCalculation("T2", "OTHER-TENANT", "2026-09", employee(), calculation("OTHER"), "HR");
+        payroll.saveCalculation("T1", "OTHER-MONTH", "2026-08", employee(), calculation("OTHER"), "HR");
+        var auditCount = jdbc.queryForObject("SELECT COUNT(*) FROM hr_payroll_audit", Integer.class);
+        // Export must cover the entire authorized result even when the requested page size is one.
+        var exported = payroll.export("T1", new PayrollQuery(0, 1, "2026-09", null, null, null), "hr:payroll:read");
+        assertThat(exported).hasSize(3);
+        for (int i = 0; i < exported.size(); i++) {
+            var row = exported.get(i);
+            var detail = payroll.detail("T1", row.id(), "hr:payroll:read");
+            assertThat(row.employeeCode()).isEqualTo("EXPORT-" + i);
+            assertThat(row.calculation().commission()).isEqualTo(amounts.get(i));
+            assertThat(json.writeValueAsString(row.calculation()))
+                    .isEqualTo(json.writeValueAsString(detail.calculation()));
+            assertThat(row.revision()).isEqualTo(detail.revision());
+        }
+        assertThat(exported.get(2).calculation().issues()).containsExactly("SO1：提成标准未配置");
+        var selected = payroll.export("T1", new PayrollQuery(0, 1, "2026-09", null, null, null,
+                null, null, null, List.of(exported.get(0).id(), exported.get(2).id())), "hr:payroll:read");
+        assertThat(selected).extracting(PayrollDetailView::employeeCode).containsExactly("EXPORT-0", "EXPORT-2");
+        assertThat(selected.getFirst().calculation().commission()).isEqualByComparingTo("559.10");
+        assertThat(selected.getLast().calculation().commission()).isNull();
+        assertThat(payroll.export("T1", new PayrollQuery(0, 1, "2026-09", null, null, null,
+                null, null, null, List.of()), "hr:payroll:read")).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM hr_payroll_audit", Integer.class))
+                .isEqualTo(auditCount);
+    }
+
+    @Test
     void partialPaymentsAreAuditedIdempotentAndCannotExceedNetPay() {
         var confirmed = confirmed();
         var confirmedCostVersion = payrollCosts.version("T1");

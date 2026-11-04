@@ -75,6 +75,9 @@ public class MybatisPlusSupplierProfileRepository
         entity.setAddress(command.address());
         entity.setBankName(command.bankName());
         entity.setBankAccountNo(command.bankAccountNo());
+        entity.setAccountName(command.accountName());
+        entity.setInvoiceTitle(command.invoiceTitle());
+        entity.setTaxpayerNumber(command.taxpayerNumber());
         entity.setStatusCode(command.statusCode());
         entity.setRemark(command.remark());
         entity.setRevision(1);
@@ -104,6 +107,9 @@ public class MybatisPlusSupplierProfileRepository
                 .set(InternalSupplierProfileEntity::getAddress, command.address())
                 .set(InternalSupplierProfileEntity::getBankName, command.bankName())
                 .set(InternalSupplierProfileEntity::getBankAccountNo, command.bankAccountNo())
+                .set(InternalSupplierProfileEntity::getAccountName, command.accountName())
+                .set(InternalSupplierProfileEntity::getInvoiceTitle, command.invoiceTitle())
+                .set(InternalSupplierProfileEntity::getTaxpayerNumber, command.taxpayerNumber())
                 .set(InternalSupplierProfileEntity::getStatusCode, command.statusCode())
                 .set(InternalSupplierProfileEntity::getRemark, command.remark())
                 .set(InternalSupplierProfileEntity::getRevision, command.revision() + 1)
@@ -176,7 +182,8 @@ public class MybatisPlusSupplierProfileRepository
                 entity.getSupplierName(), entity.getContactName(), entity.getContactPhone(), entity.getAddress(),
                 entity.getBankName(), entity.getBankAccountNo(), entity.getStatusCode(), entity.getRemark(),
                 entity.getRevision(), entity.getCreatedBy(), instant(entity.getCreatedTime()), entity.getUpdatedBy(),
-                instant(entity.getUpdatedTime()));
+                instant(entity.getUpdatedTime()), entity.getAccountName(), entity.getInvoiceTitle(),
+                entity.getTaxpayerNumber());
     }
 
     private static Instant instant(LocalDateTime value) {

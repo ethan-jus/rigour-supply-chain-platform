@@ -150,6 +150,11 @@ public final class HrPayrollController implements HrPayrollApi {
     }
 
     @Override
+    public ApiResponse<List<PayrollDetailView>> exportQuery(PayrollQuery query) {
+        return ApiResponse.success(workflow.export(query));
+    }
+
+    @Override
     public ApiResponse<PayrollDetailView> reopen(String id, PayrollActionCommand command) {
         return ApiResponse.success(workflow.reopen(id, command));
     }

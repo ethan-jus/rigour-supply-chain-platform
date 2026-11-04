@@ -709,16 +709,31 @@ public final class DhbSyncOrchestrationService {
     private static DhbSyncOrchestrationStepView erpStep(ErpDataSyncResult result) {
         return new DhbSyncOrchestrationStepView("ERP", result.objectType(), result.status(),
                 result.runId(), result.fetched(), result.created() + result.changed(),
-                result.unmapped(), result.dictionaryRevisions(), erpMessage(result));
+                result.unmapped(), result.dictionaryRevisions(), erpMessage(result),
+                result.created(), result.changed(), 0L, result.duplicates(), result.rejected());
     }
 
     private static String erpMessage(ErpDataSyncResult result) {
-        if (result.sourceDetails().isEmpty()) return null;
-        String details = result.sourceDetails().entrySet().stream()
-                .map(entry -> entry.getKey() + "=" + entry.getValue())
-                .collect(java.util.stream.Collectors.joining("；"));
-        return "来源明细：" + details + "；未变化" + result.duplicates()
-                + "条；拒绝" + result.rejected() + "条";
+        List<String> messages = new ArrayList<>();
+        result.sourceDetails().forEach((key, count) -> {
+            if (!key.startsWith("REJECTED_REFERENCE:") || count == 0) return;
+            String reason = switch (key.substring("REJECTED_REFERENCE:".length())) {
+                case "purchaseOrder.supplier" -> "缺少供应商来源关联，请先到供应商档案同步供应商";
+                case "purchaseOrder.targetWarehouse" -> "缺少仓库来源关联，请先到仓库信息同步仓库";
+                case "purchaseOrder.lines" -> "商品或SKU未关联，请先同步商品档案";
+                case "purchaseOrder.identity" -> "来源采购单缺少标识或单号";
+                case "supplier.identity" -> "来源供应商缺少标识或名称，请在订货宝补齐后重试";
+                default -> "来源关联资料不完整";
+            };
+            messages.add(reason + "（" + count + "条）");
+        });
+        if (result.sourceDetails().getOrDefault("DHB_SYNC_WINDOW_UNSUPPORTED_BY_SOURCE_API", 0L) > 0) {
+            messages.add("来源接口不支持变更时间筛选，本次核对了全部来源记录");
+        }
+        if (result.rejected() > 0 && messages.isEmpty()) {
+            messages.add("有" + result.rejected() + "条未导入，请核对来源标识和基础资料关联后重试");
+        }
+        return messages.isEmpty() ? null : String.join("；", messages);
     }
 
     private static String dictionaryMessage(Audit audit) {

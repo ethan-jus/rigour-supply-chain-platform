@@ -27,6 +27,12 @@ public class InternalSupplierProfileEntity {
     private String bankName;
     /** 银行账号。 */
     private String bankAccountNo;
+    /** 开户名称。 */
+    private String accountName;
+    /** 开票抬头。 */
+    private String invoiceTitle;
+    /** 纳税人识别号。 */
+    private String taxpayerNumber;
     /** 供应商状态，关联 SUPPLIER_STATUS 字典项。 */
     private String statusCode;
     /** 备注。 */
@@ -62,6 +68,12 @@ public class InternalSupplierProfileEntity {
     public void setBankName(String bankName) { this.bankName = bankName; }
     public String getBankAccountNo() { return bankAccountNo; }
     public void setBankAccountNo(String bankAccountNo) { this.bankAccountNo = bankAccountNo; }
+    public String getAccountName() { return accountName; }
+    public void setAccountName(String accountName) { this.accountName = accountName; }
+    public String getInvoiceTitle() { return invoiceTitle; }
+    public void setInvoiceTitle(String invoiceTitle) { this.invoiceTitle = invoiceTitle; }
+    public String getTaxpayerNumber() { return taxpayerNumber; }
+    public void setTaxpayerNumber(String taxpayerNumber) { this.taxpayerNumber = taxpayerNumber; }
     public String getStatusCode() { return statusCode; }
     public void setStatusCode(String statusCode) { this.statusCode = statusCode; }
     public String getRemark() { return remark; }

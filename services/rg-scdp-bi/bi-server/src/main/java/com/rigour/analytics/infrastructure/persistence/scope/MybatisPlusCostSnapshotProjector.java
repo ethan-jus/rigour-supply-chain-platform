@@ -23,7 +23,7 @@ public class MybatisPlusCostSnapshotProjector implements CostDashboardRefresh {
     // Changing the classification contract must rebuild persisted facts even when source data is
     // unchanged.
     private static final String NORMALIZATION_VERSION_KEY = "BI_COST_NORMALIZATION";
-    private static final String NORMALIZATION_VERSION = "6";
+    private static final String NORMALIZATION_VERSION = "7";
     private static final Logger log =
             LoggerFactory.getLogger(MybatisPlusCostSnapshotProjector.class);
     private final CostSnapshotMapper snapshots;
@@ -134,7 +134,10 @@ public class MybatisPlusCostSnapshotProjector implements CostDashboardRefresh {
                             || !tenant.equals(source.get("tenant_id")))
                         throw new IllegalStateException("费用源字段或租户不匹配");
                     cursor = CostSourceDatasets.validateCursor(source.get("id"), cursor);
-                    var fact = normalizer.normalize(d.source(), source, cities, paths);
+                    var root = normalizer.normalize(d.source(), source, cities, paths);
+                    if (root != null && !"HR".equals(root.source())) originals.put(root.key(), root);
+                    for (var partition : CostLedgerPartitions.expand(d.source(), source, json)) {
+                    var fact = normalizer.normalize(d.source(), partition, cities, paths);
                     if (fact == null) continue;
                     if (!"HR".equals(fact.source())) originals.put(fact.key(), fact);
                     else fact = CostReimbursementReconciler.reconcile(fact, originals);
@@ -192,6 +195,7 @@ public class MybatisPlusCostSnapshotProjector implements CostDashboardRefresh {
                     row.setCategory(fact.category());
                     row.setRecordJson(json.writeValueAsString(fact));
                     batch.add(row);
+                    }
                 }
                 if (!batch.isEmpty()) facts.insertBatch(batch);
                 count += batch.size();

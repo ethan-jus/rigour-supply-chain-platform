@@ -47,7 +47,9 @@ public record DhbPageSyncCommand(
                 throw new IllegalArgumentException("该对象不支持服务端增量同步");
             if (from != null || to != null)
                 throw new IllegalArgumentException("增量同步由服务器确定时间范围，请勿显式指定窗口");
-        } else if (from == null || to == null || !from.isBefore(to))
+        } else if (!(from == null && to == null && (scope == Scope.SUPPLIER
+                || scope == Scope.PURCHASE_ORDER || scope == Scope.WAREHOUSE))
+                && (from == null || to == null || !from.isBefore(to)))
             throw new IllegalArgumentException("请选择有效时间范围");
         if (maxPages != null && (maxPages < 1 || maxPages > 500))
             throw new IllegalArgumentException("最多页数范围为1至500");

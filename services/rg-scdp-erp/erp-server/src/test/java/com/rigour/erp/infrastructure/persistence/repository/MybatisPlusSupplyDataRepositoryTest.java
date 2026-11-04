@@ -86,8 +86,8 @@ class MybatisPlusSupplyDataRepositoryTest {
 
         ImportResult result = repository.importSupplier(TENANT_ID, RUN_ID,
                 new Supplier("SUP-1", null, "S001", "勇者工厂", null, null,
-                        null, null, null, null, null, null, null,
-                        null, null, null, null,
+                        null, null, null, null, "开户名称", "开户银行", "银行账号",
+                        "开票抬头", "EXAMPLE-TAX-001", null, null,
                         Map.of("create_date", "2026-08-21 09:20:00"), "hash-supplier"));
 
         assertThat(result.created()).isEqualTo(1);
@@ -95,6 +95,66 @@ class MybatisPlusSupplyDataRepositoryTest {
                 ArgumentCaptor.forClass(InternalSupplierProfileEntity.class);
         verify(supplierMapper).insert(inserted.capture());
         assertThat(inserted.getValue().getSupplierCode()).startsWith("SUP20260821");
+        assertThat(inserted.getValue().getAccountName()).isEqualTo("开户名称");
+        assertThat(inserted.getValue().getInvoiceTitle()).isEqualTo("开票抬头");
+        assertThat(inserted.getValue().getTaxpayerNumber()).isEqualTo("EXAMPLE-TAX-001");
+    }
+
+    @Test
+    void supplierSyncRepairsNewFinancialColumnsWithoutRequiringSourceHashChanges() {
+        givenRunConnector();
+        var entity = supplier(7L, "来源名称");
+        var binding = binding("SUPPLIER", "SUPPLIER_PROFILE", "SUP-1", 7L, "来源名称");
+        binding.sourcePayloadHash = "same-hash";
+        when(bindingMapper.selectOne(any())).thenReturn(binding);
+        when(supplierMapper.selectById(7L)).thenReturn(entity);
+        var source = new Supplier("SUP-1", null, "S001", "来源名称", null, null, null, null, null, null,
+                "开户名称", "开户银行", "账号", "开票抬头", "EXAMPLE-TAX-001", null, null, Map.of(), "same-hash");
+        var repaired = repository.importSupplier(TENANT_ID, RUN_ID, source);
+        assertThat(repaired.changed()).isEqualTo(1);
+        assertThat(entity.getAccountName()).isEqualTo("开户名称");
+        assertThat(entity.getInvoiceTitle()).isEqualTo("开票抬头");
+        assertThat(entity.getTaxpayerNumber()).isEqualTo("EXAMPLE-TAX-001");
+        var repeated = repository.importSupplier(TENANT_ID, RUN_ID, source);
+        assertThat(repeated.duplicates()).isEqualTo(1);
+        verify(supplierMapper).updateById(entity);
+    }
+
+    @Test
+    void supplierSyncKeepsLocalEditsAndDoesNotCountThemAsUpdates() {
+        givenRunConnector();
+        var supplier = supplier(7L, "本地维护名称");
+        supplier.setUpdatedBy("local-user");
+        supplier.setAccountName("手工开户名称");
+        supplier.setInvoiceTitle("手工抬头");
+        supplier.setTaxpayerNumber("LOCAL-TAX");
+        var binding = binding("SUPPLIER", "SUPPLIER_PROFILE", "SUP-1", 7L, "来源名称");
+        binding.sourcePayloadHash = "old-hash";
+        when(bindingMapper.selectOne(any())).thenReturn(binding);
+        when(supplierMapper.selectById(7L)).thenReturn(supplier);
+        ImportResult result = repository.importSupplier(TENANT_ID, RUN_ID,
+                new Supplier("SUP-1", null, "S001", "来源新名称", null, null,
+                        null, null, null, null, null, null, null,
+                        null, null, null, null, Map.of(), "new-hash"));
+        assertThat(result.changed()).isZero();
+        assertThat(result.duplicates()).isEqualTo(1);
+        assertThat(supplier.getSupplierName()).isEqualTo("本地维护名称");
+        assertThat(supplier.getAccountName()).isEqualTo("手工开户名称");
+        assertThat(supplier.getInvoiceTitle()).isEqualTo("手工抬头");
+        assertThat(supplier.getTaxpayerNumber()).isEqualTo("LOCAL-TAX");
+        verify(supplierMapper, never()).updateById(any(InternalSupplierProfileEntity.class));
+        verify(bindingMapper).updateById(binding);
+    }
+
+    @Test
+    void supplierMissingIdentityReturnsActionableIssueWithoutWriting() {
+        ImportResult result = repository.importSupplier(TENANT_ID, RUN_ID,
+                new Supplier(null, null, "S001", "来源名称", null, null,
+                        null, null, null, null, null, null, null,
+                        null, null, null, null, Map.of(), "new-hash"));
+        assertThat(result.rejected()).isEqualTo(1);
+        assertThat(result.issues()).extracting(i -> i.fieldCode()).containsExactly("supplier.identity");
+        verify(supplierMapper, never()).insert(any(InternalSupplierProfileEntity.class));
     }
 
     @Test
@@ -294,6 +354,48 @@ class MybatisPlusSupplyDataRepositoryTest {
         verify(procurementMapper).updateById(updated.capture());
         assertThat(updated.getValue().getProcurementNo()).startsWith("PO20260821");
         verify(procurementLineMapper).insert(any(InternalProcurementOrderLineEntity.class));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"false,false,0,1", "true,false,1,0", "true,true,0,1"})
+    void procurementSyncComparesAmountByValueAndPreservesManualEdits(boolean differentAmount,
+            boolean manuallyEdited, long expectedChanged, long expectedDuplicates) {
+        givenRunConnector();
+        var supplier = supplier(7L, "来源供应商");
+        var warehouse = warehouse(9L, "来源仓库");
+        var product = product(11L, "100009", "启航款皮头");
+        var variant = variant(13L, product.getId(), "SKU-100009-H", "H");
+        var existingBinding = binding("PURCHASE_ORDER", "PROCUREMENT_ORDER", "27781", 66L, supplier.getSupplierName());
+        existingBinding.sourcePayloadHash = "hash-po-with-line";
+        var productBinding = binding("PRODUCT_SPU", "PRODUCT", "1167088", product.getId(), product.getProductName());
+        var variantBinding = binding("PRODUCT_SKU", "PRODUCT_VARIANT", "1167088::721960", variant.getId(), "H");
+        when(bindingMapper.selectOne(any()))
+                .thenReturn(binding("SUPPLIER", "SUPPLIER_PROFILE", "550585", supplier.getId(), supplier.getSupplierName()))
+                .thenReturn(binding("WAREHOUSE", "INVENTORY_WAREHOUSE", "26914", warehouse.getId(), warehouse.getWarehouseName()))
+                .thenReturn(productBinding).thenReturn(variantBinding).thenReturn(existingBinding)
+                .thenReturn(productBinding).thenReturn(variantBinding);
+        when(supplierMapper.selectById(7L)).thenReturn(supplier);
+        when(warehouseMapper.selectById(9L)).thenReturn(warehouse);
+        when(productMapper.selectById(11L)).thenReturn(product);
+        when(variantMapper.selectById(13L)).thenReturn(variant);
+        var existing = procurement(66L);
+        if (manuallyEdited) existing.setUpdatedBy("local-user");
+        existing.setProcurementNo("PO202608219999");
+        existing.setTotalAmount(new java.math.BigDecimal(differentAmount ? "1.000000" : "0.000000"));
+        when(procurementMapper.selectById(66L)).thenReturn(existing);
+        var result = repository.importPurchaseOrder(TENANT_ID, RUN_ID,
+                purchaseOrderWithLine("27781", supplier.getSupplierName(), warehouse.getWarehouseName()));
+        assertThat(result.created()).isZero();
+        assertThat(result.changed()).isEqualTo(expectedChanged);
+        assertThat(result.duplicates()).isEqualTo(expectedDuplicates);
+        if (expectedChanged > 0) {
+            verify(procurementMapper).updateById(existing);
+            verify(procurementLineMapper).insert(any(InternalProcurementOrderLineEntity.class));
+        } else {
+            verify(procurementMapper, never()).updateById(any(InternalProcurementOrderEntity.class));
+            verify(procurementLineMapper, never()).delete(any());
+            verify(procurementLineMapper, never()).insert(any(InternalProcurementOrderLineEntity.class));
+        }
     }
 
     @Test

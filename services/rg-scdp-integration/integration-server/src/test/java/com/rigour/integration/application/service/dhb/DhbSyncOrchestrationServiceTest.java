@@ -942,6 +942,36 @@ class DhbSyncOrchestrationServiceTest {
         assertThat(step.rejected()).isEqualTo(2);
     }
 
+    @Test
+    void procurementSnapshotPreservesCountsAndExplainsMissingReferences() {
+        when(erpClient.sync(any(), eq(CONNECTOR_ID), eq(SUPPLY_TASK_ID), eq("PURCHASE_ORDER"),
+                eq(10), eq("MANUAL"), isNull(), isNull())).thenReturn(new ErpDataSyncResult(
+                UUID.randomUUID(), "PURCHASE_ORDER", "SUCCEEDED_WITH_WARNINGS", CONNECTOR_ID,
+                36, 1, 0, 0, 35, 0, Map.of(),
+                Map.of("PURCHASE_ORDER", 36L, "REJECTED_REFERENCE:purchaseOrder.targetWarehouse", 35L),
+                1, Instant.now()));
+        var result = service.runPage(manualCaller(), new DhbPageSyncCommand(
+                DhbPageSyncCommand.Scope.PURCHASE_ORDER, CONNECTOR_ID, null, null, 10));
+        var step = result.tenants().getFirst().steps().getFirst();
+        assertThat(step.created()).isEqualTo(1);
+        assertThat(step.updated()).isZero();
+        assertThat(step.duplicates()).isZero();
+        assertThat(step.rejected()).isEqualTo(35);
+        assertThat(step.message()).contains("仓库信息同步仓库", "35条").doesNotContain("REJECTED_REFERENCE");
+        org.mockito.Mockito.verifyNoInteractions(crmClient, orderSyncService, hrEmployeeClient, dhbClient, dictionaryClient);
+    }
+
+    @Test
+    void supplierAndWarehouseSnapshotsAcceptNoWindowButOtherScopesStillRequireIt() {
+        for (var scope : List.of(DhbPageSyncCommand.Scope.SUPPLIER, DhbPageSyncCommand.Scope.WAREHOUSE)) {
+            assertThat(new DhbPageSyncCommand(scope, CONNECTOR_ID, null, null, 10).from()).isNull();
+            assertThatThrownBy(() -> new DhbPageSyncCommand(scope, CONNECTOR_ID, Instant.now(), null, 10))
+                    .isInstanceOf(IllegalArgumentException.class);
+        }
+        assertThatThrownBy(() -> new DhbPageSyncCommand(DhbPageSyncCommand.Scope.RECEIPT,
+                CONNECTOR_ID, null, null, 10)).isInstanceOf(IllegalArgumentException.class);
+    }
+
     private DhbSyncOrchestrationService serviceWithIncrementalWindow(String incrementalFrom, Instant clockAt) {
         DhbSyncOrchestrationProperties properties = new DhbSyncOrchestrationProperties();
         properties.setIncrementalWindowFrom(incrementalFrom);
