@@ -3,6 +3,7 @@ package com.rigour.erp.infrastructure.persistence.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -55,6 +56,9 @@ public class InternalStockInOrderLineEntity {
     /** 删除标识：0未删除，1已删除。 */
     private Integer deleted;
 
+    private String procurementNo;
+    private String procurementVariantCode;
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public String getTenantId() { return tenantId; }
@@ -99,4 +103,20 @@ public class InternalStockInOrderLineEntity {
     public void setUpdatedTime(LocalDateTime updatedTime) { this.updatedTime = updatedTime; }
     public Integer getDeleted() { return deleted; }
     public void setDeleted(Integer deleted) { this.deleted = deleted; }
+
+    public String getProcurementNo() {
+        return procurementNo;
+    }
+
+    public void setProcurementNo(String value) {
+        this.procurementNo = value;
+    }
+
+    public String getProcurementVariantCode() {
+        return procurementVariantCode;
+    }
+
+    public void setProcurementVariantCode(String value) {
+        this.procurementVariantCode = value;
+    }
 }

@@ -286,7 +286,9 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
         var rows =
                 jdbc.queryForList(
                         "SELECT "
-                                + String.join(",", d.columns())
+                                + d.columns().stream()
+                                        .map(column -> projection(d.table(), column))
+                                        .collect(java.util.stream.Collectors.joining(","))
                                 + " FROM "
                                 + d.table()
                                 + " WHERE "
@@ -300,6 +302,55 @@ public class JdbcAnalyticsSourceSnapshotStore implements AnalyticsSourceSnapshot
             items.add(item);
         }
         return new Page(version, items);
+    }
+
+    /** 维持已有BI协议；业务主表以编码保存，导出时在ERP域内解析旧协议的ID列。 */
+    private static String projection(String table, String column) {
+        if ("erp_procurement_order".equals(table) && "target_warehouse_id".equals(column))
+            return "CASE WHEN target_warehouse_code IS NULL THEN target_warehouse_id ELSE (SELECT"
+                       + " w.id FROM erp_inventory_warehouse w WHERE"
+                       + " w.tenant_id COLLATE utf8mb4_general_ci=erp_procurement_order.tenant_id AND"
+                       + " w.warehouse_code COLLATE utf8mb4_general_ci=erp_procurement_order.target_warehouse_code LIMIT 1)"
+                       + " END AS target_warehouse_id";
+        if ("erp_procurement_order_line".equals(table)) {
+            String resolved =
+                    switch (column) {
+                        case "procurement_order_id" ->
+                                "CASE WHEN procurement_no IS NULL THEN procurement_order_id ELSE"
+                                    + " (SELECT h.id FROM erp_procurement_order h WHERE"
+                                    + " h.tenant_id=erp_procurement_order_line.tenant_id AND"
+                                    + " h.procurement_no COLLATE"
+                                    + " utf8mb4_general_ci=erp_procurement_order_line.procurement_no"
+                                    + " LIMIT 1) END";
+                        case "product_id" ->
+                                "CASE WHEN product_code IS NULL THEN product_id ELSE (SELECT p.id"
+                                    + " FROM erp_product p WHERE"
+                                    + " p.tenant_id COLLATE utf8mb4_general_ci=erp_procurement_order_line.tenant_id AND"
+                                    + " p.product_code COLLATE"
+                                    + " utf8mb4_general_ci=erp_procurement_order_line.product_code"
+                                    + " LIMIT 1) END";
+                        case "product_variant_id" ->
+                                "CASE WHEN variant_code IS NULL THEN product_variant_id ELSE"
+                                    + " (SELECT v.id FROM erp_product_variant v WHERE"
+                                    + " v.tenant_id COLLATE utf8mb4_general_ci=erp_procurement_order_line.tenant_id AND"
+                                    + " v.variant_code COLLATE"
+                                    + " utf8mb4_general_ci=erp_procurement_order_line.variant_code"
+                                    + " LIMIT 1) END";
+                        case "product_code_snapshot" ->
+                                "COALESCE(product_code,product_code_snapshot)";
+                        case "variant_code_snapshot" ->
+                                "COALESCE(variant_code,variant_code_snapshot)";
+                        case "product_name_snapshot" ->
+                                "COALESCE((SELECT p.product_name FROM erp_product p WHERE"
+                                    + " p.tenant_id COLLATE utf8mb4_general_ci=erp_procurement_order_line.tenant_id AND"
+                                    + " p.product_code COLLATE"
+                                    + " utf8mb4_general_ci=erp_procurement_order_line.product_code"
+                                    + " LIMIT 1),product_name_snapshot)";
+                        default -> column;
+                    };
+            return resolved + " AS " + column;
+        }
+        return column;
     }
 
     private static String exact(Object value) {

@@ -185,8 +185,19 @@ public final class SupplyDataSyncService {
         return new ErpDataSyncResult(attempt.runId, type.name(), status, connectorId,
                 stats.fetched(), stats.created(), stats.changed(), stats.duplicates(),
                 stats.rejected(), stats.dictionaryAudit().unmapped(),
-                stats.dictionaryAudit().revisions(), attempt.counts.sourceDetails,
+                stats.dictionaryAudit().revisions(), resultDetails(attempt.counts.sourceDetails, stats),
                 stats.pages(), Instant.now());
+    }
+
+    private static Map<String, Long> resultDetails(Map<String, Long> sourceDetails,
+                                                    RunStatistics stats) {
+        Map<String, Long> details = new LinkedHashMap<>(sourceDetails);
+        for (var issue : stats.dictionaryAudit().issues()) {
+            if ("ERP_REFERENCE".equals(issue.dictCode())) {
+                details.merge("REJECTED_REFERENCE:" + issue.fieldCode(), issue.count(), Long::sum);
+            }
+        }
+        return details;
     }
 
     private int registerExternalObjectMappings(String tenantId, UUID connectorId, UUID runId,

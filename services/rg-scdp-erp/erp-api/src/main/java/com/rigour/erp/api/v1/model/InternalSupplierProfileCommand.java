@@ -10,5 +10,8 @@ public record InternalSupplierProfileCommand(
         String bankAccountNo,
         String statusCode,
         String remark,
-        Integer revision) {
+        Integer revision,
+        String accountName,
+        String invoiceTitle,
+        String taxpayerNumber) {
 }

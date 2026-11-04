@@ -380,7 +380,7 @@ public class CostDashboardService {
                                 () ->
                                         new BusinessException(
                                                 ErrorCode.NOT_FOUND, "费用不存在或无访问权限", List.of()));
-        var current = sourceDetail.verify(fact.source(), fact.sourceCategory(), fact.sourceId());
+        var current = sourceDetail.verify(fact.source(), fact.sourceCategory(), fact.rootSourceId());
         if (current.revision() != fact.revision()
                 || !Objects.equals(current.status(), fact.status()))
             throw new CostDashboardFailure("SOURCE_VERSION_CHANGED", 409, "源单据已更新，请刷新整个看板后查看");
@@ -498,7 +498,7 @@ public class CostDashboardService {
             return ("PAYROLL".equals(r.sourceCategory())
                             ? "/supply-chain/hr/payroll?sourceId="
                             : "/supply-chain/hr/expenses?sourceId=")
-                    + r.sourceId();
+                    + r.rootSourceId();
         String path =
                 switch (r.category()) {
                     case "freight" -> "/supply-chain/cost/logistics";
@@ -509,13 +509,13 @@ public class CostDashboardService {
                     case "expense" -> "/supply-chain/hr/expenses";
                     default -> "/supply-chain/cost/warehouse-rentals";
                 };
-        return path + "?sourceId=" + r.sourceId();
+        return path + "?sourceId=" + r.rootSourceId();
     }
 
     public static CostDashboardRecordView record(CostFact r) {
         return new CostDashboardRecordView(
                 r.source(),
-                r.sourceId(),
+                r.rootSourceId(),
                 r.documentNo(),
                 r.title(),
                 r.category(),

@@ -84,20 +84,27 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                             bind(m, p.sql(), p.args());
                                         }));
         scope.applyCity(q, action, "city_code");
+        var ledgerScope = scope.ledgerPredicate(action);
+        if (ledgerScope != null && !"1=1".equals(ledgerScope.sql()))
+            bind(q, "(COALESCE(JSON_EXTRACT(data_json,'$.ledger.schemaVersion'),1)<>2 OR " + ledgerScope.sql() + ")", ledgerScope.args());
         return q;
     }
 
     private static void partyFilter(QueryWrapper<OrderLogisticsCostEntity> q, String field, String value) {
         // field is a fixed internal path; user text is always bound and JSON_SEARCH wildcards are escaped.
+        String ledgerPath = "senderName".equals(field) ? "$.ledger.sender" : "$.ledger.receivingPoints[*]";
         String pattern = "%" + value.trim().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
         q.apply("(LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.logistics." + field + "')),''))>0"
-                + " OR JSON_SEARCH(sources_json,'one',{1},NULL,'$[*]." + field + "') IS NOT NULL"
+                + " OR JSON_SEARCH(sources_json,'one',{1},NULL,'$[*]." + field + "') IS NOT NULL OR JSON_SEARCH(data_json,'one',{1},NULL,'" + ledgerPath + ".manualName','" + ledgerPath + ".partyCode') IS NOT NULL"
                 + " OR JSON_SEARCH(data_json,'one',{1},NULL,'$.logistics.externalDocuments[*]." + field + "') IS NOT NULL)", value.trim(), pattern);
     }
 
     private QueryWrapper<OrderLogisticsCostEntity> query(
             String tenant, String category, LogisticsCostQuery filter, String action) {
         var q = where(tenant, category, action);
+        q.eq(text(filter.costMonth()), "cost_month", filter.costMonth());
+        q.eq(text(filter.carrierCode()), "carrier_code", filter.carrierCode());
+        if (text(filter.orderTypeCode())) q.apply("(JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].orderTypeCode') IS NOT NULL OR JSON_SEARCH(sources_json,'one',{1},NULL,'$[*].sourceType') IS NOT NULL)", filter.orderTypeCode(), switch(filter.orderTypeCode()){case "PURCHASE_ORDER"->"PURCHASE";case "TRANSFER_ORDER"->"TRANSFER";case "SALES_ORDER"->"DELIVERY";default->filter.orderTypeCode();});
         q.eq(text(filter.sourceSystem()), "source_system", filter.sourceSystem());
         if (Boolean.TRUE.equals(filter.missingAmount()))
             q.isNull("amount").ne("status_code", "VOID");
@@ -139,7 +146,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                     filter.remark().trim());
         if (text(filter.trackingNo()))
             q.apply(
-                    "LOCATE({0},JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.logistics.trackingNo')))>0",
+                    "LOCATE({0},COALESCE(tracking_no,JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.logistics.trackingNo')),''))>0",
                     filter.trackingNo().trim());
         if (text(filter.sourceDocumentNo())) {
             // 只匹配来源单号，避免命中来源快照中的城市、仓库等其他字段。
@@ -151,7 +158,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                             .replace("_", "\\_");
             q.apply(
                     "(JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].originalNo') IS NOT NULL OR"
-                        + " JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].documentNo') IS NOT NULL"
+                        + " JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].documentNo','$[*].orderCode') IS NOT NULL"
                         + " OR JSON_SEARCH(data_json,'one',{0},NULL,'$.logistics.externalDocuments[*].documentNo')"
                         + " IS NOT NULL)",
                     "%" + value + "%");
@@ -192,7 +199,9 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                                 "COALESCE(SUM(CASE WHEN status_code<>'VOID' THEN"
                                                         + " amount ELSE 0 END),0) registered",
                                                 "COALESCE(SUM(status_code<>'VOID' AND amount IS"
-                                                        + " NULL),0) missing"))
+                                                        + " NULL),0) missing",
+                                                "COALESCE(SUM(CASE WHEN status_code='DRAFT' THEN amount ELSE 0 END),0) pending_amount",
+                                                "COALESCE(SUM(status_code='CONFIRMED' AND amount=0 AND payer_code IN ('SUPPLIER','CUSTOMER','OTHER')),0) third_party"))
                         .getFirst();
         var rows =
                 mapper
@@ -216,13 +225,41 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                 ((Number) totals.get("pending")).longValue(),
                 rows,
                 new BigDecimal(totals.get("registered").toString()),
-                ((Number) totals.get("missing")).longValue());
+                ((Number) totals.get("missing")).longValue(),
+                new BigDecimal(totals.get("pending_amount").toString()),
+                ((Number) totals.get("third_party")).longValue());
     }
 
     public LogisticsCostDetailView entry(String tenant, String category, String id, String action) {
         var row = mapper.selectOne(where(tenant, category, action).eq("id", id));
         if (row == null) throw new BusinessException(ErrorCode.NOT_FOUND, "费用不存在或无访问权限", List.of());
         return view(row);
+    }
+
+    @Transactional
+    public LogisticsCostDetailView upsertProcurementFreight(String tenant, LogisticsCostCommand incoming) {
+        var sync = incoming.ledger().sourceSync();
+        if (sync == null || !sync.originBizKey().startsWith("ERP:PROCUREMENT_ORDER:")) throw bad("采购运费来源标识无效");
+        mapper.ensureGuard(tenant);
+        mapper.lock(tenant);
+        var previous = mapper.selectOne(new QueryWrapper<OrderLogisticsCostEntity>().eq("tenant_id",tenant).eq("origin_biz_key",sync.originBizKey()));
+        String action = "order:logistics-cost:procurement-sync";
+        if (previous == null) return save(tenant,"LOGISTICS",null,incoming,List.of(),null,null,"SYSTEM",action);
+        var old = view(previous);
+        var oldSync = old.data().ledger().sourceSync();
+        var decision = com.rigour.order.domain.cost.ProcurementFreightSyncPolicy.decide(old.statusCode(),oldSync,sync);
+        if (decision == com.rigour.order.domain.cost.ProcurementFreightSyncPolicy.Decision.UNCHANGED) return old;
+        if (decision == com.rigour.order.domain.cost.ProcurementFreightSyncPolicy.Decision.REPLACE_DRAFT) {
+            var c = new LogisticsCostCommand(old.data().requestId(),old.revision(),incoming.title(),incoming.typeCode(),incoming.cityCode(),incoming.cityName(),null,null,incoming.costDate(),incoming.amount(),incoming.paymentStatusCode(),null,incoming.remark(),"采购约定来源更新，保留待核实状态",incoming.ledger());
+            return save(tenant,"LOGISTICS",old.id(),c,List.of(),null,null,"SYSTEM",action);
+        }
+        var nextSync = new com.rigour.order.api.v1.model.LogisticsCostLedger.SourceSync(oldSync.originBizKey(),oldSync.originVersion(),oldSync.lastAppliedFingerprint(),oldSync.manuallyChanged(),sync.originVersion(),sync.lastAppliedFingerprint(),true);
+        var command = old.data().withLedger(old.data().ledger().withSourceSync(nextSync),old.data().amount());
+        mapper.advanceAnalyticsVersion(tenant);
+        mapper.update(null,new UpdateWrapper<OrderLogisticsCostEntity>().eq("tenant_id",tenant).eq("id",old.id()).set("data_json",body(command)).setSql("revision=revision+1").set("updated_by","SYSTEM").set("updated_time",LocalDateTime.now(ZoneOffset.UTC)));
+        var saved = entry(tenant,"LOGISTICS",old.id(),action);
+        audit(tenant,saved,"SOURCE_DIFFERENCE","SYSTEM","采购约定已变化，保留人工或已确认实际费用，待核实");
+        return saved;
     }
 
     @Transactional
@@ -237,11 +274,20 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             String actor,
             String action) {
         lock(tenant);
-        Long warehouse =
+        boolean ledger = c.ledger() != null;
+        Long warehouse;
+        Long source;
+        if (ledger) {
+            scope.requireLedger(action, c.ledger());
+            var ids = c.ledger().scopeWarehouseIds();
+            source = ids.isEmpty() ? null : ids.getFirst();
+            warehouse = ids.isEmpty() ? null : ids.getLast();
+        } else {
+        warehouse =
                 sources.isEmpty()
                         ? c.logistics().targetWarehouseId()
                         : sources.getFirst().targetWarehouseId();
-        Long source =
+        source =
                 sources.isEmpty()
                         ? c.logistics().sourceWarehouseId()
                         : sources.getFirst().warehouseId();
@@ -252,12 +298,14 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         scope.requireManual(action, "INVENTORY", c.cityCode());
         if (!sources.isEmpty() && (warehouse == null || source == null)) throw bad("来源缺少有效仓库");
         if (warehouse != null && source != null) scope.requirePair(source, warehouse, action);
-        String body = json.writeValueAsString(c);
+        }
+        String body = body(c);
+        String sourceBody = json.writeValueAsString(ledger ? c.ledger().sources() : sources);
         var values =
                 new UpdateWrapper<OrderLogisticsCostEntity>()
                         .set("source_system", sourceSystem(c, sources))
                         .set("title", c.title())
-                        .set("type_code", c.logistics().legCode())
+                        .set("type_code", ledger ? c.ledger().transportPurposeCode() : c.logistics().legCode())
                         .set("city_code", c.cityCode())
                         .set("department_id", c.departmentId())
                         .set("owner_employee_code", c.ownerEmployeeCode())
@@ -266,9 +314,15 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         .set("cost_date", c.costDate())
                         .set("amount", c.amount())
                         .set("payment_status_code", c.paymentStatusCode())
-                        .set("payer_code", c.logistics() == null ? null : c.logistics().payerCode())
+                        .set("payer_code", ledger ? ledgerPayer(c) : c.logistics() == null ? null : c.logistics().payerCode())
                         .set("data_json", body)
-                        .set("sources_json", json.writeValueAsString(sources))
+                        .set("sources_json", sourceBody)
+                        .set(ledger, "transport_purpose_code", ledger ? c.ledger().transportPurposeCode() : null)
+                        .set(ledger, "delivery_mode_code", ledger ? c.ledger().deliveryModeCode() : null)
+                        .set(ledger, "carrier_code", ledger ? c.ledger().carrierCode() : null)
+                        .set(ledger, "tracking_no", ledger ? c.ledger().trackingNo() : null)
+                        .set(ledger, "cost_month", ledger ? c.ledger().costMonth() : null)
+                        .set(ledger && c.ledger().sourceSync() != null, "origin_biz_key", ledger && c.ledger().sourceSync() != null ? c.ledger().sourceSync().originBizKey() : null)
                         .set("warehouse_name", warehouseName)
                         .set("owner_employee_name", employeeName)
                         .set("updated_by", actor)
@@ -281,7 +335,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                     .eq("request_id", c.requestId()));
             if (previous != null) {
                 var old = entry(tenant, category, previous.getId(), action);
-                if (!json.writeValueAsString(old.data()).equals(body))
+                if (!body(old.data()).equals(body) || ledger && !json.writeValueAsString(old.data().ledger().sources()).equals(sourceBody))
                     throw conflict("请求编号已用于另一笔费用");
                 return old;
             }
@@ -294,7 +348,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             row.setCategoryCode(category);
             row.setSourceSystem(sourceSystem(c, sources));
             row.setTitle(c.title());
-            row.setTypeCode(c.logistics().legCode());
+            row.setTypeCode(ledger ? c.ledger().transportPurposeCode() : c.logistics().legCode());
             row.setCityCode(c.cityCode());
             row.setDepartmentId(c.departmentId());
             row.setOwnerEmployeeCode(c.ownerEmployeeCode());
@@ -303,22 +357,24 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             row.setCostDate(c.costDate());
             row.setAmount(c.amount());
             row.setPaymentStatusCode(c.paymentStatusCode());
-            row.setPayerCode(c.logistics() == null ? null : c.logistics().payerCode());
+            row.setPayerCode(ledger ? ledgerPayer(c) : c.logistics() == null ? null : c.logistics().payerCode());
             row.setDataJson(body);
-            row.setSourcesJson(json.writeValueAsString(sources));
+            row.setSourcesJson(sourceBody);
             row.setWarehouseName(warehouseName);
             row.setOwnerEmployeeName(employeeName);
             row.setCreatedBy(actor);
             row.setUpdatedBy(actor);
             mapper.insert(row);
+            if (ledger) mapper.update(null, values.eq("tenant_id", tenant).eq("id", row.getId()));
             var saved = entry(tenant, category, row.getId(), action);
             audit(tenant, saved, "CREATE", actor, c.reason());
             return saved;
         }
         var old = entry(tenant, category, id, action);
-        var oldDocuments = old.data().logistics().externalDocuments();
-        var newDocuments = c.logistics().externalDocuments();
-        if (oldDocuments != null
+        if (old.data().ledger() != null && !ledger) throw bad("新版费用不能通过旧版协议覆盖");
+        var oldDocuments = old.data().logistics() == null ? null : old.data().logistics().externalDocuments();
+        var newDocuments = c.logistics() == null ? null : c.logistics().externalDocuments();
+        if (!ledger && oldDocuments != null
                 && (c.logistics().sourceIds() != null && !c.logistics().sourceIds().isEmpty()
                         || oldDocuments.stream()
                                 .anyMatch(document -> document.linkedId() != null))) {
@@ -362,7 +418,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         lock(tenant);
         var old = entry(tenant, category, id, action);
         boolean confirm = action.endsWith(":confirm");
-        if (confirm
+        if (confirm && old.data().ledger() == null
                 && old.data().logistics().sourceIds() != null
                 && !old.data().logistics().sourceIds().isEmpty()) {
             var transport = old.data().logistics();
@@ -438,15 +494,28 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                 .toList();
     }
 
+    private String body(LogisticsCostCommand c) {
+        if (c.ledger() == null) return json.writeValueAsString(c);
+        var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(c);
+        var plan = (tools.jackson.databind.node.ObjectNode) tree.get("ledger");
+        plan.remove("sources");
+        if (plan.get("sender") instanceof tools.jackson.databind.node.ObjectNode sender) sender.remove("displayName");
+        for (var point : plan.path("receivingPoints")) if (point instanceof tools.jackson.databind.node.ObjectNode row) row.remove("displayName");
+        return json.writeValueAsString(tree);
+    }
+
     private LogisticsCostDetailView view(OrderLogisticsCostEntity r) {
+        var data = json.readValue(r.getDataJson(), LogisticsCostCommand.class);
+        boolean ledger = data.ledger() != null;
+        if (ledger) data = data.withLedger(data.ledger().withSources(Arrays.asList(json.readValue(r.getSourcesJson(), com.rigour.order.api.v1.model.LogisticsCostLedger.Source[].class))), data.amount());
         return new LogisticsCostDetailView(
                 r.getId(),
                 r.getDocumentNo(),
                 r.getCategoryCode(),
                 r.getStatusCode(),
                 r.getRevision(),
-                json.readValue(r.getDataJson(), LogisticsCostCommand.class),
-                Arrays.asList(json.readValue(r.getSourcesJson(), LogisticsCostSourceView[].class)),
+                data,
+                ledger ? List.of() : Arrays.asList(json.readValue(r.getSourcesJson(), LogisticsCostSourceView[].class)),
                 r.getWarehouseName(),
                 r.getOwnerEmployeeName(),
                 r.getCreatedTime().toInstant(ZoneOffset.UTC),
@@ -469,8 +538,14 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         q.apply(result.toString(), args.toArray());
     }
 
+    private static String ledgerPayer(LogisticsCostCommand c) {
+        if (c.ledger().feeItems().stream().anyMatch(f -> "COMPANY".equals(f.bearerCode()) || "SHARED".equals(f.bearerCode()))) return "COMPANY";
+        return c.ledger().feeItems().stream().map(f -> f.bearerCode()).distinct().count() == 1 ? c.ledger().feeItems().getFirst().bearerCode() : "OTHER";
+    }
+
     private static String sourceSystem(
             LogisticsCostCommand c, List<LogisticsCostSourceView> sources) {
+        if (c.ledger() != null) return c.ledger().sources().stream().allMatch(s -> "NONE".equals(s.orderTypeCode())) ? "NONE" : "SYSTEM";
         java.util.Set<String> values = new java.util.HashSet<>();
         if (c.logistics().externalDocuments() != null)
             c.logistics().externalDocuments().forEach(d -> values.add(d.sourceSystem()));

@@ -26,7 +26,8 @@ public final class CostCustomerReferenceService {
         if (!Set.of(
                         "order:logistics-cost:read",
                         "order:logistics-cost:write",
-                        "order:logistics-cost:confirm")
+                        "order:logistics-cost:confirm",
+                        "order:logistics-cost:export")
                 .contains(action)) throw new AuthorizationDeniedException(action);
         var caller = AuthorizationContext.requireCurrent();
         AuthorizationContext.requirePermission(action);

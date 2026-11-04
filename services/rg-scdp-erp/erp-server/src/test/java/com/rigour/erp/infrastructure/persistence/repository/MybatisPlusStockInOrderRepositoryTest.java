@@ -66,7 +66,8 @@ class MybatisPlusStockInOrderRepositoryTest {
                             mock(com.rigour.tenant.iam.client.SupplyAuthorizationClient.class),
                             mock(
                                     com.rigour.erp.infrastructure.persistence.mapper
-                                            .ErpWarehouseScopeMapper.class)));
+                                            .ErpWarehouseScopeMapper.class)),
+                    mock(ProcurementReadModel.class));
 
     @BeforeAll
     static void initMybatisMetadata() {

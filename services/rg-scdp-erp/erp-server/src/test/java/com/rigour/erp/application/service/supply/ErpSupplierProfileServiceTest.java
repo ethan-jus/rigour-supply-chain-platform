@@ -1,5 +1,14 @@
 package com.rigour.erp.application.service.supply;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
 import com.rigour.erp.api.v1.model.InternalSupplierProfileCommand;
 import com.rigour.erp.api.v1.model.InternalSupplierProfileView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
@@ -10,24 +19,17 @@ import com.rigour.shared.context.TestAuthorizationContext;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.code.BusinessCodeGenerator;
 import com.rigour.shared.core.exception.BusinessException;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
-
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 class ErpSupplierProfileServiceTest {
     private static final UUID TENANT_ID = UUID.fromString("019fb700-2000-7000-8000-000000000001");
@@ -49,9 +51,18 @@ class ErpSupplierProfileServiceTest {
         when(store.create(eq(TENANT), eq("SUP202608201234"), any(), eq(ACTOR)))
                 .thenReturn(view(1L, "SUP202608201234", "ACTIVE", 1));
 
-        InternalSupplierProfileView created = service.create(new InternalSupplierProfileCommand(
-                " 供应商一 ", " 张三 ", " 13800138000 ", " 上海 ", " 测试银行 ",
-                " 6222000012345678 ", null, " 默认供应商 ", null));
+        InternalSupplierProfileView created =
+                service.create(
+                        new InternalSupplierProfileCommand(
+                                " 供应商一 ",
+                                " 张三 ",
+                                " 13800138000 ",
+                                " 上海 ",
+                                " 测试银行 ",
+                                " 6222000012345678 ",
+                                "ACTIVE",
+                                " 默认供应商 ",
+                                null, " 供应商一对公户 ", " 供应商一开票抬头 ", " EXAMPLE-TAX-001 "));
 
         ArgumentCaptor<InternalSupplierProfileCommand> command =
                 ArgumentCaptor.forClass(InternalSupplierProfileCommand.class);
@@ -62,6 +73,9 @@ class ErpSupplierProfileServiceTest {
         assertThat(command.getValue().contactPhone()).isEqualTo("13800138000");
         assertThat(command.getValue().statusCode()).isEqualTo("ACTIVE");
         assertThat(command.getValue().revision()).isZero();
+        assertThat(command.getValue().accountName()).isEqualTo("供应商一对公户");
+        assertThat(command.getValue().invoiceTitle()).isEqualTo("供应商一开票抬头");
+        assertThat(command.getValue().taxpayerNumber()).isEqualTo("EXAMPLE-TAX-001");
     }
 
     @Test
@@ -89,7 +103,7 @@ class ErpSupplierProfileServiceTest {
         TestAuthorizationContext.set(caller("erp:supply:write"));
 
         assertThatThrownBy(() -> service.update(1L, new InternalSupplierProfileCommand(
-                "供应商一", null, null, null, null, null, null, null, null)))
+                "供应商一", null, null, null, null, null, null, null, null, null, null, null)))
                 .isInstanceOf(BusinessException.class)
                 .extracting("errorCode").isEqualTo(ErrorCode.BAD_REQUEST);
         verify(store, never()).update(eq(TENANT), eq(1L), any(), eq(ACTOR));
@@ -106,6 +120,56 @@ class ErpSupplierProfileServiceTest {
         verify(store).delete(TENANT, 7L, 2, ACTOR);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {0, 1, 2, 3, 4, 5, 6, 7})
+    void manualCreateAndUpdateRequireEveryProfileField(int missing) {
+        var store = mock(ErpSupplierProfileStore.class);
+        var service = new ErpSupplierProfileService(store, fixedGenerator());
+        TestAuthorizationContext.set(caller("erp:supply:write"));
+        String[] values = {
+            "供应商", "联系人", "027-12345678", "联系地址", "开户银行", "6222000012345678", "ACTIVE",
+            "供应商对公账户"
+        };
+        values[missing] = "  ";
+        var create =
+                new InternalSupplierProfileCommand(
+                        values[0], values[1], values[2], values[3], values[4], values[5], values[6],
+                        null, null, values[7], null, null);
+        var update =
+                new InternalSupplierProfileCommand(
+                        values[0], values[1], values[2], values[3], values[4], values[5], values[6],
+                        null, 1, values[7], null, null);
+        assertThatThrownBy(() -> service.create(create))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("不能为空");
+        assertThatThrownBy(() -> service.update(1L, update))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("不能为空");
+        verify(store, never()).create(any(), any(), any(), any());
+        verify(store, never()).update(any(), any(), any(), any());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.NullAndEmptySource
+    void manualCreateAndUpdateRejectMissingAccountName(String accountName) {
+        var store = mock(ErpSupplierProfileStore.class);
+        var service = new ErpSupplierProfileService(store, fixedGenerator());
+        TestAuthorizationContext.set(caller("erp:supply:write"));
+        var create = new InternalSupplierProfileCommand(
+                "供应商", "联系人", "027-12345678", "联系地址", "开户银行", "6222000012345678",
+                "ACTIVE", null, null, accountName, null, null);
+        var update = new InternalSupplierProfileCommand(
+                "供应商", "联系人", "027-12345678", "联系地址", "开户银行", "6222000012345678",
+                "ACTIVE", null, 1, accountName, null, null);
+
+        assertThatThrownBy(() -> service.create(create))
+                .isInstanceOf(BusinessException.class).hasMessage("开户名称不能为空");
+        assertThatThrownBy(() -> service.update(1L, update))
+                .isInstanceOf(BusinessException.class).hasMessage("开户名称不能为空");
+        verify(store, never()).create(any(), any(), any(), any());
+        verify(store, never()).update(any(), any(), any(), any());
+    }
+
     private static BusinessCodeGenerator fixedGenerator() {
         return new BusinessCodeGenerator(
                 Clock.fixed(Instant.parse("2026-08-20T03:00:00Z"), ZoneId.of("Asia/Shanghai")),
@@ -115,7 +179,7 @@ class ErpSupplierProfileServiceTest {
     private static InternalSupplierProfileView view(Long id, String supplierCode, String statusCode, int revision) {
         return new InternalSupplierProfileView(id, supplierCode, "供应商一", "张三", "13800138000",
                 "上海", "测试银行", "6222000012345678", statusCode, null, revision,
-                ACTOR, Instant.now(), ACTOR, Instant.now());
+                ACTOR, Instant.now(), ACTOR, Instant.now(), null, null, null);
     }
 
     private static CallerIdentity caller(String permission) {

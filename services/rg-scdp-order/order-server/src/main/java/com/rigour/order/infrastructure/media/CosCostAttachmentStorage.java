@@ -29,6 +29,7 @@ import java.util.UUID;
  */
 @Component
 public final class CosCostAttachmentStorage implements CostAttachmentStorage {
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(CosCostAttachmentStorage.class);
     static final String OBJECT_PREFIX = "order-cost-attachments";
 
     private final COSClient client;
@@ -69,20 +70,30 @@ public final class CosCostAttachmentStorage implements CostAttachmentStorage {
     @Override
     public String upload(String tenantId, String orderNo, String contentType, byte[] content) {
         if (client == null) {
+            LOG.warn("费用附件存储不可用 sourceSystem=ORDER reason={}", unavailableReason);
             throw new BusinessException(
-                    ErrorCode.INTERNAL_ERROR, "费用附件存储不可用：" + unavailableReason, List.of());
+                    ErrorCode.COST_ATTACHMENT_STORAGE_UNAVAILABLE, "费用附件存储未就绪，请联系管理员", List.of());
         }
         String key = objectKey(tenantId, orderNo, contentType);
-        ObjectMetadata metadata = new ObjectMetadata();
-        metadata.setContentLength(content.length);
-        metadata.setContentType(contentType);
+        ObjectMetadata metadata = objectMetadata(orderNo, contentType, content.length);
         try {
             client.putObject(
                     new PutObjectRequest(bucket, key, new ByteArrayInputStream(content), metadata));
         } catch (RuntimeException exception) {
-            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "费用附件上传失败，请稍后重试", List.of());
+            LOG.warn("费用附件上传失败 sourceSystem=ORDER errorType={}", exception.getClass().getSimpleName());
+            throw new BusinessException(ErrorCode.COST_ATTACHMENT_UPLOAD_FAILED, "费用附件上传失败，请稍后重试", List.of());
         }
         return key;
+    }
+
+    static ObjectMetadata objectMetadata(String entryId, String contentType, long size) {
+        var metadata = new ObjectMetadata();
+        metadata.setContentLength(size);
+        metadata.setContentType(contentType);
+        metadata.addUserMetadata("source-system", "ORDER");
+        metadata.addUserMetadata("business-type", "cost-attachment");
+        metadata.addUserMetadata("cost-entry-id", entryId);
+        return metadata;
     }
 
     static String objectKey(String tenantId, String orderNo, String contentType) {

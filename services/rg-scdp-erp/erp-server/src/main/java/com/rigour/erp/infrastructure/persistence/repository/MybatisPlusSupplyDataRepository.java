@@ -43,6 +43,14 @@ import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCom
 import com.rigour.shared.core.code.BusinessCodeGenerator;
 import com.rigour.shared.core.code.BusinessCodeRule;
 import com.rigour.shared.core.sync.ExternalSourceCodes;
+
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
+
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.SerializationFeature;
+import tools.jackson.databind.json.JsonMapper;
+
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -57,19 +65,14 @@ import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.LinkedHashMap;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
-import org.springframework.stereotype.Repository;
-import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.SerializationFeature;
-import tools.jackson.databind.json.JsonMapper;
 
 /**
  * ERP 供应链订货宝同步仓储。
@@ -94,7 +97,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             sha256Hex(UNSPECIFIED_PURCHASE_WAREHOUSE_SOURCE_ID);
     private static final long RUN_LEASE_MINUTES = 30;
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
-    private static final DateTimeFormatter SOURCE_DATE_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final DateTimeFormatter SOURCE_DATE_TIME =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final BigDecimal ZERO = BigDecimal.ZERO;
     private static final ObjectMapper JSON = JsonMapper.builder()
             .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
@@ -185,11 +189,15 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     @Override
     @Transactional
     public ImportResult importSupplier(String tenantId, UUID runId, Supplier item) {
-        if (missing(item.sourceId()) || missing(item.name())) return ImportResult.oneRejected();
+        if (missing(item.sourceId()) || missing(item.name())) {
+            return ImportResult.rejectedIssue("supplier.identity", "supplierId=" + safe(item.sourceId())
+                    + ", supplierName=" + safe(item.name()));
+        }
         UpsertResult result = upsertSupplier(tenantId, runId, item.sourceId(), item.code(),
                 item.name(), item.contactName(), firstText(item.mobile(), item.phone()),
                 item.address(), item.bankName(), item.bankAccount(), item.remark(),
-                item.payloadHash(), "ACTIVE", item.sourceFields());
+                item.payloadHash(), "ACTIVE", item.sourceFields(), item.accountName(),
+                item.invoiceTitle(), item.taxpayerNumber());
         return result.result();
     }
 
@@ -231,7 +239,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             return ImportResult.rejectedIssue("purchaseOrder.lines", purchaseRef(item));
         }
         Instant procurementBusinessTime = item.sourceCreatedAt();
-        MasterSourceBindingEntity binding = binding(tenantId, connectorId, "PURCHASE_ORDER", item.sourceId());
+        MasterSourceBindingEntity binding =
+                binding(tenantId, connectorId, "PURCHASE_ORDER", item.sourceId());
         boolean changed = changed(binding, item.payloadHash());
         Long id = longTargetId(binding);
         InternalProcurementOrderEntity entity = id == null ? null : procurementMapper.selectById(id);
@@ -250,10 +259,11 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 && codeDateMismatch(ErpBusinessCodeRules.PURCHASE_ORDER,
                 entity.getProcurementNo(), procurementBusinessTime);
         boolean procurementProjectionMismatch = !created && sourceWritable(entity.getUpdatedBy())
-                && !Objects.equals(entity.getTotalAmount(), amount(item.totalAmount()));
-        if (created || (sourceWritable(entity.getUpdatedBy())
-                && (changed || procurementNoDateMismatch
-                || procurementProjectionMismatch))) {
+                && (entity.getTotalAmount() == null
+                || entity.getTotalAmount().compareTo(amount(item.totalAmount())) != 0);
+        boolean applied = created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || procurementNoDateMismatch || procurementProjectionMismatch));
+        if (applied) {
             if (procurementNoDateMismatch) {
                 entity.setProcurementNo(uniqueProcurementNo(tenantId, procurementBusinessTime));
             }
@@ -262,7 +272,21 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.setSourceDocumentNo(item.number());
             entity.setSupplierId(supplier.id());
             entity.setTargetWarehouseId(warehouse.id());
+            var procurementSupplier = supplierMapper.selectById(supplier.id());
+            var procurementWarehouse = warehouseMapper.selectById(warehouse.id());
+            entity.setSupplierCode(
+                    procurementSupplier == null ? null : procurementSupplier.getSupplierCode());
+            entity.setTargetWarehouseCode(
+                    procurementWarehouse == null ? null : procurementWarehouse.getWarehouseCode());
             entity.setStatusCode(procurementStatus(item.sourceStatus(), item.sourceStatusName()));
+            entity.setConfirmationStatusCode(
+                    "DRAFT".equals(entity.getStatusCode()) ? "UNCONFIRMED" : "CONFIRMED");
+            entity.setPurchaseDate(
+                    procurementBusinessTime == null
+                            ? null
+                            : procurementBusinessTime
+                                    .atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                                    .toLocalDate());
             entity.setExpectedArrivalTime(sourceTime(item.deliveryAt(), null));
             entity.setTotalQuantity(amount(item.goodsCount()));
             entity.setTotalAmount(amount(item.totalAmount()));
@@ -279,8 +303,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         upsertBinding(tenantId, runId, "PURCHASE_ORDER", item.sourceId(), "PROCUREMENT_ORDER",
                 entity.getId(), item.number(), item.supplierName(), item.sourceStatus(), null,
                 item.payloadHash(), now);
-        return importResult(binding, created,
-                changed || procurementNoDateMismatch || procurementProjectionMismatch);
+        return importResult(binding, created, applied);
     }
 
     @Override
@@ -307,7 +330,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         }
         Long supplierId = purchaseStockIn ? supplier.id() : null;
         String transferOrderNo = sourceTransferNo(item);
-        MasterSourceBindingEntity binding = binding(tenantId, connectorId, "WAREHOUSING_RECEIPT", item.sourceId());
+        MasterSourceBindingEntity binding =
+                binding(tenantId, connectorId, "WAREHOUSING_RECEIPT", item.sourceId());
         boolean changed = changed(binding, item.payloadHash());
         Long id = longTargetId(binding);
         InternalStockInOrderEntity entity = id == null ? null : stockInMapper.selectById(id);
@@ -375,7 +399,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             return ImportResult.oneRejected();
         }
         Instant returnBusinessTime = firstInstant(item.sendAt(), item.sourceCreatedAt());
-        MasterSourceBindingEntity binding = binding(tenantId, runId, "PURCHASE_RETURN", item.sourceId());
+        MasterSourceBindingEntity binding =
+                binding(tenantId, runId, "PURCHASE_RETURN", item.sourceId());
         boolean changed = changed(binding, item.payloadHash());
         Long id = longTargetId(binding);
         InternalPurchaseReturnOrderEntity entity = id == null ? null : purchaseReturnMapper.selectById(id);
@@ -915,6 +940,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         procurementLineMapper.delete(Wrappers.<InternalProcurementOrderLineEntity>lambdaQuery()
                 .eq(InternalProcurementOrderLineEntity::getTenantId, tenantId)
                 .eq(InternalProcurementOrderLineEntity::getProcurementOrderId, orderId));
+        var purchase = procurementMapper.selectById(orderId);
         int lineNo = 1;
         for (PurchaseOrder.Line line : item.lines()) {
             UpsertResult product = resolveProduct(tenantId, runId, line.sourceGoodsId(),
@@ -929,6 +955,9 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             InternalProcurementOrderLineEntity entity = new InternalProcurementOrderLineEntity();
             entity.setTenantId(tenantId);
             entity.setProcurementOrderId(orderId);
+            entity.setProcurementNo(purchase == null ? null : purchase.getProcurementNo());
+            entity.setProductCode(productEntity == null ? null : productEntity.getProductCode());
+            entity.setVariantCode(variantEntity == null ? null : variantEntity.getVariantCode());
             entity.setLineNo(lineNo++);
             entity.setProductId(product.id());
             entity.setProductVariantId(variant.id());
@@ -1221,7 +1250,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                                         String sourceCode, String sourceName, String contactName,
                                         String contactPhone, String address, String bankName,
                                         String bankAccount, String remark, String payloadHash,
-                                        String statusCode, Map<String, Object> sourceFields) {
+                                        String statusCode, Map<String, Object> sourceFields,
+                                        String accountName, String invoiceTitle, String taxpayerNumber) {
         MasterSourceBindingEntity binding = binding(tenantId, runId, "SUPPLIER", sourceId);
         boolean changed = changed(binding, payloadHash);
         Long id = longTargetId(binding);
@@ -1239,14 +1269,21 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
             entity.setDeleted(0);
             entity.setRevision(1);
         }
-        if (created || (sourceWritable(entity.getUpdatedBy())
-                && (changed || !Objects.equals(entity.getSupplierName(), sourceName)))) {
+        boolean applied = created || (sourceWritable(entity.getUpdatedBy())
+                && (changed || !Objects.equals(entity.getSupplierName(), sourceName)
+                || !Objects.equals(entity.getAccountName(), accountName)
+                || !Objects.equals(entity.getInvoiceTitle(), invoiceTitle)
+                || !Objects.equals(entity.getTaxpayerNumber(), taxpayerNumber)));
+        if (applied) {
             entity.setSupplierName(sourceName);
             entity.setContactName(contactName);
             entity.setContactPhone(contactPhone);
             entity.setAddress(address);
             entity.setBankName(bankName);
             entity.setBankAccountNo(bankAccount);
+            entity.setAccountName(accountName);
+            entity.setInvoiceTitle(invoiceTitle);
+            entity.setTaxpayerNumber(taxpayerNumber);
             entity.setStatusCode(statusCode);
             entity.setRemark(remark);
             entity.setUpdatedBy(SYSTEM_ACTOR);
@@ -1259,7 +1296,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         }
         upsertBinding(tenantId, runId, "SUPPLIER", sourceId, "SUPPLIER_PROFILE",
                 entity.getId(), sourceCode, sourceName, statusCode, null, payloadHash, now);
-        return new UpsertResult(entity.getId(), importResult(binding, created, changed));
+        return new UpsertResult(entity.getId(), importResult(binding, created, applied));
     }
 
     private UpsertResult resolveWarehouse(String tenantId, UUID runId, String sourceId,
@@ -1335,8 +1372,21 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
                 warehouseMapper.updateById(entity);
             }
         }
-        upsertBinding(tenantId, runId, connectorId, binding, "WAREHOUSE", sourceId, "INVENTORY_WAREHOUSE",
-                entity.getId(), sourceCode, sourceName, statusCode, null, payloadHash, now);
+        upsertBinding(
+                tenantId,
+                runId,
+                connectorId,
+                binding,
+                "WAREHOUSE",
+                sourceId,
+                "INVENTORY_WAREHOUSE",
+                entity.getId(),
+                sourceCode,
+                sourceName,
+                statusCode,
+                null,
+                payloadHash,
+                now);
         return new UpsertResult(entity.getId(), importResult(binding, created, changed));
     }
 
@@ -1382,7 +1432,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     private InternalSupplierProfileEntity supplierFromBindingSourceId(String tenantId, String connectorId,
                                                                       String sourceId) {
         if (!usableSourceId(sourceId)) return null;
-        MasterSourceBindingEntity binding = binding(tenantId, connectorId, "SUPPLIER", sourceId.strip());
+        MasterSourceBindingEntity binding =
+                binding(tenantId, connectorId, "SUPPLIER", sourceId.strip());
         return supplierFromBinding(tenantId, binding);
     }
 
@@ -1401,7 +1452,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     private InternalInventoryWarehouseEntity warehouseFromBindingSourceId(String tenantId, String connectorId,
                                                                          String sourceId) {
         if (!usableSourceId(sourceId)) return null;
-        MasterSourceBindingEntity binding = binding(tenantId, connectorId, "WAREHOUSE", sourceId.strip());
+        MasterSourceBindingEntity binding =
+                binding(tenantId, connectorId, "WAREHOUSE", sourceId.strip());
         return warehouseFromBinding(tenantId, binding);
     }
 
@@ -1420,7 +1472,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     private InternalProductEntity productFromBindingSourceId(String tenantId, String connectorId,
                                                             String sourceId) {
         if (!usableSourceId(sourceId)) return null;
-        MasterSourceBindingEntity binding = binding(tenantId, connectorId, "PRODUCT_SPU", sourceId.strip());
+        MasterSourceBindingEntity binding =
+                binding(tenantId, connectorId, "PRODUCT_SPU", sourceId.strip());
         return productFromBinding(tenantId, binding);
     }
 
@@ -1433,7 +1486,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     private InternalProductVariantEntity variantFromBindingSourceId(String tenantId, String connectorId,
                                                                     Long productId, String sourceId) {
         if (!usableSourceId(sourceId)) return null;
-        MasterSourceBindingEntity binding = binding(tenantId, connectorId, "PRODUCT_SKU", sourceId.strip());
+        MasterSourceBindingEntity binding =
+                binding(tenantId, connectorId, "PRODUCT_SKU", sourceId.strip());
         return variantFromBinding(tenantId, productId, binding);
     }
 
@@ -1981,7 +2035,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
 
     private static Instant sourceCreatedAt(Map<String, Object> fields) {
         if (fields == null || fields.isEmpty()) return null;
-        return firstInstant(fields, "create_date", "created_at", "createdAt", "created_time", "CreateDate");
+        return firstInstant(
+                fields, "create_date", "created_at", "createdAt", "created_time", "CreateDate");
     }
 
     private static Instant firstInstant(Map<String, Object> fields, String... keys) {
@@ -2024,7 +2079,8 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         if (missing(sourceId) && missing(sourceName)) return true;
         boolean missingOrZeroId = missing(sourceId) || "0".equals(sourceId.strip());
         String name = blank(sourceName);
-        return missingOrZeroId && (name == null || Objects.equals(name, unknownName) || name.contains("未知"));
+        return missingOrZeroId
+                && (name == null || Objects.equals(name, unknownName) || name.contains("未知"));
     }
 
     private static boolean unspecifiedPurchaseWarehouse(PurchaseOrder item) {
@@ -2080,16 +2136,23 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     }
 
     private static String procurementStatus(String sourceStatus, String sourceName) {
-        String value = (firstText(sourceStatus, sourceName) == null ? "" : firstText(sourceStatus, sourceName))
-                .toLowerCase(java.util.Locale.ROOT);
+        String value =
+                (firstText(sourceStatus, sourceName) == null
+                                ? ""
+                                : firstText(sourceStatus, sourceName))
+                        .toLowerCase(java.util.Locale.ROOT);
         if (value.contains("cancel") || value.contains("取消")) return "CANCELLED";
-        if (value.contains("finish") || value.contains("complete") || value.contains("完成")) return "COMPLETED";
+        if (value.contains("finish") || value.contains("complete") || value.contains("完成"))
+            return "COMPLETED";
         return "SUBMITTED";
     }
 
     private static String stockStatus(String sourceStatus, String sourceName) {
-        String value = (firstText(sourceStatus, sourceName) == null ? "" : firstText(sourceStatus, sourceName))
-                .toLowerCase(java.util.Locale.ROOT);
+        String value =
+                (firstText(sourceStatus, sourceName) == null
+                                ? ""
+                                : firstText(sourceStatus, sourceName))
+                        .toLowerCase(java.util.Locale.ROOT);
         if (value.contains("cancel") || value.contains("取消")) return "CANCELLED";
         if (value.contains("finish") || value.contains("complete") || value.contains("完成")
                 || value.contains("已入库") || value.contains("已出库")) return "CONFIRMED";
@@ -2097,11 +2160,15 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
     }
 
     private static String purchaseReturnStatus(String sourceStatus, String sourceName) {
-        String value = (firstText(sourceStatus, sourceName) == null ? "" : firstText(sourceStatus, sourceName))
-                .toLowerCase(java.util.Locale.ROOT);
+        String value =
+                (firstText(sourceStatus, sourceName) == null
+                                ? ""
+                                : firstText(sourceStatus, sourceName))
+                        .toLowerCase(java.util.Locale.ROOT);
         if (value.contains("cancel") || value.contains("取消")) return "CANCELLED";
         if (value.contains("refund") || value.contains("退款")) return "REFUND_PENDING";
-        if (value.contains("finish") || value.contains("complete") || value.contains("完成")) return "COMPLETED";
+        if (value.contains("finish") || value.contains("complete") || value.contains("完成"))
+            return "COMPLETED";
         if (value.contains("stock") || value.contains("出库")) return "WAIT_STOCK_OUT";
         return "DRAFT";
     }

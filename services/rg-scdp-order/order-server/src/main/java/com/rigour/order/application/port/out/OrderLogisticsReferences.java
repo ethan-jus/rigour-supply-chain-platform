@@ -6,6 +6,15 @@ import java.util.List;
 import java.util.Set;
 
 public interface OrderLogisticsReferences {
+    default List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> ledgerParties(
+            String kind, String code, Long id, String keyword, String city, int begin, String action) {
+        throw new UnsupportedOperationException("编码收发方引用尚未接入");
+    }
+
+    default List<LogisticsCostSourceView> ledgerSources(
+            com.rigour.order.api.v1.model.LogisticsLedgerSourceQuery query, String action) {
+        throw new UnsupportedOperationException("编码单据引用尚未接入");
+    }
     List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees(String action);
 
     String city(String code, String action);

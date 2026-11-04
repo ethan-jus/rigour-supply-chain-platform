@@ -32,6 +32,13 @@ public final class ErpCostService {
     private final ErpCostStore store;
     private final ErpProductDictionary dictionary;
     private final CostReferenceSource references;
+    private WarehouseLedgerService warehouseLedgers;
+    private com.rigour.erp.application.port.out.ProcurementGoodsCosts procurementGoods;
+    @org.springframework.beans.factory.annotation.Autowired
+    void procurementGoods(com.rigour.erp.application.port.out.ProcurementGoodsCosts source){this.procurementGoods=source;}
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void warehouseLedgers(WarehouseLedgerService service) { warehouseLedgers = service; }
 
     public ErpCostService(
             ErpCostStore store, ErpProductDictionary dictionary, CostReferenceSource references) {
@@ -133,18 +140,23 @@ public final class ErpCostService {
                         q.payeeName(),
                         q.landlordName(),
                         q.productName(),
-                        q.specification()),
+                        q.specification(), q.ledgerFeeType(), q.warehouseCode()),
                 p);
     }
 
     public ErpCostDetailView entry(String value, String id) {
         String c = category(value), p = permission(c, "read");
-        return store.entry(actor(p).tenantId().toString(), c, id, p);
+        String tenant=actor(p).tenantId().toString();
+        try { return store.entry(tenant,c,id,p); }
+        catch(BusinessException e){
+            if(e.getErrorCode()!=ErrorCode.NOT_FOUND || !"PURCHASE".equals(c) || procurementGoods==null)throw e;
+            return procurementGoods.detail(tenant,id,p).orElseThrow(()->e);
+        }
     }
 
     public List<ErpCostAuditView> history(String value, String id) {
         var row = entry(value, id);
-        return store.history(AuthorizationContext.requireCurrent().tenantId().toString(), row.id());
+        return row.procurementReference()!=null ? List.of() : store.history(AuthorizationContext.requireCurrent().tenantId().toString(), row.id());
     }
 
     public List<ErpCostEmployeeView> employees() {
@@ -167,6 +179,10 @@ public final class ErpCostService {
         var a = actor(p);
         String t = a.tenantId().toString();
         if (c == null) throw bad("请填写费用");
+        if (c.warehouseLedger() != null) {
+            if (!"RENTAL".equals(category)) throw bad("只有仓储费用可填写费用组合");
+            c = warehouseLedgers.normalize(c, p, false);
+        }
         if (id == null) {
             try {
                 UUID.fromString(c.requestId());
@@ -223,6 +239,12 @@ public final class ErpCostService {
             employeeName = employee.employeeName();
         } else if (c.departmentId() != null) {
             throw bad("请先选择费用负责人，不接受未经核验的部门或员工编号");
+        }
+        if (c.warehouseLedger() != null) {
+            if (!"RENTAL".equals(category) || c.rental() != null || c.goods() != null) throw bad("仓储费用参数无效");
+            var normalized = warehouseLedgers.normalize(c, p, false);
+            if (!com.rigour.erp.domain.cost.WarehouseLedgerRules.sameComputation(normalized.warehouseLedger(), c.warehouseLedger()) || (normalized.amount() == null ? c.amount() != null : c.amount() == null || normalized.amount().compareTo(c.amount()) != 0)) throw bad("费用计算已变化，请重新编辑后保存");
+            return new ValidatedCost(List.of(), warehouseLedgers.warehouse(c.warehouseLedger().warehouseCode(), p).name(), employeeName);
         }
         if ("RENTAL".equals(category)) {
             if (c.rental() == null || c.goods() != null) throw bad("场地参数无效");
@@ -357,6 +379,11 @@ public final class ErpCostService {
     }
 
     private static void validateConfirmation(String category, ErpCostCommand command) {
+        if (command.warehouseLedger() != null) {
+            try { com.rigour.erp.domain.cost.WarehouseLedgerRules.normalize(command.warehouseLedger(), true); }
+            catch (IllegalArgumentException e) { throw bad(e.getMessage()); }
+            return;
+        }
         if ("PURCHASE".equals(category)) {
             var goods = command.goods();
             if (goods == null) throw bad("请补齐进货商品");

@@ -123,6 +123,13 @@ public record CostFact(
         return source + ":" + sourceId;
     }
 
+    public String rootSourceId() {
+        var root = dimensions.get("rootSourceId");
+        return root == null ? sourceId : root.key();
+    }
+
+    public String documentKey() { return source + ":" + (dimensions.containsKey("procurementOrderCode") ? "PROCUREMENT:"+dimensions.get("procurementOrderCode").key() : rootSourceId()); }
+
     public boolean confirmed() {
         return "CONFIRMED".equals(status) && amount != null && "DIRECT".equals(treatment());
     }

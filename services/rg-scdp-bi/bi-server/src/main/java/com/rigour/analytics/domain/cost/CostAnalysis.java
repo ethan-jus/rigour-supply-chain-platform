@@ -165,7 +165,7 @@ public final class CostAnalysis {
     }
 
     public static long count(List<CostFact> rows) {
-        return rows.stream().filter(CostFact::confirmed).count();
+        return rows.stream().filter(CostFact::confirmed).map(CostFact::documentKey).distinct().count();
     }
 
     public static String money(BigDecimal value) {

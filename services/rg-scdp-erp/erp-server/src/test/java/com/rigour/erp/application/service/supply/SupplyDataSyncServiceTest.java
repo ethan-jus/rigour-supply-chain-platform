@@ -193,7 +193,8 @@ class SupplyDataSyncServiceTest {
                 SupplyDataObjectType.PURCHASE_ORDER, 1, 1, List.of(), List.of(order),
                 List.of(), List.of(), List.of(), List.of()));
         when(store.importPurchaseOrder(TENANT_ID.toString(), RUN_ID, order))
-                .thenReturn(SupplyDataStore.ImportResult.oneRejected());
+                .thenReturn(SupplyDataStore.ImportResult.rejectedIssue(
+                        "purchaseOrder.targetWarehouse", "source-warehouse"));
         SupplyDataSyncService service = service(store, client, passthroughLease());
 
         var result = service.runScheduled(scheduledCaller(), CONNECTOR_ID,
@@ -201,6 +202,8 @@ class SupplyDataSyncServiceTest {
 
         assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
         assertThat(result.rejected()).isEqualTo(1);
+        assertThat(result.sourceDetails())
+                .containsEntry("REJECTED_REFERENCE:purchaseOrder.targetWarehouse", 1L);
         verify(store).completeRunWithSourcePresence(eq(TENANT_ID.toString()),
                 eq(RUN_ID), eq(Map.of()), any());
     }
@@ -213,8 +216,11 @@ class SupplyDataSyncServiceTest {
     private static SupplyDataSyncService service(SupplyDataStore store, DhbSupplyDataClient client,
                                                  ConnectorSyncLeaseClient lease,
                                                  ExternalObjectMappingClient mappingClient) {
+        BusinessDictionaryCoverageService dictionaries = mock(BusinessDictionaryCoverageService.class);
+        when(dictionaries.inspect(any(UUID.class), any(DhbSupplyDataClient.Collected.class)))
+                .thenReturn(com.rigour.erp.application.model.DictionaryMappingAudit.empty());
         return new SupplyDataSyncService(client, mock(DhbSupplySyncTargetDiscoveryClient.class),
-                store, mock(BusinessDictionaryCoverageService.class), lease,
+                store, dictionaries, lease,
                 mappingClient);
     }
 

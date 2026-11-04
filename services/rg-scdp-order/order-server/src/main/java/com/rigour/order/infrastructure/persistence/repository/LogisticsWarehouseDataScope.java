@@ -125,6 +125,47 @@ public final class LogisticsWarehouseDataScope {
             throw new AuthorizationDeniedException(action);
     }
 
+    /** 同一完整角色范围须覆盖整笔合运涉及的全部仓库；查询与写入采用同一规则。 */
+    public void requireLedger(String action, com.rigour.order.api.v1.model.LogisticsCostLedger ledger) {
+        for (String city : ledger.scopeCityCodes()) requireManual(action, "INVENTORY", city);
+        var p = policy(action);
+        var ids = ledger.scopeWarehouseIds();
+        if (p == null || ids.isEmpty()) return;
+        boolean allowed = p.clauses().stream().anyMatch(c ->
+                "INVENTORY".equals(c.objectType()) && Set.of("WAREHOUSE", "ALL").contains(c.scopeMode())
+                && Set.of("NONE", "ALL").contains(c.departments().mode()) && Set.of("NONE", "ALL").contains(c.regions().mode())
+                && ids.stream().allMatch(id -> contains(c.warehouses(), id)));
+        if (!allowed || !ids.stream().allMatch(id -> contains(p.warehouseLimit(), id))) throw new AuthorizationDeniedException(action);
+    }
+
+    public Predicate ledgerPredicate(String action) {
+        var p = policy(action);
+        if (p == null) return new Predicate("1=1", List.of());
+        var access = com.rigour.tenant.iam.client.ManualCostScope.access(p, "INVENTORY");
+        if (!access.allowed()) return new Predicate("1=0", List.of());
+        List<Object> args = new ArrayList<>();
+        List<String> parts = new ArrayList<>();
+        if (access.cities() != null) {
+            if (access.cities().isEmpty()) return new Predicate("1=0", List.of());
+            args.addAll(access.cities());
+            parts.add("NOT EXISTS (SELECT 1 FROM JSON_TABLE(data_json,'$.ledger.scopeCityCodes[*]' COLUMNS(code VARCHAR(64) PATH '$')) lc WHERE lc.code NOT IN (" + String.join(",", Collections.nCopies(access.cities().size(), "?")) + "))");
+        }
+        List<String> roles = new ArrayList<>();
+        for (var c : p.clauses()) {
+            if (!"INVENTORY".equals(c.objectType()) || !Set.of("WAREHOUSE", "ALL").contains(c.scopeMode()) || !Set.of("NONE", "ALL").contains(c.departments().mode()) || !Set.of("NONE", "ALL").contains(c.regions().mode())) continue;
+            roles.add(allLedgerWarehouses(c.warehouses(), args));
+        }
+        parts.add("(COALESCE(JSON_LENGTH(JSON_EXTRACT(data_json,'$.ledger.scopeWarehouseIds')),0)=0 OR (" + (roles.isEmpty() ? "1=0" : String.join(" OR ", roles)) + "))");
+        parts.add(allLedgerWarehouses(p.warehouseLimit(), args));
+        return new Predicate("(" + String.join(" AND ", parts) + ")", args);
+    }
+
+    private static String allLedgerWarehouses(Limit limit, List<Object> args) {
+        if ("ALL".equals(limit.mode())) return "1=1";
+        String allowed = in(limit, "lw.warehouse_id", args);
+        return "NOT EXISTS (SELECT 1 FROM JSON_TABLE(data_json,'$.ledger.scopeWarehouseIds[*]' COLUMNS(warehouse_id BIGINT PATH '$')) lw WHERE NOT (" + allowed + "))";
+    }
+
     private static boolean contains(Limit limit, long warehouse) {
         return "ALL".equals(limit.mode())
                 || "SPECIFIED".equals(limit.mode())

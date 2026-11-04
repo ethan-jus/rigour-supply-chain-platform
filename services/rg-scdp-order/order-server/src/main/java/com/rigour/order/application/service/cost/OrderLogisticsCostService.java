@@ -29,6 +29,10 @@ public final class OrderLogisticsCostService {
             org.slf4j.LoggerFactory.getLogger(OrderLogisticsCostService.class);
     private final OrderLogisticsCostStore store;
     private final OrderLogisticsReferences dictionary;
+    private OrderLogisticsLedgerService ledgers;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void ledgerService(OrderLogisticsLedgerService service) { this.ledgers = service; }
 
     public OrderLogisticsCostService(
             OrderLogisticsCostStore store, OrderLogisticsReferences dictionary) {
@@ -80,7 +84,7 @@ public final class OrderLogisticsCostService {
         text(q.sourceDocumentNo(), 100, "来源单号");
         if (q.dateFrom() != null && q.dateTo() != null && q.dateTo().isBefore(q.dateFrom()))
             throw bad("截止日期不能早于开始日期");
-        return store.entries(
+        var page = store.entries(
                 a.tenantId().toString(),
                 category,
                 new LogisticsCostQuery(
@@ -105,13 +109,15 @@ public final class OrderLogisticsCostService {
                         q.missingAmount(),
                         q.senderName(),
                         q.receiverName(),
-                        q.carrierName()),
+                        q.carrierName(), q.costMonth(), q.orderTypeCode(), q.carrierCode()),
                 p);
+        return page.withItems(page.items().stream().map(row -> row.data().ledger() == null ? row : row.withData(ledgers.enrich(row.data(), p))).toList());
     }
 
     public LogisticsCostDetailView entry(String value, String id) {
         String c = category(value), p = permission(c, "read");
-        return store.entry(actor(p).tenantId().toString(), c, id, p);
+        var row = store.entry(actor(p).tenantId().toString(), c, id, p);
+        return row.data().ledger() == null ? row : row.withData(ledgers.enrich(row.data(), p));
     }
 
     public List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees() {
@@ -157,13 +163,28 @@ public final class OrderLogisticsCostService {
         var a = actor(p);
         String t = a.tenantId().toString();
         if (c == null) throw bad("请填写费用");
+        if (c.ledger() != null) {
+            required(c.cityCode(), 64, "费用归属城市");
+            required(c.cityName(), 120, "费用归属城市名称");
+            required(c.paymentStatusCode(), 32, "付款状态");
+            if (c.costDate() == null) throw bad("请选择运输日期");
+            var old = id == null ? null : store.entry(t, category, id, p).data().ledger();
+            var sync = old == null ? null : old.sourceSync();
+            if (sync != null) {
+                if (sync.differencePending() && (c.reason() == null || c.reason().isBlank())) throw bad("采购来源已变化，请说明核实结果和修改原因");
+                sync = new com.rigour.order.api.v1.model.LogisticsCostLedger.SourceSync(sync.originBizKey(), sync.originVersion(), sync.lastAppliedFingerprint(), true, sync.lastSeenVersion(), sync.lastSeenFingerprint(), false);
+            }
+            c = c.withLedger(c.ledger().withSourceSync(sync), c.amount());
+            c = ledgers.normalize(c, p, false);
+        }
         required(c.title(), 200, "费用事项");
         required(c.cityCode(), 64, "归属城市编码");
         required(c.cityName(), 120, "归属城市");
         if (c.costDate() == null) throw bad("请选择费用日期");
         text(c.remark(), 1000, "备注");
         text(c.reason(), 500, "变更原因");
-        rules(() -> LogisticsCostRules.money(c.amount(), false));
+        var checkedAmount = c.amount();
+        rules(() -> LogisticsCostRules.money(checkedAmount, false));
         if (c.paymentStatusCode() != null && !c.paymentStatusCode().isBlank())
             valid(t, "COST_PAYMENT_STATUS", c.paymentStatusCode());
         if ("PAID".equals(c.paymentStatusCode()) && c.amount() == null) throw bad("已付款费用必须填写金额");
@@ -176,7 +197,7 @@ public final class OrderLogisticsCostService {
         } else if (c.revision() == null || c.revision() < 1) throw bad("缺少费用版本，请刷新");
         if (!Objects.equals(dictionary.city(c.cityCode(), p), c.cityName()))
             throw bad("城市名称与授权目录不一致，请重新选择");
-        List<LogisticsCostSourceView> sources =
+        List<LogisticsCostSourceView> sources = c.ledger() != null ? List.of() :
                 new LogisticsCostValidator(store, dictionary).validate(t, c, p, false);
         String warehouseName = null, employeeName = responsibleEmployee(c, p);
         return store.save(
@@ -209,7 +230,13 @@ public final class OrderLogisticsCostService {
             var current = store.entry(a.tenantId().toString(), category, id, p);
             dictionary.city(current.data().cityCode(), p);
             responsibleEmployee(current.data(), p);
-            new LogisticsCostValidator(store, dictionary)
+            if (current.data().ledger() != null) {
+                var checked = ledgers.normalize(current.data(), p, true);
+                if (!new java.util.HashSet<>(checked.ledger().scopeWarehouseIds()).equals(new java.util.HashSet<>(current.data().ledger().scopeWarehouseIds()))
+                        || !new java.util.HashSet<>(checked.ledger().scopeCityCodes()).equals(new java.util.HashSet<>(current.data().ledger().scopeCityCodes()))) throw bad("来源单据范围已变更，请重新编辑费用后确认");
+                if ((c.reason() == null || c.reason().isBlank()) && current.data().amount().signum() == 0)
+                    c = new LogisticsCostActionCommand(c.revision(), current.data().ledger().feeItems().stream().map(f -> f.zeroCostReason()).filter(Objects::nonNull).collect(java.util.stream.Collectors.joining("；")));
+            } else new LogisticsCostValidator(store, dictionary)
                     .validate(a.tenantId().toString(), current.data(), p, true);
         }
         return store.transition(

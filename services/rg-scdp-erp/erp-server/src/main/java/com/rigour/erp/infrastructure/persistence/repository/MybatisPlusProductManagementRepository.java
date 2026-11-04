@@ -38,6 +38,21 @@ import com.rigour.erp.infrastructure.persistence.mapper.MasterSourceBindingMappe
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.code.BusinessCodeGenerator;
 import com.rigour.shared.core.exception.BusinessException;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.stereotype.Repository;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.util.StringUtils;
+
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -56,17 +71,6 @@ import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.dao.DataIntegrityViolationException;
-import org.springframework.stereotype.Repository;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.util.StringUtils;
-import tools.jackson.core.type.TypeReference;
-import tools.jackson.databind.ObjectMapper;
-import tools.jackson.databind.json.JsonMapper;
 
 /** MyBatis-Plus 商品管理仓储；CRUD 内部统一使用 BaseMapper 和 LambdaWrapper。 */
 @Repository
@@ -114,8 +118,11 @@ public class MybatisPlusProductManagementRepository
         this.brandMapper = Objects.requireNonNull(brandMapper, "brandMapper");
         this.tagMapper = Objects.requireNonNull(tagMapper, "tagMapper");
         this.warehouseMapper = Objects.requireNonNull(warehouseMapper, "warehouseMapper");
-        this.productMediaUrlResolver = Objects.requireNonNull(productMediaUrlResolver, "productMediaUrlResolver");
-        this.transaction = new TransactionTemplate(Objects.requireNonNull(transactionManager, "transactionManager"));
+        this.productMediaUrlResolver =
+                Objects.requireNonNull(productMediaUrlResolver, "productMediaUrlResolver");
+        this.transaction =
+                new TransactionTemplate(
+                        Objects.requireNonNull(transactionManager, "transactionManager"));
         this.clock = Objects.requireNonNull(erpClock, "erpClock");
     }
 
@@ -231,7 +238,39 @@ public class MybatisPlusProductManagementRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ProductManagementDetailView update(String tenantId, Long id, ProductWrite command, String actorId) {
-        requireActive(tenantId, id);
+        var existing =
+                getBaseMapper()
+                        .selectOne(
+                                Wrappers.<InternalProductEntity>lambdaQuery()
+                                        .eq(InternalProductEntity::getTenantId, tenantId)
+                                        .eq(InternalProductEntity::getId, id)
+                                        .eq(InternalProductEntity::getDeleted, 0)
+                                        .last("FOR UPDATE"));
+        if (existing == null) throw notFound("商品不存在");
+        boolean unitChanged =
+                !java.util.Objects.equals(existing.getUnitCode(), command.unitCode())
+                        || !java.util.Objects.equals(
+                                existing.getMiddleUnitCode(), command.middleUnitCode())
+                        || !sameDecimal(existing.getBaseToMiddleRate(), command.baseToMiddleRate())
+                        || !java.util.Objects.equals(
+                                existing.getBigUnitCode(), command.bigUnitCode())
+                        || !sameDecimal(existing.getBaseToBigRate(), command.baseToBigRate());
+        var currentVariants = variantsByProduct(tenantId, Set.of(id)).getOrDefault(id, List.of());
+        unitChanged |=
+                currentVariants.stream()
+                        .anyMatch(
+                                v ->
+                                        command.variants().stream()
+                                                .noneMatch(
+                                                        w ->
+                                                                java.util.Objects.equals(
+                                                                                w.id(), v.getId())
+                                                                        && java.util.Objects.equals(
+                                                                                w.unitCode(),
+                                                                                v.getUnitCode())));
+        if (unitChanged
+                && getBaseMapper().unitDefinitionInUse(tenantId, id, existing.getProductCode()))
+            throw conflict("商品已有采购或库存记录，单位及换算关系不可修改，请新增SKU或商品");
         LocalDateTime now = now();
         int updated = getBaseMapper().update(null, Wrappers.<InternalProductEntity>lambdaUpdate()
                 .set(InternalProductEntity::getProductName, command.productName())
@@ -441,17 +480,28 @@ public class MybatisPlusProductManagementRepository
     private List<ProductResolveCandidate> sourceVariantCandidates(
             String tenantId, String preferredSourceSystem, String sourceCode, String strategy, int baseScore) {
         if (!StringUtils.hasText(sourceCode)) return List.of();
-        return bindingMapper.selectList(Wrappers.<MasterSourceBindingEntity>query()
-                        .eq("tenant_id", tenantId)
-                        .eq(StringUtils.hasText(preferredSourceSystem), "source_system", preferredSourceSystem)
-                        .eq("source_object_type", "PRODUCT_SKU")
-                        .eq("source_code", sourceCode.strip())
-                        .eq("source_presence", SOURCE_PRESENT)
-                        .eq("deleted", 0)
-                        .last("LIMIT 20"))
+        return bindingMapper
+                .selectList(
+                        Wrappers.<MasterSourceBindingEntity>query()
+                                .eq("tenant_id", tenantId)
+                                .eq(
+                                        StringUtils.hasText(preferredSourceSystem),
+                                        "source_system",
+                                        preferredSourceSystem)
+                                .eq("source_object_type", "PRODUCT_SKU")
+                                .eq("source_code", sourceCode.strip())
+                                .eq("source_presence", SOURCE_PRESENT)
+                                .eq("deleted", 0)
+                                .last("LIMIT 20"))
                 .stream()
-                .map(binding -> variantCandidateFromBinding(tenantId, preferredSourceSystem,
-                        binding, strategy, baseScore))
+                .map(
+                        binding ->
+                                variantCandidateFromBinding(
+                                        tenantId,
+                                        preferredSourceSystem,
+                                        binding,
+                                        strategy,
+                                        baseScore))
                 .flatMap(Optional::stream)
                 .toList();
     }
@@ -474,17 +524,30 @@ public class MybatisPlusProductManagementRepository
             String tenantId, String preferredSourceSystem, String sourceColumn, String sourceValue,
             String specification, String strategy, int baseScore) {
         if (!StringUtils.hasText(sourceValue)) return List.of();
-        return bindingMapper.selectList(Wrappers.<MasterSourceBindingEntity>query()
-                        .eq("tenant_id", tenantId)
-                        .eq(StringUtils.hasText(preferredSourceSystem), "source_system", preferredSourceSystem)
-                        .eq("source_object_type", "PRODUCT_SPU")
-                        .eq(sourceColumn, sourceValue.strip())
-                        .eq("source_presence", SOURCE_PRESENT)
-                        .eq("deleted", 0)
-                        .last("LIMIT 20"))
+        return bindingMapper
+                .selectList(
+                        Wrappers.<MasterSourceBindingEntity>query()
+                                .eq("tenant_id", tenantId)
+                                .eq(
+                                        StringUtils.hasText(preferredSourceSystem),
+                                        "source_system",
+                                        preferredSourceSystem)
+                                .eq("source_object_type", "PRODUCT_SPU")
+                                .eq(sourceColumn, sourceValue.strip())
+                                .eq("source_presence", SOURCE_PRESENT)
+                                .eq("deleted", 0)
+                                .last("LIMIT 20"))
                 .stream()
-                .flatMap(binding -> productCandidatesFromBinding(tenantId, preferredSourceSystem,
-                        binding, specification, strategy, baseScore).stream())
+                .flatMap(
+                        binding ->
+                                productCandidatesFromBinding(
+                                        tenantId,
+                                        preferredSourceSystem,
+                                        binding,
+                                        specification,
+                                        strategy,
+                                        baseScore)
+                                        .stream())
                 .toList();
     }
 
@@ -657,7 +720,8 @@ public class MybatisPlusProductManagementRepository
         String variantSource = targetSourceSystem(tenantId, preferredSourceSystem,
                 "PRODUCT_VARIANT", variantId);
         if (variantSource != null) return variantSource;
-        String productSource = targetSourceSystem(tenantId, preferredSourceSystem, "PRODUCT", productId);
+        String productSource =
+                targetSourceSystem(tenantId, preferredSourceSystem, "PRODUCT", productId);
         if (productSource != null) return productSource;
         InternalProductEntity product = productId == null ? null : getBaseMapper().selectById(productId);
         return product == null ? null : product.getSourceSystemCode();
@@ -784,7 +848,8 @@ public class MybatisPlusProductManagementRepository
         for (String part : text.split("\\s*[-－–—,，/]+\\s*")) {
             String token = clean(part, 200);
             if (token == null || token.length() < 2) continue;
-            if (token.matches(".*\\d.*") && (token.contains("箱") || token.contains("桶") || token.contains("袋"))) {
+            if (token.matches(".*\\d.*")
+                    && (token.contains("箱") || token.contains("桶") || token.contains("袋"))) {
                 continue;
             }
             tokens.add(token);
@@ -801,7 +866,8 @@ public class MybatisPlusProductManagementRepository
             for (int start = 0; start + length <= text.length(); start++) {
                 String token = text.substring(start, start + length);
                 if (!token.matches(".*[\\p{IsHan}A-Za-z].*")) continue;
-                if (token.matches(".*\\d.*") && (token.contains("箱") || token.contains("桶") || token.contains("袋"))) {
+                if (token.matches(".*\\d.*")
+                        && (token.contains("箱") || token.contains("桶") || token.contains("袋"))) {
                     continue;
                 }
                 tokens.add(token);
@@ -856,9 +922,20 @@ public class MybatisPlusProductManagementRepository
                         variant.id(), variant.variantCode(), variant.unitCode(), "UPDATED",
                         "ERP商品已补齐默认规格");
             }
-            return new ProductSyncOutcome(row.sourceProductId(), existing.getId(), existing.getProductCode(),
-                    variant.id(), variant.variantCode(), variant.unitCode(), "UNCHANGED", "ERP商品无变化");
+            return new ProductSyncOutcome(
+                    row.sourceProductId(),
+                    existing.getId(),
+                    existing.getProductCode(),
+                    variant.id(),
+                    variant.variantCode(),
+                    variant.unitCode(),
+                    "UNCHANGED",
+                    "ERP商品无变化");
         }
+        if (!java.util.Objects.equals(existing.getUnitCode(), clean(row.unitCode(), 64))
+                && getBaseMapper()
+                        .unitDefinitionInUse(tenantId, existing.getId(), existing.getProductCode()))
+            throw conflict("商品已有采购或库存记录，来源单位变更需先核对商品档案");
         copyExternalProductFields(existing, tenantId, existing.getProductCode(), sourceSystem,
                 sourceTenantKey, row, actorId, now);
         int nextRevision = existing.getRevision() == null ? 2 : existing.getRevision() + 1;
@@ -1010,6 +1087,10 @@ public class MybatisPlusProductManagementRepository
                 .eq(InternalProductEntity::getSourceProductId, sourceProductId)
                 .eq(InternalProductEntity::getDeleted, 0)
                 .last("LIMIT 1"));
+    }
+
+    private static boolean sameDecimal(BigDecimal a, BigDecimal b) {
+        return a == null ? b == null : b != null && a.compareTo(b) == 0;
     }
 
     private static void copyExternalProductFields(InternalProductEntity entity, String tenantId,

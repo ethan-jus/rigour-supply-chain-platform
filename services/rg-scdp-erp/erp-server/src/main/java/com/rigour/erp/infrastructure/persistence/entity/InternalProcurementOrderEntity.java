@@ -3,6 +3,7 @@ package com.rigour.erp.infrastructure.persistence.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -49,6 +50,19 @@ public class InternalProcurementOrderEntity {
     /** 删除标识：0未删除，1已删除。 */
     private Integer deleted;
 
+    private String supplierCode;
+    private String targetWarehouseCode;
+    private java.time.LocalDate purchaseDate;
+    private BigDecimal freightAmount;
+    private String freightBearerCode;
+    private String contractNo;
+    private String contractFileKey;
+
+    private String confirmationStatusCode;
+    private String receiverName;
+    private String receiverPhone;
+    private String receivingAddress;
+
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public String getTenantId() { return tenantId; }
@@ -87,4 +101,92 @@ public class InternalProcurementOrderEntity {
     public void setUpdatedTime(LocalDateTime updatedTime) { this.updatedTime = updatedTime; }
     public Integer getDeleted() { return deleted; }
     public void setDeleted(Integer deleted) { this.deleted = deleted; }
+
+    public String getSupplierCode() {
+        return supplierCode;
+    }
+
+    public void setSupplierCode(String value) {
+        this.supplierCode = value;
+    }
+
+    public String getTargetWarehouseCode() {
+        return targetWarehouseCode;
+    }
+
+    public void setTargetWarehouseCode(String value) {
+        this.targetWarehouseCode = value;
+    }
+
+    public java.time.LocalDate getPurchaseDate() {
+        return purchaseDate;
+    }
+
+    public void setPurchaseDate(java.time.LocalDate value) {
+        this.purchaseDate = value;
+    }
+
+    public BigDecimal getFreightAmount() {
+        return freightAmount;
+    }
+
+    public void setFreightAmount(BigDecimal value) {
+        this.freightAmount = value;
+    }
+
+    public String getFreightBearerCode() {
+        return freightBearerCode;
+    }
+
+    public void setFreightBearerCode(String value) {
+        this.freightBearerCode = value;
+    }
+
+    public String getContractNo() {
+        return contractNo;
+    }
+
+    public void setContractNo(String value) {
+        this.contractNo = value;
+    }
+
+    public String getContractFileKey() {
+        return contractFileKey;
+    }
+
+    public void setContractFileKey(String value) {
+        this.contractFileKey = value;
+    }
+
+    public String getReceiverName() {
+        return receiverName;
+    }
+
+    public void setReceiverName(String value) {
+        this.receiverName = value;
+    }
+
+    public String getReceiverPhone() {
+        return receiverPhone;
+    }
+
+    public void setReceiverPhone(String value) {
+        this.receiverPhone = value;
+    }
+
+    public String getReceivingAddress() {
+        return receivingAddress;
+    }
+
+    public void setReceivingAddress(String value) {
+        this.receivingAddress = value;
+    }
+
+    public String getConfirmationStatusCode() {
+        return confirmationStatusCode;
+    }
+
+    public void setConfirmationStatusCode(String value) {
+        this.confirmationStatusCode = value;
+    }
 }

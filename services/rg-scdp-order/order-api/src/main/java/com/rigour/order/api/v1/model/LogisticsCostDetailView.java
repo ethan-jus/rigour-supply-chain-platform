@@ -17,6 +17,10 @@ public record LogisticsCostDetailView(
         Instant updatedTime,
         String createdBy,
         String updatedBy) {
+    public LogisticsCostDetailView withData(LogisticsCostCommand value) {
+        return new LogisticsCostDetailView(id, documentNo, categoryCode, statusCode, revision, value, sources, warehouseName, ownerEmployeeName, createdTime, updatedTime, createdBy, updatedBy);
+    }
+
     public LogisticsCostDetailView(
             String id,
             String documentNo,

@@ -157,6 +157,7 @@ public final class ErpStockInOrderService {
         if (externalSource(order.sourceSystemCode())) {
             throw conflict("外部来源采购订单已按来源入库凭证同步，无需在ERP重复确认入库");
         }
+        if (!"CONFIRMED".equals(order.confirmationStatusCode())) throw conflict("只有已确认的采购订单才能入库");
         if (!ErpProcurementStatus.SUBMITTED.code().equals(order.statusCode())
                 && !ErpProcurementStatus.PARTIAL_IN.code().equals(order.statusCode())) {
             throw conflict("只有已提交或部分入库的采购订单才能确认入库");
@@ -204,11 +205,47 @@ public final class ErpStockInOrderService {
             ProcurementOrderLineSnapshot procurementLine = availableLines.get(procurementLineId);
             if (procurementLine == null) throw badRequest("采购入库明细不属于当前采购订单");
             BigDecimal quantity = quantity(item.quantity(), "quantity");
-            BigDecimal received = zeroIfNull(procurementLine.receivedQuantity());
-            BigDecimal remaining = procurementLine.quantity().subtract(received);
-            if (quantity.compareTo(remaining) > 0) {
-                throw conflict("采购入库数量不能超过未入库数量");
+            if (!procurementLine.receiptProgressVerified()
+                    || procurementLine.inventoryRate() == null
+                    || procurementLine.productId() == null
+                    || procurementLine.productVariantId() == null)
+                throw conflict("商品单位配置或入库记录无法核验，请核对商品档案");
+            BigDecimal factor =
+                    procurementLine.conversionRate() == null
+                            ? BigDecimal.ONE
+                            : procurementLine.conversionRate();
+            String base =
+                    procurementLine.baseUnitCode() == null
+                            ? procurementLine.unitCode()
+                            : procurementLine.baseUnitCode();
+            String inputUnit =
+                    item.unitCode() == null ? procurementLine.unitCode() : item.unitCode();
+            if (!Objects.equals(inputUnit, base)
+                    && !Objects.equals(inputUnit, procurementLine.unitCode()))
+                throw badRequest("入库单位必须为采购单位或基本单位");
+            BigDecimal baseQuantity =
+                    Objects.equals(inputUnit, base) ? quantity : quantity.multiply(factor);
+            if (baseQuantity.stripTrailingZeros().scale() > 6
+                    || baseQuantity.precision() - baseQuantity.scale() > 18)
+                throw badRequest("入库基本数量超出精度限制");
+            BigDecimal remaining =
+                    procurementLine
+                            .quantity()
+                            .multiply(factor)
+                            .subtract(zeroIfNull(procurementLine.receivedBaseQuantity()));
+            if (baseQuantity.compareTo(remaining) > 0) throw conflict("采购入库数量不能超过未入库数量");
+            BigDecimal stockQuantity;
+            try {
+                stockQuantity =
+                        baseQuantity.divide(
+                                procurementLine.inventoryRate(),
+                                6,
+                                java.math.RoundingMode.UNNECESSARY);
+            } catch (ArithmeticException ex) {
+                throw badRequest("本次数量无法按库存单位精确计量，请调整入库数量");
             }
+            if (stockQuantity.precision() - stockQuantity.scale() > 18)
+                throw badRequest("入库数量超出库存计量精度限制");
             duplicateGuard.put(procurementLineId, quantity);
             String flowNo =
                     codeGenerator.generateUnique(
@@ -216,7 +253,10 @@ public final class ErpStockInOrderService {
                             candidate ->
                                     flowNoGuard.add(candidate)
                                             && !store.existsByFlowNo(tenantId, candidate));
-            BigDecimal amount = quantity.multiply(zeroIfNull(procurementLine.unitPrice()));
+            BigDecimal amount =
+                    baseQuantity
+                            .multiply(zeroIfNull(procurementLine.unitPrice()))
+                            .divide(factor, 6, java.math.RoundingMode.HALF_UP);
             result.add(
                     new ProcurementStockInLineWrite(
                             result.size() + 1,
@@ -226,12 +266,14 @@ public final class ErpStockInOrderService {
                             procurementLine.productCode(),
                             procurementLine.variantCode(),
                             procurementLine.productName(),
-                            procurementLine.unitCode(),
-                            quantity,
-                            zeroIfNull(procurementLine.unitPrice()),
+                            base,
+                            baseQuantity,
+                            zeroIfNull(procurementLine.unitPrice())
+                                    .divide(factor, 6, java.math.RoundingMode.HALF_UP),
                             amount,
                             flowNo,
-                            ErpServiceValidation.text(item.remark(), 1000, "lineRemark")));
+                            ErpServiceValidation.text(item.remark(), 1000, "lineRemark"),
+                            stockQuantity));
         }
         if (result.isEmpty()) throw badRequest("采购入库至少需要一条有效明细");
         return List.copyOf(result);
@@ -248,9 +290,15 @@ public final class ErpStockInOrderService {
         boolean completed = true;
         for (ProcurementOrderLineSnapshot line : current) {
             BigDecimal afterReceived =
-                    zeroIfNull(line.receivedQuantity())
+                    zeroIfNull(line.receivedBaseQuantity())
                             .add(stockInByProcurementLine.getOrDefault(line.id(), ZERO));
-            if (afterReceived.compareTo(line.quantity()) < 0) {
+            if (afterReceived.compareTo(
+                            line.quantity()
+                                    .multiply(
+                                            line.conversionRate() == null
+                                                    ? BigDecimal.ONE
+                                                    : line.conversionRate()))
+                    < 0) {
                 completed = false;
                 break;
             }
@@ -262,6 +310,8 @@ public final class ErpStockInOrderService {
 
     private static BigDecimal quantity(BigDecimal value, String name) {
         if (value == null) throw badRequest(name + "不能为空");
+        if (value.stripTrailingZeros().scale() > 6 || value.precision() - value.scale() > 18)
+            throw badRequest(name + "超出精度限制");
         if (value.compareTo(ZERO) <= 0) throw badRequest(name + "必须大于0");
         return value;
     }

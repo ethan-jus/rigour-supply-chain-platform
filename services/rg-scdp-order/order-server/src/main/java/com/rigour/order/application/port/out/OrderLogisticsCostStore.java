@@ -11,6 +11,9 @@ import com.rigour.order.api.v1.model.LogisticsCostSourceView;
 import java.util.List;
 
 public interface OrderLogisticsCostStore {
+    default LogisticsCostDetailView upsertProcurementFreight(String tenant, LogisticsCostCommand command) {
+        throw new UnsupportedOperationException("采购运费来源尚未配置");
+    }
     LogisticsCostPageView entries(
             String tenant, String category, LogisticsCostQuery query, String action);
 
