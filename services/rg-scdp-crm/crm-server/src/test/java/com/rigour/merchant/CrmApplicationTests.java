@@ -274,7 +274,7 @@ class CrmApplicationTests {
                                  WHERE table_schema = DATABASE() AND table_name LIKE 'crm\\_%'
                                 """,
                                 Integer.class))
-                .isEqualTo(36);
+                .isEqualTo(37);
         assertThat(
                         jdbcTemplate.queryForList(
                                 """
