@@ -43,6 +43,24 @@ class StoreLifecycleIntegrationTest {
     RefreshResult refresh(Instant now,StoreOrderFacts facts){var c=lifecycle.current(tenant,store);return transaction(()->lifecycle.reconcile(c,facts,null,now));}
     Visit visitAt(Instant time){var s=scope("crm:store:visit-write","1");var v=transaction(()->visits.checkIn(s,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",BigDecimal.ONE),new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",300),time));v=submit(v,time.plusSeconds(600));var value=v;return transaction(()->visits.review(scope("crm:store:visit-review","2"),store,value.id(),new ReviewVisit(value.revision(),"EFFECTIVE","主管核验证据通过"),time.plusSeconds(650)));}
     Visit submit(Visit v,Instant now){return transaction(()->visits.submit(scope("crm:store:visit-write","1"),store,v.id(),new SubmitVisit(v.revision(),"拜访结果",List.of("dev/photo.jpg")),now));}
+    @Test void unchangedPollingDoesNotInvalidateAnOpenStatusFormButActualOrderChangesDo(){
+        var s=scope("crm:store:status-write","1");
+        var opened=pool.detail(s,store);var cycle=lifecycle.current(tenant,store);
+        assertThat(refresh(t.plusSeconds(60),facts(t,false)).outcome()).isEqualTo("PROTECTED");
+        assertThat(refresh(t.plusSeconds(120),facts(t,false)).outcome()).isEqualTo("PROTECTED");
+        assertThat(pool.detail(s,store).revision()).isEqualTo(opened.revision());
+        assertThat(lifecycle.current(tenant,store).revision()).isGreaterThan(cycle.revision());
+        assertThat(transaction(()->lifecycle.reconcile(cycle,facts(t,false),null,t.plusSeconds(180))).outcome()).isEqualTo("RETRY");
+        transaction(()->{pool.businessStatus(s,store,new BusinessStatusChange(UUID.randomUUID().toString(),opened.revision(),"TEMP_CLOSED","装修核实",false));return null;});
+        var beforeOrder=pool.detail(s,store);
+        var order=new StoreOrderFacts.Fact("123",ownership,"1",t.plusSeconds(30),1);
+        refresh(t.plusSeconds(240),facts(t,false,order));
+        assertThat(pool.detail(s,store).revision()).isGreaterThan(beforeOrder.revision());
+        assertThatThrownBy(()->transaction(()->{pool.businessStatus(s,store,new BusinessStatusChange(UUID.randomUUID().toString(),beforeOrder.revision(),"CLOSED","旧页面操作",false));return null;})).hasMessageContaining("状态已变化");
+        var afterOrder=pool.detail(s,store);
+        refresh(t.plusSeconds(300),facts(t,false,order));
+        assertThat(pool.detail(s,store).revision()).isEqualTo(afterOrder.revision());
+    }
     @Test void firstVisitExpiresExactlyAtBoundaryAndOnlyOriginalEmployeeCools(){
         assertThat(refresh(t.plusSeconds(86400-1),facts(t,false)).outcome()).isEqualTo("PROTECTED");
         assertThat(refresh(t.plusSeconds(86400),facts(t,false)).outcome()).isEqualTo("RELEASED");

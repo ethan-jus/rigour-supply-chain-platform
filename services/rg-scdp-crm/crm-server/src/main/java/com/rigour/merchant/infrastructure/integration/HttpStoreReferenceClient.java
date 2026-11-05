@@ -38,6 +38,7 @@ public class HttpStoreReferenceClient implements StoreReferenceClient {
         this.dictionaries = new com.rigour.settings.client.EffectiveDictionaryClient(builder,signer,foundation,"rigour-merchant-crm-service");
         this.iam = iam.replaceAll("/+$", ""); this.foundation = foundation.replaceAll("/+$", "");
     }
+    public Set<String> businessStatusCodes(String tenant){return dictionaries.activeCodes(tenant,"CRM_STORE_BUSINESS_STATUS");}
     public Set<String> storeTypeCodes(String tenant){return dictionaries.activeCodes(tenant,"CRM_STORE_TYPE");}
     public List<com.rigour.settings.api.v1.model.DictItemView> storeTypes(String tenant){return dictionaries.effective(tenant,"CRM_STORE_TYPE").items();}
     public StoreAccessView access(String action) {

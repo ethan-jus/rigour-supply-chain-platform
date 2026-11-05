@@ -130,7 +130,21 @@ class BusinessDictionaryServiceTest {
         "crm:pool:team-read,CRM_STORE_TYPE",
         "crm:store:cooperation-read,CRM_STORE_TYPE",
         "crm:store:manage,CRM_STORE_TYPE",
+        "crm:store:library-read,CRM_STORE_TYPE",
         "crm:lead:read,CRM_STORE_TYPE",
+        "crm:lead:create,CRM_STORE_TYPE",
+        "crm:lead:review,CRM_STORE_TYPE",
+        "crm:store:status-write,CRM_STORE_TYPE",
+        "crm:pool:public-read,CRM_STORE_BUSINESS_STATUS",
+        "crm:pool:private-read,CRM_STORE_BUSINESS_STATUS",
+        "crm:pool:team-read,CRM_STORE_BUSINESS_STATUS",
+        "crm:store:cooperation-read,CRM_STORE_BUSINESS_STATUS",
+        "crm:store:library-read,CRM_STORE_BUSINESS_STATUS",
+        "crm:store:manage,CRM_STORE_BUSINESS_STATUS",
+        "crm:lead:read,CRM_STORE_BUSINESS_STATUS",
+        "crm:lead:create,CRM_STORE_BUSINESS_STATUS",
+        "crm:lead:review,CRM_STORE_BUSINESS_STATUS",
+        "crm:store:status-write,CRM_STORE_BUSINESS_STATUS",
         "erp:cost:purchase:read,PRODUCT_UNIT",
         "erp:cost:loss:read,PRODUCT_UNIT",
         "erp:cost:rental:read,COST_PREMISES_TYPE",
@@ -162,6 +176,9 @@ class BusinessDictionaryServiceTest {
     @ParameterizedTest
     @CsvSource({
         "analytics:cost-dashboard:read,CRM_STORE_TYPE",
+        "unrelated:read,CRM_STORE_BUSINESS_STATUS",
+        "hr:employee:read,CRM_STORE_BUSINESS_STATUS",
+        "crm:store:status-write,PAYROLL_RULE_KIND",
         "crm:pool:public-read,PRIVATE_CUSTOM_DICTIONARY",
         "crm:pool:private-read,PAYROLL_RULE_KIND",
         "erp:cost:purchase:read,MARKETING_EXPENSE_TYPE",
@@ -181,12 +198,18 @@ class BusinessDictionaryServiceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"analytics:cost-dashboard:read", "crm:pool:public-read"})
+    @ValueSource(strings = {"analytics:cost-dashboard:read", "crm:pool:public-read", "crm:store:library-read", "crm:store:status-write", "crm:lead:create", "crm:lead:review"})
     void businessOptionsAccessDoesNotGrantManagementListItemsOrWrites(String permission) {
         setBusinessReader(permission);
         assertThatThrownBy(() -> service.list(null, null)).isInstanceOf(AuthorizationDeniedException.class);
         assertThatThrownBy(() -> service.items(1L)).isInstanceOf(AuthorizationDeniedException.class);
         assertThatThrownBy(() -> service.create(new DictCommand("COST_STATUS","费用状态","COMMON",null,0)))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> service.createItem(1L,
+                new DictItemCommand("CRM_STORE_BUSINESS_STATUS",null,"OPEN","营业中",null,1,0)))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> service.updateItem(1L,
+                new DictItemCommand("CRM_STORE_BUSINESS_STATUS",null,"OPEN","修改状态名",null,1,1)))
                 .isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(store);
     }

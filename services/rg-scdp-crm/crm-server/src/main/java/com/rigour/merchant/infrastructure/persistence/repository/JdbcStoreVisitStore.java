@@ -38,6 +38,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
             return visit(s,store,p.get("id").toString());
         }
         var cycle=owner(s,store,c.ownershipId(),now);var row=pool.detail(s,store);
+        if(Set.of("TEMP_CLOSED","CLOSED").contains(row.businessStatus()))throw new StateConflictException("门店已停业或暂停营业，请先核实经营状态，不能开始新作业");
         if(!Objects.equals(row.coordinateSystem(),c.coordinateSystem()))throw new StateConflictException("定位坐标系与门店不同，请完成坐标转换后提交");
         if(row.longitude()==null||row.latitude()==null)throw new StateConflictException("请先补全门店定位");
         double distance=distance(c.longitude(),c.latitude(),row.longitude(),row.latitude());
@@ -105,7 +106,8 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
             if(!store.equals(p.get("store_id").toString())||!c.ownershipId().equals(p.get("ownership_id").toString())||!c.orderId().equals(p.get("object_id").toString())||!s.access().userId().equals(p.get("actor_user_id")))throw new StateConflictException("订单授权请求不匹配");
             return new tools.jackson.databind.ObjectMapper().readValue(p.get("after_data").toString(),OrderPermit.class);
         }
-        var cycle=owner(s,store,c.ownershipId(),now);var row=pool.detail(s,store);bump(cycle,now);
+        var cycle=owner(s,store,c.ownershipId(),now);var row=pool.detail(s,store);
+        if(Set.of("TEMP_CLOSED","CLOSED").contains(row.businessStatus()))throw new StateConflictException("门店已停业或暂停营业，请先核实经营状态，不能开始新作业");bump(cycle,now);
         var permit=new OrderPermit(store,cycle.id(),cycle.employeeId(),s.access().departmentId(),row.name(),cycle.revision()+1,now);
         jdbc.update("INSERT INTO crm_store_event(id,tenant_id,store_id,ownership_id,object_type,object_id,event_type,actor_user_id,actor_employee_id,occurred_at,request_id,event_seq,after_data) VALUES(?,?,?,?,'ORDER',?,'ORDER_AUTHORIZED',?,?,?,?,1,?)",IdWorker.getId(),tenant(s),store,cycle.id(),c.orderId(),s.access().userId(),s.access().employeeId(),ts(now),c.requestId(),new tools.jackson.databind.ObjectMapper().writeValueAsString(permit));
         return permit;

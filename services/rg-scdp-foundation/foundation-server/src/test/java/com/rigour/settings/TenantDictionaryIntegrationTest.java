@@ -76,6 +76,28 @@ class TenantDictionaryIntegrationTest {
     }
 
     @Test
+    void storeBusinessStatesKeepCodesWhileAllowingTenantLabelsAndOrdering() {
+        var dictionary=service.resolve("CRM_STORE_BUSINESS_STATUS");
+        assertThat(dictionary.dictionary().allowNewItems()).isFalse();
+        assertThat(dictionary.items()).extracting(DictItemView::dictionaryItemCode)
+                .containsExactly("UNKNOWN","OPEN","TEMP_CLOSED","CLOSED");
+        var open=dictionary.items().stream().filter(i->"OPEN".equals(i.dictionaryItemCode())).findFirst().orElseThrow();
+        var changed=service.updateItem(open.id(),new DictItemCommand("CRM_STORE_BUSINESS_STATUS",null,"OPEN","正常营业","现场核实",1,open.revision(),true));
+        assertThat(changed.dictionaryItemCode()).isEqualTo("OPEN");
+        assertThat(changed.dictionaryItemName()).isEqualTo("正常营业");
+        assertThat(changed.ordinal()).isEqualTo(1);
+        assertThatThrownBy(()->service.createItem(dictionary.dictionary().id(),new DictItemCommand("CRM_STORE_BUSINESS_STATUS",null,"ARBITRARY","任意状态",null,50,0,true)))
+                .hasMessageContaining("不能新增状态");
+        assertThatThrownBy(()->service.updateItem(changed.id(),new DictItemCommand("CRM_STORE_BUSINESS_STATUS",null,"OPEN","正常营业",null,1,changed.revision(),false)))
+                .hasMessageContaining("仅允许修改显示名称");
+        assertThatThrownBy(()->service.updateItem(changed.id(),new DictItemCommand("CRM_STORE_BUSINESS_STATUS",null,"NEW_CODE","正常营业",null,1,changed.revision(),true)))
+                .hasMessageContaining("编码和所属字典不可修改");
+        actor(UUID.randomUUID(),"TENANT");
+        assertThat(service.resolve("CRM_STORE_BUSINESS_STATUS").items())
+                .filteredOn(i->"OPEN".equals(i.dictionaryItemCode())).extracting(DictItemView::dictionaryItemName).containsExactly("营业中");
+    }
+
+    @Test
     void tenantOverrideDoesNotChangeBaselineOrAnotherTenantAndSourceCannotUndoManualLabel() {
         jdbc.update(
                 "INSERT INTO"

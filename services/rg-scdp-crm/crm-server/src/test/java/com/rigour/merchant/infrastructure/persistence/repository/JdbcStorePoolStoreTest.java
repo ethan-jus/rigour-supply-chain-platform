@@ -69,7 +69,7 @@ class JdbcStorePoolStoreTest {
     String create(String area,String name){
         var admin=national("crm:lead:review","1");
         var lead=inTx(()->store.submit(admin,new LeadCommand(UUID.randomUUID().toString(),name,"测试地址"+name,area,new BigDecimal("120.1234567"),new BigDecimal("30.1234567"),"0571-00000000")));
-        return inTx(()->store.review(admin,lead.id(),new Review(UUID.randomUUID().toString(),lead.revision(),true,"隔离测试核实"))).resultStoreId();
+        return inTx(()->store.review(admin,lead.id(),new Review(UUID.randomUUID().toString(),lead.revision(),true,"隔离测试已知独立门店",null,true))).resultStoreId();
     }
     void claim(String id,StoreScope scope){long revision=store.detail(scope,id).revision();inTx(()->{store.claim(scope,id,new Claim(UUID.randomUUID().toString(),revision));return null;});}
 
@@ -82,13 +82,15 @@ class JdbcStorePoolStoreTest {
         jdbc.update("UPDATE crm_store_master SET record_status='CLOSED' WHERE tenant_id=? AND id=?",tenant,closed);
         jdbc.update("UPDATE crm_store_summary SET record_status='CLOSED' WHERE tenant_id=? AND store_id=?",tenant,closed);
         jdbc.update("UPDATE crm_store_summary SET cooperation_status='COOPERATED' WHERE tenant_id=? AND store_id=?",tenant,publicId);
-        var admin=national("crm:store:manage","1");
-        assertThat(store.list(admin,query("ALL",null)).total()).isEqualTo(3);
-        assertThat(store.list(admin,workQuery("ALL","PRIVATE",null,null,null)).items()).extracting(Row::id).containsExactly(privateId);
-        var closedQuery=workQuery("ALL",null,"CLOSED",null,null);
-        assertThat(store.list(admin,closedQuery).items()).extracting(Row::id).containsExactly(closed);
-        assertThat(store.map(admin,closedQuery,Set.of(),new MapWindow(null,null,null,null,4d)).total()).isEqualTo(1);
-        assertThat(store.detail(admin,closed).claimBlockedReason()).contains("非正常");
+        for(String action:List.of("crm:store:library-read","crm:store:manage")) {
+            var admin=national(action,"1");
+            assertThat(store.list(admin,query("ALL",null)).total()).isEqualTo(3);
+            assertThat(store.list(admin,workQuery("ALL","PRIVATE",null,null,null)).items()).extracting(Row::id).containsExactly(privateId);
+            var closedQuery=workQuery("ALL",null,"CLOSED",null,null);
+            assertThat(store.list(admin,closedQuery).items()).extracting(Row::id).containsExactly(closed);
+            assertThat(store.map(admin,closedQuery,Set.of(),new MapWindow(null,null,null,null,4d)).total()).isEqualTo(1);
+            assertThat(store.detail(admin,closed).claimBlockedReason()).contains("非正常");
+        }
         assertThat(store.list(national("crm:pool:public-read","2"),query("PUBLIC",null)).items()).extracting(Row::id).containsExactly(publicId);
         assertThat(store.list(national("crm:store:cooperation-read","2"),query("COOPERATED",null)).items()).extracting(Row::id).containsExactly(publicId);
         assertThatThrownBy(()->claim(closed,hangzhou("crm:pool:claim","2"))).isInstanceOf(AuthorizationDeniedException.class);
@@ -321,6 +323,329 @@ class JdbcStorePoolStoreTest {
         var map=store.map(national("crm:pool:public-read","1"),query("PUBLIC",null),Set.of(),new MapWindow(120d,29.99,120.01,30.01,18d));
         assertThat(map.visible()).isEqualTo(1);assertThat(map.points().getFirst().coordinateSystem()).isEqualTo("WGS84");
         assertThat(map.points().getFirst().longitude()).isEqualTo(119.995);
+    }
+    Poi poi(String id,String name,String address) {
+        return new Poi(id,name,address,"0571-00000000","080113","330105",new BigDecimal("120.15"),new BigDecimal("30.28"));
+    }
+    Admission admit(Poi poi) {
+        return inTx(()->store.admit(national("crm:lead:create","1"),new AmapAdmission(UUID.randomUUID().toString(),poi.id()),poi,"POI_080113"));
+    }
+    void changeStatus(String id,StoreScope scope,String status,boolean management) {
+        long revision=store.detail(scope,id).revision();
+        inTx(()->{store.businessStatus(scope,id,new BusinessStatusChange(UUID.randomUUID().toString(),revision,status,"隔离测试现场核实",management));return null;});
+    }
+    @Test void amapAdmissionPersistsCanonicalFieldsWithoutClaimAndIsIdempotent() {
+        var scope=national("crm:lead:create",null);var poi=poi("BINTAKE01","高德核实门店","湖墅南路100号");
+        var command=new AmapAdmission(UUID.randomUUID().toString(),poi.id());
+        var result=inTx(()->store.admit(scope,command,poi,"POI_080113"));
+        assertThat(inTx(()->store.admit(scope,command,poi,"POI_080113"))).isEqualTo(result);
+        var row=store.detail(national("crm:store:library-read","1"),result.storeId());
+        assertThat(row.name()).isEqualTo(poi.name());assertThat(row.address()).isEqualTo(poi.address());
+        assertThat(row.primaryPoi()).isEqualTo(poi.id());assertThat(row.storeTypeCode()).isEqualTo("POI_080113");
+        assertThat(row.publicPhone()).isEqualTo(poi.publicPhone());assertThat(row.longitude()).isEqualByComparingTo(poi.longitude());
+        assertThat(row.coordinateSystem()).isEqualTo("GCJ02");assertThat(row.businessStatus()).isEqualTo("UNKNOWN");
+        assertThat(row.poolType()).isEqualTo("PUBLIC");assertThat(row.ownerEmployeeId()).isNull();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_ownership WHERE tenant_id=? AND store_id=?",Integer.class,tenant,row.id())).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_event WHERE tenant_id=? AND store_id=? AND event_type='AMAP_ADMITTED'",Integer.class,tenant,row.id())).isEqualTo(1);
+        assertThatThrownBy(()->admit(poi("BINTAKE01","另一个名称","另一个地址"))).isInstanceOf(StateConflictException.class).hasMessageContaining("POI");
+    }
+    @Test void coincidentCoordinatesAloneDoNotMakeDifferentStoresDuplicates() {
+        var first=admit(poi("BCOORD01","北岸台球俱乐部","同一商场一层101"));
+        var second=admit(poi("BCOORD02","星辰运动空间","同一商场二层201"));
+        assertThat(second.storeId()).isNotEqualTo(first.storeId());
+        assertThat(store.list(national("crm:store:library-read","1"),query("ALL",null)).total()).isEqualTo(2);
+    }
+    @Test void completeLibraryDedupIncludesPrivateAndClosedStoresWithoutLeakingIdentity() {
+        var original=admit(poi("BDUP001","精 准（台球）","中 山 路 1 号"));
+        claim(original.storeId(),hangzhou("crm:pool:claim","2"));
+        var caller=hangzhou("crm:lead:create","3");
+        assertThat(store.lookup(caller,"精","330100")).isEmpty();
+        var c=new LeadCommand(UUID.randomUUID().toString(),"精准(台球)","中山路1号","330105",BigDecimal.ONE,BigDecimal.ONE,null,"POI_080113","WGS84");
+        assertThatThrownBy(()->inTx(()->store.submit(caller,c))).isInstanceOf(StateConflictException.class).hasMessageNotContaining(original.storeId());
+        changeStatus(original.storeId(),hangzhou("crm:store:status-write","2"),"CLOSED",false);
+        assertThatThrownBy(()->inTx(()->store.submit(caller,c))).isInstanceOf(StateConflictException.class);
+        assertThat(store.list(national("crm:pool:public-read","3"),query("PUBLIC",null)).total()).isZero();
+        assertThat(store.list(national("crm:store:library-read","1"),query("ALL",null)).total()).isEqualTo(1);
+    }
+    @Test void pendingManualSubmissionCannotBeDuplicatedOrSilentlyChangeOnRetry() {
+        var scope=national("crm:lead:create",null);
+        var c=new LeadCommand(UUID.randomUUID().toString(),"手动新球馆","新地址1号","330105",BigDecimal.ONE,BigDecimal.ONE,"123","POI_080113","WGS84");
+        var first=inTx(()->store.submit(scope,c));
+        assertThat(inTx(()->store.submit(scope,c)).id()).isEqualTo(first.id());
+        assertThat(store.leads(scope,false,1,20,null,null).items()).extracting(Lead::id).containsExactly(first.id());
+        assertThat(store.list(national("crm:store:library-read","1"),query("ALL",null)).total()).isZero();
+        assertThatThrownBy(()->inTx(()->store.submit(scope,new LeadCommand(UUID.randomUUID().toString(),"手动新球馆","新地址1号","330105",BigDecimal.ONE,BigDecimal.ONE,"123","POI_080113","WGS84"))))
+                .isInstanceOf(StateConflictException.class).hasMessageContaining("待审核");
+        assertThatThrownBy(()->inTx(()->store.submit(scope,new LeadCommand(c.requestId(),c.name(),c.address(),c.areaCode(),c.longitude(),c.latitude(),"456",c.storeTypeCode(),c.coordinateSystem()))))
+                .isInstanceOf(StateConflictException.class);
+    }
+    @Test void rejectedLeadCanBeCorrectedOnlyByItsCreatorThenApprovedWithoutClaim() {
+        var creator=hangzhou("crm:lead:create","2");var reviewer=national("crm:lead:review","1");
+        var c=new LeadCommand(UUID.randomUUID().toString(),"待核实新门店","初次地址","330105",BigDecimal.ONE,BigDecimal.ONE,null,"POI_080113","WGS84");
+        var lead=inTx(()->store.submit(creator,c));
+        var rejected=inTx(()->store.review(reviewer,lead.id(),new Review(UUID.randomUUID().toString(),lead.revision(),false,"地址不完整")));
+        var fixed=new LeadCommand(UUID.randomUUID().toString(),c.name(),"核实后地址2号",c.areaCode(),new BigDecimal("120.1"),new BigDecimal("30.1"),"0571-11111111",c.storeTypeCode(),c.coordinateSystem());
+        var correction=new Resubmit(rejected.revision(),fixed);
+        assertThatThrownBy(()->inTx(()->store.resubmit(hangzhou("crm:lead:create","3"),lead.id(),correction))).isInstanceOf(AuthorizationDeniedException.class);
+        var pending=inTx(()->store.resubmit(creator,lead.id(),correction));
+        assertThat(pending.id()).isEqualTo(lead.id());assertThat(pending.status()).isEqualTo("PENDING_REVIEW");
+        assertThat(pending.address()).isEqualTo(fixed.address());assertThat(pending.coordinateSystem()).isEqualTo("WGS84");
+        var approved=inTx(()->store.review(reviewer,pending.id(),new Review(UUID.randomUUID().toString(),pending.revision(),true,"现场核实完整")));
+        assertThat(approved.submitterUserId()).isEqualTo(creator.access().userId());
+        assertThat(approved.reviewerUserId()).isEqualTo(reviewer.access().userId());
+        var row=store.detail(national("crm:store:library-read","1"),approved.resultStoreId());
+        assertThat(row.publicPhone()).isEqualTo(fixed.publicPhone());assertThat(row.storeTypeCode()).isEqualTo(fixed.storeTypeCode());
+        assertThat(row.coordinateSystem()).isEqualTo("WGS84");assertThat(row.poolType()).isEqualTo("PUBLIC");
+        assertThat(row.ownerEmployeeId()).isNull();assertThat(row.primaryPoi()).isNull();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_lead WHERE tenant_id=?",Integer.class,tenant)).isEqualTo(1);
+    }
+    @Test void reviewCanResolveSubmissionToExistingArchiveWithoutCreatingOrOverwriting() {
+        var original=admit(poi("BLINK01","存量门店","完整地址"));
+        var c=new LeadCommand(UUID.randomUUID().toString(),"存量门店简称","模糊地址","330105",BigDecimal.ONE,BigDecimal.ONE,null,"POI_080113","GCJ02");
+        var lead=inTx(()->store.submit(hangzhou("crm:lead:create","2"),c));
+        var linked=inTx(()->store.review(national("crm:lead:review","1"),lead.id(),new Review(UUID.randomUUID().toString(),lead.revision(),true,"核实系已有门店，同一档案",original.storeId(),false)));
+        assertThat(linked.resultStoreId()).isEqualTo(original.storeId());
+        var row=store.detail(national("crm:store:library-read","1"),original.storeId());
+        assertThat(row.name()).isEqualTo("存量门店");assertThat(row.address()).isEqualTo("完整地址");
+        assertThat(store.list(national("crm:store:library-read","1"),query("ALL",null)).total()).isEqualTo(1);
+    }
+    @Test void concurrentAdmissionsWithDifferentPoiIdsCannotCreateSameStore()throws Exception {
+        var start=new CountDownLatch(1);
+        try(var executor=Executors.newFixedThreadPool(2)) {
+            var results=new ArrayList<Future<Boolean>>();
+            for(String poiId:List.of("BCONCURRENT01","BCONCURRENT02"))results.add(executor.submit(()->{
+                start.await();try{admit(poi(poiId,"同一真实门店","同一地址1号"));return true;}catch(StateConflictException e){return false;}
+            }));
+            start.countDown();int wins=0;for(var result:results)if(result.get(15,TimeUnit.SECONDS))wins++;
+            assertThat(wins).isEqualTo(1);
+        }
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_master WHERE tenant_id=?",Integer.class,tenant)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_identity WHERE tenant_id=?",Integer.class,tenant)).isEqualTo(1);
+    }
+    @Test void exactDuplicateAtApprovalCannotBeOverriddenByDistinctConfirmation() {
+        var c=new LeadCommand(UUID.randomUUID().toString(),"候审门店","完整地址","330105",BigDecimal.ONE,BigDecimal.ONE,null,"POI_080113","GCJ02");
+        var reviewer=national("crm:lead:review","1");var lead=inTx(()->store.submit(reviewer,c));
+        // An older intake can be approved elsewhere before this pending record is processed.
+        String other=create("330106","原来另一门店");
+        var row=store.detail(national("crm:store:manage","1"),other);
+        inTx(()->{store.update(national("crm:store:manage","1"),other,new Update(row.revision(),UUID.randomUUID().toString(),c.name(),c.address(),null,c.storeTypeCode(),"现场确认改地区",new Location(c.areaCode(),c.longitude(),c.latitude(),c.coordinateSystem()),null));return null;});
+        assertThatThrownBy(()->inTx(()->store.review(reviewer,lead.id(),new Review(UUID.randomUUID().toString(),lead.revision(),true,"声称不同门店",null,true))))
+                .isInstanceOf(StateConflictException.class);
+        assertThat(jdbc.queryForObject("SELECT status_code FROM crm_store_lead WHERE tenant_id=? AND id=?",String.class,tenant,lead.id())).isEqualTo("PENDING_REVIEW");
+    }
+    @Test void closureEndsOnlyCurrentOwnershipAndPreservesCooperationAndAudit() {
+        String id=create("330105","经营状态门店");claim(id,hangzhou("crm:pool:claim","2"));
+        jdbc.update("UPDATE crm_store_summary SET cooperation_status='COOPERATED',customer_tier='B',last_order_at='2026-10-01 00:00:00' WHERE tenant_id=? AND store_id=?",tenant,id);
+        var owner=hangzhou("crm:store:status-write","2");
+        changeStatus(id,owner,"CLOSED",false);
+        var row=store.detail(national("crm:store:library-read","1"),id);
+        assertThat(row.businessStatus()).isEqualTo("CLOSED");assertThat(row.recordStatus()).isEqualTo("ACTIVE");
+        assertThat(row.ownerEmployeeId()).isNull();assertThat(row.cooperationStatus()).isEqualTo("COOPERATED");assertThat(row.customerTier()).isEqualTo("B");
+        assertThat(row.lastOrderAt()).isNotNull();assertThat(row.claimBlockedReason()).contains("停业");
+        assertThat(store.list(national("crm:pool:public-read","1"),query("PUBLIC",null)).total()).isZero();
+        assertThat(store.list(national("crm:store:cooperation-read","1"),query("COOPERATED",null)).items()).extracting(Row::id).containsExactly(id);
+        assertThat(jdbc.queryForObject("SELECT end_reason FROM crm_store_ownership WHERE tenant_id=? AND store_id=?",String.class,tenant,id)).isEqualTo("STORE_CLOSED");
+        assertThat(jdbc.queryForObject("SELECT TIMESTAMPDIFF(HOUR,ended_at,cooldown_until) FROM crm_store_ownership WHERE tenant_id=? AND store_id=?",Integer.class,tenant,id)).isEqualTo(48);
+        assertThat(store.events(national("crm:store:history-read","1"),id)).anySatisfy(event->{assertThat(event.type()).isEqualTo("BUSINESS_STATUS_CHANGED");assertThat(event.beforeData()).contains("UNKNOWN");assertThat(event.afterData()).contains("CLOSED");});
+        assertThatThrownBy(()->changeStatus(id,owner,"OPEN",false)).isInstanceOf(AuthorizationDeniedException.class);
+        changeStatus(id,national("crm:store:manage","1"),"OPEN",true);
+        assertThat(store.detail(national("crm:store:library-read","1"),id).poolType()).isEqualTo("PUBLIC");
+        assertThatThrownBy(()->claim(id,hangzhou("crm:pool:claim","2"))).isInstanceOf(StateConflictException.class).hasMessageContaining("冷却");
+        claim(id,hangzhou("crm:pool:claim","3"));
+        assertThat(store.ownerships(national("crm:store:history-read","1"),id)).hasSize(2);
+    }
+    @Test void ownerCanOnlyMaintainOwnStoreAndTemporaryClosureRetainsDeadline() {
+        String mine=create("330105","本人门店"),other=create("330105","他人门店");
+        claim(mine,hangzhou("crm:pool:claim","2"));claim(other,hangzhou("crm:pool:claim","3"));
+        var own=national("crm:store:status-write","2");
+        assertThatThrownBy(()->changeStatus(other,own,"CLOSED",false)).isInstanceOf(AuthorizationDeniedException.class);
+        var before=store.detail(own,mine);changeStatus(mine,own,"TEMP_CLOSED",false);
+        var after=store.detail(own,mine);assertThat(after.ownerEmployeeId()).isEqualTo("2");assertThat(after.deadlineAt()).isEqualTo(before.deadlineAt());
+        assertThat(after.currentOwnershipId()).isEqualTo(before.currentOwnershipId());
+        assertThat(store.list(hangzhou("crm:pool:private-read","2"),query("MINE",null)).items()).extracting(Row::id).containsExactly(mine);
+        assertThatThrownBy(()->inTx(()->{store.claim(national("crm:pool:claim","4"),mine,new Claim(UUID.randomUUID().toString(),after.revision()));return null;})).isInstanceOf(StateConflictException.class);
+    }
+
+    @Test void temporaryClosureBlocksNewVisitAndOrderButDoesNotEraseExistingVisits() {
+        String id=create("330105","暂停作业门店");claim(id,hangzhou("crm:pool:claim","2"));
+        var lifecycle=new JdbcStoreLifecycleStore(jdbc);var visits=new JdbcStoreVisitStore(jdbc,store,lifecycle);
+        var owner=hangzhou("crm:store:visit-write","2");var row=store.detail(owner,id);var cycle=lifecycle.current(tenant,id);
+        var now=java.time.Instant.now();
+        var policy=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("test",300);
+        var command=new com.rigour.merchant.api.v1.model.StoreWorkModels.CheckIn(UUID.randomUUID().toString(),cycle.id(),row.longitude(),row.latitude(),row.coordinateSystem(),BigDecimal.ONE);
+        var existing=inTx(()->visits.checkIn(owner,id,command,policy,now));
+        changeStatus(id,hangzhou("crm:store:status-write","2"),"TEMP_CLOSED",false);
+        var newVisit=new com.rigour.merchant.api.v1.model.StoreWorkModels.CheckIn(UUID.randomUUID().toString(),cycle.id(),row.longitude(),row.latitude(),row.coordinateSystem(),BigDecimal.ONE);
+        assertThatThrownBy(()->inTx(()->visits.checkIn(owner,id,newVisit,policy,now.plusSeconds(60)))).isInstanceOf(StateConflictException.class).hasMessageContaining("停业");
+        var order=new com.rigour.merchant.api.v1.model.StoreWorkModels.OrderAuthorization("1001",cycle.id(),UUID.randomUUID().toString());
+        assertThatThrownBy(()->inTx(()->visits.authorize(hangzhou("crm:store:order-write","2"),id,order,now.plusSeconds(60)))).isInstanceOf(StateConflictException.class).hasMessageContaining("停业");
+        assertThat(visits.visits(owner,id)).extracting(com.rigour.merchant.api.v1.model.StoreWorkModels.Visit::id).containsExactly(existing.id());
+    }
+    @Test void closureInvalidatesAnAlreadyReadRecoveryCandidate() {
+        String id=create("330105","停业回收竞争");claim(id,hangzhou("crm:pool:claim","2"));
+        var lifecycle=new JdbcStoreLifecycleStore(jdbc);var candidate=lifecycle.current(tenant,id);
+        changeStatus(id,hangzhou("crm:store:status-write","2"),"CLOSED",false);
+        var now=java.time.Instant.now().plusSeconds(86400);
+        var facts=new com.rigour.order.api.v1.model.StoreOrderFacts(tenant,id,candidate.id(),now,"TEST",List.of(),false,null,null);
+        assertThat(inTx(()->lifecycle.reconcile(candidate,facts,null,now)).outcome()).isEqualTo("RETRY");
+        assertThat(lifecycle.current(tenant,id)).isNull();
+        assertThat(store.detail(national("crm:store:library-read","1"),id).businessStatus()).isEqualTo("CLOSED");
+    }
+
+    @Test void reviewAndClosedStatusRequestsReplayWithoutReapplyingWrites() {
+        var creator=hangzhou("crm:lead:create","2");var reviewer=national("crm:lead:review","1");
+        var proposal=new LeadCommand(UUID.randomUUID().toString(),"可靠重试门店","重试地址","330105",new BigDecimal("120.1"),new BigDecimal("30.1"),null,"POI_080113","GCJ02");
+        var lead=inTx(()->store.submit(creator,proposal));
+        var review=new Review(UUID.randomUUID().toString(),lead.revision(),true,"现场核实通过");
+        var approved=inTx(()->store.review(reviewer,lead.id(),review));
+        assertThat(inTx(()->store.review(reviewer,lead.id(),review))).isEqualTo(approved);
+        assertThatThrownBy(()->inTx(()->store.review(reviewer,lead.id(),new Review(review.requestId(),review.revision(),false,review.reason())))).isInstanceOf(StateConflictException.class);
+        String id=approved.resultStoreId();claim(id,hangzhou("crm:pool:claim","2"));
+        var owner=hangzhou("crm:store:status-write","2");
+        var close=new BusinessStatusChange(UUID.randomUUID().toString(),store.detail(owner,id).revision(),"CLOSED","确认撤店",false);
+        inTx(()->{store.businessStatus(owner,id,close);return null;});
+        inTx(()->{store.businessStatus(owner,id,close);return null;});
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_event WHERE tenant_id=? AND request_id=?",Integer.class,tenant,close.requestId())).isEqualTo(1);
+        assertThatThrownBy(()->inTx(()->{store.businessStatus(owner,id,new BusinessStatusChange(close.requestId(),close.revision(),"OPEN",close.reason(),false));return null;})).isInstanceOf(StateConflictException.class);
+    }
+    @Test void rejectedLeadResubmissionReplaysOnlyIdenticalPayload() {
+        var creator=hangzhou("crm:lead:create","2");var reviewer=national("crm:lead:review","1");
+        var proposal=new LeadCommand(UUID.randomUUID().toString(),"重提幂等门店","初始地址","330105",BigDecimal.ONE,BigDecimal.ONE,null,"POI_080113","GCJ02");
+        var lead=inTx(()->store.submit(creator,proposal));
+        var rejected=inTx(()->store.review(reviewer,lead.id(),new Review(UUID.randomUUID().toString(),lead.revision(),false,"补充地址")));
+        var fixed=new LeadCommand(UUID.randomUUID().toString(),proposal.name(),"完整地址1号",proposal.areaCode(),proposal.longitude(),proposal.latitude(),null,proposal.storeTypeCode(),proposal.coordinateSystem());
+        var command=new Resubmit(rejected.revision(),fixed);
+        var pending=inTx(()->store.resubmit(creator,lead.id(),command));
+        assertThat(inTx(()->store.resubmit(creator,lead.id(),command))).isEqualTo(pending);
+        var altered=new Resubmit(rejected.revision(),new LeadCommand(fixed.requestId(),fixed.name(),"另一地址",fixed.areaCode(),fixed.longitude(),fixed.latitude(),fixed.publicPhone(),fixed.storeTypeCode(),fixed.coordinateSystem()));
+        assertThatThrownBy(()->inTx(()->store.resubmit(creator,lead.id(),altered))).isInstanceOf(StateConflictException.class);
+    }
+
+    @Test void createLookupDoesNotUseAnAllOwnerCreateScopeToReadOthersPrivateStores() {
+        String own=create("330105","同名查询本人"),other=create("330105","同名查询他人"),publicId=create("330105","同名查询公海");
+        claim(own,hangzhou("crm:pool:claim","2"));claim(other,hangzhou("crm:pool:claim","3"));
+        var creator=national("crm:lead:create","2");
+        assertThat(store.lookup(creator,"同名查询","330100")).extracting(StoreMatch::id).containsExactlyInAnyOrder(own,publicId);
+        var reviewer=national("crm:lead:review","1");
+        assertThat(store.lookup(reviewer,"同名查询","330100")).extracting(StoreMatch::id).containsExactlyInAnyOrder(own,other,publicId);
+    }
+    @Test void suspectedMatchNeedsExplicitReviewButDistinctAddressesCanBeApproved() {
+        admit(poi("BSUSPECT01","连锁台球俱乐部","商场1-2号"));
+        var other=poi("BSUSPECT02","连锁台球俱乐部","商场12号");
+        assertThatThrownBy(()->admit(other)).isInstanceOf(StateConflictException.class).hasMessageContaining("疑似");
+        var scope=national("crm:lead:review","1");
+        var proposal=new LeadCommand(UUID.randomUUID().toString(),other.name(),other.address(),other.areaCode(),other.longitude(),other.latitude(),null,"POI_080113","GCJ02");
+        var lead=inTx(()->store.submit(scope,proposal));
+        assertThatThrownBy(()->inTx(()->store.review(scope,lead.id(),new Review(UUID.randomUUID().toString(),lead.revision(),true,"尚未核实是否相同")))).isInstanceOf(StateConflictException.class).hasMessageContaining("疑似");
+        var approved=inTx(()->store.review(scope,lead.id(),new Review(UUID.randomUUID().toString(),lead.revision(),true,"现场确认两个独立门牌",null,true)));
+        assertThat(approved.resultStoreId()).isNotNull();
+        assertThat(store.list(national("crm:store:library-read","1"),query("ALL",null)).total()).isEqualTo(2);
+    }
+
+    @Test void maintenanceDoesNotWaitForAnUncommittedClaimPolicyForeignKeyLock()throws Exception {
+        maintenanceWhileOwnershipUncommitted(false);
+    }
+    @Test void maintenanceDoesNotWaitForAnUncommittedReturnPolicyLock()throws Exception {
+        maintenanceWhileOwnershipUncommitted(true);
+    }
+    private void maintenanceWhileOwnershipUncommitted(boolean returning)throws Exception {
+        String operated=create("330105","归属并发门店"),maintained=create("330105","资料并发门店");
+        if(returning)claim(operated,hangzhou("crm:pool:claim","2"));
+        var owner=hangzhou(returning?"crm:pool:release":"crm:pool:claim","2");
+        long revision=store.detail(owner,operated).revision();
+        var manager=national("crm:store:manage","1");var original=store.detail(manager,maintained);
+        var ownerWritten=new CountDownLatch(1);var commitOwner=new CountDownLatch(1);
+        try(var executor=Executors.newFixedThreadPool(2)) {
+            var ownership=executor.submit(()->inTx(()->{
+                if(returning)store.release(owner,operated,new Release(UUID.randomUUID().toString(),revision,"并发退回验证"));
+                else store.claim(owner,operated,new Claim(UUID.randomUUID().toString(),revision));
+                ownerWritten.countDown();
+                try {if(!commitOwner.await(15,TimeUnit.SECONDS))throw new IllegalStateException("Timed out waiting for maintenance verification");}
+                catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw new IllegalStateException(interrupted);}
+                return true;
+            }));
+            try {
+                assertThat(ownerWritten.await(10,TimeUnit.SECONDS)).isTrue();
+                var maintenance=executor.submit(()->inTx(()->{
+                    store.update(manager,maintained,new Update(original.revision(),UUID.randomUUID().toString(),original.name(),original.address(),"0571-22222222",original.storeTypeCode(),"并发维护不应等待其他门店的归属策略锁"));
+                    return true;
+                }));
+                // The ownership transaction deliberately still holds its policy/FK locks here.
+                assertThat(maintenance.get(8,TimeUnit.SECONDS)).isTrue();
+                assertThat(ownership.isDone()).isFalse();
+            } finally {commitOwner.countDown();}
+            assertThat(ownership.get(10,TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(store.detail(manager,maintained).publicPhone()).isEqualTo("0571-22222222");
+        assertThat(store.detail(manager,operated).poolType()).isEqualTo(returning?"PUBLIC":"PRIVATE");
+    }
+
+    @Test void cooperationViewRetainsFirstCooperationDateAfterClosure() {
+        String id=create("330105","合作历史字段验证");
+        jdbc.update("UPDATE crm_store_summary SET cooperation_status='COOPERATED',first_cooperated_at='2026-05-01 03:00:00',last_order_at='2026-06-01 03:00:00' WHERE tenant_id=? AND store_id=?",tenant,id);
+        var manager=national("crm:store:manage","1");
+        var row=store.detail(manager,id);
+        inTx(()->{store.businessStatus(manager,id,new BusinessStatusChange(UUID.randomUUID().toString(),row.revision(),"CLOSED","合作门店实地核实已停业",true));return null;});
+        var history=store.list(national("crm:store:cooperation-read","1"),query("COOPERATED",null)).items().getFirst();
+        assertThat(history.firstCooperatedAt()).isEqualTo(java.time.Instant.parse("2026-05-01T03:00:00Z"));
+        assertThat(history.lastOrderAt()).isEqualTo(java.time.Instant.parse("2026-06-01T03:00:00Z"));
+        assertThat(history.businessStatus()).isEqualTo("CLOSED");
+        assertThat(store.list(national("crm:pool:public-read","1"),query("PUBLIC",null)).total()).isZero();
+    }
+
+    private String leadPageFixture(StoreScope creator,String area,String name,String address,String status,int sequence) {
+        String id=Long.toString(com.baomidou.mybatisplus.core.toolkit.IdWorker.getId());
+        jdbc.update("INSERT INTO crm_store_lead(id,tenant_id,request_type,proposed_name,proposed_address,proposed_admin_area_code,proposed_admin_area_version,proposed_longitude,proposed_latitude,proposed_coordinate_system,status_code,submitter_employee_id,submitted_at,request_id,created_at,updated_at,created_by,updated_by) VALUES(?,?,'CREATE_STORE',?,?,?,?,120,30,'GCJ02',?,?,DATE_ADD('2026-11-01 00:00:00',INTERVAL ? SECOND),?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?,?)",
+                id,creator.access().tenantId(),name,address,area,VERSION,status,creator.access().employeeId(),sequence,UUID.randomUUID().toString(),creator.access().userId(),creator.access().userId());
+        return id;
+    }
+    @Test void leadPaginationReturnsRecordsBeyondOldHundredLimitWithRealTotalAndCreatorScope() {
+        var creator=hangzhou("crm:lead:create","2");
+        var ids=new ArrayList<String>();
+        for(int i=0;i<105;i++)ids.add(leadPageFixture(creator,"330105","分页球馆"+i,"地址"+i,"PENDING_REVIEW",i));
+        leadPageFixture(creator,"620102","外市本人提报","兰州地址","PENDING_REVIEW",200);
+        leadPageFixture(hangzhou("crm:lead:create","3"),"330105","他人提报","他人地址","PENDING_REVIEW",201);
+        var reader=hangzhou("crm:lead:read","2");
+        var seen=new HashSet<String>();
+        for(int page=1;page<=6;page++) {
+            var result=store.leads(reader,false,page,20,null,null);
+            assertThat(result.total()).isEqualTo(105);assertThat(result.page()).isEqualTo(page);assertThat(result.size()).isEqualTo(20);
+            assertThat(result.items()).hasSize(page==6?5:20);
+            for(var item:result.items())assertThat(seen.add(item.id())).isTrue();
+        }
+        assertThat(seen).containsExactlyInAnyOrderElementsOf(ids);
+        var last=store.leads(reader,false,6,20,null,null);
+        assertThat(last.items()).extracting(Lead::id).containsExactly(ids.get(4),ids.get(3),ids.get(2),ids.get(1),ids.get(0));
+        var beyond=store.leads(reader,false,Integer.MAX_VALUE,100,null,null);
+        assertThat(beyond.items()).isEmpty();assertThat(beyond.total()).isEqualTo(105);
+        assertThat(store.leads(national("crm:lead:read","4"),false,1,20,null,null).total()).isZero();
+    }
+    @Test void leadFiltersEscapeLikeWildcardsAndCountOnlyMatchingPersonalStatus() {
+        var creator=hangzhou("crm:lead:create","2");
+        String literal=leadPageFixture(creator,"330105","50%_!台球馆","商城一层","REJECTED",1);
+        String address=leadPageFixture(creator,"330105","普通台球馆","50%_!路一号","APPROVED",2);
+        leadPageFixture(creator,"330105","50ABC台球馆","其他地址","REJECTED",3);
+        var reader=hangzhou("crm:lead:read","2");
+        assertThat(store.leads(reader,false,1,20,"50%_!",null).items()).extracting(Lead::id).containsExactly(address,literal);
+        var rejected=store.leads(reader,false,1,20,"50%_!","REJECTED");
+        assertThat(rejected.total()).isEqualTo(1);assertThat(rejected.items()).extracting(Lead::id).containsExactly(literal);
+        assertThat(store.leads(reader,false,1,20,"不存在",null).total()).isZero();
+    }
+    @Test void leadReviewPaginationIncludesAuthorizedSubmittersButNeverOtherCitiesOrCompletedReviews() {
+        var creator=hangzhou("crm:lead:create","2");
+        String mine=leadPageFixture(creator,"330105","杭州待审1","地址1","PENDING_REVIEW",1);
+        String other=leadPageFixture(hangzhou("crm:lead:create","3"),"330105","杭州待审2","地址2","PENDING_REVIEW",2);
+        leadPageFixture(creator,"330105","杭州已审","地址3","APPROVED",3);
+        leadPageFixture(creator,"620102","兰州待审","地址4","PENDING_REVIEW",4);
+        var reviewer=hangzhou("crm:lead:review","1");
+        var first=store.leads(reviewer,true,1,1,null,null);
+        var second=store.leads(reviewer,true,2,1,null,"PENDING_REVIEW");
+        assertThat(first.total()).isEqualTo(2);assertThat(second.total()).isEqualTo(2);
+        assertThat(first.items()).extracting(Lead::id).containsExactly(other);assertThat(second.items()).extracting(Lead::id).containsExactly(mine);
+        var limited=scope("crm:lead:review","1",List.of(nationalGrant()),true,List.of(new StoreAccessView.Area(VERSION,"330100")),Map.of());
+        assertThat(store.leads(limited,true,1,20,null,null).total()).isEqualTo(2);
+        var empty=scope("crm:lead:review","1",List.of(nationalGrant()),true,List.of(),Map.of());
+        assertThat(store.leads(empty,true,1,20,null,null)).isEqualTo(new LeadPage(0,List.of(),1,20));
     }
 
 }

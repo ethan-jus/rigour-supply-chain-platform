@@ -17,7 +17,7 @@ public class StorePoolService {
         this.references=references;this.employees=employees;this.store=store;this.pois=pois;
     }
     public static String action(String view) {
-        return switch(view) {case "PUBLIC"->"crm:pool:public-read";case "MINE"->"crm:pool:private-read";case "TEAM"->"crm:pool:team-read";case "COOPERATED"->"crm:store:cooperation-read";case "ALL"->"crm:store:manage";case "LEADS"->"crm:lead:read";case "COVERAGE"->"crm:coverage:read";default->throw new RequestValidationException("门店视图无效");};
+        return switch(view) {case "PUBLIC"->"crm:pool:public-read";case "MINE"->"crm:pool:private-read";case "TEAM"->"crm:pool:team-read";case "COOPERATED"->"crm:store:cooperation-read";case "ALL"->"crm:store:library-read";case "LEADS"->"crm:lead:read";case "COVERAGE"->"crm:coverage:read";default->throw new RequestValidationException("门店视图无效");};
     }
     public StoreScope scope(String action) {
         var access=references.access(action); var catalog=references.divisions(); var members=new HashMap<String,List<String>>();
@@ -29,6 +29,7 @@ public class StorePoolService {
         var scope=scope(action);store.detail(scope,id);return scope;
     }
     public void initializePolicy(){store.initializePolicy(scope("crm:store:manage"));}
+    public Context maintenanceContext(String id){id(id);return scopeForStore("crm:store:manage",id).context();}
     public List<Event> events(String id,String view){id(id);listView(view);store.detail(scope(action(view)),id);return store.events(scope("crm:store:history-read"),id);}
     public void update(String id,Update c){
         id(id);request(c.requestId());required(c.name(),200,"门店名称");required(c.address(),500,"门店地址");required(c.reason(),500,"修改原因");
@@ -123,23 +124,79 @@ public class StorePoolService {
         id(id);request(command.requestId());required(command.reason(),500,"退回原因");
         var scope=scope("crm:pool:release");employee(scope);store.release(scope,id,command);
     }
-    public List<Lead> leads(boolean review) {return store.leads(scope(review?"crm:lead:review":"crm:lead:read"),review);}
-    public Lead submit(LeadCommand c) {
-        request(c.requestId());required(c.name(),200,"门店名称");required(c.address(),500,"门店地址");
-        if(c.longitude()==null||c.latitude()==null||c.longitude().abs().doubleValue()>180||c.latitude().abs().doubleValue()>90)
-            throw new RequestValidationException("请填写有效的GCJ02经纬度");
-        if(c.publicPhone()!=null&&c.publicPhone().length()>50)throw new RequestValidationException("公开电话过长");
-        var scope=scope("crm:lead:create");employee(scope);
-        var node=scope.nodes().get(c.areaCode());
-        if(node==null||!scope.permitsArea(c.areaCode()))throw new AuthorizationDeniedException("store-area");
-        boolean leaf="PREFECTURE".equals(node.level())&&scope.catalog().nodes().stream().noneMatch(n->node.code().equals(n.parentCode()));
-        if(!"COUNTY".equals(node.level())&&!leaf)throw new RequestValidationException("请选择区县或合法的无县级建制城市");
-        return store.submit(scope,c);
+    public LeadPage leads(boolean review,int page,int size,String keyword,String status) {
+        if(page<1||size<1||size>100)throw new RequestValidationException("页码从1开始，每页需要1至100条");
+        if(keyword!=null&&keyword.length()>100)throw new RequestValidationException("查询关键词不能超过100个字符");
+        oneOf(status,Set.of("PENDING_REVIEW","APPROVED","REJECTED"));
+        if(review&&status!=null&&!status.isBlank()&&!"PENDING_REVIEW".equals(status))
+            throw new RequestValidationException("待我审核仅支持待审核状态");
+        return store.leads(scope(review?"crm:lead:review":"crm:lead:read"),review,page,size,
+                keyword==null?null:keyword.strip(),status==null||status.isBlank()?null:status);
     }
-    public Lead review(String id,Review c) {id(id);request(c.requestId());required(c.reason(),1000,"审核说明");return store.review(scope("crm:lead:review"),id,c);}
+    public Context intakeContext(){return scope("crm:lead:create").context();}
+    private void searchArea(StoreScope scope,String code) {
+        var node=scope.nodes().get(code);
+        if(node==null||scope.context().areas().stream().noneMatch(a->code.equals(a.code())))throw new AuthorizationDeniedException("store-area");
+    }
+    public List<StoreMatch> lookup(String keyword,String areaCode) {
+        required(keyword,100,"门店名称");var access=scope("crm:lead:create");searchArea(access,areaCode);
+        return store.lookup(access,keyword.strip(),areaCode);
+    }
+    public List<StoreMatch> reviewLookup(String keyword,String areaCode) {
+        required(keyword,100,"门店名称");var access=scope("crm:lead:review");searchArea(access,areaCode);
+        return store.lookup(access,keyword.strip(),areaCode);
+    }
+    public List<Poi> intakeCandidates(String keyword,String areaCode) {
+        required(keyword,100,"门店名称");var access=scope("crm:lead:create");searchArea(access,areaCode);
+        return pois.search(access.access().tenantId(),keyword.strip(),areaCode).stream()
+                .filter(p->usablePoi(access,p)&&access.ancestry(p.areaCode()).stream().anyMatch(a->areaCode.equals(a.code())))
+                .limit(20).toList();
+    }
+    public Admission admit(AmapAdmission c) {
+        request(c.requestId());
+        if(c.poiId()==null||!c.poiId().matches("[A-Za-z0-9]{1,64}"))throw new RequestValidationException("POI 编码无效");
+        var access=scope("crm:lead:create");
+        // Only the provider detail is authoritative; the client submits no writable POI fields.
+        var poi=pois.detail(access.access().tenantId(),c.poiId());
+        if(poi==null||!c.poiId().equals(poi.id())||!usablePoi(access,poi))throw new RequestValidationException("POI 无法核验或不在新增权限地区内");
+        maintenanceArea(access,poi.areaCode());required(poi.name(),200,"门店名称");required(poi.address(),500,"门店地址");
+        var codes=references.storeTypeCodes(access.access().tenantId());
+        String type=poi.typeCode()==null?null:Arrays.stream(poi.typeCode().split("[;|]"))
+                .map(String::strip).map(c1->"POI_"+c1).filter(codes::contains).findFirst().orElse(null);
+        if(type==null)throw new RequestValidationException("高德分类暂不能映射门店字典，请手动提报核验");
+        if(poi.publicPhone()!=null&&poi.publicPhone().length()>50)throw new RequestValidationException("高德电话需整理，请手动提报核验");
+        return store.admit(access,c,poi,type);
+    }
+    private StoreScope validateLead(LeadCommand c) {
+        request(c.requestId());required(c.name(),200,"门店名称");required(c.address(),500,"门店地址");
+        if(c.longitude()==null||c.latitude()==null||c.longitude().abs().doubleValue()>180||c.latitude().abs().doubleValue()>90
+                ||!Set.of("GCJ02","WGS84").contains(Objects.toString(c.coordinateSystem(),"")))
+            throw new RequestValidationException("请定位门店并选择正确的坐标系");
+        if(c.publicPhone()!=null&&c.publicPhone().length()>50)throw new RequestValidationException("公开电话过长");
+        var access=scope("crm:lead:create");maintenanceArea(access,c.areaCode());
+        if(c.storeTypeCode()==null||!references.storeTypeCodes(access.access().tenantId()).contains(c.storeTypeCode()))throw new RequestValidationException("请选择启用的门店分类");
+        return access;
+    }
+    public Lead submit(LeadCommand c) {return store.submit(validateLead(c),c);}
+    public Lead resubmit(String id,Resubmit c) {
+        id(id);if(c.revision()<1||c.proposal()==null)throw new RequestValidationException("提报版本无效");
+        return store.resubmit(validateLead(c.proposal()),id,c);
+    }
+    public Lead review(String id,Review c) {
+        id(id);request(c.requestId());required(c.reason(),1000,"审核说明");
+        if(c.existingStoreId()!=null)id(c.existingStoreId());
+        return store.review(scope("crm:lead:review"),id,c);
+    }
+    public void businessStatus(String id,BusinessStatusChange c) {
+        id(id);request(c.requestId());required(c.reason(),500,"核实依据");
+        if(c.revision()<1||!Set.of("UNKNOWN","OPEN","TEMP_CLOSED","CLOSED").contains(Objects.toString(c.status(),"")))throw new RequestValidationException("经营状态无效");
+        var access=scope(c.management()?"crm:store:manage":"crm:store:status-write");
+        if(!references.businessStatusCodes(access.access().tenantId()).contains(c.status()))throw new RequestValidationException("请选择字典中启用的经营状态");
+        store.businessStatus(access,id,c);
+    }
     public Coverage coverage(Query q) {validate(q);var scope=scope("crm:coverage:read");return store.coverage(scope,q,typeCodes(scope,q));}
     private static void listView(String view){if(!Set.of("PUBLIC","MINE","TEAM","COOPERATED","ALL").contains(view))throw new RequestValidationException("门店列表视图无效");}
-    private static void employee(StoreScope s) {if(s.access().employeeId()==null)throw new RequestValidationException("当前账号未关联有效员工，不能认领或提报门店");}
+    private static void employee(StoreScope s) {if(s.access().employeeId()==null)throw new RequestValidationException("当前账号未关联有效员工，不能进行销售作业");}
     private static void id(String s) {if(s==null||!s.matches("[1-9][0-9]{0,18}"))throw new RequestValidationException("门店或记录ID无效");}
     private static void request(String s) {if(s==null||!s.matches("[A-Za-z0-9_-]{16,64}"))throw new RequestValidationException("请求标识无效");}
     private static void required(String s,int max,String label) {if(s==null||s.isBlank()||s.length()>max)throw new RequestValidationException(label+"不能为空且长度不能超过"+max);}
@@ -153,6 +210,7 @@ public class StorePoolService {
         oneOf(q.cooperation(),Set.of("NEVER","COOPERATED"));oneOf(q.tier(),Set.of("A","B","C","UNRATED"));
         oneOf(q.activity(),Set.of("UNKNOWN","NEVER_ORDERED","ACTIVE","DORMANT"));oneOf(q.potential(),Set.of("UNKNOWN","HIGH","MEDIUM","LOW"));
         oneOf(q.pool(),Set.of("PUBLIC","PRIVATE"));
+        oneOf(q.businessStatus(),Set.of("UNKNOWN","OPEN","TEMP_CLOSED","CLOSED"));
         oneOf(q.recordStatus(),Set.of("ACTIVE","SUSPENDED","CLOSED","MERGED"));
         if(q.recordStatus()!=null&&!q.recordStatus().isBlank()&&!"ALL".equals(q.view()))
             throw new RequestValidationException("档案状态筛选仅供商家库管理使用");

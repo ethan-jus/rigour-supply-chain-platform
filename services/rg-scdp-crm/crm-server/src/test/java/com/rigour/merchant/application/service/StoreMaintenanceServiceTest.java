@@ -31,6 +31,22 @@ class StoreMaintenanceServiceTest {
     }
     Update update(Location location,String id){return new Update(1,UUID.randomUUID().toString(),"球馆","核实地址",null,null,"实地核实",location,id);}
     Location location(String area){return new Location(area,poi.longitude(),poi.latitude(),"GCJ02");}
+    @Test void libraryReadDoesNotGrantMaintenanceOrProviderAccess() {
+        assertThat(StorePoolService.action("ALL")).isEqualTo("crm:store:library-read");
+        var manager=refs.access("crm:store:manage");
+        when(refs.access("crm:store:library-read")).thenReturn(manager);
+        service.context("ALL");
+        when(refs.access("crm:store:manage")).thenThrow(new AuthorizationDeniedException("crm:store:manage"));
+        assertThatThrownBy(()->service.maintenanceContext("123")).isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(()->service.poiCandidates("123","球馆","330105")).isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(()->service.update("123",update(location("330105"),null))).isInstanceOf(AuthorizationDeniedException.class);
+        verifyNoInteractions(pois,store);
+    }
+    @Test void maintenanceCatalogUsesWriteScopeAndChecksOriginalStore() {
+        assertThat(service.maintenanceContext("123").areas()).extracting(Area::code).contains("330105").doesNotContain("620102");
+        verify(store).detail(any(),eq("123"));
+        verify(refs).access("crm:store:manage");
+    }
     @Test void onlyReturnsCandidatesInSelectedAuthorizedCounty() {
         when(pois.search("T","球馆","330105")).thenReturn(List.of(poi,
                 new Poi("B002","越权结果",null,null,null,"620102",BigDecimal.ONE,BigDecimal.ONE),

@@ -11,6 +11,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,6 +51,7 @@ public class JdbcStoreLifecycleStore implements StoreLifecycleStore {
     @Override @Transactional public RefreshResult reconcile(Cycle c,StoreOrderFacts facts,com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Facts captures,Instant now) {
         if(!unchanged(c))return stale(c);
         if(!c.tenant().equals(facts.tenantId())||!c.storeId().equals(facts.storeId())||!c.id().equals(facts.ownershipId()))throw new IllegalArgumentException("订单事实范围错误");
+        var before=visibleState(c);
         applyCaptures(c,captures,now);
         var visits=jdbc.queryForList("SELECT id,qualified_at FROM crm_visit WHERE tenant_id=? AND ownership_id=? AND salesperson_id=? AND status_code='EFFECTIVE' ORDER BY qualified_at DESC,id DESC LIMIT 1",c.tenant(),c.id(),c.employeeId());
         String visitId=visits.isEmpty()?null:visits.getFirst().get("id").toString();
@@ -61,18 +63,26 @@ public class JdbcStoreLifecycleStore implements StoreLifecycleStore {
         // 只投影已确认的新链路事实，不把尚未迁移的订单窗口标为 COMPLETE。
         jdbc.update("UPDATE crm_store_summary q JOIN crm_store_master s ON s.tenant_id=q.tenant_id AND s.id=q.store_id SET q.cooperation_status=IF(s.historical_cooperation_confirmed OR ? IS NOT NULL,'COOPERATED','NEVER'),q.first_cooperated_at=IF(s.historical_cooperation_confirmed,IF(s.historical_first_cooperated_at IS NULL,NULL,LEAST(s.historical_first_cooperated_at,COALESCE(?,s.historical_first_cooperated_at))),?),q.last_order_at=?,q.order_synced_at=?,q.activity_status=IF(? IS NOT NULL AND ?>?,'ACTIVE','UNKNOWN'),q.activity_expires_at=? WHERE q.tenant_id=? AND q.store_id=?",ts(facts.firstStoreOrderAt()),ts(facts.firstStoreOrderAt()),ts(facts.firstStoreOrderAt()),ts(facts.lastStoreOrderAt()),ts(now),ts(facts.lastStoreOrderAt()),ts(facts.lastStoreOrderAt()==null?null:facts.lastStoreOrderAt().plusSeconds(60*86400L)),ts(now),ts(facts.lastStoreOrderAt()==null?null:facts.lastStoreOrderAt().plusSeconds(60*86400L)),c.tenant(),c.storeId());
         jdbc.update("UPDATE crm_store_ownership SET phase=?,deadline_at=?,last_valid_visit_id=?,last_valid_visit_at=?,last_valid_order_id=?,last_valid_order_at=?,revision=revision+1,updated_at=?,updated_by='CRM_LIFECYCLE',next_check_at=? WHERE tenant_id=? AND id=?",window.phase(),ts(window.deadline()),visitId,ts(visit),order==null?null:order.orderId(),ts(order==null?null:order.effectiveAt()),ts(now),ts(now.plusSeconds(60)),c.tenant(),c.id());
-        jdbc.update("UPDATE crm_store_summary SET phase=?,deadline_at=?,ownership_revision=?,revision=revision+1,updated_at=? WHERE tenant_id=? AND store_id=?",window.phase(),ts(window.deadline()),c.revision()+1,ts(now),c.tenant(),c.storeId());
+        jdbc.update("UPDATE crm_store_summary SET phase=?,deadline_at=?,ownership_revision=?,updated_at=? WHERE tenant_id=? AND store_id=?",window.phase(),ts(window.deadline()),c.revision()+1,ts(now),c.tenant(),c.storeId());
         if(window.expired(now)) {
             boolean pendingVisit=jdbc.queryForObject("SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND ownership_id=? AND status_code='SUBMITTED' AND checkin_accepted_at<? AND submitted_at<?",Long.class,c.tenant(),c.id(),ts(window.deadline()),ts(window.deadline()))>0;
-            if(pendingVisit||facts.pendingAuthorization())return setHold(c,now,pendingVisit?"PENDING_REVIEW":"PENDING_ORDER");
+            if(pendingVisit||facts.pendingAuthorization())return finish(c,before,setHold(c,now,pendingVisit?"PENDING_REVIEW":"PENDING_ORDER"));
             jdbc.update("UPDATE crm_store_ownership SET ended_at=?,end_reason=?,cooldown_until=?,hold_reason=NULL,hold_until=NULL WHERE tenant_id=? AND id=?",ts(now),window.expiryReason(),ts(now.plusSeconds(c.policy().cooldownHours()*3600L)),c.tenant(),c.id());
             jdbc.update("UPDATE crm_store_summary SET current_ownership_id=NULL,owner_employee_id=NULL,owner_employee_code=NULL,ownership_revision=NULL,phase=NULL,deadline_at=NULL WHERE tenant_id=? AND store_id=? AND current_ownership_id=?",c.tenant(),c.storeId(),c.id());
             event(c,"AUTO_RELEASED",window.expiryReason(),now);
-            return new RefreshResult(c.id(),"RELEASED",window.phase(),window.deadline(),null);
+            return finish(c,before,new RefreshResult(c.id(),"RELEASED",window.phase(),window.deadline(),null));
         }
         jdbc.update("UPDATE crm_store_ownership SET hold_reason=NULL,hold_until=NULL WHERE tenant_id=? AND id=?",c.tenant(),c.id());
         if(!c.deadline().equals(window.deadline()))event(c,"PROTECTION_UPDATED",window.phase(),now);
-        return new RefreshResult(c.id(),"PROTECTED",window.phase(),window.deadline(),null);
+        return finish(c,before,new RefreshResult(c.id(),"PROTECTED",window.phase(),window.deadline(),null));
+    }
+    private Map<String,Object> visibleState(Cycle c) {
+        return jdbc.queryForMap("SELECT q.current_ownership_id,q.owner_employee_id,q.phase,q.deadline_at,q.cooperation_status,q.first_cooperated_at,q.last_order_at,q.activity_status,q.activity_expires_at,q.valid_visit_count,q.first_valid_visit_at,q.last_visit_at,o.hold_reason FROM crm_store_summary q LEFT JOIN crm_store_ownership o ON o.tenant_id=q.tenant_id AND o.id=q.current_ownership_id WHERE q.tenant_id=? AND q.store_id=?",c.tenant(),c.storeId());
+    }
+    private RefreshResult finish(Cycle c,Map<String,Object> before,RefreshResult result) {
+        // 轮询时间和内部归属版本不是门店变更；仍保留归属版本以拒绝过期的回收任务。
+        if(!before.equals(visibleState(c)))jdbc.update("UPDATE crm_store_summary SET revision=revision+1 WHERE tenant_id=? AND store_id=?",c.tenant(),c.storeId());
+        return result;
     }
     private void applyCaptures(Cycle c,com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Facts facts,Instant now){
         if(facts==null)return;

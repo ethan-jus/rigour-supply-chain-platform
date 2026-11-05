@@ -54,7 +54,7 @@ public class BusinessDictionaryService {
             Set.of("ATTENDANCE_LEAVE_TYPE", "ATTENDANCE_STATUS");
     private static final Set<String> STORE_CLASSIFICATION_READERS = Set.of(
             "crm:pool:public-read", "crm:pool:private-read", "crm:pool:team-read",
-            "crm:store:cooperation-read", "crm:store:manage", "crm:lead:read");
+            "crm:store:cooperation-read", "crm:store:library-read", "crm:store:manage", "crm:lead:read", "crm:lead:create", "crm:lead:review", "crm:store:status-write");
     private static final Map<String, Set<String>> BUSINESS_READ_PERMISSIONS = Map.ofEntries(
             Map.entry("PRODUCT_UNIT", Set.of("erp:cost:purchase:read", "erp:cost:loss:read")),
             Map.entry("MARKETING_EXPENSE_TYPE", Set.of("erp:cost:marketing:read")),
@@ -169,7 +169,7 @@ public class BusinessDictionaryService {
         if (AuthorizationContext.hasPermission(READ_PERMISSION)) return;
         if (Set.of("SALES_ORDER_STATUS","ORDER_COLLECTION_STATUS","PAYMENT_RECEIPT_STATUS","PAYMENT_CONFIRMATION_STATUS","PAYMENT_VOUCHER_AUDIT_STATUS","PAYMENT_VOUCHER_AUDIT_REASON").contains(code)
                 && AuthorizationContext.hasPermission("order:read")) return;
-        if ("CRM_STORE_TYPE".equals(code)
+        if (Set.of("CRM_STORE_TYPE", "CRM_STORE_BUSINESS_STATUS").contains(code)
                 && STORE_CLASSIFICATION_READERS.stream().anyMatch(AuthorizationContext::hasPermission)) return;
         if (PAYROLL_DICTIONARIES.contains(code)
                 && (AuthorizationContext.hasPermission("hr:payroll:read")

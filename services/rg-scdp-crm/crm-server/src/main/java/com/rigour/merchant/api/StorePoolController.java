@@ -11,6 +11,20 @@ import org.springframework.web.bind.annotation.*;
 public class StorePoolController {
     private final StorePoolService service;
     public StorePoolController(StorePoolService service){this.service=service;}
+    @GetMapping("/intake/context")
+    public ApiResponse<Context> intakeContext(){return ApiResponse.success(service.intakeContext());}
+    @GetMapping("/intake/lookup")
+    public ApiResponse<List<StoreMatch>> lookup(@RequestParam String keyword,@RequestParam String areaCode){return ApiResponse.success(service.lookup(keyword,areaCode));}
+    @GetMapping("/leads/lookup")
+    public ApiResponse<List<StoreMatch>> reviewLookup(@RequestParam String keyword,@RequestParam String areaCode){return ApiResponse.success(service.reviewLookup(keyword,areaCode));}
+    @GetMapping("/intake/poi-candidates")
+    public ApiResponse<List<Poi>> intakeCandidates(@RequestParam String keyword,@RequestParam String areaCode){return ApiResponse.success(service.intakeCandidates(keyword,areaCode));}
+    @PostMapping("/intake/amap")
+    public ApiResponse<Admission> admit(@RequestBody AmapAdmission command){return ApiResponse.success(service.admit(command));}
+    @PutMapping("/leads/{id}")
+    public ApiResponse<Lead> resubmit(@PathVariable String id,@RequestBody Resubmit command){return ApiResponse.success(service.resubmit(id,command));}
+    @PutMapping("/{id}/business-status")
+    public ApiResponse<Void> businessStatus(@PathVariable String id,@RequestBody BusinessStatusChange command){service.businessStatus(id,command);return ApiResponse.success(null);}
     @GetMapping("/context")
     public ApiResponse<Context> context(@RequestParam(defaultValue="PUBLIC")String view){return ApiResponse.success(service.context(view));}
     @GetMapping
@@ -28,7 +42,11 @@ public class StorePoolController {
     @PostMapping("/{id}/release")
     public ApiResponse<Void> release(@PathVariable String id,@RequestBody Release command){service.release(id,command);return ApiResponse.success(null);}
     @GetMapping("/leads")
-    public ApiResponse<List<Lead>> leads(@RequestParam(defaultValue="false")boolean review){return ApiResponse.success(service.leads(review));}
+    public ApiResponse<LeadPage> leads(@RequestParam(defaultValue="false")boolean review,
+            @RequestParam(defaultValue="1")int page,@RequestParam(defaultValue="20")int size,
+            @RequestParam(required=false)String keyword,@RequestParam(required=false)String status){
+        return ApiResponse.success(service.leads(review,page,size,keyword,status));
+    }
     @PostMapping("/leads")
     public ApiResponse<Lead> submit(@RequestBody LeadCommand command){return ApiResponse.success(service.submit(command));}
     @PostMapping("/leads/{id}/review")
@@ -41,6 +59,8 @@ public class StorePoolController {
     public ApiResponse<Void> update(@PathVariable String id,@RequestBody Update command){service.update(id,command);return ApiResponse.success(null);}
     @GetMapping("/{id}/poi-candidates")
     public ApiResponse<List<Poi>> poiCandidates(@PathVariable String id,@RequestParam String keyword,@RequestParam String areaCode){return ApiResponse.success(service.poiCandidates(id,keyword,areaCode));}
+    @GetMapping("/{id}/maintenance-context")
+    public ApiResponse<Context> maintenanceContext(@PathVariable String id){return ApiResponse.success(service.maintenanceContext(id));}
     @PostMapping("/policy/initialize")
     public ApiResponse<Void> initialize(){service.initializePolicy();return ApiResponse.success(null);}
 }

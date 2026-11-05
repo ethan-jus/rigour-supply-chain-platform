@@ -7,6 +7,10 @@ import java.util.Set;
 
 public interface StorePoolStore {
     void initializePolicy(StoreScope scope);
+    List<StoreMatch> lookup(StoreScope scope,String keyword,String areaCode);
+    Admission admit(StoreScope scope,AmapAdmission command,Poi poi,String typeCode);
+    Lead resubmit(StoreScope scope,String id,Resubmit command);
+    void businessStatus(StoreScope scope,String id,BusinessStatusChange command);
     void update(StoreScope scope, String id, Update command);
     List<Event> events(StoreScope scope, String id);
     default Page list(StoreScope scope, Query query) {return list(scope, query, Set.of());}
@@ -17,7 +21,7 @@ public interface StorePoolStore {
     void claim(StoreScope scope, String id, Claim command);
     void release(StoreScope scope, String id, Release command);
     List<Ownership> ownerships(StoreScope scope, String id);
-    List<Lead> leads(StoreScope scope, boolean review);
+    LeadPage leads(StoreScope scope, boolean review, int page, int size, String keyword, String status);
     Lead submit(StoreScope scope, LeadCommand command);
     Lead review(StoreScope scope, String id, Review command);
     default Coverage coverage(StoreScope scope, Query query) {return coverage(scope, query, Set.of());}

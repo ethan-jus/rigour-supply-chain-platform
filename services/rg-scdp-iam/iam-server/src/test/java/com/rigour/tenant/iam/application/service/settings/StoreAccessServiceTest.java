@@ -9,17 +9,19 @@ import com.rigour.tenant.iam.application.model.settings.AppAuthorizationSnapshot
 import com.rigour.tenant.iam.application.model.settings.AppAuthorizationSnapshot.*;
 import com.rigour.tenant.iam.application.port.out.*;
 import java.util.*;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class StoreAccessServiceTest {
-    @Test void includesChildDepartmentTerritoriesOnlyWhenExplicitlyAuthorized() {
+    @ParameterizedTest
+    @ValueSource(strings={"crm:pool:team-read","crm:store:status-write"})
+    void includesChildDepartmentTerritoriesOnlyWhenExplicitlyAuthorized(String action) {
         var authorization = mock(AppAuthorizationService.class);
         var employees = mock(AppEmployeeClient.class);
         var territories = mock(StoreTerritoryStore.class);
         var references = mock(AppReferenceClient.class);
         var caller = mock(CallerIdentity.class);
         UUID tenant = UUID.randomUUID(), user = UUID.randomUUID();
-        String action = "crm:pool:team-read";
         var clauses = List.of(
                 new Clause(UUID.randomUUID(), "CUSTOMER", "DEPARTMENT", new Limit("SPECIFIED", List.of("1")), new Limit("ALL", List.of()), new Limit("ALL", List.of()), true),
                 new Clause(UUID.randomUUID(), "CUSTOMER", "DEPARTMENT", new Limit("SPECIFIED", List.of("2")), new Limit("ALL", List.of()), new Limit("ALL", List.of()), false));
