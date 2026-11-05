@@ -38,7 +38,7 @@ class IamSchemaMigrationTest {
         Flyway flyway = migration(true, "latest");
         flyway.migrate();
         flyway.validate();
-        assertEquals("147", flyway.info().current().getVersion().getVersion());
+        assertEquals("149", flyway.info().current().getVersion().getVersion());
         assertEquals(1, scalar("SELECT COUNT(*) FROM flyway_schema_history WHERE version='120' AND type='SQL_BASELINE'"));
         try (var connection = DriverManager.getConnection(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
              var statement = connection.createStatement();
@@ -62,10 +62,10 @@ class IamSchemaMigrationTest {
             statement.execute("INSERT INTO migration_sentinel VALUES(42)");
         }
         Flyway upgraded = migration(true, "latest");
-        assertEquals(15, upgraded.migrate().migrationsExecuted);
+        assertEquals(17, upgraded.migrate().migrationsExecuted);
         upgraded.validate();
-        assertEquals(historyCount + 15, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
-        assertEquals("147", upgraded.info().current().getVersion().getVersion());
+        assertEquals(historyCount + 17, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
+        assertEquals("149", upgraded.info().current().getVersion().getVersion());
         assertEquals(checksum, scalar("SELECT checksum FROM flyway_schema_history WHERE version='120'"));
         assertEquals(0, scalar("SELECT COUNT(*) FROM flyway_schema_history WHERE type='SQL_BASELINE'"));
         assertEquals(42, scalar("SELECT id FROM migration_sentinel"));

@@ -70,7 +70,7 @@ SELECT MAX(installed_rank)+1,'139','cost dashboard permissions','SQL',?,-8120608
             var flyway = migration(source, "latest");
             flyway.migrate();
             flyway.validate();
-            assertThat(flyway.info().current().getVersion().toString()).isEqualTo("147");
+            assertThat(flyway.info().current().getVersion().toString()).isEqualTo("149");
             assertThat(flyway.migrate().migrationsExecuted).isZero();
             if (original != null) {
                 assertThat(
