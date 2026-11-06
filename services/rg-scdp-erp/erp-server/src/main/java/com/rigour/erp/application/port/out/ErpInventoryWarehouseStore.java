@@ -5,7 +5,7 @@ import com.rigour.erp.api.v1.model.InternalInventoryWarehouseView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import java.util.Optional;
 
-/** ERP 自研仓库持久化端口；只操作 `erp_inventory_warehouse`。 */
+/** ERP 仓库持久化端口；来源追溯复用已有主数据绑定。 */
 public interface ErpInventoryWarehouseStore {
     MasterDataPageView<InternalInventoryWarehouseView> warehouses(
             String tenantId, int begin, int step, WarehouseSearchCriteria criteria);
@@ -24,6 +24,9 @@ public interface ErpInventoryWarehouseStore {
 
     /** 仓库列表独立筛选条件。 */
     record WarehouseSearchCriteria(String warehouseCode, String warehouseName, String regionCode,
-                                   Boolean defaultFlag, String statusCode) {
+                                   Boolean defaultFlag, String statusCode, String sourceWarehouseCode) {
+        public WarehouseSearchCriteria(String warehouseCode,String warehouseName,String regionCode,Boolean defaultFlag,String statusCode) {
+            this(warehouseCode,warehouseName,regionCode,defaultFlag,statusCode,null);
+        }
     }
 }

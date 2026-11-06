@@ -3,6 +3,8 @@ package com.rigour.erp.application.service.inventory;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseCommand;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
+import com.rigour.erp.api.v1.model.WarehouseLocationCatalogView;
+import com.rigour.settings.api.v1.model.AdminDivisionCatalog;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore.WarehouseSearchCriteria;
 import com.rigour.erp.application.service.support.ErpServiceValidation;
@@ -31,6 +33,17 @@ public final class ErpInventoryWarehouseService {
 
     private final ErpInventoryWarehouseStore store;
     private final BusinessCodeGenerator codeGenerator;
+    private WarehouseLocationService locations;
+
+    @Autowired
+    void locationService(WarehouseLocationService locations) { this.locations = locations; }
+
+    public WarehouseLocationCatalogView locationCatalog(String version) {
+        tenant(READ_PERMISSION);
+        var catalog = locations.catalog(version);
+        return new WarehouseLocationCatalogView(catalog.version(), catalog.nodes().stream()
+                .map(n -> new WarehouseLocationCatalogView.Node(n.code(), n.name(), n.level(), n.parentCode())).toList());
+    }
 
     @Autowired
     public ErpInventoryWarehouseService(ErpInventoryWarehouseStore store) {
@@ -51,6 +64,17 @@ public final class ErpInventoryWarehouseService {
             String regionCode,
             Boolean defaultFlag,
             String statusCode) {
+        return warehouses(begin,step,warehouseCode,warehouseName,regionCode,defaultFlag,statusCode,null);
+    }
+
+    public MasterDataPageView<InternalInventoryWarehouseView> warehouses(
+            int begin,
+            int step,
+            String warehouseCode,
+            String warehouseName,
+            String regionCode,
+            Boolean defaultFlag,
+            String statusCode, String sourceWarehouseCode) {
         String tenantId = tenant(READ_PERMISSION);
         WarehouseSearchCriteria criteria =
                 new WarehouseSearchCriteria(
@@ -58,7 +82,8 @@ public final class ErpInventoryWarehouseService {
                         ErpServiceValidation.text(warehouseName, 120, "warehouseName"),
                         ErpServiceValidation.code(regionCode, "regionCode", false),
                         defaultFlag,
-                        ErpServiceValidation.code(statusCode, "statusCode", false));
+                        ErpServiceValidation.code(statusCode, "statusCode", false),
+                        ErpServiceValidation.text(sourceWarehouseCode,100,"sourceWarehouseCode"));
         MasterDataPageView<InternalInventoryWarehouseView> result =
                 store.warehouses(
                         tenantId,
@@ -76,7 +101,9 @@ public final class ErpInventoryWarehouseService {
                 ErpServiceValidation.value(criteria.statusCode()),
                 result.items().size(),
                 result.total());
-        return result;
+        var catalogs = new java.util.HashMap<String, AdminDivisionCatalog>();
+        return new MasterDataPageView<>(result.total(), result.begin(), result.step(),
+                result.items().stream().map(row -> decorate(row, catalogs)).toList());
     }
 
     public InternalInventoryWarehouseView warehouse(Long id) {
@@ -89,7 +116,7 @@ public final class ErpInventoryWarehouseService {
                 tenantId,
                 result.id(),
                 result.warehouseCode());
-        return result;
+        return decorate(result, new java.util.HashMap<>());
     }
 
     public InternalInventoryWarehouseView create(InternalInventoryWarehouseCommand command) {
@@ -109,7 +136,7 @@ public final class ErpInventoryWarehouseService {
                 created.warehouseCode(),
                 created.warehouseName(),
                 actor.principalId());
-        return created;
+        return decorate(created, new java.util.HashMap<>());
     }
 
     public InternalInventoryWarehouseView update(
@@ -130,7 +157,7 @@ public final class ErpInventoryWarehouseService {
                 updated.warehouseCode(),
                 updated.revision(),
                 actor.principalId());
-        return updated;
+        return decorate(updated, new java.util.HashMap<>());
     }
 
     public void delete(Long id, int revision) {
@@ -147,10 +174,13 @@ public final class ErpInventoryWarehouseService {
                 actor.principalId());
     }
 
-    private static InternalInventoryWarehouseCommand normalize(
+    private InternalInventoryWarehouseCommand normalize(
             InternalInventoryWarehouseCommand command, boolean update) {
         if (command == null) throw badRequest("仓库参数不能为空");
         ErpServiceValidation.checkRevision(command.revision(), update);
+        String locationCode = command.locationAreaCode() == null ? null : command.locationAreaCode().strip();
+        String locationVersion = ErpServiceValidation.text(command.locationAreaVersion(), 32, "locationAreaVersion");
+        if (locationCode != null || locationVersion != null) locations.validate(locationCode, locationVersion);
         return new InternalInventoryWarehouseCommand(
                 ErpServiceValidation.required(command.warehouseName(), "warehouseName不能为空", 120),
                 ErpServiceValidation.code(command.regionCode(), "regionCode", false),
@@ -162,7 +192,21 @@ public final class ErpInventoryWarehouseService {
                 ErpServiceValidation.text(command.contactPhone(), 50, "contactPhone"),
                 ErpServiceValidation.defaultCode(command.statusCode(), "statusCode", "ACTIVE"),
                 ErpServiceValidation.text(command.remark(), 1000, "remark"),
-                update ? command.revision() : 0);
+                update ? command.revision() : 0, locationCode, locationVersion);
+    }
+
+    private InternalInventoryWarehouseView decorate(InternalInventoryWarehouseView row,
+            java.util.Map<String, AdminDivisionCatalog> catalogs) {
+        if (row == null || row.locationAreaCode() == null) return row;
+        String display;
+        try {
+            var catalog = catalogs.computeIfAbsent(row.locationAreaVersion(), locations::catalog);
+            display = WarehouseLocationService.display(catalog, row.locationAreaCode());
+            if (display.isBlank()) display = row.locationAreaCode() + "（待核对）";
+        } catch (BusinessException e) {
+            display = row.locationAreaCode() + "（区划目录暂不可用）";
+        }
+        return row.withLocationDisplay(display);
     }
 
     private static CallerIdentity action(String action) {

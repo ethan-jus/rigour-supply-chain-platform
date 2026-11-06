@@ -3,7 +3,11 @@ package com.rigour.analytics.domain.cost;
 import static org.assertj.core.api.Assertions.*;
 
 import com.rigour.analytics.application.port.out.CostDashboardStore.City;
+import com.rigour.analytics.application.service.CostDashboardAccess;
 import com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer;
+import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView;
+import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Clause;
+import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit;
 
 import org.junit.jupiter.api.Test;
 
@@ -42,6 +46,93 @@ class CostSourceNormalizerTest {
     }
 
     @Test
+    void automaticProcurementUsesReceivingWarehouseAndPreservesWarehouseRestriction() {
+        var row = row();
+        row.put("category_code", "PURCHASE");
+        row.put("warehouse_id", "42");
+        row.put("data_json", "{\"_procurementOrderId\":101}");
+        var fact = normalizer.normalize("ERP", row, cities, Map.of());
+        assertThat(fact.warehouseId()).isEqualTo("42");
+        assertThat(fact.sourceWarehouseId()).isEqualTo("42");
+        assertThat(
+                        CostDashboardAccess.sourceVisible(
+                                warehousePolicy("INVENTORY", "42"), fact, "actor"))
+                .isTrue();
+        assertThat(
+                        CostDashboardAccess.sourceVisible(
+                                warehousePolicy("INVENTORY", "43"), fact, "actor"))
+                .isFalse();
+        assertThat(CostDashboardAccess.dashboardVisible(warehousePolicy("ANALYTICS", "42"), fact))
+                .isTrue();
+        assertThat(CostDashboardAccess.dashboardVisible(warehousePolicy("ANALYTICS", "43"), fact))
+                .isFalse();
+        row.put("source_warehouse_id", "44");
+        var twoWarehouses = normalizer.normalize("ERP", row, cities, Map.of());
+        assertThat(twoWarehouses.sourceWarehouseId()).isEqualTo("44");
+        assertThat(
+                        CostDashboardAccess.sourceVisible(
+                                warehousePolicy("INVENTORY", "42"), twoWarehouses, "actor"))
+                .isFalse();
+        row.remove("source_warehouse_id");
+        row.put("data_json", "{}");
+        assertThat(normalizer.normalize("ERP", row, cities, Map.of()).sourceWarehouseId()).isNull();
+    }
+
+    private SupplyAuthorizationView warehousePolicy(String object, String warehouse) {
+        var all = new Limit("ALL", List.of());
+        var warehouses = new Limit("SPECIFIED", List.of(warehouse));
+        return new SupplyAuthorizationView(
+                "ACTIVE",
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                null,
+                1,
+                1,
+                1,
+                1,
+                Set.of(),
+                "read",
+                true,
+                List.of(
+                        new Clause(
+                                UUID.randomUUID(),
+                                object,
+                                "WAREHOUSE",
+                                all,
+                                all,
+                                warehouses,
+                                false)),
+                all,
+                warehouses);
+    }
+
+    @Test
+    void procurementFreightBelongsToPurchaseAndHistoricalQuotesAreReferenceOnly() {
+        var row = row();
+        row.put("payer_code", "COMPANY");
+        row.put("amount", "60.00");
+        row.put("data_json", "{\"logistics\":{\"legCode\":\"PURCHASE\"}}");
+        var manual = normalizer.normalize("ORDER", row, cities, Map.of());
+        assertThat(manual.category()).isEqualTo("purchase");
+        assertThat(manual.amount()).isEqualByComparingTo("60");
+        row.put(
+                "data_json",
+                "{\"ledger\":{\"transportPurposeCode\":\"PURCHASE\",\"sourceSync\":{\"originBizKey\":\"ERP:PROCUREMENT_ORDER:PO1\"}}}");
+        var quote = normalizer.normalize("ORDER", row, cities, Map.of());
+        assertThat(quote.category()).isEqualTo("purchase");
+        assertThat(quote.dimension("costTreatment").key()).isEqualTo("REFERENCE");
+        row.put("category_code", "PURCHASE");
+        row.put("type_code", "PROCUREMENT_FREIGHT");
+        row.put(
+                "data_json",
+                "{\"typeCode\":\"PROCUREMENT_FREIGHT\",\"goods\":{\"purchaseOrderId\":1}}");
+        var actual = normalizer.normalize("ERP", row, cities, Map.of());
+        assertThat(actual.category()).isEqualTo("purchase");
+        assertThat(actual.confirmed()).isTrue();
+        assertThat(actual.dimension("costTreatment").key()).isNotEqualTo("REFERENCE");
+    }
+
+    @Test
     void payrollPreservesPaymentRegistrationStatusWithoutChangingConfirmedCost() {
         for (String payment : List.of("PAID", "UNPAID")) {
             var row = row();
@@ -64,7 +155,9 @@ class CostSourceNormalizerTest {
         row.put("category_code", "EXPENSE");
         row.put("type_code", "COURIER");
         row.put("amount", "18.00");
-        row.put("data_json", """
+        row.put(
+                "data_json",
+                """
                 {"expense":{"courier":{"contents":"合同与资料","recipientName":"合作方业务部",
                 "companyName":"快递公司","trackingNo":"0001234567"}}}
                 """);
@@ -333,5 +426,42 @@ class CostSourceNormalizerTest {
             assertThat(fact.dimensions().get("type").key())
                     .isEqualTo("code:REIMBURSEMENT_EXPENSE_TYPE:" + type);
         }
+    }
+
+    @Test
+    void newDictionaryCodesAndModernRoutesArePreservedWithoutEnumeratingTheirValues() {
+        var row = row();
+        row.put("payer_code", "COMPANY");
+        row.put(
+                "data_json",
+                """
+                {"_ledgerFeeType":"HANDLING_NEW","ledger":{
+                  "transportPurposeCode":"DELIVERY","deliveryModeCode":"THIRD_PARTY",
+                  "transportMethodCode":"RAIL_NEW","carrierCode":"CARRIER_NEW",
+                  "sender":{"displayName":"武汉仓"},
+                  "receivingPoints":[{"displayName":"门店甲"},{"manualName":"门店乙"}]}}
+                """);
+        var fact = normalizer.normalize("ORDER", row, cities, Map.of());
+        assertThat(fact.dimension("leg").key()).isEqualTo("dict:COST_TRANSPORT_PURPOSE:DELIVERY");
+        assertThat(fact.dimension("method").key()).isEqualTo("dict:COST_TRANSPORT_KIND:RAIL_NEW");
+        assertThat(fact.dimension("carrier").key()).isEqualTo("dict:COST_CARRIER:CARRIER_NEW");
+        assertThat(fact.dimension("feeType").key())
+                .isEqualTo("dict:COST_LOGISTICS_FEE_TYPE:HANDLING_NEW");
+        assertThat(fact.dimension("route").label()).isEqualTo("武汉仓 → 门店甲、门店乙");
+    }
+
+    @Test
+    void procurementGoodsAndActualFreightShareOrderIdentityAndKeepSeparateComponents() {
+        var row = row();
+        row.put("category_code", "PURCHASE");
+        row.put("data_json", "{\"_procurementOrderId\":42,\"_procurementOrderCode\":\"PO42\"}");
+        var goods = normalizer.normalize("ERP", row, cities, Map.of());
+        row.put("id", UUID.randomUUID().toString());
+        row.put("type_code", "PROCUREMENT_FREIGHT");
+        row.put("data_json", "{\"goods\":{\"purchaseOrderId\":42}}");
+        var freight = normalizer.normalize("ERP", row, cities, Map.of());
+        assertThat(goods.documentKey()).isEqualTo(freight.documentKey());
+        assertThat(goods.dimension("component").key()).isEqualTo("GOODS");
+        assertThat(freight.dimension("component").key()).isEqualTo("FREIGHT");
     }
 }

@@ -98,7 +98,7 @@ class CostDashboardServiceTest {
                                 tenant.toString(),
                                 clock.instant(),
                                 LocalDate.of(2026, 10, 16),
-                                Map.of("BI_COST_NORMALIZATION", "6"),
+                                Map.of("BI_COST_NORMALIZATION", CostAnalysis.NORMALIZATION_VERSION),
                                 List.of(),
                                 facts));
         service =
@@ -147,6 +147,53 @@ class CostDashboardServiceTest {
         assertThat(workspace.records().meta()).isEqualTo(workspace.report().meta());
         assertThat(workspace.records()).isEqualTo(service.records(q));
         assertThat(workspace.report()).isEqualTo(service.overview(q));
+    }
+
+    @Test
+    void scopeCardsReconcileToIndependentQueriesAndNeverBorrowAnotherScopesComparison() {
+        var board = service.overview(query("武汉市", null, "current", "ALL"));
+        assertThat(board.scopeSummaries())
+                .extracting(s -> s.scope())
+                .containsExactly("opex", "purchase", "loss");
+        for (var card : board.scopeSummaries()) {
+            var scoped =
+                    service.overview(
+                            new CostDashboardQuery(
+                                    2026,
+                                    10,
+                                    "previous",
+                                    "武汉市",
+                                    card.scope(),
+                                    null,
+                                    null,
+                                    null,
+                                    "CONFIRMED",
+                                    "ALL",
+                                    null,
+                                    "current",
+                                    1,
+                                    20,
+                                    null,
+                                    false));
+            assertThat(card.current()).isEqualTo(scoped.current());
+            assertThat(card.previous()).isEqualTo(scoped.previous());
+            assertThat(card.delta()).isEqualTo(scoped.delta());
+            assertThat(card.comparisonAvailable()).isEqualTo(scoped.meta().comparisonAvailable());
+            if ("purchase".equals(card.scope())) {
+                assertThat(
+                                card.components().stream()
+                                        .map(g -> new BigDecimal(g.current()))
+                                        .reduce(BigDecimal.ZERO, BigDecimal::add))
+                        .isEqualByComparingTo(card.current().amount());
+            }
+        }
+        sources.remove("purchase");
+        sources.remove("loss");
+        sources.remove("expense");
+        sources.remove("freight");
+        authorize(all);
+        var restricted = service.overview(query("武汉市", null, "current", "ALL"));
+        assertThat(restricted.scopeSummaries()).extracting(s -> s.scope()).containsExactly("opex");
     }
 
     @Test
@@ -208,13 +255,35 @@ class CostDashboardServiceTest {
 
     @Test
     void newCategoryAndCityKeepTheParentComparisonWithZeroPriorCostAndNoGrowthRate() {
-        var normalizer = new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
-                JsonMapper.builder().build());
-        var rent = normalizer.normalize("ERP", Map.of("id", "new-rent", "amount", "6000.00",
-                        "status_code", "CONFIRMED", "data_json", "{}", "cost_date", "2026-10-01",
-                        "revision", "1", "category_code", "RENTAL", "premises_type", "WAREHOUSE",
-                        "city_code", "WH"),
-                        List.of(new CostDashboardStore.City("WH", "武汉市", "WH", "20", List.of("20"))), Map.of());
+        var normalizer =
+                new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
+                        JsonMapper.builder().build());
+        var rent =
+                normalizer.normalize(
+                        "ERP",
+                        Map.of(
+                                "id",
+                                "new-rent",
+                                "amount",
+                                "6000.00",
+                                "status_code",
+                                "CONFIRMED",
+                                "data_json",
+                                "{}",
+                                "cost_date",
+                                "2026-10-01",
+                                "revision",
+                                "1",
+                                "category_code",
+                                "RENTAL",
+                                "premises_type",
+                                "WAREHOUSE",
+                                "city_code",
+                                "WH"),
+                        List.of(
+                                new CostDashboardStore.City(
+                                        "WH", "武汉市", "WH", "20", List.of("20"))),
+                        Map.of());
         useFacts(List.of(rent, salary("E1", false)));
         var parent = service.overview(query(null, null, "current", "ALL"));
         var child = service.overview(query(rent.city(), "warehouse", "current", "ALL"));
@@ -228,8 +297,9 @@ class CostDashboardServiceTest {
 
     @Test
     void everyDashboardEntryPointOnlyIncludesConfirmedCostsAndPreservesSourcePayment() {
-        var normalizer = new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
-                JsonMapper.builder().build());
+        var normalizer =
+                new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
+                        JsonMapper.builder().build());
         var rows = new ArrayList<CostFact>();
         for (String source : List.of("ERP", "ORDER", "HR")) {
             for (String status : List.of("CONFIRMED", "DRAFT", "VOID")) {
@@ -259,9 +329,11 @@ class CostDashboardServiceTest {
         assertThat(service.overview(q).current().draftCount()).isZero();
         assertThat(service.records(q).items()).hasSize(6);
         assertThat(service.records(query(null, null, "current", "PAID")).items())
-                .hasSize(3).allMatch(r -> "PAID".equals(r.payment()));
+                .hasSize(3)
+                .allMatch(r -> "PAID".equals(r.payment()));
         assertThat(service.records(query(null, null, "current", "UNPAID")).items())
-                .hasSize(3).allMatch(r -> "UNPAID".equals(r.payment()));
+                .hasSize(3)
+                .allMatch(r -> "UNPAID".equals(r.payment()));
         var csv = CostDashboardExportService.csv(c, service.matching(c));
         assertThat(csv).doesNotContain("DRAFT", "VOID", "待确认", "已作废");
         assertThatThrownBy(() -> service.detail(q, "ERP", "ERP-DRAFT-PAID"))
@@ -292,7 +364,7 @@ class CostDashboardServiceTest {
                                 tenant.toString(),
                                 clock.instant(),
                                 LocalDate.of(2026, 10, 16),
-                                Map.of("BI_COST_NORMALIZATION", "6"),
+                                Map.of("BI_COST_NORMALIZATION", CostAnalysis.NORMALIZATION_VERSION),
                                 List.of(),
                                 only));
         var r = service.overview(query(null, null, "current", "ALL"));
@@ -461,13 +533,79 @@ class CostDashboardServiceTest {
     }
 
     @Test
+    void historicalOrderPurchaseUsesOrderPermissionWithoutGrantingErpPurchaseAccess() {
+        var normalizer =
+                new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
+                        JsonMapper.builder().build());
+        Map<String, String> row = new HashMap<>();
+        row.put("id", UUID.randomUUID().toString());
+        row.put("amount", "60.00");
+        row.put("status_code", "CONFIRMED");
+        row.put("cost_date", "2026-10-02");
+        row.put("revision", "3");
+        row.put("category_code", "LOGISTICS");
+        row.put("payer_code", "COMPANY");
+        row.put("created_by", user.toString());
+        row.put("data_json", "{\"logistics\":{\"legCode\":\"PURCHASE\"}}");
+        var orderFreight = normalizer.normalize("ORDER", row, List.of(), Map.of());
+        row.put("id", UUID.randomUUID().toString());
+        row.put("amount", "540.00");
+        row.put("category_code", "PURCHASE");
+        row.put("data_json", "{\"_procurementOrderId\":101}");
+        var erpPurchase = normalizer.normalize("ERP", row, List.of(), Map.of());
+        useFacts(List.of(orderFreight, erpPurchase));
+        var q =
+                new CostDashboardQuery(
+                        2026, 10, "previous", null, "purchase", "purchase", null, null,
+                        "CONFIRMED", "ALL", null, "current", 1, 20, null, false);
+        var orderPolicy = sources.get("freight");
+        var erpPolicy = sources.get("purchase");
+        sources.clear();
+        sources.put("freight", orderPolicy);
+        authorize(all);
+        assertThat(service.context(q).rows()).containsExactly(orderFreight);
+        assertThat(service.overview(q).current().amount()).isEqualTo("60.00");
+        assertThat(service.records(q).items()).extracting(r -> r.source()).containsExactly("ORDER");
+        assertThat(access.current().categories()).contains("freight", "purchase");
+
+        var original = mock(CostSourceDetail.class);
+        when(original.verify("ORDER", "LOGISTICS", orderFreight.sourceId()))
+                .thenReturn(new CostSourceDetail.State("CONFIRMED", orderFreight.revision()));
+        var linked =
+                new CostDashboardService(
+                        store, mock(CostDashboardRefreshService.class), access, original, true, clock);
+        assertThat(linked.detail(q, "ORDER", orderFreight.sourceId()).sourceRoute())
+                .isEqualTo("/supply-chain/cost/logistics?sourceId=" + orderFreight.sourceId());
+
+        sources.clear();
+        sources.put("purchase", erpPolicy);
+        authorize(all);
+        assertThat(service.context(q).rows()).containsExactly(erpPurchase);
+        assertThat(service.overview(q).current().amount()).isEqualTo("540.00");
+        assertThat(service.records(q).items()).extracting(r -> r.source()).containsExactly("ERP");
+        assertThatThrownBy(() -> linked.detail(q, "ORDER", orderFreight.sourceId()))
+                .hasMessageContaining("费用不存在或无访问权限");
+    }
+
+    @Test
     void hrCostRespectsSourceRegionLimitEvenWhenDashboardAndEmployeeAreUnrestricted() {
         var base = policy("EMPLOYEE", "ALL", new Limit("ALL", List.of()));
-        var wh = new SupplyAuthorizationView(base.mode(), base.tenantId(), base.userId(),
-                base.employeeCode(), base.applicationVersion(), base.memberVersion(),
-                base.employeeRevision(), base.organizationVersion(), base.permissions(), base.action(),
-                base.functionAllowed(), base.clauses(), new Limit("SPECIFIED", List.of("WH")),
-                base.warehouseLimit());
+        var wh =
+                new SupplyAuthorizationView(
+                        base.mode(),
+                        base.tenantId(),
+                        base.userId(),
+                        base.employeeCode(),
+                        base.applicationVersion(),
+                        base.memberVersion(),
+                        base.employeeRevision(),
+                        base.organizationVersion(),
+                        base.permissions(),
+                        base.action(),
+                        base.functionAllowed(),
+                        base.clauses(),
+                        new Limit("SPECIFIED", List.of("WH")),
+                        base.warehouseLimit());
         var row = mock(CostFact.class);
         when(row.source()).thenReturn("HR");
         when(row.employeeCode()).thenReturn("E1");
@@ -516,7 +654,7 @@ class CostDashboardServiceTest {
                                 tenant.toString(),
                                 clock.instant(),
                                 LocalDate.of(2026, 10, 16),
-                                Map.of("BI_COST_NORMALIZATION", "6"),
+                                Map.of("BI_COST_NORMALIZATION", CostAnalysis.NORMALIZATION_VERSION),
                                 List.of(),
                                 rows));
     }
@@ -628,15 +766,17 @@ class CostDashboardServiceTest {
 
     @Test
     void selfDashboardIncludesOwnManualRentButStillIntersectsSourcePermissions() {
-        var self = policy("ANALYTICS","SELF",new Limit("ALL",List.of()));
-        var inventory = policy("INVENTORY","SELF",new Limit("ALL",List.of()));
+        var self = policy("ANALYTICS", "SELF", new Limit("ALL", List.of()));
+        var inventory = policy("INVENTORY", "SELF", new Limit("ALL", List.of()));
         var own = mock(CostFact.class);
         when(own.source()).thenReturn("ERP");
         when(own.category()).thenReturn("office");
         when(own.city()).thenReturn("COST_HEADQUARTERS");
         when(own.rawCity()).thenReturn("COST_HEADQUARTERS");
         when(own.createdBy()).thenReturn(user.toString());
-        var limited = new CostDashboardAccess.Access(actor,self,Map.of("office",inventory),self,"self");
+        var limited =
+                new CostDashboardAccess.Access(
+                        actor, self, Map.of("office", inventory), self, "self");
         assertThat(limited.visible(own)).isTrue();
         assertThat(limited.exportVisible(own)).isTrue();
         when(own.createdBy()).thenReturn(UUID.randomUUID().toString());
@@ -645,21 +785,23 @@ class CostDashboardServiceTest {
         when(own.employeeCode()).thenReturn("E1");
         // 员工维度符合看板本人范围，也不能越过原台账的创建人范围。
         assertThat(limited.visible(own)).isFalse();
-        var noSource = new CostDashboardAccess.Access(actor,self,Map.of(),self,"none");
+        var noSource = new CostDashboardAccess.Access(actor, self, Map.of(), self, "none");
         when(own.createdBy()).thenReturn(user.toString());
         assertThat(noSource.visible(own)).isFalse();
     }
 
     @Test
     void selfCreatorCannotSeeAnotherEmployeesPayrollOrExpenseThroughDashboard() {
-        var self = policy("ANALYTICS","SELF",new Limit("ALL",List.of()));
-        var employee = policy("EMPLOYEE","SELF",new Limit("ALL",List.of()));
+        var self = policy("ANALYTICS", "SELF", new Limit("ALL", List.of()));
+        var employee = policy("EMPLOYEE", "SELF", new Limit("ALL", List.of()));
         var row = mock(CostFact.class);
         when(row.source()).thenReturn("HR");
         when(row.sourceCategory()).thenReturn("PAYROLL");
         when(row.employeeCode()).thenReturn("E2");
         when(row.createdBy()).thenReturn(user.toString());
-        var limited = new CostDashboardAccess.Access(actor,self,Map.of("labor",employee,"expense",employee),self,"self");
+        var limited =
+                new CostDashboardAccess.Access(
+                        actor, self, Map.of("labor", employee, "expense", employee), self, "self");
         assertThat(limited.visible(row)).isFalse();
         when(row.sourceCategory()).thenReturn("EXPENSE");
         assertThat(limited.visible(row)).isFalse();
@@ -826,7 +968,7 @@ class CostDashboardServiceTest {
                                 tenant.toString(),
                                 clock.instant(),
                                 LocalDate.of(2026, 10, 16),
-                                Map.of("BI_COST_NORMALIZATION", "6"),
+                                Map.of("BI_COST_NORMALIZATION", CostAnalysis.NORMALIZATION_VERSION),
                                 List.of(),
                                 rows));
         Map<String, Object> responses = new LinkedHashMap<>();
@@ -1010,18 +1152,18 @@ class CostDashboardServiceTest {
                                 tenant.toString(),
                                 Instant.parse("2026-10-21T06:00:00Z"),
                                 LocalDate.of(2026, 10, 21),
-                                Map.of("BI_COST_NORMALIZATION", "6"),
+                                Map.of("BI_COST_NORMALIZATION", CostAnalysis.NORMALIZATION_VERSION),
                                 cities,
                                 facts));
         var report = service.overview(query(null, null, "current", "ALL"));
-        assertThat(report.current().amount()).isEqualTo("20717.30");
-        assertThat(report.purchase()).isEqualTo("7121.85");
+        assertThat(report.current().amount()).isEqualTo("19517.30");
+        assertThat(report.purchase()).isEqualTo("8321.85");
         assertThat(report.loss()).isEqualTo("22.63");
         assertThat(report.current().linkedAmount()).isEqualTo("320.00");
         assertThat(report.current().reviewAmount()).isEqualTo("4500.00");
         assertThat(report.current().reviewCount()).isEqualTo(1);
         assertThat(report.monthlyAmount()).isEqualTo("15300.00");
-        assertThat(report.cumulative().getLast().current()).isEqualTo("5417.30");
+        assertThat(report.cumulative().getLast().current()).isEqualTo("4217.30");
         assertThat(
                         report.categories().stream()
                                 .filter(c -> c.key().equals("expense"))
@@ -1054,7 +1196,8 @@ class CostDashboardServiceTest {
         var included = service.matching(service.context(query(null, null, "current", "ALL")));
         assertThat(included).allMatch(CostFact::confirmed);
         assertThat(ledger.summary().count()).isEqualTo(report.current().count());
-        assertThat(CostAnalysis.sum(included, r -> true)).isEqualByComparingTo(report.current().amount());
+        assertThat(CostAnalysis.sum(included, r -> true))
+                .isEqualByComparingTo(report.current().amount());
         assertThat(
                         com.rigour.analytics.infrastructure.persistence.scope
                                 .CostReimbursementReconciler.reconcile(linked, Map.of())
@@ -1115,5 +1258,39 @@ class CostDashboardServiceTest {
         java.nio.file.Files.writeString(
                 java.nio.file.Path.of("target/cost-business-facts.json"),
                 json.writerWithDefaultPrettyPrinter().writeValueAsString(facts));
+    }
+
+    @Test
+    void partitionRecordDetailUsesFactIdentityAndVerifiesTheOriginalDocument() {
+        var row = crossMonthRent();
+        String root = UUID.randomUUID().toString();
+        var dims = new LinkedHashMap<>(row.dimensions());
+        dims.put("rootSourceId", new CostFact.Dimension(root, root, false));
+        dims.put(
+                "feeType",
+                new CostFact.Dimension(
+                        "dict:COST_WAREHOUSE_FEE_TYPE:ASSEMBLY_NEW", "ASSEMBLY_NEW", false));
+        var fact = row.withDimensions(dims);
+        useFacts(List.of(fact));
+        var original = mock(CostSourceDetail.class);
+        when(original.verify("ERP", "RENTAL", root))
+                .thenReturn(new CostSourceDetail.State("CONFIRMED", fact.revision()));
+        var linked =
+                new CostDashboardService(
+                        store,
+                        mock(CostDashboardRefreshService.class),
+                        access,
+                        original,
+                        true,
+                        clock);
+        var q = query(null, "warehouse", "current", "ALL");
+        var record = linked.records(q).items().getFirst();
+        assertThat(record.sourceId()).isEqualTo(fact.sourceId());
+        assertThat(record.itemKey()).isEqualTo("dict:COST_WAREHOUSE_FEE_TYPE:ASSEMBLY_NEW");
+        var detail = linked.detail(q, "ERP", record.sourceId());
+        assertThat(detail.dimensions())
+                .containsEntry("费用项目", "dict:COST_WAREHOUSE_FEE_TYPE:ASSEMBLY_NEW");
+        assertThat(detail.sourceRoute()).endsWith("sourceId=" + root);
+        verify(original).verify("ERP", "RENTAL", root);
     }
 }

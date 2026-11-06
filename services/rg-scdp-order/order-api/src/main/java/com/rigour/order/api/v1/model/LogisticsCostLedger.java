@@ -69,6 +69,13 @@ public record LogisticsCostLedger(
                 feeItems, value, nonSalesPurposeCode, noTrackingReason, noSourceReason, scopeWarehouseIds, scopeCityCodes, sourceSync, driverName, vehicleNo);
     }
 
+    public LogisticsCostLedger withTransportType(String value) {
+        return new LogisticsCostLedger(schemaVersion, value, deliveryModeCode, carrierCode,
+                costMonth, trackingNo, transportMethodCode, sender, receivingPoints, feeItems,
+                sources, nonSalesPurposeCode, noTrackingReason, noSourceReason, scopeWarehouseIds,
+                scopeCityCodes, sourceSync, driverName, vehicleNo);
+    }
+
     public LogisticsCostLedger resolved(Party from, List<Party> points, List<Long> warehouses) {
         return new LogisticsCostLedger(schemaVersion, transportPurposeCode, deliveryModeCode,
                 carrierCode, costMonth, trackingNo, transportMethodCode, from, points,

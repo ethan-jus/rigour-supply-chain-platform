@@ -129,6 +129,14 @@ public final class CostSourceNormalizer {
                 };
         JsonNode data = json.readTree(r.get("data_json"));
         if (!data.isObject()) throw new IllegalStateException("成本源业务快照无效");
+        boolean historicalPurchaseFreight =
+                "ORDER".equals(source)
+                        && "PURCHASE"
+                                .equals(
+                                        first(
+                                                text(data, "ledger", "transportPurposeCode"),
+                                                text(data, "logistics", "legCode")));
+        if (historicalPurchaseFreight) category = "purchase";
         boolean expense = "HR".equals(source) && !"PAYROLL".equals(r.get("category_code"));
         String intended = text(data, "expense", "costCategory");
         if (expense && intended != null) {
@@ -179,7 +187,8 @@ public final class CostSourceNormalizer {
                 || (departmentMatches.size() > 1
                         && !("HR".equals(source) && codeMatches.size() == 1)))
             mapping = "AMBIGUOUS";
-        else if (text(data, "_ledgerPartition") == null && !"HR".equals(source)
+        else if (text(data, "_ledgerPartition") == null
+                && !"HR".equals(source)
                 && codeMatches.size() == 1
                 && departmentMatches.size() == 1
                 && !codeMatches.getFirst().code().equals(departmentMatches.getFirst().code()))
@@ -194,14 +203,47 @@ public final class CostSourceNormalizer {
         }
         Map<String, Dimension> dims = new LinkedHashMap<>();
         if (text(data, "_ledgerRootId") != null) {
-            dims.put("rootSourceId", new Dimension(text(data, "_ledgerRootId"), text(data, "_ledgerRootId"), false));
-            dims.put("ledgerPartition", new Dimension(text(data, "_ledgerPartition"), text(data, "_ledgerPartition"), false));
+            dims.put(
+                    "rootSourceId",
+                    new Dimension(text(data, "_ledgerRootId"), text(data, "_ledgerRootId"), false));
+            dims.put(
+                    "ledgerPartition",
+                    new Dimension(
+                            text(data, "_ledgerPartition"), text(data, "_ledgerPartition"), false));
         }
-        if (text(data,"_procurementOrderCode") != null) dims.put("procurementOrderCode",new Dimension(text(data,"_procurementOrderCode"),text(data,"_procurementOrderCode"),false));
-        if (text(data,"_costTreatment") != null) dims.put("costTreatment",new Dimension(text(data,"_costTreatment"),Objects.toString(text(data,"_costTreatmentReason"),"待核对"),false));
+        if (text(data, "_procurementOrderCode") != null)
+            dims.put(
+                    "procurementOrderCode",
+                    new Dimension(
+                            text(data, "_procurementOrderCode"),
+                            text(data, "_procurementOrderCode"),
+                            false));
+        if (text(data, "_costTreatment") != null)
+            dims.put(
+                    "costTreatment",
+                    new Dimension(
+                            text(data, "_costTreatment"),
+                            Objects.toString(text(data, "_costTreatmentReason"), "待核对"),
+                            false));
+        if (historicalPurchaseFreight && text(data, "ledger", "sourceSync", "originBizKey") != null)
+            dims.put(
+                    "costTreatment",
+                    new Dimension("REFERENCE", "历史采购约定运费仅追溯；采购实际运费在ERP采购成本核实后计入", false));
+        String purchaseId =
+                first(text(data, "_procurementOrderId"), text(data, "goods", "purchaseOrderId"));
+        if (purchaseId != null)
+            dims.put("procurementOrderId", new Dimension(purchaseId, purchaseId, false));
+        if ("purchase".equals(category)) {
+            boolean freight =
+                    historicalPurchaseFreight || "PROCUREMENT_FREIGHT".equals(r.get("type_code"));
+            dims.put(
+                    "component",
+                    new Dimension(freight ? "FREIGHT" : "GOODS", freight ? "采购运费" : "采购货款", false));
+        }
         String costMonth = text(data, "costMonth");
-        boolean monthly = text(data, "_ledgerPartition") != null ||
-                "PAYROLL".equals(r.get("category_code"))
+        boolean monthly =
+                text(data, "_ledgerPartition") != null
+                        || "PAYROLL".equals(r.get("category_code"))
                         || "RENTAL".equals(r.get("category_code"))
                         || expense
                                 && Set.of("OFFICE_RENT", "WAREHOUSE_RENT", "NETWORK")
@@ -239,9 +281,11 @@ public final class CostSourceNormalizer {
             dims.put("trip", dimension(null, text(data, "expense", "tripReference"), "trip"));
             dims.put("purpose", dimension(null, text(data, "expense", "purpose"), "purpose"));
             if ("COURIER".equals(r.get("type_code"))) {
-                for (String field : List.of("contents", "recipientName", "companyName", "trackingNo")) {
+                for (String field :
+                        List.of("contents", "recipientName", "companyName", "trackingNo")) {
                     String value = text(data, "expense", "courier", field);
-                    if (value != null) dims.put("courier_" + field, dimension(null, value, "courier"));
+                    if (value != null)
+                        dims.put("courier_" + field, dimension(null, value, "courier"));
                 }
             }
         }
@@ -267,25 +311,52 @@ public final class CostSourceNormalizer {
                         department,
                         Objects.toString(r.get("department_name"), department),
                         "department"));
+        String modernPurpose = text(data, "ledger", "transportPurposeCode");
+        String oldPurpose =
+                first(text(data, "logistics", "legCode"), text(data, "expense", "freightLeg"));
         dims.put(
                 "leg",
-                dimension(
-                        first(
-                                first(text(data, "ledger", "transportPurposeCode"), text(data, "logistics", "legCode")),
-                                text(data, "expense", "freightLeg")),
-                        first(
-                                text(data, "logistics", "legCode"),
-                                text(data, "expense", "freightLeg")),
-                        "code"));
-        dims.put("carrier", dimension(text(data, "ledger", "carrierCode"), first(text(data, "ledger", "carrierCode"), text(data, "logistics", "carrierName")), "carrier"));
-        String sender = text(data, "logistics", "senderName");
-        String receiver = text(data, "logistics", "receiverName");
+                dictionaryDimension(
+                        modernPurpose == null ? "COST_LOGISTICS_LEG" : "COST_TRANSPORT_PURPOSE",
+                        "NON_SALES".equals(modernPurpose)
+                                ? "OTHER"
+                                : first(modernPurpose, oldPurpose)));
+        String carrier = text(data, "ledger", "carrierCode");
+        dims.put(
+                "carrier",
+                carrier == null
+                        ? "SELF".equals(text(data, "ledger", "deliveryModeCode"))
+                                ? dictionaryDimension("COST_DELIVERY_MODE", "SELF")
+                                : dimension(null, text(data, "logistics", "carrierName"), "carrier")
+                        : dictionaryDimension("COST_CARRIER", carrier));
+        String sender = partyName(data.path("ledger").path("sender"));
+        List<String> receivers = new ArrayList<>();
+        for (var point : data.path("ledger").path("receivingPoints")) {
+            String name = partyName(point);
+            if (name != null && !receivers.contains(name)) receivers.add(name);
+        }
+        sender = first(sender, text(data, "logistics", "senderName"));
+        String receiver =
+                receivers.isEmpty()
+                        ? text(data, "logistics", "receiverName")
+                        : String.join("、", receivers);
         dims.put(
                 "route",
                 dimension(
                         null,
                         sender == null || receiver == null ? null : sender + " → " + receiver,
                         "route"));
+        dims.put(
+                "deliveryMode",
+                dictionaryDimension(
+                        "COST_DELIVERY_MODE", text(data, "ledger", "deliveryModeCode")));
+        dims.put(
+                "feeType",
+                dictionaryDimension(
+                        "ORDER".equals(source)
+                                ? "COST_LOGISTICS_FEE_TYPE"
+                                : "COST_WAREHOUSE_FEE_TYPE",
+                        text(data, "_ledgerFeeType")));
         dims.put(
                 "warehouse",
                 dimension(
@@ -301,19 +372,26 @@ public final class CostSourceNormalizer {
         dims.put(
                 "destination",
                 dimension(null, text(data, "expense", "destination"), "destination"));
+        String method = text(data, "ledger", "transportMethodCode");
         dims.put(
                 "method",
-                dimension(
-                        text(data, "logistics", "transportMethodCode"),
-                        text(data, "logistics", "transportMethodCode"),
-                        "code"));
+                dictionaryDimension(
+                        method == null ? "COST_TRANSPORT_METHOD" : "COST_TRANSPORT_KIND",
+                        first(method, text(data, "logistics", "transportMethodCode"))));
         dims.put(
                 "premises",
                 dimension(
                         r.get("warehouse_id"),
                         first(text(data, "rental", "premisesName"), r.get("warehouse_name")),
                         "warehouse"));
-        dims.put("contract", dimension(null, first(text(data, "warehouseLedger", "contractNo"), text(data, "rental", "contractNo")), "contract"));
+        dims.put(
+                "contract",
+                dimension(
+                        null,
+                        first(
+                                text(data, "warehouseLedger", "contractNo"),
+                                text(data, "rental", "contractNo")),
+                        "contract"));
         dims.put("channel", dimension(null, text(data, "marketing", "channelName"), "channel"));
         dims.put(
                 "supplier",
@@ -357,6 +435,12 @@ public final class CostSourceNormalizer {
             add(originals, text(row, "documentNo"));
         String date = r.get("cost_date");
         if (date == null) throw new IllegalStateException("费用发生日期缺失");
+        String sourceWarehouse = r.get("source_warehouse_id");
+        // 自动采购货款只关联收货仓，仓库权限按这一实际仓库核验，不要求不存在的发货仓。
+        if (sourceWarehouse == null
+                && "ERP".equals(source)
+                && "purchase".equals(category)
+                && purchaseId != null) sourceWarehouse = r.get("warehouse_id");
         return new CostFact(
                 source,
                 r.get("id"),
@@ -387,7 +471,7 @@ public final class CostSourceNormalizer {
                 department,
                 departmentPath,
                 r.get("warehouse_id"),
-                r.get("source_warehouse_id"),
+                sourceWarehouse,
                 r.get("created_by"),
                 Long.parseLong(r.get("revision")),
                 text(data, "remark"),
@@ -428,6 +512,18 @@ public final class CostSourceNormalizer {
 
     private static String first(String a, String b) {
         return blank(a) != null ? a : b;
+    }
+
+    private static String partyName(JsonNode party) {
+        return first(
+                text(party, "displayName"),
+                first(text(party, "manualName"), text(party, "partyCode")));
+    }
+
+    private static Dimension dictionaryDimension(String dictionary, String code) {
+        return blank(code) == null || "UNKNOWN".equals(code)
+                ? new Dimension("UNKNOWN", "未记录", true)
+                : new Dimension("dict:" + dictionary + ":" + code, code, false);
     }
 
     private static Dimension dimension(String id, String name, String kind) {

@@ -16,4 +16,9 @@ public record CostDashboardRecordView(
         String status,
         String payment,
         String sourceSystem,
-        String employeeName, String costMonth, String periodBasis, String costTreatment) {}
+        String employeeName,
+        String costMonth,
+        String periodBasis,
+        String costTreatment,
+        String itemKey,
+        String itemName) {}

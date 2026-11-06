@@ -193,7 +193,7 @@ class CostDashboardCapacityAcceptanceTest {
 
     private static CostDashboardStore.Snapshot snapshot(String id, List<CostFact> rows) {
         return new CostDashboardStore.Snapshot(id, TENANT.toString(), CLOCK.instant(),
-                LocalDate.of(2026, 10, 23), Map.of("BI_COST_NORMALIZATION", "6"), List.of(), rows);
+                LocalDate.of(2026, 10, 23), Map.of("BI_COST_NORMALIZATION", CostAnalysis.NORMALIZATION_VERSION), List.of(), rows);
     }
 
     private static CostDashboardQuery query(int month, String scope, String city, int page) {

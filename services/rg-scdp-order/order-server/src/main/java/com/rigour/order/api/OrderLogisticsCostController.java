@@ -34,6 +34,11 @@ public final class OrderLogisticsCostController implements OrderLogisticsCostApi
     }
 
     @Override
+    public ApiResponse<List<LogisticsCostDetailView>> exportSelected(List<String> ids) {
+        return ApiResponse.success(service.exportSelected(ids));
+    }
+
+    @Override
     public ApiResponse<LogisticsCostDetailView> entry(String id) {
         return ApiResponse.success(service.entry("logistics", id));
     }
@@ -58,6 +63,18 @@ public final class OrderLogisticsCostController implements OrderLogisticsCostApi
     public ApiResponse<LogisticsCostDetailView> voidEntry(
             String id, LogisticsCostActionCommand action) {
         return ApiResponse.success(service.action("logistics", id, action, false));
+    }
+
+    @Override
+    public ApiResponse<LogisticsCostDetailView> revoke(
+            String id, LogisticsCostActionCommand action) {
+        return ApiResponse.success(service.lifecycle("logistics", id, action, false));
+    }
+
+    @Override
+    public ApiResponse<LogisticsCostDetailView> delete(
+            String id, LogisticsCostActionCommand action) {
+        return ApiResponse.success(service.lifecycle("logistics", id, action, true));
     }
 
     @Override

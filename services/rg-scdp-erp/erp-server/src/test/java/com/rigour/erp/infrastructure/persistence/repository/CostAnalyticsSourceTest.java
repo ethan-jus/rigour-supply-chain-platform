@@ -40,6 +40,7 @@ class CostAnalyticsSourceTest {
                                                                             : " VARCHAR(1000)"))
                                             .toList())
                             + ")");
+            jdbc.execute("ALTER TABLE erp_cost_entry ADD COLUMN deleted INT NOT NULL DEFAULT 0");
             jdbc.execute(
                     "CREATE TABLE erp_cost_guard(tenant_id VARCHAR PRIMARY KEY,version BIGINT)");
             jdbc.update("INSERT INTO erp_cost_guard VALUES('tenant',1)");
@@ -50,6 +51,9 @@ class CostAnalyticsSourceTest {
             jdbc.update(
                     "INSERT INTO erp_cost_entry(id,tenant_id,amount)"
                             + " VALUES('foreign','another',999)");
+            jdbc.update(
+                    "INSERT INTO erp_cost_entry(id,tenant_id,amount,deleted)"
+                        + " VALUES('removed','tenant',999,1)");
             var config = new MybatisConfiguration();
             config.setMapUnderscoreToCamelCase(true);
             config.addMapper(ErpCostMapper.class);

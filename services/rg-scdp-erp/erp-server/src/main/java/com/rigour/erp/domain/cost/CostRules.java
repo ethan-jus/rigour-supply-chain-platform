@@ -17,15 +17,26 @@ public final class CostRules {
     }
 
     public static void transition(String state, String action, BigDecimal amount, String reason) {
-        if ("VOID".equals(state)) throw new IllegalArgumentException("已作废费用不能变更");
+        switch (action) {
+            case "UPDATE", "CONFIRM", "VOID" -> {
+                if (!"DRAFT".equals(state))
+                    throw new IllegalArgumentException("仅待确认费用可编辑、确认或作废；已确认费用请先撤销");
+            }
+            case "REVOKE" -> {
+                if (!"CONFIRMED".equals(state)) throw new IllegalArgumentException("仅已确认费用可撤销");
+            }
+            case "DELETE" -> {
+                if (!"VOID".equals(state)) throw new IllegalArgumentException("仅已作废费用可删除");
+            }
+            default -> throw new IllegalArgumentException("费用操作无效");
+        }
         if ("CONFIRM".equals(action)) {
-            if (!"DRAFT".equals(state)) throw new IllegalArgumentException("仅待确认费用可确认");
             money(amount, true);
             if (amount.signum() == 0 && blank(reason))
                 throw new IllegalArgumentException("零元费用确认需填写原因");
         }
-        if (("VOID".equals(action) || "CONFIRMED".equals(state)) && blank(reason))
-            throw new IllegalArgumentException("作废或修改已确认费用需填写原因");
+        if (List.of("VOID", "REVOKE", "DELETE").contains(action) && blank(reason))
+            throw new IllegalArgumentException("请填写作废、撤销或删除原因");
     }
 
     public static void sameTrip(List<String> keys) {

@@ -22,4 +22,17 @@ public interface CostAttachmentApi {
             @PathVariable String entry,
             @RequestParam int revision,
             @RequestPart("file") MultipartFile file);
+
+    @PostMapping("/api/v1/orders/logistics-costs/{entry}/attachments/{id}/remove")
+    ApiResponse<Void> remove(
+            @PathVariable String entry, @PathVariable String id, @RequestParam int revision);
+
+    @PostMapping(
+            value = "/api/v1/orders/logistics-costs/{entry}/attachments/{id}/replacement",
+            consumes = "multipart/form-data")
+    ApiResponse<LogisticsCostAttachmentView> replace(
+            @PathVariable String entry,
+            @PathVariable String id,
+            @RequestParam int revision,
+            @RequestPart("file") MultipartFile file);
 }

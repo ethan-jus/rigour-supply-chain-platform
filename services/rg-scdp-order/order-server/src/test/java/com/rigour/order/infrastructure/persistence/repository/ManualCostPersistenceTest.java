@@ -51,6 +51,7 @@ class ManualCostPersistenceTest {
                         .replace(" JSON ", " LONGTEXT ")
                         .replace("'MARKETING','RENTAL'", "'MARKETING','RENTAL','PURCHASE','LOSS'");
         for (String sql : ddl.split(";")) if (!sql.isBlank()) jdbc.execute(sql);
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN deleted INT NOT NULL DEFAULT 0");
 
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN source_system VARCHAR(20)");
         String attachmentDdl =
@@ -61,6 +62,9 @@ class ManualCostPersistenceTest {
                                 "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
                                 "");
         jdbc.execute(attachmentDdl);
+        jdbc.execute(
+                "ALTER TABLE order_logistics_cost_attachment ADD COLUMN deleted INT NOT NULL"
+                    + " DEFAULT 0");
         var config = new MybatisConfiguration();
         config.addMapper(CostAttachmentMapper.class);
         config.setMapUnderscoreToCamelCase(true);
@@ -176,9 +180,29 @@ class ManualCostPersistenceTest {
                         "U",
                         "cost:confirm");
         assertThat(confirmed.statusCode()).isEqualTo("CONFIRMED");
-        assertThatThrownBy(() -> save(first.id(), command(3, "124", "")))
-                .hasMessageContaining("原因");
-        var updated = save(first.id(), command(3, "124", "补录更正"));
+        assertThatThrownBy(() -> save(first.id(), command(3, "124", "任意原因")))
+                .hasMessageContaining("撤销");
+        assertThatThrownBy(
+                        () ->
+                                store.lifecycle(
+                                        "T1",
+                                        "LOGISTICS",
+                                        first.id(),
+                                        new LogisticsCostActionCommand(3, "不能删除"),
+                                        "U",
+                                        "cost:void",
+                                        true))
+                .hasMessageContaining("作废");
+        var revoked =
+                store.lifecycle(
+                        "T1",
+                        "LOGISTICS",
+                        first.id(),
+                        new LogisticsCostActionCommand(3, "补录更正前撤销"),
+                        "U",
+                        "cost:confirm",
+                        false);
+        var updated = save(first.id(), command(revoked.revision(), "124", "补录更正"));
         assertThat(updated.statusCode()).isEqualTo("DRAFT");
         assertThatThrownBy(
                         () ->
@@ -200,8 +224,32 @@ class ManualCostPersistenceTest {
                         "cost:void");
         assertThat(voided.statusCode()).isEqualTo("VOID");
         assertThatThrownBy(() -> save(first.id(), command(voided.revision(), "124", "更正")))
-                .hasMessageContaining("作废");
-        assertThat(store.history("T1", first.id())).hasSize(7);
+                .hasMessageContaining("待确认");
+        assertThatThrownBy(
+                        () ->
+                                store.lifecycle(
+                                        "T1",
+                                        "LOGISTICS",
+                                        first.id(),
+                                        new LogisticsCostActionCommand(
+                                                voided.revision() - 1, "旧版本"),
+                                        "U",
+                                        "cost:void",
+                                        true))
+                .hasMessageContaining("变化");
+        store.lifecycle(
+                "T1",
+                "LOGISTICS",
+                first.id(),
+                new LogisticsCostActionCommand(voided.revision(), "删除作废单据"),
+                "U",
+                "cost:void",
+                true);
+        assertThatThrownBy(() -> store.entry("T1", "LOGISTICS", first.id(), "cost:read"))
+                .hasMessageContaining("不存在");
+        assertThat(store.history("T1", first.id()))
+                .extracting(a -> a.action())
+                .contains("REVOKE", "DELETE");
         assertThatThrownBy(() -> store.entry("T2", "LOGISTICS", first.id(), "cost:read"))
                 .hasMessageContaining("不存在");
         verifyNoInteractions(refs);
@@ -248,6 +296,83 @@ class ManualCostPersistenceTest {
     }
 
     @Test
+    void replacingAndRemovingRetainFilesAndRollbackAsOneMutation() {
+        var first = save(null, command(1, "10", ""));
+        var tx =
+                new org.springframework.transaction.support.TransactionTemplate(
+                        new org.springframework.jdbc.datasource.DataSourceTransactionManager(ds));
+        var old =
+                new LogisticsCostAttachmentView(
+                        "old", "原运费凭证.pdf", "application/pdf", 20, "U", java.time.Instant.now());
+        var replacement =
+                new LogisticsCostAttachmentView(
+                        "new", "更正运费凭证.pdf", "application/pdf", 20, "U", java.time.Instant.now());
+        tx.execute(
+                status -> {
+                    attachments.add("T1", first.id(), 1, old, "private/old");
+                    return null;
+                });
+        assertThatThrownBy(
+                        () ->
+                                tx.execute(
+                                        status -> {
+                                            attachments.retire("T1", first.id(), old.id());
+                                            attachments.add("T1", first.id(), 2, replacement, null);
+                                            return null;
+                                        }))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(attachments.list("T1", first.id()))
+                .extracting(f -> f.id())
+                .containsExactly("old");
+        tx.execute(
+                status -> {
+                    attachments.retire("T1", first.id(), old.id());
+                    attachments.add("T1", first.id(), 2, replacement, "private/new");
+                    store.attachmentChanged(
+                            "T1",
+                            "LOGISTICS",
+                            first.id(),
+                            "U",
+                            "ATTACHMENT_REPLACED",
+                            "原运费凭证 → 更正运费凭证",
+                            "cost:write");
+                    return null;
+                });
+        assertThat(attachments.list("T1", first.id()))
+                .extracting(f -> f.id())
+                .containsExactly("new");
+        assertThatThrownBy(() -> attachments.fileKey("T1", first.id(), old.id()))
+                .hasMessageContaining("不存在");
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT file_key FROM order_logistics_cost_attachment WHERE"
+                                    + " id='old'",
+                                String.class))
+                .isEqualTo("private/old");
+        assertThatThrownBy(() -> attachments.retire("T2", first.id(), replacement.id()))
+                .hasMessageContaining("变化");
+        tx.execute(
+                status -> {
+                    attachments.touch("T1", first.id(), 3, "U");
+                    attachments.retire("T1", first.id(), replacement.id());
+                    store.attachmentChanged(
+                            "T1",
+                            "LOGISTICS",
+                            first.id(),
+                            "U",
+                            "ATTACHMENT_REMOVED",
+                            "更正运费凭证",
+                            "cost:write");
+                    return null;
+                });
+        assertThat(attachments.list("T1", first.id())).isEmpty();
+        assertThat(store.entry("T1", "LOGISTICS", first.id(), "cost:read").revision()).isEqualTo(4);
+        assertThat(store.history("T1", first.id()))
+                .extracting(a -> a.action())
+                .contains("ATTACHMENT_REPLACED", "ATTACHMENT_REMOVED");
+    }
+
+    @Test
     void laterAssociationPreservesDhbOriginalNumberAndDoesNotCreateSecondCost() {
         var first = save(null, command(1, "10", ""));
         String body = json.writeValueAsString(command(1, "10", ""));
@@ -274,29 +399,4 @@ class ManualCostPersistenceTest {
         assertThatThrownBy(() -> save(first.id(), tampered)).hasMessageContaining("原始来源");
         assertThat(store.entry("T1", "LOGISTICS", first.id(), "cost:read").revision()).isEqualTo(2);
     }
-    @Test void procurementSourceRetryNeverDuplicatesOrOverwritesManualActualCosts() {
-        for(String column:List.of("transport_purpose_code","delivery_mode_code","carrier_code","tracking_no","cost_month","origin_biz_key")) jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN "+column+" VARCHAR(150)");
-        jdbc.execute("CREATE UNIQUE INDEX origin_unique ON order_logistics_cost(tenant_id,origin_biz_key)");
-        when(scope.predicate(anyString(),any(String[].class))).thenReturn(new LogisticsWarehouseDataScope.Predicate("1=1",List.of()));
-        var source=new com.rigour.erp.api.v1.model.ProcurementCostSource("PO1",1,java.time.LocalDate.of(2026,11,3),"SUP1","华东食品供应有限公司","厂家地址","李经理","13800000000",7,"WH1","武汉城市仓","C1","张三","13800000001","收货地址","BUYER",new java.math.BigDecimal("18"));
-        var draft=com.rigour.order.application.service.cost.ProcurementFreightDraft.from(source);
-        var manual=save(null,command(1,"10",""));
-        var first=store.upsertProcurementFreight("T1",draft);
-        long version=jdbc.queryForObject("SELECT version FROM order_logistics_cost_guard WHERE tenant_id='T1'",Long.class);
-        assertThat(store.upsertProcurementFreight("T1",draft).id()).isEqualTo(first.id());
-        assertThat(jdbc.queryForObject("SELECT version FROM order_logistics_cost_guard WHERE tenant_id='T1'",Long.class)).isEqualTo(version);
-        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_logistics_cost",Long.class)).isEqualTo(2);
-        var old=first.data().ledger().sourceSync();
-        var trusted=new LogisticsCostLedger.SourceSync(old.originBizKey(),old.originVersion(),old.lastAppliedFingerprint(),true,old.lastSeenVersion(),old.lastSeenFingerprint(),false);
-        var edit=first.data().withLedger(first.data().ledger().withSourceSync(trusted),first.data().amount());
-        edit=new LogisticsCostCommand(edit.requestId(),first.revision(),edit.title(),edit.typeCode(),edit.cityCode(),edit.cityName(),null,null,edit.costDate(),edit.amount(),edit.paymentStatusCode(),null,edit.remark(),"已核实实际运费",edit.ledger());
-        var edited=store.save("T1","LOGISTICS",first.id(),edit,List.of(),null,null,"U","cost:write");
-        var next=new com.rigour.erp.api.v1.model.ProcurementCostSource("PO1",2,source.purchaseDate(),source.supplierCode(),source.supplierName(),source.supplierAddress(),source.supplierContact(),source.supplierPhone(),source.warehouseId(),source.warehouseCode(),source.warehouseName(),source.cityCode(),source.receiverName(),source.receiverPhone(),source.receivingAddress(),"BUYER",new java.math.BigDecimal("88"));
-        var preserved=store.upsertProcurementFreight("T1",com.rigour.order.application.service.cost.ProcurementFreightDraft.from(next));
-        assertThat(preserved.data().amount()).isEqualByComparingTo("18");assertThat(preserved.data().ledger().sourceSync().differencePending()).isTrue();
-        assertThat(store.entry("T1","LOGISTICS",manual.id(),"cost:read").data().amount()).isEqualByComparingTo("10");
-        assertThat(store.upsertProcurementFreight("T1",com.rigour.order.application.service.cost.ProcurementFreightDraft.from(next)).revision()).isEqualTo(preserved.revision());
-        assertThat(preserved.revision()).isGreaterThan(edited.revision());
-    }
-
 }

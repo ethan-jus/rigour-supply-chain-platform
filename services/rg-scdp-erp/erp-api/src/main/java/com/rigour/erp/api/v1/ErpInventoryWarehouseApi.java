@@ -1,6 +1,7 @@
 package com.rigour.erp.api.v1;
 
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseCommand;
+import com.rigour.erp.api.v1.model.WarehouseLocationCatalogView;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.shared.core.api.ApiResponse;
@@ -24,7 +25,11 @@ public interface ErpInventoryWarehouseApi {
             @RequestParam(required = false) String warehouseName,
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) Boolean defaultFlag,
-            @RequestParam(required = false) String statusCode);
+            @RequestParam(required = false) String statusCode,
+            @RequestParam(required = false) String sourceWarehouseCode);
+
+    @GetMapping(BASE_PATH + "/location-catalog")
+    ApiResponse<WarehouseLocationCatalogView> locationCatalog(@RequestParam(required = false) String version);
 
     @GetMapping(BASE_PATH + "/{id}")
     ApiResponse<InternalInventoryWarehouseView> warehouse(@PathVariable("id") Long id);

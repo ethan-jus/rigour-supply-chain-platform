@@ -63,6 +63,18 @@ public final class ErpCostController implements ErpCostApi {
     }
 
     @Override
+    public ApiResponse<ErpCostDetailView> revoke(
+            String category, String id, ErpCostActionCommand action) {
+        return ApiResponse.success(service.lifecycle(category, id, action, false));
+    }
+
+    @Override
+    public ApiResponse<ErpCostDetailView> delete(
+            String category, String id, ErpCostActionCommand action) {
+        return ApiResponse.success(service.lifecycle(category, id, action, true));
+    }
+
+    @Override
     public ApiResponse<List<ErpCostAuditView>> history(String category, String id) {
         return ApiResponse.success(service.history(category, id));
     }

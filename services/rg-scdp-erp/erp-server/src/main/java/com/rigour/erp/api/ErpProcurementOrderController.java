@@ -37,7 +37,7 @@ public final class ErpProcurementOrderController implements ErpProcurementOrderA
             String targetWarehouseCode,
             String confirmationStatusCode,
             java.time.LocalDate purchaseDateFrom,
-            java.time.LocalDate purchaseDateTo) {
+            java.time.LocalDate purchaseDateTo, String sourceDocumentNo) {
         return ApiResponse.success(
                 procurementOrderService.procurementOrders(
                         begin,
@@ -52,7 +52,7 @@ public final class ErpProcurementOrderController implements ErpProcurementOrderA
                         targetWarehouseCode,
                         confirmationStatusCode,
                         purchaseDateFrom,
-                        purchaseDateTo));
+                        purchaseDateTo, sourceDocumentNo));
     }
 
     @Override

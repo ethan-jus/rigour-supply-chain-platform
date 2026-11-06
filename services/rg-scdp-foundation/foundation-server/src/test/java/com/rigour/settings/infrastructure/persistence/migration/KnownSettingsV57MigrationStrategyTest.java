@@ -1,0 +1,156 @@
+package com.rigour.settings.infrastructure.persistence.migration;
+
+import static org.assertj.core.api.Assertions.*;
+
+import com.rigour.settings.infrastructure.config.LocalSettingsMigrationRecoveryConfiguration;
+
+import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.FlywayException;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
+
+import java.nio.file.*;
+import java.util.UUID;
+
+import javax.sql.DataSource;
+
+class KnownSettingsV57MigrationStrategyTest {
+    @TempDir Path directory;
+    Flyway flyway;
+    JdbcTemplate jdbc;
+    final KnownSettingsV57MigrationStrategy strategy = new KnownSettingsV57MigrationStrategy();
+
+    @BeforeEach
+    void setup() throws Exception {
+        var ds =
+                new DriverManagerDataSource(
+                        "jdbc:h2:mem:" + UUID.randomUUID() + ";DB_CLOSE_DELAY=-1", "sa", "");
+        jdbc = new JdbcTemplate(ds);
+        Files.writeString(
+                directory.resolve("V56__fixture.sql"),
+                "CREATE TABLE fixture (id INT PRIMARY KEY);");
+        flyway = Flyway.configure().dataSource(ds).locations("filesystem:" + directory).load();
+        flyway.migrate();
+        // 仅隔离测试模拟数据库元数据；不伪造生产缺失脚本。
+        jdbc.update(
+                """
+INSERT INTO "flyway_schema_history" ("installed_rank","version","description","type","script","checksum","installed_by","execution_time","success")
+VALUES (2,'57','crm store business status','SQL','V57__crm_store_business_status.sql',-1826246970,'fixture',1,TRUE)
+""");
+        Files.writeString(
+                directory.resolve("V58__fixture.sql"), "INSERT INTO fixture VALUES (58);");
+    }
+
+    @Test
+    void knownMissingHistoryAllowsForwardMigrationOnceWithoutRewritingHistory() {
+        var before =
+                jdbc.queryForMap("SELECT * FROM \"flyway_schema_history\" WHERE \"version\"='57'");
+        assertThat(strategy.hasKnownMissingHistory(flyway)).isTrue();
+        strategy.migrate(flyway);
+        strategy.migrate(flyway);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture WHERE id=58", Integer.class))
+                .isOne();
+        assertThat(
+                        jdbc.queryForMap(
+                                "SELECT * FROM \"flyway_schema_history\" WHERE \"version\"='57'"))
+                .isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"checksum", "script", "description", "type", "success"})
+    void changedOrFailedKnownRecordCannotBeIgnored(String field) {
+        String value =
+                switch (field) {
+                    case "checksum" -> "1";
+                    case "success" -> "FALSE";
+                    case "type" -> "'JDBC'";
+                    default -> "'unrecognized'";
+                };
+        jdbc.update(
+                "UPDATE \"flyway_schema_history\" SET \""
+                        + field
+                        + "\"="
+                        + value
+                        + " WHERE \"version\"='57'");
+        blocked();
+    }
+
+    @Test
+    void anotherMissingVersionBlocksStartup() throws Exception {
+        Files.delete(directory.resolve("V56__fixture.sql"));
+        blocked();
+    }
+
+    @Test
+    void changedLocalResolvedScriptBlocksStartup() throws Exception {
+        Files.writeString(
+                directory.resolve("V56__fixture.sql"), "CREATE TABLE fixture (id BIGINT);");
+        blocked();
+    }
+
+    @Test
+    void conflictingLocalV57CannotBeIgnored() throws Exception {
+        Files.writeString(directory.resolve("V57__logistics_transport_types.sql"), "SELECT 1;");
+        blocked();
+    }
+
+    @Test
+    void unknownFutureVersionCannotBeIgnored() {
+        jdbc.update(
+                """
+INSERT INTO "flyway_schema_history" ("installed_rank","version","description","type","script","checksum","installed_by","execution_time","success")
+VALUES (3,'59','unrecognized','SQL','V59__unrecognized.sql',1,'fixture',1,TRUE)
+""");
+        blocked();
+    }
+
+    @Test
+    void latestKnownHistoryWithoutPendingMigrationIsStillReadOnly() throws Exception {
+        Files.delete(directory.resolve("V58__fixture.sql"));
+        var before = jdbc.queryForList("SELECT * FROM \"flyway_schema_history\"");
+        strategy.migrate(flyway);
+        assertThat(jdbc.queryForList("SELECT * FROM \"flyway_schema_history\"")).isEqualTo(before);
+    }
+
+    @Test
+    void noConflictUsesNormalMigration() {
+        jdbc.update("DELETE FROM \"flyway_schema_history\" WHERE \"version\"='57'");
+        assertThat(strategy.hasKnownMissingHistory(flyway)).isFalse();
+        strategy.migrate(flyway);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture", Integer.class)).isOne();
+    }
+
+    @Test
+    void bootInitializerUsesTheOptedInStrategy() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(FlywayAutoConfiguration.class))
+                .withUserConfiguration(LocalSettingsMigrationRecoveryConfiguration.class)
+                .withBean(DataSource.class, () -> flyway.getConfiguration().getDataSource())
+                .withPropertyValues(
+                        "spring.profiles.active=dev,local",
+                        "rigour.settings.flyway.allow-known-history-conflicts=true",
+                        "spring.flyway.locations=filesystem:" + directory)
+                .run(context -> assertThat(context).hasNotFailed());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture", Integer.class)).isOne();
+    }
+
+    void blocked() {
+        var before =
+                jdbc.queryForList(
+                        "SELECT * FROM \"flyway_schema_history\" ORDER BY \"installed_rank\"");
+        assertThatThrownBy(() -> strategy.migrate(flyway)).isInstanceOf(FlywayException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture", Integer.class)).isZero();
+        assertThat(
+                        jdbc.queryForList(
+                                "SELECT * FROM \"flyway_schema_history\" ORDER BY"
+                                        + " \"installed_rank\""))
+                .isEqualTo(before);
+    }
+}

@@ -37,7 +37,8 @@ public class MybatisPlusCostAttachmentRepository implements CostAttachmentStore 
     private LambdaQueryWrapper<CostAttachmentEntity> scope(String tenant, String entry) {
         return new LambdaQueryWrapper<CostAttachmentEntity>()
                 .eq(CostAttachmentEntity::getTenantId, tenant)
-                .eq(CostAttachmentEntity::getEntryId, entry);
+                .eq(CostAttachmentEntity::getEntryId, entry)
+                .eq(CostAttachmentEntity::getDeleted, 0);
     }
 
     public List<ErpCostAttachmentView> list(String tenant, String entry) {
@@ -68,22 +69,10 @@ public class MybatisPlusCostAttachmentRepository implements CostAttachmentStore 
 
     public void add(
             String tenant, String entry, int revision, ErpCostAttachmentView file, String key) {
-        int changed =
-                costs.update(
-                        null,
-                        new LambdaUpdateWrapper<ErpCostEntity>()
-                                .eq(ErpCostEntity::getTenantId, tenant)
-                                .eq(ErpCostEntity::getId, entry)
-                                .eq(ErpCostEntity::getRevision, revision)
-                                .eq(ErpCostEntity::getStatusCode, "DRAFT")
-                                .set(ErpCostEntity::getUpdatedBy, file.createdBy())
-                                .set(
-                                        ErpCostEntity::getUpdatedTime,
-                                        LocalDateTime.now(ZoneOffset.UTC))
-                                .setSql("revision=revision+1"));
-        if (changed != 1) throw new BusinessException(ErrorCode.CONFLICT, "费用已被修改，请刷新", List.of());
+        touch(tenant, entry, revision, file.createdBy());
         var row = new CostAttachmentEntity();
         row.setId(file.id());
+        row.setDeleted(0);
         row.setTenantId(tenant);
         row.setEntryId(entry);
         row.setFileKey(key);
@@ -93,5 +82,35 @@ public class MybatisPlusCostAttachmentRepository implements CostAttachmentStore 
         row.setCreatedBy(file.createdBy());
         row.setCreatedTime(LocalDateTime.ofInstant(file.createdTime(), ZoneOffset.UTC));
         attachments.insert(row);
+    }
+
+    public void touch(String tenant, String entry, int revision, String actor) {
+        int changed =
+                costs.update(
+                        null,
+                        new LambdaUpdateWrapper<ErpCostEntity>()
+                                .eq(ErpCostEntity::getTenantId, tenant)
+                                .eq(ErpCostEntity::getId, entry)
+                                .eq(ErpCostEntity::getRevision, revision)
+                                .eq(ErpCostEntity::getStatusCode, "DRAFT")
+                                .set(ErpCostEntity::getUpdatedBy, actor)
+                                .set(
+                                        ErpCostEntity::getUpdatedTime,
+                                        LocalDateTime.now(ZoneOffset.UTC))
+                                .setSql("revision=revision+1"));
+        if (changed != 1) throw new BusinessException(ErrorCode.CONFLICT, "费用已被修改，请刷新", List.of());
+    }
+
+    public void retire(String tenant, String entry, String id) {
+        int changed =
+                attachments.update(
+                        null,
+                        new LambdaUpdateWrapper<CostAttachmentEntity>()
+                                .eq(CostAttachmentEntity::getTenantId, tenant)
+                                .eq(CostAttachmentEntity::getEntryId, entry)
+                                .eq(CostAttachmentEntity::getId, id)
+                                .eq(CostAttachmentEntity::getDeleted, 0)
+                                .set(CostAttachmentEntity::getDeleted, 1));
+        if (changed != 1) throw new BusinessException(ErrorCode.CONFLICT, "附件已变化，请刷新", List.of());
     }
 }

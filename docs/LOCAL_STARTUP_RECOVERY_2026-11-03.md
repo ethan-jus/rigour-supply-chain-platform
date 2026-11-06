@@ -1,5 +1,17 @@
 # 本机成本功能联调与迁移说明
 
+## 当前补充（2026-11-05）
+
+用户本次重新授权开启字典服务本机临时过滤。V50～V55 原件已在当前源码中，真实库只读预检确认目前唯一缺失的是 V57 `V57__crm_store_business_status.sql`，描述 `crm store business status`、checksum `-1826246970`、SQL、success=true。本地未发布的运输类型脚本顺延至 V58，V57 原历史和已发布脚本均未改动。
+
+新增 `KnownSettingsV57MigrationStrategy` 和 `LocalSettingsMigrationRecoveryConfiguration`：仅 `local & !prod` 且 `rigour.settings.flyway.allow-known-history-conflicts=true` 生效。本机 application-local.yml 已开启该开关，个人开关不纳入团队提交。完整预检只允许上述精确 V57 缺失；其他缺失、未来、失败、描述、类型、文件名或checksum差异仍拦截。通过后保留V57，允许正常前向迁移V58，不调用repair、不关闭Flyway。
+
+17项隔离测试通过；真实MySQL只读预检识别唯一已核实V57，待执行仅V58，前后Flyway历史一致。数据库静态策略检查通过。2026-11-05用户重启后，Foundation日志确认本机精确V57过滤生效、60项迁移校验通过、schema版本58，26892健康检查UP；数据库V57原校验值保持-1826246970，V58（695062425）success=true。有效运输类型为仓间调拨、销售订单配送、其他费用，旧采购运输与非销售配送均已停用。浏览器当前停在登录页，带身份字典接口、采购成本/物流页面和实际导出仍待用户登录后核对。
+
+BI占用26888的是11月4日的本项目旧进程，已精确识别后SIGTERM退出。用户随后启动的新进程已监听26888且health=UP，未自行另起服务实例。
+
+以下保留此前日期的处理及验证快照，不代表当前过滤开关仍关闭。
+
 2026-11-04 按用户最终要求撤销 Order、Foundation 的本机 Flyway 临时过滤；对应配置类、测试、个人开关和遗留编译类已移除，恢复标准 Flyway 校验。用户确认缺失原件仍在同事本地，本次不引入、不补造，也不再为这些缺失记录新增忽略规则。
 
 ## 已核实状态

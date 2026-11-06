@@ -34,11 +34,16 @@ public final class ErpCostService {
     private final CostReferenceSource references;
     private WarehouseLedgerService warehouseLedgers;
     private com.rigour.erp.application.port.out.ProcurementGoodsCosts procurementGoods;
-    @org.springframework.beans.factory.annotation.Autowired
-    void procurementGoods(com.rigour.erp.application.port.out.ProcurementGoodsCosts source){this.procurementGoods=source;}
 
     @org.springframework.beans.factory.annotation.Autowired
-    void warehouseLedgers(WarehouseLedgerService service) { warehouseLedgers = service; }
+    void procurementGoods(com.rigour.erp.application.port.out.ProcurementGoodsCosts source) {
+        this.procurementGoods = source;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void warehouseLedgers(WarehouseLedgerService service) {
+        warehouseLedgers = service;
+    }
 
     public ErpCostService(
             ErpCostStore store, ErpProductDictionary dictionary, CostReferenceSource references) {
@@ -140,23 +145,31 @@ public final class ErpCostService {
                         q.payeeName(),
                         q.landlordName(),
                         q.productName(),
-                        q.specification(), q.ledgerFeeType(), q.warehouseCode()),
+                        q.specification(),
+                        q.ledgerFeeType(),
+                        q.warehouseCode()),
                 p);
     }
 
     public ErpCostDetailView entry(String value, String id) {
         String c = category(value), p = permission(c, "read");
-        String tenant=actor(p).tenantId().toString();
-        try { return store.entry(tenant,c,id,p); }
-        catch(BusinessException e){
-            if(e.getErrorCode()!=ErrorCode.NOT_FOUND || !"PURCHASE".equals(c) || procurementGoods==null)throw e;
-            return procurementGoods.detail(tenant,id,p).orElseThrow(()->e);
+        String tenant = actor(p).tenantId().toString();
+        try {
+            return store.entry(tenant, c, id, p);
+        } catch (BusinessException e) {
+            if (e.getErrorCode() != ErrorCode.NOT_FOUND
+                    || !"PURCHASE".equals(c)
+                    || procurementGoods == null) throw e;
+            return procurementGoods.detail(tenant, id, p).orElseThrow(() -> e);
         }
     }
 
     public List<ErpCostAuditView> history(String value, String id) {
         var row = entry(value, id);
-        return row.procurementReference()!=null ? List.of() : store.history(AuthorizationContext.requireCurrent().tenantId().toString(), row.id());
+        return row.procurementReference() != null
+                ? List.of()
+                : store.history(
+                        AuthorizationContext.requireCurrent().tenantId().toString(), row.id());
     }
 
     public List<ErpCostEmployeeView> employees() {
@@ -178,7 +191,11 @@ public final class ErpCostService {
         String category = category(value), p = permission(category, "write");
         var a = actor(p);
         String t = a.tenantId().toString();
+        if (id != null && !"DRAFT".equals(store.entry(t, category, id, p).statusCode()))
+            throw bad("只有待确认费用可编辑，已确认费用请先撤销");
         if (c == null) throw bad("请填写费用");
+        if ("PROCUREMENT_FREIGHT".equals(c.typeCode()))
+            throw bad("采购实际运费请从采购成本记录的核实入口维护，不能使用人工货款台账覆盖");
         if (c.warehouseLedger() != null) {
             if (!"RENTAL".equals(category)) throw bad("只有仓储费用可填写费用组合");
             c = warehouseLedgers.normalize(c, p, false);
@@ -241,10 +258,19 @@ public final class ErpCostService {
             throw bad("请先选择费用负责人，不接受未经核验的部门或员工编号");
         }
         if (c.warehouseLedger() != null) {
-            if (!"RENTAL".equals(category) || c.rental() != null || c.goods() != null) throw bad("仓储费用参数无效");
+            if (!"RENTAL".equals(category) || c.rental() != null || c.goods() != null)
+                throw bad("仓储费用参数无效");
             var normalized = warehouseLedgers.normalize(c, p, false);
-            if (!com.rigour.erp.domain.cost.WarehouseLedgerRules.sameComputation(normalized.warehouseLedger(), c.warehouseLedger()) || (normalized.amount() == null ? c.amount() != null : c.amount() == null || normalized.amount().compareTo(c.amount()) != 0)) throw bad("费用计算已变化，请重新编辑后保存");
-            return new ValidatedCost(List.of(), warehouseLedgers.warehouse(c.warehouseLedger().warehouseCode(), p).name(), employeeName);
+            if (!com.rigour.erp.domain.cost.WarehouseLedgerRules.sameComputation(
+                            normalized.warehouseLedger(), c.warehouseLedger())
+                    || (normalized.amount() == null
+                            ? c.amount() != null
+                            : c.amount() == null || normalized.amount().compareTo(c.amount()) != 0))
+                throw bad("费用计算已变化，请重新编辑后保存");
+            return new ValidatedCost(
+                    List.of(),
+                    warehouseLedgers.warehouse(c.warehouseLedger().warehouseCode(), p).name(),
+                    employeeName);
         }
         if ("RENTAL".equals(category)) {
             if (c.rental() == null || c.goods() != null) throw bad("场地参数无效");
@@ -355,6 +381,26 @@ public final class ErpCostService {
         return new ValidatedCost(sources, warehouseName, employeeName);
     }
 
+    public ErpCostDetailView lifecycle(
+            String value, String id, ErpCostActionCommand command, boolean delete) {
+        String category = category(value), p = permission(category, delete ? "void" : "confirm");
+        var caller = actor(p);
+        if (command == null || command.revision() < 1) throw bad("缺少费用版本");
+        required(command.reason(), 500, delete ? "删除原因" : "撤销原因");
+        return operation(
+                delete ? "DELETE" : "REVOKE",
+                id,
+                () ->
+                        store.lifecycle(
+                                caller.tenantId().toString(),
+                                category,
+                                id,
+                                command,
+                                caller.principalId().toString(),
+                                p,
+                                delete));
+    }
+
     public ErpCostDetailView action(
             String value, String id, ErpCostActionCommand command, boolean confirm) {
         return operation(
@@ -380,8 +426,12 @@ public final class ErpCostService {
 
     private static void validateConfirmation(String category, ErpCostCommand command) {
         if (command.warehouseLedger() != null) {
-            try { com.rigour.erp.domain.cost.WarehouseLedgerRules.normalize(command.warehouseLedger(), true); }
-            catch (IllegalArgumentException e) { throw bad(e.getMessage()); }
+            try {
+                com.rigour.erp.domain.cost.WarehouseLedgerRules.normalize(
+                        command.warehouseLedger(), true);
+            } catch (IllegalArgumentException e) {
+                throw bad(e.getMessage());
+            }
             return;
         }
         if ("PURCHASE".equals(category)) {

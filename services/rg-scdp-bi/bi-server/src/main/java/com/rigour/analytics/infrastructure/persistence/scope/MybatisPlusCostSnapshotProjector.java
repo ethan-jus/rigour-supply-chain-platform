@@ -23,7 +23,8 @@ public class MybatisPlusCostSnapshotProjector implements CostDashboardRefresh {
     // Changing the classification contract must rebuild persisted facts even when source data is
     // unchanged.
     private static final String NORMALIZATION_VERSION_KEY = "BI_COST_NORMALIZATION";
-    private static final String NORMALIZATION_VERSION = "7";
+    private static final String NORMALIZATION_VERSION =
+            com.rigour.analytics.domain.cost.CostAnalysis.NORMALIZATION_VERSION;
     private static final Logger log =
             LoggerFactory.getLogger(MybatisPlusCostSnapshotProjector.class);
     private final CostSnapshotMapper snapshots;
@@ -135,66 +136,68 @@ public class MybatisPlusCostSnapshotProjector implements CostDashboardRefresh {
                         throw new IllegalStateException("费用源字段或租户不匹配");
                     cursor = CostSourceDatasets.validateCursor(source.get("id"), cursor);
                     var root = normalizer.normalize(d.source(), source, cities, paths);
-                    if (root != null && !"HR".equals(root.source())) originals.put(root.key(), root);
+                    if (root != null && !"HR".equals(root.source()))
+                        originals.put(root.key(), root);
                     for (var partition : CostLedgerPartitions.expand(d.source(), source, json)) {
-                    var fact = normalizer.normalize(d.source(), partition, cities, paths);
-                    if (fact == null) continue;
-                    if (!"HR".equals(fact.source())) originals.put(fact.key(), fact);
-                    else fact = CostReimbursementReconciler.reconcile(fact, originals);
-                    // 营销员工的当前部门用于源模块同义权限核验；同一批次带入现行员工归属。
-                    if ("marketing".equals(fact.category()) && fact.employeeCode() != null) {
-                        var employee = employeeIndex.get(fact.employeeCode());
-                        if (employee != null && !"1".equals(employee.get("deleted"))) {
-                            Map<String, CostFact.Dimension> dimensions =
-                                    new LinkedHashMap<>(fact.dimensions());
-                            dimensions.put(
-                                    "authorizationEmployeeDepartment",
-                                    new CostFact.Dimension(
-                                            Objects.toString(
-                                                    employee.get("department_id"), "UNKNOWN"),
-                                            Objects.toString(employee.get("department_path"), "[]"),
-                                            false));
-                            fact =
-                                    new CostFact(
-                                            fact.source(),
-                                            fact.sourceId(),
-                                            fact.sourceTable(),
-                                            fact.documentNo(),
-                                            fact.title(),
-                                            fact.category(),
-                                            fact.sourceCategory(),
-                                            fact.city(),
-                                            fact.cityName(),
-                                            fact.rawCity(),
-                                            fact.mappingState(),
-                                            fact.date(),
-                                            fact.amount(),
-                                            fact.status(),
-                                            fact.payment(),
-                                            fact.sourceSystem(),
-                                            fact.employeeCode(),
-                                            fact.employeeName(),
-                                            fact.departmentId(),
-                                            fact.departmentPath(),
-                                            fact.warehouseId(),
-                                            fact.sourceWarehouseId(),
-                                            fact.createdBy(),
-                                            fact.revision(),
-                                            fact.remark(),
-                                            Map.copyOf(dimensions),
-                                            fact.originalNumbers());
+                        var fact = normalizer.normalize(d.source(), partition, cities, paths);
+                        if (fact == null) continue;
+                        if (!"HR".equals(fact.source())) originals.put(fact.key(), fact);
+                        else fact = CostReimbursementReconciler.reconcile(fact, originals);
+                        // 营销员工的当前部门用于源模块同义权限核验；同一批次带入现行员工归属。
+                        if ("marketing".equals(fact.category()) && fact.employeeCode() != null) {
+                            var employee = employeeIndex.get(fact.employeeCode());
+                            if (employee != null && !"1".equals(employee.get("deleted"))) {
+                                Map<String, CostFact.Dimension> dimensions =
+                                        new LinkedHashMap<>(fact.dimensions());
+                                dimensions.put(
+                                        "authorizationEmployeeDepartment",
+                                        new CostFact.Dimension(
+                                                Objects.toString(
+                                                        employee.get("department_id"), "UNKNOWN"),
+                                                Objects.toString(
+                                                        employee.get("department_path"), "[]"),
+                                                false));
+                                fact =
+                                        new CostFact(
+                                                fact.source(),
+                                                fact.sourceId(),
+                                                fact.sourceTable(),
+                                                fact.documentNo(),
+                                                fact.title(),
+                                                fact.category(),
+                                                fact.sourceCategory(),
+                                                fact.city(),
+                                                fact.cityName(),
+                                                fact.rawCity(),
+                                                fact.mappingState(),
+                                                fact.date(),
+                                                fact.amount(),
+                                                fact.status(),
+                                                fact.payment(),
+                                                fact.sourceSystem(),
+                                                fact.employeeCode(),
+                                                fact.employeeName(),
+                                                fact.departmentId(),
+                                                fact.departmentPath(),
+                                                fact.warehouseId(),
+                                                fact.sourceWarehouseId(),
+                                                fact.createdBy(),
+                                                fact.revision(),
+                                                fact.remark(),
+                                                Map.copyOf(dimensions),
+                                                fact.originalNumbers());
+                            }
                         }
-                    }
-                    var row = new CostFactEntity();
-                    row.setId(UUID.randomUUID().toString());
-                    row.setTenantId(tenant);
-                    row.setSnapshotId(id);
-                    row.setSourceService(d.source());
-                    row.setSourceId(fact.sourceId());
-                    row.setCostDate(fact.date());
-                    row.setCategory(fact.category());
-                    row.setRecordJson(json.writeValueAsString(fact));
-                    batch.add(row);
+                        var row = new CostFactEntity();
+                        row.setId(UUID.randomUUID().toString());
+                        row.setTenantId(tenant);
+                        row.setSnapshotId(id);
+                        row.setSourceService(d.source());
+                        row.setSourceId(fact.sourceId());
+                        row.setCostDate(fact.date());
+                        row.setCategory(fact.category());
+                        row.setRecordJson(json.writeValueAsString(fact));
+                        batch.add(row);
                     }
                 }
                 if (!batch.isEmpty()) facts.insertBatch(batch);

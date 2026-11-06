@@ -41,6 +41,8 @@ class CostAnalyticsSourceTest {
                                             .toList())
                             + ")");
             jdbc.execute(
+                    "ALTER TABLE order_logistics_cost ADD COLUMN deleted INT NOT NULL DEFAULT 0");
+            jdbc.execute(
                     "CREATE TABLE order_logistics_cost_guard(tenant_id VARCHAR PRIMARY KEY,version"
                             + " BIGINT)");
             jdbc.update("INSERT INTO order_logistics_cost_guard VALUES('tenant',1)");
@@ -52,6 +54,9 @@ class CostAnalyticsSourceTest {
             jdbc.update(
                     "INSERT INTO order_logistics_cost(id,tenant_id,amount)"
                             + " VALUES('foreign','another',999)");
+            jdbc.update(
+                    "INSERT INTO order_logistics_cost(id,tenant_id,amount,deleted)"
+                        + " VALUES('removed','tenant',999,1)");
             var config = new MybatisConfiguration();
             config.setMapUnderscoreToCamelCase(true);
             config.addMapper(OrderLogisticsCostMapper.class);
@@ -75,10 +80,10 @@ class CostAnalyticsSourceTest {
                     status -> {
                         mapper.lock("tenant");
                         mapper.advanceAnalyticsVersion("tenant");
-                        assertThat(source.version("tenant")).isEqualTo("2");
+                        assertThat(source.version("tenant")).isEqualTo("2:transport-types-v2");
                         status.setRollbackOnly();
                     });
-            assertThat(source.version("tenant")).isEqualTo("1");
+            assertThat(source.version("tenant")).isEqualTo("1:transport-types-v2");
         } finally {
             ds.destroy();
         }

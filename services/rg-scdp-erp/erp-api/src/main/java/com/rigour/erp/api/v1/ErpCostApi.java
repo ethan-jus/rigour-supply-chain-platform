@@ -56,6 +56,18 @@ public interface ErpCostApi {
             @PathVariable String id,
             @RequestBody ErpCostActionCommand action);
 
+    @PostMapping(BASE_PATH + "/{category}/{id}/revoke")
+    ApiResponse<ErpCostDetailView> revoke(
+            @PathVariable String category,
+            @PathVariable String id,
+            @RequestBody ErpCostActionCommand action);
+
+    @PostMapping(BASE_PATH + "/{category}/{id}/delete")
+    ApiResponse<ErpCostDetailView> delete(
+            @PathVariable String category,
+            @PathVariable String id,
+            @RequestBody ErpCostActionCommand action);
+
     @GetMapping(BASE_PATH + "/{category}/{id}/history")
     ApiResponse<List<ErpCostAuditView>> history(
             @PathVariable String category, @PathVariable String id);

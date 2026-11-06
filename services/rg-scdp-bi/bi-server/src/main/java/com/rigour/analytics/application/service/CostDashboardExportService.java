@@ -252,17 +252,7 @@ public class CostDashboardExportService {
                 String.valueOf(rows.size()),
                 "已确认金额",
                 CostAnalysis.money(CostAnalysis.amount(rows)));
-        append(
-                out,
-                "单据号",
-                "事项",
-                "费用类别",
-                "城市",
-                "费用日期",
-                "金额（元）",
-                "确认状态",
-                "付款状态",
-                "费用所属月");
+        append(out, "单据号", "事项", "费用类别", "城市", "费用日期", "金额（元）", "确认状态", "付款状态", "费用所属月", "费用项目");
         for (var r : rows)
             append(
                     out,
@@ -274,8 +264,14 @@ public class CostDashboardExportService {
                     CostAnalysis.money(r.amount()),
                     statusLabel(r.status()),
                     statusLabel(r.payment()),
-                    r.costMonth().toString());
+                    r.costMonth().toString(),
+                    itemValue(r));
         return out.toString();
+    }
+
+    private static String itemValue(CostFact r) {
+        var item = r.dimension("purchase".equals(r.category()) ? "component" : "feeType");
+        return item.missing() ? "-" : item.key().startsWith("dict:") ? item.key() : item.label();
     }
 
     private static String statusLabel(String value) {

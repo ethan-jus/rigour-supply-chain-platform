@@ -50,6 +50,7 @@ class ManualCostPersistenceTest {
                         .replace(" JSON ", " LONGTEXT ")
                         .replace("'MARKETING','RENTAL'", "'MARKETING','RENTAL','PURCHASE','LOSS'");
         for (String sql : ddl.split(";")) if (!sql.isBlank()) jdbc.execute(sql);
+        jdbc.execute("ALTER TABLE erp_cost_entry ADD COLUMN deleted INT NOT NULL DEFAULT 0");
         jdbc.execute("ALTER TABLE erp_cost_entry ADD COLUMN cost_month VARCHAR(7)");
         jdbc.execute("ALTER TABLE erp_cost_entry ADD COLUMN source_system VARCHAR(20)");
         jdbc.execute("ALTER TABLE erp_cost_entry ADD COLUMN premises_type VARCHAR(20)");
@@ -61,6 +62,8 @@ class ManualCostPersistenceTest {
                                 "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
                                 "");
         jdbc.execute(attachmentDdl);
+        jdbc.execute(
+                "ALTER TABLE erp_cost_entry_attachment ADD COLUMN deleted INT NOT NULL DEFAULT 0");
         var config = new MybatisConfiguration();
         config.addMapper(CostAttachmentMapper.class);
         config.setMapUnderscoreToCamelCase(true);
@@ -144,9 +147,29 @@ class ManualCostPersistenceTest {
                         "U",
                         "cost:confirm");
         assertThat(confirmed.statusCode()).isEqualTo("CONFIRMED");
-        assertThatThrownBy(() -> save(first.id(), command(3, "124", "")))
-                .hasMessageContaining("原因");
-        var updated = save(first.id(), command(3, "124", "补录更正"));
+        assertThatThrownBy(() -> save(first.id(), command(3, "124", "任意原因")))
+                .hasMessageContaining("撤销");
+        assertThatThrownBy(
+                        () ->
+                                store.lifecycle(
+                                        "T1",
+                                        "PURCHASE",
+                                        first.id(),
+                                        new ErpCostActionCommand(3, "不能删除"),
+                                        "U",
+                                        "cost:void",
+                                        true))
+                .hasMessageContaining("作废");
+        var revoked =
+                store.lifecycle(
+                        "T1",
+                        "PURCHASE",
+                        first.id(),
+                        new ErpCostActionCommand(3, "补录更正前撤销"),
+                        "U",
+                        "cost:confirm",
+                        false);
+        var updated = save(first.id(), command(revoked.revision(), "124", "补录更正"));
         assertThat(updated.statusCode()).isEqualTo("DRAFT");
         assertThatThrownBy(
                         () ->
@@ -168,8 +191,31 @@ class ManualCostPersistenceTest {
                         "cost:void");
         assertThat(voided.statusCode()).isEqualTo("VOID");
         assertThatThrownBy(() -> save(first.id(), command(voided.revision(), "124", "更正")))
-                .hasMessageContaining("作废");
-        assertThat(store.history("T1", first.id())).hasSize(7);
+                .hasMessageContaining("待确认");
+        assertThatThrownBy(
+                        () ->
+                                store.lifecycle(
+                                        "T1",
+                                        "PURCHASE",
+                                        first.id(),
+                                        new ErpCostActionCommand(voided.revision() - 1, "旧版本"),
+                                        "U",
+                                        "cost:void",
+                                        true))
+                .hasMessageContaining("变化");
+        store.lifecycle(
+                "T1",
+                "PURCHASE",
+                first.id(),
+                new ErpCostActionCommand(voided.revision(), "删除作废单据"),
+                "U",
+                "cost:void",
+                true);
+        assertThatThrownBy(() -> store.entry("T1", "PURCHASE", first.id(), "cost:read"))
+                .hasMessageContaining("不存在");
+        assertThat(store.history("T1", first.id()))
+                .extracting(a -> a.action())
+                .contains("REVOKE", "DELETE");
         assertThatThrownBy(() -> store.entry("T2", "PURCHASE", first.id(), "cost:read"))
                 .hasMessageContaining("不存在");
         verifyNoInteractions(refs);
@@ -271,5 +317,81 @@ class ManualCostPersistenceTest {
         store.save("T1", "LOSS", null, explained, List.of(), null, null, "U", "cost:write");
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM erp_cost_entry", Integer.class))
                 .isEqualTo(2);
+    }
+
+    @Test
+    void replacingAndRemovingRetainFilesAndRollbackAsOneMutation() {
+        var first = save(null, command(1, "10", ""));
+        var tx =
+                new org.springframework.transaction.support.TransactionTemplate(
+                        new org.springframework.jdbc.datasource.DataSourceTransactionManager(ds));
+        var old =
+                new ErpCostAttachmentView(
+                        "old", "原运费凭证.pdf", "application/pdf", 20, "U", java.time.Instant.now());
+        var replacement =
+                new ErpCostAttachmentView(
+                        "new", "更正运费凭证.pdf", "application/pdf", 20, "U", java.time.Instant.now());
+        tx.execute(
+                status -> {
+                    attachments.add("T1", first.id(), 1, old, "private/old");
+                    return null;
+                });
+        assertThatThrownBy(
+                        () ->
+                                tx.execute(
+                                        status -> {
+                                            attachments.retire("T1", first.id(), old.id());
+                                            attachments.add("T1", first.id(), 2, replacement, null);
+                                            return null;
+                                        }))
+                .isInstanceOf(RuntimeException.class);
+        assertThat(attachments.list("T1", first.id()))
+                .extracting(f -> f.id())
+                .containsExactly("old");
+        tx.execute(
+                status -> {
+                    attachments.retire("T1", first.id(), old.id());
+                    attachments.add("T1", first.id(), 2, replacement, "private/new");
+                    store.attachmentChanged(
+                            "T1",
+                            "PURCHASE",
+                            first.id(),
+                            "U",
+                            "ATTACHMENT_REPLACED",
+                            "原运费凭证 → 更正运费凭证",
+                            "cost:write");
+                    return null;
+                });
+        assertThat(attachments.list("T1", first.id()))
+                .extracting(f -> f.id())
+                .containsExactly("new");
+        assertThatThrownBy(() -> attachments.fileKey("T1", first.id(), old.id()))
+                .hasMessageContaining("不存在");
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT file_key FROM erp_cost_entry_attachment WHERE id='old'",
+                                String.class))
+                .isEqualTo("private/old");
+        assertThatThrownBy(() -> attachments.retire("T2", first.id(), replacement.id()))
+                .hasMessageContaining("变化");
+        tx.execute(
+                status -> {
+                    attachments.touch("T1", first.id(), 3, "U");
+                    attachments.retire("T1", first.id(), replacement.id());
+                    store.attachmentChanged(
+                            "T1",
+                            "PURCHASE",
+                            first.id(),
+                            "U",
+                            "ATTACHMENT_REMOVED",
+                            "更正运费凭证",
+                            "cost:write");
+                    return null;
+                });
+        assertThat(attachments.list("T1", first.id())).isEmpty();
+        assertThat(store.entry("T1", "PURCHASE", first.id(), "cost:read").revision()).isEqualTo(4);
+        assertThat(store.history("T1", first.id()))
+                .extracting(a -> a.action())
+                .contains("ATTACHMENT_REPLACED", "ATTACHMENT_REMOVED");
     }
 }

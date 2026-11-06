@@ -94,6 +94,51 @@ class ErpInventoryWarehouseServiceTest {
                 .extracting("errorCode").isEqualTo(ErrorCode.BAD_REQUEST);
     }
 
+    @Test
+    void physicalLocationAndBusinessRegionAreValidatedIndependentlyBeforeSaving() {
+        var store = mock(ErpInventoryWarehouseStore.class);
+        var source = mock(com.rigour.erp.application.port.out.WarehouseLocationCatalog.class);
+        when(source.published("2026")).thenReturn(WarehouseLocationServiceTest.catalog());
+        var service = new ErpInventoryWarehouseService(store, fixedGenerator());
+        service.locationService(new WarehouseLocationService(source));
+        TestAuthorizationContext.set(caller("erp:product:write"));
+        when(store.create(eq(TENANT), any(), any(), eq(ACTOR))).thenReturn(
+                new InternalInventoryWarehouseView(1L, "WH1", "武汉仓", "HEADQUARTERS", "CITY", false,
+                        null, null, null, "ACTIVE", null, 1, ACTOR, Instant.now(), ACTOR, Instant.now()));
+        service.create(new InternalInventoryWarehouseCommand("武汉仓", " HEADQUARTERS ", "CITY", false,
+                null, null, null, "ACTIVE", null, null, "420102", "2026"));
+        var saved = ArgumentCaptor.forClass(InternalInventoryWarehouseCommand.class);
+        verify(store).create(eq(TENANT), any(), saved.capture(), eq(ACTOR));
+        assertThat(saved.getValue().regionCode()).isEqualTo("HEADQUARTERS");
+        assertThat(saved.getValue().locationAreaCode()).isEqualTo("420102");
+        assertThat(saved.getValue().locationAreaVersion()).isEqualTo("2026");
+    }
+
+    @Test
+    void invalidCountyIsRejectedBeforeAnyWarehouseWrite() {
+        var store = mock(ErpInventoryWarehouseStore.class);
+        var source = mock(com.rigour.erp.application.port.out.WarehouseLocationCatalog.class);
+        when(source.published("2026")).thenReturn(WarehouseLocationServiceTest.catalog());
+        var service = new ErpInventoryWarehouseService(store, fixedGenerator());
+        service.locationService(new WarehouseLocationService(source));
+        TestAuthorizationContext.set(caller("erp:product:write"));
+        assertThatThrownBy(() -> service.create(new InternalInventoryWarehouseCommand("仓库", "WH", "CITY", false,
+                null, null, null, "ACTIVE", null, null, "420000", "2026")))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("区县");
+        org.mockito.Mockito.verifyNoInteractions(store);
+    }
+
+    @Test
+    void locationCatalogDoesNotBypassWarehouseReadAuthorization() {
+        var source = mock(com.rigour.erp.application.port.out.WarehouseLocationCatalog.class);
+        var service = new ErpInventoryWarehouseService(mock(ErpInventoryWarehouseStore.class), fixedGenerator());
+        service.locationService(new WarehouseLocationService(source));
+        TestAuthorizationContext.set(caller("unrelated:read"));
+        assertThatThrownBy(() -> service.locationCatalog(null))
+                .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        org.mockito.Mockito.verifyNoInteractions(source);
+    }
+
     private static BusinessCodeGenerator fixedGenerator() {
         return new BusinessCodeGenerator(
                 Clock.fixed(Instant.parse("2026-08-20T03:00:00Z"), ZoneId.of("Asia/Shanghai")),

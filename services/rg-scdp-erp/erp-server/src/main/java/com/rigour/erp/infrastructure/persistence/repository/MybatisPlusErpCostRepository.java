@@ -61,11 +61,18 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
     }
 
     private com.rigour.erp.application.port.out.CostLedgerReferenceStore ledgerReferences;
-    @org.springframework.beans.factory.annotation.Autowired
-    void ledgerReferences(com.rigour.erp.application.port.out.CostLedgerReferenceStore value) { ledgerReferences = value; }
 
-    private com.rigour.erp.api.v1.model.CostLedgerPartyView ledgerWarehouse(String tenant, String code, String action) {
-        return ledgerReferences.parties(tenant, "WAREHOUSE", code, null, null, 0, action).stream().filter(r -> code.equals(r.code())).findFirst().orElseThrow(() -> bad("仓库不存在或无权访问"));
+    @org.springframework.beans.factory.annotation.Autowired
+    void ledgerReferences(com.rigour.erp.application.port.out.CostLedgerReferenceStore value) {
+        ledgerReferences = value;
+    }
+
+    private com.rigour.erp.api.v1.model.CostLedgerPartyView ledgerWarehouse(
+            String tenant, String code, String action) {
+        return ledgerReferences.parties(tenant, "WAREHOUSE", code, null, null, 0, action).stream()
+                .filter(r -> code.equals(r.code()))
+                .findFirst()
+                .orElseThrow(() -> bad("仓库不存在或无权访问"));
     }
 
     private void lock(String tenant) {
@@ -79,7 +86,8 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
         var q =
                 new QueryWrapper<ErpCostEntity>()
                         .eq("tenant_id", tenant)
-                        .eq("category_code", category);
+                        .eq("category_code", category)
+                        .eq("deleted", 0);
         var manual =
                 scope.manualPredicate(
                         action, "MARKETING".equals(category) ? "EMPLOYEE" : "INVENTORY");
@@ -158,9 +166,13 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                     });
         }
         if (text(filter.productName()))
-            q.apply("LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.productName')),''))>0", filter.productName().trim());
+            q.apply(
+                    "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.productName')),''))>0",
+                    filter.productName().trim());
         if (text(filter.specification()))
-            q.apply("LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.specification')),''))>0", filter.specification().trim());
+            q.apply(
+                    "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.specification')),''))>0",
+                    filter.specification().trim());
         if (text(filter.supplierName()))
             q.apply(
                     "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.goods.supplierName')),''))>0",
@@ -199,25 +211,48 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
         }
         if (text(filter.costMonth()) || text(filter.ledgerFeeType())) {
             String predicate = "1=1";
-            if (text(filter.costMonth())) predicate += " AND wm.month_code='" + java.time.YearMonth.parse(filter.costMonth()) + "'";
+            if (text(filter.costMonth()))
+                predicate +=
+                        " AND wm.month_code='"
+                                + java.time.YearMonth.parse(filter.costMonth())
+                                + "'";
             if (text(filter.ledgerFeeType())) {
                 if (!filter.ledgerFeeType().matches("[A-Z0-9_]{1,50}")) throw bad("仓储费用项目编码无效");
                 predicate += " AND wm.fee_type='" + filter.ledgerFeeType() + "'";
             }
             String selected = predicate;
-            q.and(w -> {
-                w.apply("EXISTS (SELECT 1 FROM JSON_TABLE(data_json,'$.warehouseLedger.feeItems[*]' COLUMNS(fee_type VARCHAR(50) PATH '$.feeTypeCode',NESTED PATH '$.monthAllocations[*]' COLUMNS(month_code VARCHAR(7) PATH '$.month'))) wm WHERE " + selected + ")");
-                if (!text(filter.ledgerFeeType()) || "RENT".equals(filter.ledgerFeeType())) {
-                    w.or(qOld -> {
-                        qOld.apply("COALESCE(JSON_EXTRACT(data_json,'$.warehouseLedger.schemaVersion'),1)<>2");
-                        qOld.eq(text(filter.costMonth()),"cost_month",filter.costMonth());
+            q.and(
+                    w -> {
+                        w.apply(
+                                "EXISTS (SELECT 1 FROM"
+                                    + " JSON_TABLE(data_json,'$.warehouseLedger.feeItems[*]'"
+                                    + " COLUMNS(fee_type VARCHAR(50) PATH '$.feeTypeCode',NESTED"
+                                    + " PATH '$.monthAllocations[*]' COLUMNS(month_code VARCHAR(7)"
+                                    + " PATH '$.month'))) wm WHERE "
+                                        + selected
+                                        + ")");
+                        if (!text(filter.ledgerFeeType())
+                                || "RENT".equals(filter.ledgerFeeType())) {
+                            w.or(
+                                    qOld -> {
+                                        qOld.apply(
+                                                "COALESCE(JSON_EXTRACT(data_json,'$.warehouseLedger.schemaVersion'),1)<>2");
+                                        qOld.eq(
+                                                text(filter.costMonth()),
+                                                "cost_month",
+                                                filter.costMonth());
+                                    });
+                        }
                     });
-                }
-            });
         }
         if (text(filter.warehouseCode())) {
             var warehouse = ledgerWarehouse(tenant, filter.warehouseCode(), action);
-            q.and(w -> w.eq("warehouse_code", warehouse.code()).or().isNull("warehouse_code").eq("warehouse_id", Long.valueOf(warehouse.id())));
+            q.and(
+                    w ->
+                            w.eq("warehouse_code", warehouse.code())
+                                    .or()
+                                    .isNull("warehouse_code")
+                                    .eq("warehouse_id", Long.valueOf(warehouse.id())));
         }
         q.eq(filter.departmentId() != null, "department_id", filter.departmentId());
         if (text(filter.documentNo()))
@@ -253,12 +288,21 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
     private static String periodExpression(ErpCostQuery f) {
         if (!text(f.costMonth()) && !text(f.ledgerFeeType())) return "amount";
         String predicate = "1=1";
-        if (text(f.costMonth())) predicate += " AND wm.month_code='" + java.time.YearMonth.parse(f.costMonth()) + "'";
+        if (text(f.costMonth()))
+            predicate += " AND wm.month_code='" + java.time.YearMonth.parse(f.costMonth()) + "'";
         if (text(f.ledgerFeeType())) {
             if (!f.ledgerFeeType().matches("[A-Z0-9_]{1,50}")) throw bad("仓储费用项目编码无效");
             predicate += " AND wm.fee_type='" + f.ledgerFeeType() + "'";
         }
-        return "CASE WHEN JSON_EXTRACT(data_json,'$.warehouseLedger.schemaVersion')=2 THEN (SELECT CASE WHEN COUNT(*)=0 THEN 0 WHEN COUNT(wm.recognized)<COUNT(*) THEN NULL ELSE SUM(wm.recognized) END FROM JSON_TABLE(data_json,'$.warehouseLedger.feeItems[*]' COLUMNS(fee_type VARCHAR(50) PATH '$.feeTypeCode',NESTED PATH '$.monthAllocations[*]' COLUMNS(month_code VARCHAR(7) PATH '$.month',recognized DECIMAL(18,2) PATH '$.amount' NULL ON EMPTY ERROR ON ERROR))) wm WHERE " + predicate + ") ELSE amount END";
+        return "CASE WHEN JSON_EXTRACT(data_json,'$.warehouseLedger.schemaVersion')=2 THEN (SELECT"
+                   + " CASE WHEN COUNT(*)=0 THEN 0 WHEN COUNT(wm.recognized)<COUNT(*) THEN NULL"
+                   + " ELSE SUM(wm.recognized) END FROM"
+                   + " JSON_TABLE(data_json,'$.warehouseLedger.feeItems[*]' COLUMNS(fee_type"
+                   + " VARCHAR(50) PATH '$.feeTypeCode',NESTED PATH '$.monthAllocations[*]'"
+                   + " COLUMNS(month_code VARCHAR(7) PATH '$.month',recognized DECIMAL(18,2) PATH"
+                   + " '$.amount' NULL ON EMPTY ERROR ON ERROR))) wm WHERE "
+                + predicate
+                + ") ELSE amount END";
     }
 
     private static BigDecimal periodAmount(ErpCostCommand c, ErpCostQuery f) {
@@ -284,16 +328,25 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                                 query(tenant, category, filter, action)
                                         .select(
                                                 "COUNT(*) total",
-                                                "COUNT(DISTINCT CASE WHEN status_code<>'VOID' THEN warehouse_id END) warehouses",
+                                                "COUNT(DISTINCT CASE WHEN status_code<>'VOID' THEN"
+                                                    + " warehouse_id END) warehouses",
                                                 "COALESCE(SUM(CASE WHEN status_code='CONFIRMED'"
-                                                        + " THEN (" + recognized + ") ELSE 0 END),0) confirmed",
+                                                        + " THEN ("
+                                                        + recognized
+                                                        + ") ELSE 0 END),0) confirmed",
                                                 "COALESCE(SUM(CASE WHEN status_code='CONFIRMED' AND"
-                                                    + " payment_status_code='PAID' THEN (" + recognized + ") ELSE"
-                                                    + " 0 END),0) paid",
+                                                        + " payment_status_code='PAID' THEN ("
+                                                        + recognized
+                                                        + ") ELSE"
+                                                        + " 0 END),0) paid",
                                                 "COALESCE(SUM(status_code='DRAFT'),0) pending",
                                                 "COALESCE(SUM(CASE WHEN status_code<>'VOID' THEN"
-                                                        + " (" + recognized + ") ELSE 0 END),0) registered",
-                                                "COALESCE(SUM(status_code<>'VOID' AND (" + recognized + ") IS NULL),0) missing"))
+                                                        + " ("
+                                                        + recognized
+                                                        + ") ELSE 0 END),0) registered",
+                                                "COALESCE(SUM(status_code<>'VOID' AND ("
+                                                        + recognized
+                                                        + ") IS NULL),0) missing"))
                         .getFirst();
         var rows =
                 mapper
@@ -306,7 +359,14 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                                                         + " OFFSET "
                                                         + filter.begin()))
                         .stream()
-                        .map(r -> view(r).withPeriodAmount(periodAmount(json.readValue(r.getDataJson(), ErpCostCommand.class), filter)))
+                        .map(
+                                r ->
+                                        view(r).withPeriodAmount(
+                                                        periodAmount(
+                                                                json.readValue(
+                                                                        r.getDataJson(),
+                                                                        ErpCostCommand.class),
+                                                                filter)))
                         .toList();
         return new ErpCostPageView(
                 ((Number) totals.get("total")).longValue(),
@@ -318,7 +378,9 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                 rows,
                 new BigDecimal(totals.get("registered").toString()),
                 ((Number) totals.get("missing")).longValue(),
-                totals.get("warehouses")==null ? 0L : ((Number) totals.get("warehouses")).longValue());
+                totals.get("warehouses") == null
+                        ? 0L
+                        : ((Number) totals.get("warehouses")).longValue());
     }
 
     public ErpCostDetailView entry(String tenant, String category, String id, String action) {
@@ -340,12 +402,18 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
             String action) {
         lock(tenant);
         boolean ledger = c.warehouseLedger() != null;
-        Long warehouse = ledger ? Long.valueOf(ledgerWarehouse(tenant, c.warehouseLedger().warehouseCode(), action).id()) :
-                c.rental() != null
-                        ? c.rental().warehouseId()
-                        : c.goods() != null && c.goods().warehouseId() != null
-                                ? c.goods().warehouseId()
-                                : sources.isEmpty() ? null : sources.getFirst().targetWarehouseId();
+        Long warehouse =
+                ledger
+                        ? Long.valueOf(
+                                ledgerWarehouse(tenant, c.warehouseLedger().warehouseCode(), action)
+                                        .id())
+                        : c.rental() != null
+                                ? c.rental().warehouseId()
+                                : c.goods() != null && c.goods().warehouseId() != null
+                                        ? c.goods().warehouseId()
+                                        : sources.isEmpty()
+                                                ? null
+                                                : sources.getFirst().targetWarehouseId();
         Long source = sources.isEmpty() ? warehouse : sources.getFirst().warehouseId();
         if (warehouse == null) warehouse = source;
         if (source == null) source = warehouse;
@@ -410,7 +478,11 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
         var values =
                 new UpdateWrapper<ErpCostEntity>()
                         .set("source_system", sourceSystem(c, sources))
-                        .set("premises_type", ledger ? "WAREHOUSE" : c.rental() == null ? null : c.rental().premisesType())
+                        .set(
+                                "premises_type",
+                                ledger
+                                        ? "WAREHOUSE"
+                                        : c.rental() == null ? null : c.rental().premisesType())
                         .set("title", c.title())
                         .set("type_code", c.typeCode())
                         .set("city_code", c.cityCode())
@@ -420,9 +492,24 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                         .set("source_warehouse_id", source)
                         .set("cost_date", c.costDate())
                         .set("cost_month", ledger ? null : c.costMonth())
-                        .set(ledger, "warehouse_code", ledger ? c.warehouseLedger().warehouseCode() : null)
-                        .set(ledger, "attribution_from_month", ledger ? com.rigour.erp.domain.cost.WarehouseLedgerRules.firstMonth(c.warehouseLedger()) : null)
-                        .set(ledger, "attribution_to_month", ledger ? com.rigour.erp.domain.cost.WarehouseLedgerRules.lastMonth(c.warehouseLedger()) : null)
+                        .set(
+                                ledger,
+                                "warehouse_code",
+                                ledger ? c.warehouseLedger().warehouseCode() : null)
+                        .set(
+                                ledger,
+                                "attribution_from_month",
+                                ledger
+                                        ? com.rigour.erp.domain.cost.WarehouseLedgerRules
+                                                .firstMonth(c.warehouseLedger())
+                                        : null)
+                        .set(
+                                ledger,
+                                "attribution_to_month",
+                                ledger
+                                        ? com.rigour.erp.domain.cost.WarehouseLedgerRules.lastMonth(
+                                                c.warehouseLedger())
+                                        : null)
                         .set("amount", c.amount())
                         .set("payment_status_code", c.paymentStatusCode())
                         .set("payer_code", null)
@@ -452,7 +539,8 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
             row.setRequestId(c.requestId());
             row.setCategoryCode(category);
             row.setSourceSystem(sourceSystem(c, sources));
-            row.setPremisesType(ledger ? "WAREHOUSE" : c.rental() == null ? null : c.rental().premisesType());
+            row.setPremisesType(
+                    ledger ? "WAREHOUSE" : c.rental() == null ? null : c.rental().premisesType());
             row.setTitle(c.title());
             row.setTypeCode(c.typeCode());
             row.setCityCode(c.cityCode());
@@ -478,6 +566,9 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
             return saved;
         }
         var old = entry(tenant, category, id, action);
+        if ("PROCUREMENT_FREIGHT".equals(old.data().typeCode())
+                && !"PROCUREMENT_FREIGHT".equals(c.typeCode()))
+            throw bad("采购实际运费不能被人工货款台账覆盖，请从采购成本记录维护");
         if (old.data().warehouseLedger() != null && !ledger) throw bad("新版仓储费用不能使用旧版协议覆盖");
         if (old.data().goods() != null
                 && c.goods() != null
@@ -499,7 +590,8 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                         values.eq("tenant_id", tenant)
                                 .eq("id", id)
                                 .eq("revision", c.revision())
-                                .ne("status_code", "VOID")
+                                .eq("deleted", 0)
+                                .eq("status_code", "DRAFT")
                                 .set("status_code", "DRAFT")
                                 .setSql("revision=revision+1"))
                 != 1) throw conflict("费用已被修改，请刷新后重试");
@@ -548,6 +640,55 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
         var saved = entry(tenant, category, id, action);
         audit(tenant, saved, confirm ? "CONFIRM" : "VOID", actor, c.reason());
         return saved;
+    }
+
+    @Transactional
+    public ErpCostDetailView lifecycle(
+            String tenant,
+            String category,
+            String id,
+            ErpCostActionCommand command,
+            String actor,
+            String permission,
+            boolean delete) {
+        lock(tenant);
+        var old = entry(tenant, category, id, permission);
+        String operation = delete ? "DELETE" : "REVOKE";
+        transitionRule(old.statusCode(), operation, old.data().amount(), command.reason());
+        var update =
+                new UpdateWrapper<ErpCostEntity>()
+                        .eq("tenant_id", tenant)
+                        .eq("id", id)
+                        .eq("deleted", 0)
+                        .eq("status_code", old.statusCode())
+                        .eq("revision", command.revision())
+                        .set("updated_by", actor)
+                        .set("updated_time", LocalDateTime.now(ZoneOffset.UTC))
+                        .setSql("revision=revision+1");
+        if (delete) update.set("deleted", 1);
+        else update.set("status_code", "DRAFT");
+        if (mapper.update(null, update) != 1) throw conflict("费用已变化，请刷新后重试");
+        // 删除前已按完整数据范围授权；保留删除后的版本快照及附件供追溯。
+        var saved =
+                view(
+                        mapper.selectOne(
+                                new QueryWrapper<ErpCostEntity>()
+                                        .eq("tenant_id", tenant)
+                                        .eq("category_code", category)
+                                        .eq("id", id)));
+        audit(tenant, saved, operation, actor, command.reason());
+        return saved;
+    }
+
+    public void attachmentChanged(
+            String tenant,
+            String category,
+            String id,
+            String actor,
+            String operation,
+            String description,
+            String permission) {
+        audit(tenant, entry(tenant, category, id, permission), operation, actor, description);
     }
 
     public void attachmentAdded(
@@ -769,14 +910,12 @@ public class MybatisPlusErpCostRepository implements ErpCostStore {
                     .toList();
         boolean purchase = "PURCHASE".equals(leg);
         var q = new QueryWrapper<Object>().eq("d.tenant_id", tenant).eq("d.deleted", 0);
-        q.in(
-                "d.status_code",
-                purchase
-                        ? List.of("SUBMITTED", "PARTIAL_IN", "COMPLETED", "IN_CONFIRMED")
-                        : List.of("OUT_CONFIRMED", "IN_CONFIRMED"));
+        if (purchase)
+            q.eq("d.confirmation_status_code", "CONFIRMED").ne("d.status_code", "CANCELLED");
+        else q.in("d.status_code", List.of("OUT_CONFIRMED", "IN_CONFIRMED"));
         var p =
                 purchase
-                        ? scope.predicate(action, "d.target_warehouse_id")
+                        ? scope.predicate(action, "w.id")
                         : scope.predicate(action, "d.source_warehouse_id", "d.target_warehouse_id");
         bind(q, p.sql(), p.args());
         scope.applyCity(q, action, "w.region_code");

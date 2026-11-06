@@ -345,7 +345,7 @@ class CostSnapshotPersistenceTest {
         assertThat(
                         com.rigour.analytics.domain.cost.CostAnalysis.amount(
                                 facts.stream().filter(r -> r.scope().equals("opex")).toList()))
-                .isEqualByComparingTo("20717.30");
+                .isEqualByComparingTo("19517.30");
         assertThat(facts.stream().filter(r -> r.treatment().equals("LINKED"))).hasSize(1);
         var changed = data.get("ORDER_LOGISTICS_COST");
         changed.getLast().put("revision", "2");
@@ -363,11 +363,11 @@ class CostSnapshotPersistenceTest {
         assertThat(
                         com.rigour.analytics.domain.cost.CostAnalysis.amount(
                                 next.stream().filter(r -> r.scope().equals("opex")).toList()))
-                .isEqualByComparingTo("20727.30");
+                .isEqualByComparingTo("19527.30");
         assertThat(
                         com.rigour.analytics.domain.cost.CostAnalysis.amount(
                                 facts.stream().filter(r -> r.scope().equals("opex")).toList()))
-                .isEqualByComparingTo("20717.30");
+                .isEqualByComparingTo("19517.30");
     }
 
     @Test

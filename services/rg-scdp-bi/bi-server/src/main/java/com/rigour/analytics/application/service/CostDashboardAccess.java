@@ -83,6 +83,8 @@ public final class CostDashboardAccess {
             Set<String> result = new HashSet<>(sources.keySet());
             if (sources.containsKey("expense"))
                 result.addAll(Set.of("office", "warehouse", "freight", "marketing", "purchase"));
+            // 历史实际采购运费仍归采购成本，但其原件与读取权限属于订单中心。
+            if (sources.containsKey("freight")) result.add("purchase");
             return Set.copyOf(result);
         }
 
@@ -94,7 +96,7 @@ public final class CostDashboardAccess {
                                             ? ("PAYROLL".equals(r.sourceCategory())
                                                     ? "labor"
                                                     : "expense")
-                                            : r.category()),
+                                            : "ORDER".equals(r.source()) ? "freight" : r.category()),
                             r,
                             actor.principalId().toString());
         }

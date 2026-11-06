@@ -128,7 +128,11 @@ public record CostFact(
         return root == null ? sourceId : root.key();
     }
 
-    public String documentKey() { return source + ":" + (dimensions.containsKey("procurementOrderCode") ? "PROCUREMENT:"+dimensions.get("procurementOrderCode").key() : rootSourceId()); }
+    public String documentKey() {
+        var order = dimensions.get("procurementOrderId");
+        if (order == null) order = dimensions.get("procurementOrderCode");
+        return source + ":" + (order == null ? rootSourceId() : "PROCUREMENT:" + order.key());
+    }
 
     public boolean confirmed() {
         return "CONFIRMED".equals(status) && amount != null && "DIRECT".equals(treatment());

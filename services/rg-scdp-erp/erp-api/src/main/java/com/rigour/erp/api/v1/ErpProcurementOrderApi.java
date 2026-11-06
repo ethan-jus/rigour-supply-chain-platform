@@ -41,7 +41,8 @@ public interface ErpProcurementOrderApi {
             @RequestParam(required = false) String targetWarehouseCode,
             @RequestParam(required = false) String confirmationStatusCode,
             @RequestParam(required = false) java.time.LocalDate purchaseDateFrom,
-            @RequestParam(required = false) java.time.LocalDate purchaseDateTo);
+            @RequestParam(required = false) java.time.LocalDate purchaseDateTo,
+            @RequestParam(required = false) String sourceDocumentNo);
 
     @GetMapping(BASE_PATH + "/products")
     ApiResponse<MasterDataPageView<InternalProcurementProductView>> procurementProducts(

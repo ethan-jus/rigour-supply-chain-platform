@@ -2,6 +2,7 @@ package com.rigour.erp.api;
 
 import com.rigour.erp.api.v1.ErpInventoryWarehouseApi;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseCommand;
+import com.rigour.erp.api.v1.model.WarehouseLocationCatalogView;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.application.service.inventory.ErpInventoryWarehouseService;
@@ -20,9 +21,14 @@ public final class ErpInventoryWarehouseController implements ErpInventoryWareho
     @Override
     public ApiResponse<MasterDataPageView<InternalInventoryWarehouseView>> warehouses(
             int begin, int step, String warehouseCode, String warehouseName, String regionCode,
-            Boolean defaultFlag, String statusCode) {
+            Boolean defaultFlag, String statusCode, String sourceWarehouseCode) {
         return ApiResponse.success(warehouseService.warehouses(begin, step, warehouseCode,
-                warehouseName, regionCode, defaultFlag, statusCode));
+                warehouseName, regionCode, defaultFlag, statusCode, sourceWarehouseCode));
+    }
+
+    @Override
+    public ApiResponse<WarehouseLocationCatalogView> locationCatalog(String version) {
+        return ApiResponse.success(warehouseService.locationCatalog(version));
     }
 
     @Override

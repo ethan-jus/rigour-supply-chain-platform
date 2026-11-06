@@ -44,6 +44,24 @@ public interface ErpCostStore {
             String actor,
             String action);
 
+    ErpCostDetailView lifecycle(
+            String tenant,
+            String category,
+            String id,
+            ErpCostActionCommand command,
+            String actor,
+            String permission,
+            boolean delete);
+
+    void attachmentChanged(
+            String tenant,
+            String category,
+            String id,
+            String actor,
+            String operation,
+            String description,
+            String permission);
+
     void attachmentAdded(
             String tenant,
             String category,

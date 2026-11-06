@@ -44,4 +44,28 @@ public final class CostAttachmentController implements CostAttachmentApi {
             throw new BusinessException(ErrorCode.BAD_REQUEST, "附件读取失败", List.of());
         }
     }
+
+    public ApiResponse<Void> remove(String entry, String id, int revision) {
+        service.remove("logistics", entry, id, revision);
+        return ApiResponse.success(null);
+    }
+
+    public ApiResponse<LogisticsCostAttachmentView> replace(
+            String entry, String id, int revision, MultipartFile file) {
+        if (file.getSize() > 10 * 1024 * 1024)
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "附件不能超过10MB", List.of());
+        try {
+            return ApiResponse.success(
+                    service.replace(
+                            "logistics",
+                            entry,
+                            id,
+                            revision,
+                            file.getOriginalFilename(),
+                            file.getContentType(),
+                            file.getBytes()));
+        } catch (java.io.IOException e) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "附件读取失败", List.of());
+        }
+    }
 }

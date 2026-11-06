@@ -11,6 +11,16 @@ public class CostAttachmentEntity {
     @TableId(type = IdType.INPUT)
     private String id;
 
+    private Integer deleted;
+
+    public Integer getDeleted() {
+        return deleted;
+    }
+
+    public void setDeleted(Integer value) {
+        deleted = value;
+    }
+
     private String tenantId;
     private String entryId;
     private String fileKey;

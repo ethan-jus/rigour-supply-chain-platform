@@ -19,6 +19,10 @@ public class InternalInventoryWarehouseEntity {
     private String warehouseName;
     /** 仓库归属地区，关联 REGION 字典项。 */
     private String regionCode;
+    /** 所在地区行政区县编码，与业务归属地区分开。 */
+    private String locationAreaCode;
+    /** 所在地区使用的已发布行政区划版本。 */
+    private String locationAreaVersion;
     /** 仓库类型，关联 WAREHOUSE_TYPE 字典项。 */
     private String warehouseTypeCode;
     /** 是否默认仓库。 */
@@ -85,6 +89,11 @@ public class InternalInventoryWarehouseEntity {
     public void setRegionCode(String regionCode) {
         this.regionCode = regionCode;
     }
+
+    public String getLocationAreaCode() { return locationAreaCode; }
+    public void setLocationAreaCode(String value) { locationAreaCode = value; }
+    public String getLocationAreaVersion() { return locationAreaVersion; }
+    public void setLocationAreaVersion(String value) { locationAreaVersion = value; }
 
     public String getWarehouseTypeCode() {
         return warehouseTypeCode;

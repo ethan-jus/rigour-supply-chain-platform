@@ -7,6 +7,10 @@ import java.util.List;
 public interface CostAttachmentStore {
     void lock(String tenant);
 
+    void retire(String tenant, String entry, String id);
+
+    void touch(String tenant, String entry, int revision, String actor);
+
     List<ErpCostAttachmentView> list(String tenant, String entry);
 
     String fileKey(String tenant, String entry, String id);

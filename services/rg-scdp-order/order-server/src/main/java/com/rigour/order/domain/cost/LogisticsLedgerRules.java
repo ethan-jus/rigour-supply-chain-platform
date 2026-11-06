@@ -11,7 +11,8 @@ public final class LogisticsLedgerRules {
 
     public static BigDecimal validate(LogisticsCostLedger p, boolean confirm) {
         if (p == null || p.schemaVersion() != 2) throw bad("物流费用结构版本无效");
-        choice(p.transportPurposeCode(), Set.of("PURCHASE", "TRANSFER", "DELIVERY", "NON_SALES", "OTHER"), "运输用途");
+        if ("PURCHASE".equals(p.transportPurposeCode())) throw bad("采购运费已归入采购成本，请在采购成本记录中维护");
+        choice(p.transportPurposeCode(), Set.of("TRANSFER", "DELIVERY", "OTHER"), "运输类型");
         choice(p.deliveryModeCode(), Set.of("SELF", "THIRD_PARTY"), "承运方式");
         required(p.costMonth(), 7, "费用归属月份");
         try { YearMonth.parse(p.costMonth()); } catch (RuntimeException e) { throw bad("费用归属月份无效"); }
@@ -21,7 +22,7 @@ public final class LogisticsLedgerRules {
         }
         if (p.driverName()!=null && p.driverName().length()>100 || p.vehicleNo()!=null && p.vehicleNo().length()>50) throw bad("司机或车牌信息过长");
         if (p.trackingNo() != null && p.trackingNo().length() > 100) throw bad("运单号过长");
-        if (Set.of("NON_SALES", "OTHER").contains(p.transportPurposeCode())) required(p.nonSalesPurposeCode(), 200, "运输用途说明");
+        if ("OTHER".equals(p.transportPurposeCode())) required(p.nonSalesPurposeCode(), 200, "其他费用用途说明");
         party(p.sender(), false);
         if (p.receivingPoints() == null || p.receivingPoints().isEmpty() || p.receivingPoints().size() > 100) throw bad("请填写1至100个收货点");
         Set<String> points = new HashSet<>();

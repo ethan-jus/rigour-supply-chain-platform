@@ -28,6 +28,9 @@ public interface OrderLogisticsCostApi {
     @GetMapping(BASE_PATH + "/export")
     ApiResponse<LogisticsCostPageView> export(@ModelAttribute LogisticsCostQuery query);
 
+    @PostMapping(BASE_PATH + "/export-selected")
+    ApiResponse<List<LogisticsCostDetailView>> exportSelected(@RequestBody List<String> ids);
+
     @GetMapping(BASE_PATH + "/{id}")
     ApiResponse<LogisticsCostDetailView> entry(@PathVariable String id);
 
@@ -44,6 +47,14 @@ public interface OrderLogisticsCostApi {
 
     @PostMapping(BASE_PATH + "/{id}/void")
     ApiResponse<LogisticsCostDetailView> voidEntry(
+            @PathVariable String id, @RequestBody LogisticsCostActionCommand action);
+
+    @PostMapping(BASE_PATH + "/{id}/revoke")
+    ApiResponse<LogisticsCostDetailView> revoke(
+            @PathVariable String id, @RequestBody LogisticsCostActionCommand action);
+
+    @PostMapping(BASE_PATH + "/{id}/delete")
+    ApiResponse<LogisticsCostDetailView> delete(
             @PathVariable String id, @RequestBody LogisticsCostActionCommand action);
 
     @GetMapping(BASE_PATH + "/{id}/history")

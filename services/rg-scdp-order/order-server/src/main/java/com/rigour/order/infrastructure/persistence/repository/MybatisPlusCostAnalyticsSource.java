@@ -47,7 +47,7 @@ public class MybatisPlusCostAnalyticsSource {
     }
 
     public String version(String tenant) {
-        return mapper.analyticsVersion(tenant);
+        return mapper.analyticsVersion(tenant) + ":transport-types-v2";
     }
 
     @Transactional(readOnly = true)
@@ -61,6 +61,7 @@ public class MybatisPlusCostAnalyticsSource {
                 new QueryWrapper<OrderLogisticsCostEntity>()
                         .select(COLUMNS.toArray(String[]::new))
                         .eq("tenant_id", tenant)
+                        .eq("deleted", 0)
                         .gt(!cursor.isEmpty(), "id", cursor)
                         .orderByAsc("id")
                         .last("LIMIT 1000");

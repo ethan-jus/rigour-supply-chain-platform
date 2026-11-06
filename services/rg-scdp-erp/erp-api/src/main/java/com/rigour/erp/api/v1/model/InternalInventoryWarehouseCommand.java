@@ -15,5 +15,14 @@ public record InternalInventoryWarehouseCommand(
         String contactPhone,
         String statusCode,
         String remark,
-        Integer revision) {
+        Integer revision,
+        String locationAreaCode,
+        String locationAreaVersion) {
+    /** 兼容旧客户端；未传所在地字段时，编辑保留已保存的所在地。 */
+    public InternalInventoryWarehouseCommand(String warehouseName, String regionCode, String warehouseTypeCode,
+            Boolean defaultFlag, String address, String contactName, String contactPhone, String statusCode,
+            String remark, Integer revision) {
+        this(warehouseName, regionCode, warehouseTypeCode, defaultFlag, address, contactName, contactPhone,
+                statusCode, remark, revision, null, null);
+    }
 }

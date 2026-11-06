@@ -55,6 +55,29 @@ public class CostAttachmentService {
             String name,
             String contentType,
             byte[] bytes) {
+        return storeFile(category, entry, revision, name, contentType, bytes, null);
+    }
+
+    @Transactional
+    public ErpCostAttachmentView replace(
+            String category,
+            String entry,
+            String replacing,
+            int revision,
+            String name,
+            String contentType,
+            byte[] bytes) {
+        return storeFile(category, entry, revision, name, contentType, bytes, replacing);
+    }
+
+    private ErpCostAttachmentView storeFile(
+            String category,
+            String entry,
+            int revision,
+            String name,
+            String contentType,
+            byte[] bytes,
+            String replacing) {
         String tenant = authorize(category, entry, "write");
         files.lock(tenant);
         String c = ErpCostService.category(category);
@@ -71,14 +94,23 @@ public class CostAttachmentService {
             throw bad("附件须为1字节至10MB");
         if (!validContent(contentType, bytes)) throw bad("仅支持内容匹配的 PNG、JPEG 或 PDF 文件");
         // 同一单据、文件名及内容的重试复用已有附件；不因响应丢失重复写对象或增加版本。
-        String attachmentId = attachmentId(tenant, entry, name, contentType, bytes);
+        String attachmentId =
+                attachmentId(
+                        tenant, entry, name + ":" + revision + ":" + replacing, contentType, bytes);
         var existing = files.list(tenant, entry);
         var duplicate =
                 existing.stream().filter(file -> file.id().equals(attachmentId)).findFirst();
         if (duplicate.isPresent()) return duplicate.get();
         if (current.revision() != revision)
             throw new BusinessException(ErrorCode.CONFLICT, "记录已更新，请刷新后上传附件", List.of());
-        if (existing.size() >= 20) throw bad("每条记录最多20个附件");
+        if (replacing == null && existing.size() >= 20) throw bad("每条记录最多20个附件");
+        var original =
+                replacing == null
+                        ? null
+                        : files.list(tenant, entry).stream()
+                                .filter(file -> file.id().equals(replacing))
+                                .findFirst()
+                                .orElseThrow(() -> bad("原附件不存在或已更换，请刷新"));
         String key = storage.upload(tenant, entry, contentType, bytes);
         if (TransactionSynchronizationManager.isSynchronizationActive())
             TransactionSynchronizationManager.registerSynchronization(
@@ -96,8 +128,26 @@ public class CostAttachmentService {
                         bytes.length,
                         AuthorizationContext.requireCurrent().principalId().toString(),
                         Instant.now());
+        if (original != null) files.retire(tenant, entry, original.id());
         files.add(tenant, entry, revision, file, key);
-        costs.attachmentAdded(tenant, c, entry, file.createdBy(), file.id(), permission);
+        if (original == null)
+            costs.attachmentAdded(tenant, c, entry, file.createdBy(), file.id(), permission);
+        else
+            costs.attachmentChanged(
+                    tenant,
+                    c,
+                    entry,
+                    file.createdBy(),
+                    "ATTACHMENT_REPLACED",
+                    original.fileName()
+                            + "（"
+                            + original.id()
+                            + "） → "
+                            + file.fileName()
+                            + "（"
+                            + file.id()
+                            + "）",
+                    permission);
         TransactionSynchronizationManager.registerSynchronization(
                 new TransactionSynchronization() {
                     @Override
@@ -114,6 +164,33 @@ public class CostAttachmentService {
                     }
                 });
         return file;
+    }
+
+    @Transactional
+    public void remove(String category, String entry, String id, int revision) {
+        String tenant = authorize(category, entry, "write");
+        files.lock(tenant);
+        String c = ErpCostService.category(category),
+                permission = ErpCostService.permission(c, "write");
+        var current = costs.entry(tenant, c, entry, permission);
+        if (!"DRAFT".equals(current.statusCode()) || current.revision() != revision)
+            throw new BusinessException(ErrorCode.CONFLICT, "只有待确认费用可修改附件，请刷新", List.of());
+        var original =
+                files.list(tenant, entry).stream()
+                        .filter(file -> file.id().equals(id))
+                        .findFirst()
+                        .orElseThrow(() -> bad("附件不存在或已移除"));
+        String actor = AuthorizationContext.requireCurrent().principalId().toString();
+        files.touch(tenant, entry, revision, actor);
+        files.retire(tenant, entry, id);
+        costs.attachmentChanged(
+                tenant,
+                c,
+                entry,
+                actor,
+                "ATTACHMENT_REMOVED",
+                original.fileName() + "（" + id + "）",
+                permission);
     }
 
     static String attachmentId(

@@ -29,8 +29,4 @@ public class JdbcProcurementCostSources implements ProcurementCostSources {
                 r.getString("receiver_name"),r.getString("receiver_phone"),r.getString("receiving_address"),
                 r.getString("freight_bearer_code"),r.getBigDecimal("freight_amount")),tenant,code).stream().findFirst();
     }
-    public List<Candidate> candidates(long afterId, int limit) {
-        return jdbc.query("SELECT id,tenant_id,procurement_no FROM erp_procurement_order WHERE id>? AND deleted=0 AND confirmation_status_code='CONFIRMED' AND status_code<>'CANCELLED' ORDER BY id LIMIT ?",
-                (r,n)->new Candidate(r.getLong(1),r.getString(2),r.getString(3)),afterId,Math.min(limit,100));
-    }
 }

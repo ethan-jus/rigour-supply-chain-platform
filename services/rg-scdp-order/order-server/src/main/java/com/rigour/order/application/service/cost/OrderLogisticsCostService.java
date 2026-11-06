@@ -32,7 +32,9 @@ public final class OrderLogisticsCostService {
     private OrderLogisticsLedgerService ledgers;
 
     @org.springframework.beans.factory.annotation.Autowired
-    void ledgerService(OrderLogisticsLedgerService service) { this.ledgers = service; }
+    void ledgerService(OrderLogisticsLedgerService service) {
+        this.ledgers = service;
+    }
 
     public OrderLogisticsCostService(
             OrderLogisticsCostStore store, OrderLogisticsReferences dictionary) {
@@ -73,6 +75,37 @@ public final class OrderLogisticsCostService {
         return result;
     }
 
+    public List<LogisticsCostDetailView> exportSelected(List<String> ids) {
+        String permission = permission("LOGISTICS", "export");
+        var caller = actor(permission);
+        if (ids == null
+                || ids.isEmpty()
+                || ids.size() > 200
+                || ids.stream().anyMatch(id -> id == null || id.isBlank() || id.length() > 64)
+                || new java.util.HashSet<>(ids).size() != ids.size())
+            throw bad("请选择 1～200 条不重复的运输记录");
+        var rows =
+                store.selectedEntries(caller.tenantId().toString(), List.copyOf(ids), permission);
+        var indexed =
+                rows.stream()
+                        .collect(
+                                java.util.stream.Collectors.toMap(
+                                        LogisticsCostDetailView::id, r -> r));
+        if (indexed.size() != ids.size() || !indexed.keySet().containsAll(ids))
+            throw bad("部分所选记录已变化或无导出权限，请刷新后重新勾选");
+        var ordered = ids.stream().map(indexed::get).toList();
+        var result =
+                ordered.stream().noneMatch(row -> row.data().ledger() != null)
+                        ? ordered
+                        : ledgers.enrich(ordered, permission);
+        log.info(
+                "cost_export_selected tenant={} actor={} returned={}",
+                caller.tenantId(),
+                caller.principalId(),
+                result.size());
+        return result;
+    }
+
     private LogisticsCostPageView entries(String value, LogisticsCostQuery q, String action) {
         String category = category(value), p = permission(category, action);
         var a = actor(p);
@@ -84,34 +117,40 @@ public final class OrderLogisticsCostService {
         text(q.sourceDocumentNo(), 100, "来源单号");
         if (q.dateFrom() != null && q.dateTo() != null && q.dateTo().isBefore(q.dateFrom()))
             throw bad("截止日期不能早于开始日期");
-        var page = store.entries(
-                a.tenantId().toString(),
-                category,
-                new LogisticsCostQuery(
-                        Math.max(0, q.begin()),
-                        q.step() <= 0 ? 20 : Math.min(200, q.step()),
-                        q.documentNo(),
-                        q.title(),
-                        q.remark(),
-                        q.trackingNo(),
-                        q.sourceDocumentNo(),
-                        q.typeCode(),
-                        q.cityCode(),
-                        q.statusCode(),
-                        q.paymentStatusCode(),
-                        q.dateFrom(),
-                        q.dateTo(),
-                        q.warehouseId(),
-                        q.ownerEmployeeCode(),
-                        q.objectName(),
-                        q.sourceSystem(),
-                        q.payerCode(),
-                        q.missingAmount(),
-                        q.senderName(),
-                        q.receiverName(),
-                        q.carrierName(), q.costMonth(), q.orderTypeCode(), q.carrierCode()),
-                p);
-        return page.withItems(page.items().stream().map(row -> row.data().ledger() == null ? row : row.withData(ledgers.enrich(row.data(), p))).toList());
+        var page =
+                store.entries(
+                        a.tenantId().toString(),
+                        category,
+                        new LogisticsCostQuery(
+                                Math.max(0, q.begin()),
+                                q.step() <= 0 ? 20 : Math.min(200, q.step()),
+                                q.documentNo(),
+                                q.title(),
+                                q.remark(),
+                                q.trackingNo(),
+                                q.sourceDocumentNo(),
+                                q.typeCode(),
+                                q.cityCode(),
+                                q.statusCode(),
+                                q.paymentStatusCode(),
+                                q.dateFrom(),
+                                q.dateTo(),
+                                q.warehouseId(),
+                                q.ownerEmployeeCode(),
+                                q.objectName(),
+                                q.sourceSystem(),
+                                q.payerCode(),
+                                q.missingAmount(),
+                                q.senderName(),
+                                q.receiverName(),
+                                q.carrierName(),
+                                q.costMonth(),
+                                q.orderTypeCode(),
+                                q.carrierCode()),
+                        p);
+        return page.items().stream().noneMatch(row -> row.data().ledger() != null)
+                ? page
+                : page.withItems(ledgers.enrich(page.items(), p));
     }
 
     public LogisticsCostDetailView entry(String value, String id) {
@@ -162,7 +201,12 @@ public final class OrderLogisticsCostService {
         String category = category(value), p = permission(category, "write");
         var a = actor(p);
         String t = a.tenantId().toString();
+        if (id != null && !"DRAFT".equals(store.entry(t, category, id, p).statusCode()))
+            throw bad("只有待确认费用可编辑，已确认费用请先撤销");
         if (c == null) throw bad("请填写费用");
+        if ("PURCHASE".equals(c.typeCode())
+                || c.logistics() != null && "PURCHASE".equals(c.logistics().legCode()))
+            throw bad("采购运费已归入采购成本，请在采购成本记录中维护；历史物流记录保留追溯");
         if (c.ledger() != null) {
             required(c.cityCode(), 64, "费用归属城市");
             required(c.cityName(), 120, "费用归属城市名称");
@@ -171,8 +215,17 @@ public final class OrderLogisticsCostService {
             var old = id == null ? null : store.entry(t, category, id, p).data().ledger();
             var sync = old == null ? null : old.sourceSync();
             if (sync != null) {
-                if (sync.differencePending() && (c.reason() == null || c.reason().isBlank())) throw bad("采购来源已变化，请说明核实结果和修改原因");
-                sync = new com.rigour.order.api.v1.model.LogisticsCostLedger.SourceSync(sync.originBizKey(), sync.originVersion(), sync.lastAppliedFingerprint(), true, sync.lastSeenVersion(), sync.lastSeenFingerprint(), false);
+                if (sync.differencePending() && (c.reason() == null || c.reason().isBlank()))
+                    throw bad("采购来源已变化，请说明核实结果和修改原因");
+                sync =
+                        new com.rigour.order.api.v1.model.LogisticsCostLedger.SourceSync(
+                                sync.originBizKey(),
+                                sync.originVersion(),
+                                sync.lastAppliedFingerprint(),
+                                true,
+                                sync.lastSeenVersion(),
+                                sync.lastSeenFingerprint(),
+                                false);
             }
             c = c.withLedger(c.ledger().withSourceSync(sync), c.amount());
             c = ledgers.normalize(c, p, false);
@@ -197,8 +250,10 @@ public final class OrderLogisticsCostService {
         } else if (c.revision() == null || c.revision() < 1) throw bad("缺少费用版本，请刷新");
         if (!Objects.equals(dictionary.city(c.cityCode(), p), c.cityName()))
             throw bad("城市名称与授权目录不一致，请重新选择");
-        List<LogisticsCostSourceView> sources = c.ledger() != null ? List.of() :
-                new LogisticsCostValidator(store, dictionary).validate(t, c, p, false);
+        List<LogisticsCostSourceView> sources =
+                c.ledger() != null
+                        ? List.of()
+                        : new LogisticsCostValidator(store, dictionary).validate(t, c, p, false);
         String warehouseName = null, employeeName = responsibleEmployee(c, p);
         return store.save(
                 t,
@@ -210,6 +265,26 @@ public final class OrderLogisticsCostService {
                 employeeName,
                 a.principalId().toString(),
                 p);
+    }
+
+    public LogisticsCostDetailView lifecycle(
+            String value, String id, LogisticsCostActionCommand command, boolean delete) {
+        String category = category(value), p = permission(category, delete ? "void" : "confirm");
+        var caller = actor(p);
+        if (command == null || command.revision() < 1) throw bad("缺少费用版本");
+        required(command.reason(), 500, delete ? "删除原因" : "撤销原因");
+        return operation(
+                delete ? "DELETE" : "REVOKE",
+                id,
+                () ->
+                        store.lifecycle(
+                                caller.tenantId().toString(),
+                                category,
+                                id,
+                                command,
+                                caller.principalId().toString(),
+                                p,
+                                delete));
     }
 
     public LogisticsCostDetailView action(
@@ -228,16 +303,32 @@ public final class OrderLogisticsCostService {
         text(c.reason(), 500, "操作原因");
         if (confirm) {
             var current = store.entry(a.tenantId().toString(), category, id, p);
+            if ("PURCHASE".equals(current.data().typeCode())) throw bad("采购运费已归入采购成本，历史物流记录不再确认");
             dictionary.city(current.data().cityCode(), p);
             responsibleEmployee(current.data(), p);
             if (current.data().ledger() != null) {
                 var checked = ledgers.normalize(current.data(), p, true);
-                if (!new java.util.HashSet<>(checked.ledger().scopeWarehouseIds()).equals(new java.util.HashSet<>(current.data().ledger().scopeWarehouseIds()))
-                        || !new java.util.HashSet<>(checked.ledger().scopeCityCodes()).equals(new java.util.HashSet<>(current.data().ledger().scopeCityCodes()))) throw bad("来源单据范围已变更，请重新编辑费用后确认");
-                if ((c.reason() == null || c.reason().isBlank()) && current.data().amount().signum() == 0)
-                    c = new LogisticsCostActionCommand(c.revision(), current.data().ledger().feeItems().stream().map(f -> f.zeroCostReason()).filter(Objects::nonNull).collect(java.util.stream.Collectors.joining("；")));
-            } else new LogisticsCostValidator(store, dictionary)
-                    .validate(a.tenantId().toString(), current.data(), p, true);
+                if (!new java.util.HashSet<>(checked.ledger().scopeWarehouseIds())
+                                .equals(
+                                        new java.util.HashSet<>(
+                                                current.data().ledger().scopeWarehouseIds()))
+                        || !new java.util.HashSet<>(checked.ledger().scopeCityCodes())
+                                .equals(
+                                        new java.util.HashSet<>(
+                                                current.data().ledger().scopeCityCodes())))
+                    throw bad("来源单据范围已变更，请重新编辑费用后确认");
+                if ((c.reason() == null || c.reason().isBlank())
+                        && current.data().amount().signum() == 0)
+                    c =
+                            new LogisticsCostActionCommand(
+                                    c.revision(),
+                                    current.data().ledger().feeItems().stream()
+                                            .map(f -> f.zeroCostReason())
+                                            .filter(Objects::nonNull)
+                                            .collect(java.util.stream.Collectors.joining("；")));
+            } else
+                new LogisticsCostValidator(store, dictionary)
+                        .validate(a.tenantId().toString(), current.data(), p, true);
         }
         return store.transition(
                 a.tenantId().toString(), category, id, c, a.principalId().toString(), p);

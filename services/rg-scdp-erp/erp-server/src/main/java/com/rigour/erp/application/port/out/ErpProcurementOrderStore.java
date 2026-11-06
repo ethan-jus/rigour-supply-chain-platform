@@ -71,7 +71,11 @@ public interface ErpProcurementOrderStore {
             String targetWarehouseCode,
             String confirmationStatusCode,
             LocalDate purchaseDateFrom,
-            LocalDate purchaseDateTo) {
+            LocalDate purchaseDateTo,
+            String sourceDocumentNo) {
+        public ProcurementOrderSearchCriteria(String procurementNo,Long supplierId,Long targetWarehouseId,String statusCode,Instant expectedArrivalFrom,Instant expectedArrivalTo,String supplierCode,String targetWarehouseCode,String confirmationStatusCode,LocalDate purchaseDateFrom,LocalDate purchaseDateTo) {
+            this(procurementNo,supplierId,targetWarehouseId,statusCode,expectedArrivalFrom,expectedArrivalTo,supplierCode,targetWarehouseCode,confirmationStatusCode,purchaseDateFrom,purchaseDateTo,null);
+        }
         public ProcurementOrderSearchCriteria(
                 String procurementNo,
                 Long supplierId,

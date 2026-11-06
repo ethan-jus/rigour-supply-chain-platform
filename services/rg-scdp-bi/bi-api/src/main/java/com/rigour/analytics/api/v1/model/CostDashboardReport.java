@@ -29,4 +29,5 @@ public record CostDashboardReport(
         List<CostDashboardRecordView> majorRecords,
         List<CostDashboardPayrollComponent> payrollComponents,
         String monthlyAmount,
-        String previousMonthlyAmount) {}
+        String previousMonthlyAmount,
+        List<CostDashboardScopeSummary> scopeSummaries) {}

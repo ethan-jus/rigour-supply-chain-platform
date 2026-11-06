@@ -40,6 +40,7 @@ public final class OrderLogisticsLedgerService {
     }
     public LogisticsCostCommand normalize(LogisticsCostCommand c, String action, boolean confirm) {
         var ledger = c.ledger();
+        if ("NON_SALES".equals(ledger.transportPurposeCode())) ledger = ledger.withTransportType("OTHER");
         if (confirm && ledger.sourceSync() != null && ledger.sourceSync().differencePending()) throw bad("采购来源存在未处理差异，请编辑核实后确认");
         java.math.BigDecimal amount;
         try { amount = LogisticsLedgerRules.validate(ledger, confirm); } catch (IllegalArgumentException e) { throw bad(e.getMessage()); }
@@ -61,7 +62,9 @@ public final class OrderLogisticsLedgerService {
         points.forEach(p -> pointCities.put(p.pointCode(), p.cityCode()));
         for (var link : ledger.sources()) {
             if (!"NONE".equals(link.orderTypeCode())) {
-                if ("REQUISITION_OUT".equals(link.orderTypeCode())) throw bad("当前领用请关联真实其他出库单并填写领用用途");
+                if ("REQUISITION_OUT".equals(link.orderTypeCode())) throw bad("领用等其他订单请关联真实其他出库单，并选择其他费用");
+                if ("PURCHASE_ORDER".equals(link.orderTypeCode()) && "COST".equals(link.linkRoleCode()))
+                    throw bad("采购运费归入采购成本；采购单在物流记录中仅可用于历史业务追溯");
                 var q = new LogisticsLedgerSourceQuery(link.orderTypeCode(), link.orderCode(), null, null, null, null, null, null, 0, true, "TRACE".equals(link.linkRoleCode()));
                 var source = sources(q, action).stream().filter(s -> Objects.equals(s.documentNo(), link.orderCode())).findFirst().orElseThrow(() -> bad("来源单据不存在、状态不可引用或无权限：" + link.orderCode()));
                 if (source.cityCode() != null) { references.city(source.cityCode(), action); cities.add(source.cityCode()); }
@@ -90,20 +93,42 @@ public final class OrderLogisticsLedgerService {
         var ref = party(p.partyTypeCode(), p.partyCode(), city, action);
         if ("WAREHOUSE".equals(p.partyTypeCode())) {
             warehouses.add(Long.valueOf(ref.id()));
-            if (ref.cityCode() != null && p.cityCode() != null && !p.cityCode().isBlank() && !Objects.equals(ref.cityCode(), p.cityCode())) throw bad("仓库与收货城市不一致");
+            if (ref.cityCode() == null || ref.cityCode().isBlank())
+                throw bad("仓库“" + ref.name() + "（" + ref.code()
+                        + "）”未维护业务归属地区，请到 ERP → 库存管理 → 仓库信息补齐后重新保存；所在地区不能替代业务归属地区");
+            references.city(ref.cityCode(), action);
+            if (p.cityCode() != null && !p.cityCode().isBlank() && !Objects.equals(ref.cityCode(), p.cityCode()))
+                throw bad("仓库“" + ref.name() + "”的业务归属地区与所填运输城市不一致，请核对仓库档案和运输城市");
         }
         return new LogisticsCostLedger.Party(p.pointCode(), p.partyTypeCode(), ref.code(), null, ref.name(), p.contactName(), p.phone(), p.address(), "WAREHOUSE".equals(p.partyTypeCode()) ? ref.cityCode() : p.cityCode());
     }
     public LogisticsCostCommand enrich(LogisticsCostCommand c, String action) {
+        return enrich(c, action, new HashMap<>());
+    }
+    public List<LogisticsCostDetailView> enrich(List<LogisticsCostDetailView> rows, String action) {
+        // 只在本次查询内复用，避免不同租户、权限或后续档案更名共享旧结果。
+        Map<PartyReference, Optional<LogisticsLedgerPartyView>> names = new HashMap<>();
+        return rows.stream().map(row -> row.data().ledger() == null ? row
+                : row.withData(enrich(row.data(), action, names))).toList();
+    }
+    private LogisticsCostCommand enrich(LogisticsCostCommand c, String action,
+            Map<PartyReference, Optional<LogisticsLedgerPartyView>> names) {
         if (c.ledger() == null) return c;
         var p = c.ledger();
-        var sender = enrichParty(p.sender(), p.sender().cityCode() == null || p.sender().cityCode().isBlank() ? c.cityCode() : p.sender().cityCode(), action);
-        var points = p.receivingPoints().stream().map(point -> enrichParty(point, point.cityCode(), action)).toList();
+        var sender = enrichParty(p.sender(), p.sender().cityCode() == null || p.sender().cityCode().isBlank() ? c.cityCode() : p.sender().cityCode(), action, names);
+        var points = p.receivingPoints().stream().map(point -> enrichParty(point, point.cityCode(), action, names)).toList();
         return c.withLedger(p.resolved(sender, points, p.scopeWarehouseIds()), c.amount());
     }
-    private LogisticsCostLedger.Party enrichParty(LogisticsCostLedger.Party p, String city, String action) {
+    private record PartyReference(String kind, String code, String city) {}
+    private LogisticsCostLedger.Party enrichParty(LogisticsCostLedger.Party p, String city, String action,
+            Map<PartyReference, Optional<LogisticsLedgerPartyView>> names) {
         if ("OTHER".equals(p.partyTypeCode())) return p;
-        var ref = parties(p.partyTypeCode(), p.partyCode(), null, null, city, 0, action).stream().filter(r -> Objects.equals(r.code(),p.partyCode())).findFirst();
+        if (!Set.of("WAREHOUSE", "SUPPLIER", "CUSTOMER").contains(Objects.toString(p.partyTypeCode(), ""))) throw bad("收发方查询参数无效");
+        // 已持久化费用经过列表数据范围校验；CRM 客户引用还会按 action 和 city 校验权限。
+        // 补名称无需再为每个客户读取整份 CRM → HR 城市目录；新增、编辑及确认仍走 parties/normalize。
+        var ref = names.computeIfAbsent(new PartyReference(p.partyTypeCode(), p.partyCode(), city),
+                key -> references.ledgerParties(key.kind(), key.code(), null, null, key.city(), 0, action)
+                        .stream().filter(r -> Objects.equals(r.code(), key.code())).findFirst());
         return new LogisticsCostLedger.Party(p.pointCode(),p.partyTypeCode(),p.partyCode(),null,ref.map(LogisticsLedgerPartyView::name).orElse(p.partyCode()),p.contactName(),p.phone(),p.address(),p.cityCode());
     }
     private static BusinessException bad(String message) { return new BusinessException(ErrorCode.BAD_REQUEST, message, List.of()); }

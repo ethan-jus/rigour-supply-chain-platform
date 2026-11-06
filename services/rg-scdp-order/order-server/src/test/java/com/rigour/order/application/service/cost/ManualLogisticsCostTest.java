@@ -115,7 +115,7 @@ class ManualLogisticsCostTest {
 
     @Test
     void manualReferencesMustMatchTheBusinessRolesOfEachLeg() {
-        for (String leg : List.of("PURCHASE", "TRANSFER", "DELIVERY")) {
+        for (String leg : List.of("TRANSFER", "DELIVERY")) {
             String wrong = leg.equals("DELIVERY") ? ",\"supplierId\":1" : ",\"customerId\":1";
             var original = command("MANUAL", "[]", dhb + wrong);
             var c =
@@ -130,7 +130,7 @@ class ManualLogisticsCostTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"MANUAL", "NONE"})
-    void manualSupplierAndCentralWarehouseKeepTheirVerifiedNames(String mode) {
+    void purchaseFreightCannotBeCreatedThroughTheLegacyLogisticsProtocol(String mode) {
         var original =
                 command(
                         mode,
@@ -144,22 +144,9 @@ class ManualLogisticsCostTest {
                                 .replace("城市仓", "供应商A")
                                 .replace("客户", "中心仓B"),
                         LogisticsCostCommand.class);
-        when(refs.party(eq("suppliers"), eq(1L), any(), any())).thenReturn("供应商A");
-        when(refs.warehouseDetail(eq(2L), any()))
-                .thenReturn(
-                        new LogisticsCostWarehouseView("2", "中心仓B", "中心仓B", "CENTER", "C1", "地址"));
-        service.save("logistics", null, c);
-        verify(store)
-                .save(
-                        any(),
-                        eq("LOGISTICS"),
-                        isNull(),
-                        eq(c),
-                        eq(List.of()),
-                        isNull(),
-                        isNull(),
-                        any(),
-                        eq("order:logistics-cost:write"));
+        assertThatThrownBy(() -> service.save("logistics", null, c)).hasMessageContaining("采购运费已归入采购成本");
+        verifyNoInteractions(store);
+
     }
 
     @Test

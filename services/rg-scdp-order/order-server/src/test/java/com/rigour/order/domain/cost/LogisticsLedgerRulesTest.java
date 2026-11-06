@@ -17,6 +17,14 @@ class LogisticsLedgerRulesTest {
     @Test void oneFeeCanBelongToTwoOrdersWhilePurchaseIsOnlyTraced() {
         assertThat(LogisticsLedgerRules.validate(json.readValue(fixture,LogisticsCostLedger.class),true)).isEqualByComparingTo("300");
     }
+    @Test void onlyThreeTransportTypesAreAcceptedAndOtherExpensesRequireTheirPurpose() {
+        for(String type:java.util.List.of("TRANSFER","DELIVERY"))
+            assertThat(LogisticsLedgerRules.validate(json.readValue(fixture.replace("\"transportPurposeCode\":\"DELIVERY\"","\"transportPurposeCode\":\""+type+"\""),LogisticsCostLedger.class),true)).isEqualByComparingTo("300");
+        var other=json.readValue(fixture.replace("\"transportPurposeCode\":\"DELIVERY\"","\"transportPurposeCode\":\"OTHER\",\"nonSalesPurposeCode\":\"活动赠送配送\""),LogisticsCostLedger.class);
+        assertThat(LogisticsLedgerRules.validate(other,true)).isEqualByComparingTo("300");
+        assertThatThrownBy(()->LogisticsLedgerRules.validate(other.withTransportType("PURCHASE"),true)).hasMessageContaining("采购成本");
+        assertThatThrownBy(()->LogisticsLedgerRules.validate(json.readValue(fixture.replace("\"transportPurposeCode\":\"DELIVERY\"","\"transportPurposeCode\":\"OTHER\""),LogisticsCostLedger.class),true)).hasMessageContaining("其他费用用途说明");
+    }
     @Test void aSecondFullChargeOrUnknownPointIsRejected() {
         assertThatThrownBy(() -> LogisticsLedgerRules.validate(json.readValue(fixture.replace("\"amount\":200","\"amount\":300"),LogisticsCostLedger.class),true)).hasMessageContaining("分摊金额");
         assertThatThrownBy(() -> LogisticsLedgerRules.validate(json.readValue(fixture.replace("\"receivingPointCode\":\"P2\"","\"receivingPointCode\":\"missing\""),LogisticsCostLedger.class),true)).hasMessageContaining("收货点");

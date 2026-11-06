@@ -101,6 +101,23 @@ public final class ErpProcurementOrderService {
             String confirmationStatusCode,
             java.time.LocalDate purchaseDateFrom,
             java.time.LocalDate purchaseDateTo) {
+        return procurementOrders(begin,step,procurementNo,supplierId,targetWarehouseId,statusCode,expectedArrivalFrom,expectedArrivalTo,supplierCode,targetWarehouseCode,confirmationStatusCode,purchaseDateFrom,purchaseDateTo,null);
+    }
+
+    public InternalProcurementOrderPageView procurementOrders(
+            int begin,
+            int step,
+            String procurementNo,
+            Long supplierId,
+            Long targetWarehouseId,
+            String statusCode,
+            Instant expectedArrivalFrom,
+            Instant expectedArrivalTo,
+            String supplierCode,
+            String targetWarehouseCode,
+            String confirmationStatusCode,
+            java.time.LocalDate purchaseDateFrom,
+            java.time.LocalDate purchaseDateTo, String sourceDocumentNo) {
         if (confirmationStatusCode != null
                 && !Set.of("UNCONFIRMED", "CONFIRMED").contains(confirmationStatusCode))
             throw badRequest("确认状态无效");
@@ -120,7 +137,7 @@ public final class ErpProcurementOrderService {
                         ErpServiceValidation.text(targetWarehouseCode, 50, "targetWarehouseCode"),
                         confirmationStatusCode,
                         purchaseDateFrom,
-                        purchaseDateTo);
+                        purchaseDateTo, ErpServiceValidation.text(sourceDocumentNo,100,"sourceDocumentNo"));
         if (expectedArrivalFrom != null && expectedArrivalTo != null
                 && expectedArrivalFrom.isAfter(expectedArrivalTo)) {
             throw badRequest("expectedArrivalFrom不能晚于expectedArrivalTo");

@@ -536,6 +536,9 @@ public class MybatisPlusProcurementOrderRepository
                 Wrappers.<InternalProcurementOrderEntity>lambdaQuery()
                         .eq(InternalProcurementOrderEntity::getTenantId, tenantId)
                         .eq(InternalProcurementOrderEntity::getDeleted, 0);
+        if (criteria.sourceDocumentNo() != null) {
+            query.eq(InternalProcurementOrderEntity::getSourceSystemCode,"DINGHUOBAO").like(InternalProcurementOrderEntity::getSourceDocumentNo,criteria.sourceDocumentNo());
+        }
         if (criteria.procurementNo() != null) {
             query.like(InternalProcurementOrderEntity::getProcurementNo, criteria.procurementNo());
         }

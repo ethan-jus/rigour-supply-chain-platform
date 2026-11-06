@@ -18,6 +18,7 @@ import com.rigour.analytics.api.v1.model.CostDashboardRecordSummary;
 import com.rigour.analytics.api.v1.model.CostDashboardRecordView;
 import com.rigour.analytics.api.v1.model.CostDashboardRecords;
 import com.rigour.analytics.api.v1.model.CostDashboardReport;
+import com.rigour.analytics.api.v1.model.CostDashboardScopeSummary;
 import com.rigour.analytics.api.v1.model.CostDashboardWorkspace;
 import com.rigour.analytics.application.port.out.CostDashboardStore;
 import com.rigour.analytics.application.port.out.CostSourceDetail;
@@ -87,14 +88,14 @@ public class CostDashboardService {
             throw new CostDashboardFailure("COST_SOURCE_UNAVAILABLE", 503, "费用数据正在准备，请稍后刷新");
         String id = blank(q.snapshotId()) == null ? state.snapshotId() : q.snapshotId();
         var snapshot = store.snapshot(tenant, id);
-        if (!"6".equals(snapshot.versions().get("BI_COST_NORMALIZATION"))) {
+        if (!NORMALIZATION_VERSION.equals(snapshot.versions().get("BI_COST_NORMALIZATION"))) {
             if (blank(q.snapshotId()) != null) throw CostDashboardFailure.expired();
             refresh.refreshTenant(tenant);
             state = store.state(tenant);
             snapshot = store.snapshot(tenant, state.snapshotId());
             id = snapshot.id();
-            if (!"6".equals(snapshot.versions().get("BI_COST_NORMALIZATION")))
-                throw new CostDashboardFailure("COST_SOURCE_UNAVAILABLE", 503, "六类成本口径正在准备，请稍后刷新");
+            if (!NORMALIZATION_VERSION.equals(snapshot.versions().get("BI_COST_NORMALIZATION")))
+                throw new CostDashboardFailure("COST_SOURCE_UNAVAILABLE", 503, "成本统计口径正在准备，请稍后刷新");
         }
         Filter f = filter(q, snapshot.cutoff());
         CostPeriod p = CostPeriod.resolve(f.year(), f.month(), f.compare(), snapshot.cutoff());
@@ -124,7 +125,11 @@ public class CostDashboardService {
                 // 历史覆盖按同一授权费用范围判断；新发生费用的城市、分类或对象上期金额为零，
                 // 不能因继续下钻而把总览中已可比较的增减金额变成“无可比数据”。
                 rows.stream()
-                        .anyMatch(r -> f.scope().equals(r.scope()) && r.inPeriod(p, true) && r.confirmed());
+                        .anyMatch(
+                                r ->
+                                        f.scope().equals(r.scope())
+                                                && r.inPeriod(p, true)
+                                                && r.confirmed());
         var excluded =
                 CATEGORIES.keySet().stream()
                         .filter(k -> !a.sources().containsKey(k))
@@ -144,7 +149,7 @@ public class CostDashboardService {
                 "FAILED".equals(state.status()) || state.succeededAt() == null ? "STALE" : "READY";
         CostDashboardMeta meta =
                 new CostDashboardMeta(
-                        "cost-v9",
+                        "cost-v11",
                         id,
                         snapshot.generatedAt(),
                         snapshot.cutoff(),
@@ -286,7 +291,8 @@ public class CostDashboardService {
                                 ? payrollComponents(cur, prev)
                                 : List.of(),
                         money(sum(cur, r -> r.confirmed() && r.monthly())),
-                        money(sum(prev, r -> r.confirmed() && r.monthly())));
+                        money(sum(prev, r -> r.confirmed() && r.monthly())),
+                        scopeSummaries(c));
         log.info(
                 "cost_dashboard_query tenant={} actor={} snapshot={} year={} month={} scope={}"
                         + " city={} rows={} elapsedMs={}",
@@ -352,12 +358,8 @@ public class CostDashboardService {
     public List<CostFact> matching(Context c) {
         // 明细、导出与汇总采用同一纳入口径，关联报销不得再次作为费用金额行展示。
         return sorted(
-                period(
-                        c.rows(),
-                        c.filter(),
-                        c.period(),
-                        "previous".equals(c.filter().side()),
-                        true).stream()
+                period(c.rows(), c.filter(), c.period(), "previous".equals(c.filter().side()), true)
+                        .stream()
                         .filter(CostFact::confirmed)
                         .toList());
     }
@@ -380,14 +382,21 @@ public class CostDashboardService {
                                 () ->
                                         new BusinessException(
                                                 ErrorCode.NOT_FOUND, "费用不存在或无访问权限", List.of()));
-        var current = sourceDetail.verify(fact.source(), fact.sourceCategory(), fact.rootSourceId());
+        var current =
+                sourceDetail.verify(fact.source(), fact.sourceCategory(), fact.rootSourceId());
         if (current.revision() != fact.revision()
                 || !Objects.equals(current.status(), fact.status()))
             throw new CostDashboardFailure("SOURCE_VERSION_CHANGED", 409, "源单据已更新，请刷新整个看板后查看");
         Map<String, String> dimensions = new LinkedHashMap<>();
         DIMENSIONS
                 .get(fact.category())
-                .forEach(k -> dimensions.put(DIMENSION_LABELS.get(k), fact.dimension(k).label()));
+                .forEach(
+                        k ->
+                                dimensions.put(
+                                        DIMENSION_LABELS.get(k),
+                                        fact.dimension(k).key().startsWith("dict:")
+                                                ? fact.dimension(k).key()
+                                                : fact.dimension(k).label()));
         Map<String, String> sourceFields =
                 Map.of(
                         "recordArea",
@@ -403,12 +412,20 @@ public class CostDashboardService {
                     var value = fact.dimensions().get(key);
                     if (value != null) dimensions.put(label, value.label());
                 });
-        Map.of("courier_contents", "寄送内容", "courier_recipientName", "收件客户或合作方",
-                        "courier_companyName", "快递公司", "courier_trackingNo", "运单号")
-                .forEach((key, label) -> {
-                    var value = fact.dimensions().get(key);
-                    if (value != null) dimensions.put(label, value.label());
-                });
+        Map.of(
+                        "courier_contents",
+                        "寄送内容",
+                        "courier_recipientName",
+                        "收件客户或合作方",
+                        "courier_companyName",
+                        "快递公司",
+                        "courier_trackingNo",
+                        "运单号")
+                .forEach(
+                        (key, label) -> {
+                            var value = fact.dimensions().get(key);
+                            if (value != null) dimensions.put(label, value.label());
+                        });
         fact.components()
                 .forEach(
                         (key, value) ->
@@ -494,6 +511,9 @@ public class CostDashboardService {
     }
 
     private static String sourceRoute(CostFact r) {
+        // 统计分类不能改变原单所有者；历史采购运费仍须进入订单中心查看。
+        if ("ORDER".equals(r.source()))
+            return "/supply-chain/cost/logistics?sourceId=" + r.rootSourceId();
         if ("HR".equals(r.source()))
             return ("PAYROLL".equals(r.sourceCategory())
                             ? "/supply-chain/hr/payroll?sourceId="
@@ -515,7 +535,7 @@ public class CostDashboardService {
     public static CostDashboardRecordView record(CostFact r) {
         return new CostDashboardRecordView(
                 r.source(),
-                r.rootSourceId(),
+                r.sourceId(),
                 r.documentNo(),
                 r.title(),
                 r.category(),
@@ -529,7 +549,9 @@ public class CostDashboardService {
                 r.employeeName(),
                 r.costMonth().toString(),
                 r.monthly() ? "MONTH" : "DAY",
-                r.treatment());
+                r.treatment(),
+                r.dimension("purchase".equals(r.category()) ? "component" : "feeType").key(),
+                r.dimension("purchase".equals(r.category()) ? "component" : "feeType").label());
     }
 
     private static Filter filter(CostDashboardQuery q, LocalDate cutoff) {
@@ -611,6 +633,62 @@ public class CostDashboardService {
                                                         || c.filter().city().equals(r.city()))
                                                 && r.inPeriod(c.period(), false))
                         .toList());
+    }
+
+    private static List<CostDashboardScopeSummary> scopeSummaries(Context c) {
+        Map<String, String> labels = new LinkedHashMap<>();
+        labels.put("opex", "经营费用");
+        labels.put("purchase", "采购成本");
+        labels.put("loss", "商品损耗");
+        List<CostDashboardScopeSummary> result = new ArrayList<>();
+        for (var entry : labels.entrySet()) {
+            String scope = entry.getKey();
+            boolean allowed =
+                    c.access().categories().stream()
+                            .anyMatch(
+                                    category ->
+                                            scope.equals(
+                                                    Set.of("purchase", "loss").contains(category)
+                                                            ? category
+                                                            : "opex"));
+            if (!allowed) continue;
+            var scopeRows = c.rows().stream().filter(r -> scope.equals(r.scope())).toList();
+            var rows =
+                    scopeRows.stream()
+                            .filter(
+                                    r ->
+                                            c.filter().city() == null
+                                                    || c.filter().city().equals(r.city()))
+                            .toList();
+            var current = rows.stream().filter(r -> r.inPeriod(c.period(), false)).toList();
+            var previous = rows.stream().filter(r -> r.inPeriod(c.period(), true)).toList();
+            // 与下钻保持一致：同一成本口径的可比基准保留，新归属可表现为零基数增长。
+            boolean comparable =
+                    scopeRows.stream().anyMatch(r -> r.inPeriod(c.period(), true) && r.confirmed());
+            BigDecimal amount = amount(current), before = amount(previous);
+            var components =
+                    "purchase".equals(scope)
+                            ? groups(
+                                            current,
+                                            previous,
+                                            r -> r.dimension("component").key(),
+                                            r -> r.dimension("component").label())
+                                    .stream()
+                                    .map(g -> view(g, amount, comparable))
+                                    .toList()
+                            : List.<CostDashboardGroup>of();
+            result.add(
+                    new CostDashboardScopeSummary(
+                            scope,
+                            entry.getValue(),
+                            metric(current),
+                            metric(previous),
+                            comparable,
+                            comparable ? money(amount.subtract(before)) : null,
+                            comparable ? ratio(amount.subtract(before), before) : null,
+                            components));
+        }
+        return List.copyOf(result);
     }
 
     private static List<CostDashboardChoice> cityChoices(

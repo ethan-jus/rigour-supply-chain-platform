@@ -1356,7 +1356,7 @@ public class MybatisPlusSupplyDataRepository implements SupplyDataStore {
         if (created || (sourceWritable(entity.getUpdatedBy())
                 && (changed || !Objects.equals(entity.getWarehouseName(), sourceName)))) {
             entity.setWarehouseName(sourceName);
-            entity.setRegionCode(null);
+            // 来源接口未提供所在地；业务归属和人工所在地独立维护，不能被基础资料同步清空。
             entity.setWarehouseTypeCode(defaultFlag != null && defaultFlag ? "DEFAULT" : "CITY");
             entity.setDefaultFlag(defaultFlag != null && defaultFlag);
             entity.setAddress(address);

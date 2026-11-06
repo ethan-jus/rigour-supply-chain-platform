@@ -9,6 +9,8 @@ import java.util.function.Function;
 public final class CostAnalysis {
     private CostAnalysis() {}
 
+    public static final String NORMALIZATION_VERSION = "9";
+
     public static final Map<String, String> CATEGORIES;
 
     static {
@@ -16,11 +18,11 @@ public final class CostAnalysis {
         categories.put("warehouse", "仓储费用");
         categories.put("marketing", "营销费用");
         categories.put("office", "办公费用");
-        categories.put("freight", "运费");
+        categories.put("freight", "物流运输费用");
         categories.put("labor", "人力薪酬");
         categories.put("expense", "员工报销");
         categories.put("premises_unknown", "待分类场地费用");
-        categories.put("purchase", "商品采购");
+        categories.put("purchase", "采购成本");
         categories.put("loss", "商品损耗");
         CATEGORIES = Collections.unmodifiableMap(categories);
     }
@@ -28,9 +30,16 @@ public final class CostAnalysis {
     public static final Map<String, List<String>> DIMENSIONS =
             Map.of(
                     "freight",
-                    List.of("leg", "route", "carrier", "method", "type", "employee"),
+                    List.of(
+                            "leg",
+                            "method",
+                            "carrier",
+                            "feeType",
+                            "deliveryMode",
+                            "route",
+                            "employee"),
                     "warehouse",
-                    List.of("premises", "contract"),
+                    List.of("feeType", "premises", "contract"),
                     "office",
                     List.of("premises", "contract", "type", "employee"),
                     "labor",
@@ -40,16 +49,19 @@ public final class CostAnalysis {
                     "expense",
                     List.of("type", "employee", "department", "trip", "destination", "payee"),
                     "purchase",
-                    List.of("supplier", "product", "warehouse"),
+                    List.of("component", "supplier", "warehouse", "product"),
                     "loss",
                     List.of("product", "lossReason", "warehouse"),
                     "premises_unknown",
                     List.of("premises", "contract"));
     public static final Map<String, String> DIMENSION_LABELS =
             Map.ofEntries(
-                    Map.entry("leg", "运输环节"),
-                    Map.entry("carrier", "承运方"),
+                    Map.entry("leg", "运输类型"),
+                    Map.entry("carrier", "物流公司"),
                     Map.entry("method", "运输方式"),
+                    Map.entry("feeType", "费用项目"),
+                    Map.entry("deliveryMode", "承运方式"),
+                    Map.entry("component", "采购成本构成"),
                     Map.entry("premises", "仓库或场地"),
                     Map.entry("contract", "合同编号"),
                     Map.entry("type", "费用类型"),
@@ -165,7 +177,11 @@ public final class CostAnalysis {
     }
 
     public static long count(List<CostFact> rows) {
-        return rows.stream().filter(CostFact::confirmed).map(CostFact::documentKey).distinct().count();
+        return rows.stream()
+                .filter(CostFact::confirmed)
+                .map(CostFact::documentKey)
+                .distinct()
+                .count();
     }
 
     public static String money(BigDecimal value) {

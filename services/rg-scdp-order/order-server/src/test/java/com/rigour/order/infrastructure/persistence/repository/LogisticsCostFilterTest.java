@@ -48,6 +48,7 @@ public class LogisticsCostFilterTest {
                                 "")
                         .replace(" JSON ", " LONGTEXT ");
         jdbc.execute(ddl);
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN deleted INT NOT NULL DEFAULT 0");
 
         for (String name : List.of("extract", "unquote", "search")) {
             String function =
@@ -92,13 +93,29 @@ public class LogisticsCostFilterTest {
 
     @Test
     void senderReceiverAndCarrierAreIndependentAndIntersect() {
-        jdbc.update("UPDATE order_logistics_cost SET data_json=?", "{\"logistics\":{\"senderName\":\"发货甲\",\"receiverName\":\"收货乙\",\"carrierName\":\"承运丙\"}}");
-        var match = JSON.readValue("{\"begin\":0,\"step\":20,\"senderName\":\"发货甲\",\"receiverName\":\"收货乙\",\"carrierName\":\"承运丙\"}", LogisticsCostQuery.class);
+        jdbc.update(
+                "UPDATE order_logistics_cost SET data_json=?",
+                "{\"logistics\":{\"senderName\":\"发货甲\",\"receiverName\":\"收货乙\",\"carrierName\":\"承运丙\"}}");
+        var match =
+                JSON.readValue(
+                        "{\"begin\":0,\"step\":20,\"senderName\":\"发货甲\",\"receiverName\":\"收货乙\",\"carrierName\":\"承运丙\"}",
+                        LogisticsCostQuery.class);
         var result = store.entries("T1", "LOGISTICS", match, "cost:read");
         assertThat(result.total()).isEqualTo(1);
         assertThat(result.registeredAmount()).isEqualByComparingTo("100");
-        var crossed = JSON.readValue("{\"begin\":0,\"step\":20,\"senderName\":\"收货乙\",\"receiverName\":\"发货甲\"}", LogisticsCostQuery.class);
+        var crossed =
+                JSON.readValue(
+                        "{\"begin\":0,\"step\":20,\"senderName\":\"收货乙\",\"receiverName\":\"发货甲\"}",
+                        LogisticsCostQuery.class);
         assertThat(store.entries("T1", "LOGISTICS", crossed, "cost:read").total()).isZero();
+    }
+
+    @Test
+    void selectedExportStillIntersectsTenantAndWarehouseScope() {
+        var rows = store.selectedEntries("T1", List.of("good", "other", "hidden"), "cost:export");
+        assertThat(rows).extracting(r -> r.id()).containsExactly("good");
+        assertThat(store.selectedEntries("T1", List.of("good' OR 1=1 --"), "cost:export"))
+                .isEmpty();
     }
 
     @AfterEach

@@ -690,6 +690,29 @@ class MybatisPlusSupplyDataRepositoryTest {
     }
 
     @Test
+    void warehouseSyncPreservesBusinessRegionAndPhysicalLocationWhenSourceChanges() {
+        givenRunConnector();
+        var binding = binding("WAREHOUSE", "INVENTORY_WAREHOUSE", "STOCK-1", 9L, "原仓名");
+        binding.sourcePayloadHash = "old-hash";
+        when(bindingMapper.selectOne(any())).thenReturn(binding);
+        var entity = warehouse(9L, "原仓名");
+        entity.setUpdatedBy("SYSTEM");
+        entity.setRegionCode("CUSTOMER-AREA-WH");
+        entity.setLocationAreaCode("420102");
+        entity.setLocationAreaVersion("2026");
+        when(warehouseMapper.selectById(9L)).thenReturn(entity);
+        repository.importWarehouse(TENANT_ID, RUN_ID, new com.rigour.erp.domain.model.supply.Warehouse(
+                "STOCK-1", null, "19", "新仓名", "1", false, null, "13800000000", "详细地址",
+                null, null, Map.of("stock_id", "STOCK-1"), "new-hash"));
+        var updated = ArgumentCaptor.forClass(InternalInventoryWarehouseEntity.class);
+        verify(warehouseMapper).updateById(updated.capture());
+        assertThat(updated.getValue().getWarehouseName()).isEqualTo("新仓名");
+        assertThat(updated.getValue().getRegionCode()).isEqualTo("CUSTOMER-AREA-WH");
+        assertThat(updated.getValue().getLocationAreaCode()).isEqualTo("420102");
+        assertThat(updated.getValue().getLocationAreaVersion()).isEqualTo("2026");
+    }
+
+    @Test
     void warehouseSourceBindingPublishesExternalMappingForOrderProjection() {
         MasterSourceBindingEntity binding = binding("WAREHOUSE", "INVENTORY_WAREHOUSE",
                 "26914", 9L, "指间云仓");
