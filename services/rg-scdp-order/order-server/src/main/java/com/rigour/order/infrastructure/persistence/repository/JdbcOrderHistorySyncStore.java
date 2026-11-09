@@ -460,6 +460,37 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         ts(c.sourceUpdatedAt()), ts(c.sourceUpdatedAt()));
             }
         }
+        // 同版本重放也补齐早期取消分支遗漏的快照；已有归属及历史飞书主体保持不变。
+        var fields = new LinkedHashMap<String, Object>();
+        fields.put("customer_name_snapshot", c.customerName());
+        if (c.attribution() != null) {
+            var a = c.attribution();
+            fields.put("customer_id", a.customerId());
+            fields.put("customer_code_snapshot", a.customerCode());
+            fields.put("region_code", a.regionCode());
+            fields.put("owner_employee_code", a.ownerEmployeeCode());
+            fields.put("owner_employee_name_snapshot", a.ownerEmployeeName());
+            fields.put("source_creator_id", a.sourceCreatorId());
+            fields.put("source_creator_staff_code", a.sourceCreatorCode());
+            fields.put("source_creator_name", a.sourceCreatorName());
+        }
+        fields.entrySet().removeIf(e -> e.getValue() == null || e.getValue() instanceof String v && v.isBlank());
+        if (!fields.isEmpty()) {
+            var set = new ArrayList<String>();
+            var missing = new ArrayList<String>();
+            var args = new ArrayList<Object>();
+            fields.forEach((column, value) -> {
+                String current = value instanceof String ? "NULLIF(" + column + ",'')" : column;
+                set.add(column + "=COALESCE(" + current + ",?)");
+                missing.add(current + " IS NULL");
+                args.add(value);
+            });
+            args.add(actor); args.add(t); args.add(c.sourceNo()); args.add(status);
+            jdbc.update("UPDATE order_sales_order SET " + String.join(",", set)
+                    + ",revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6)"
+                    + " WHERE tenant_id=? AND source_system_code='DINGHUOBAO' AND source_order_no=? AND order_status_code=?"
+                    + " AND (" + String.join(" OR ", missing) + ")", args.toArray());
+        }
         return new Intake(status, group, null);
     }
 

@@ -1241,6 +1241,30 @@ class OrderAttributionAndScopeIntegrationTest {
         assertThat((java.math.BigDecimal)row.get("payable_amount")).isEqualByComparingTo("0");
     }
 
+    @Test
+    void cancelledSourceReplaysFillMissingAttributionWithoutChangingKnownFieldsOrMoney() {
+        TestAuthorizationContext.set(serviceCallerIdentity());
+        var connector = UUID.randomUUID();
+        var stamp = Instant.parse("2026-11-08T07:07:13Z");
+        historySync.cancelSourceOrder(tenant, "sync-test", new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(
+                connector, "CANCELLED-METADATA", "CANCELLED", null, new java.math.BigDecimal("156"), null, stamp));
+        var attribution = new com.rigour.order.api.v1.model.HistorySyncModels.CancelledOrderAttribution(
+                1L, "C1", "HZ", "EMP-A", "原业务员", "SOURCE-A", "EMP-A", "原制单人");
+        var enriched = new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(
+                connector, "CANCELLED-METADATA", "CANCELLED", null, new java.math.BigDecimal("999"), "取消门店", stamp, attribution);
+        historySync.cancelSourceOrder(tenant, "sync-test", enriched);
+        var row = jdbc.queryForMap("SELECT * FROM order_sales_order WHERE tenant_id=?",tenant);
+        assertThat(row).containsEntry("customer_name_snapshot","取消门店").containsEntry("owner_employee_code","EMP-A")
+                .containsEntry("region_code","HZ").containsEntry("source_creator_name","原制单人");
+        assertThat((java.math.BigDecimal)row.get("payable_amount")).isEqualByComparingTo("156");
+        historySync.cancelSourceOrder(tenant, "sync-test", enriched);
+        assertThat(jdbc.queryForMap("SELECT * FROM order_sales_order WHERE tenant_id=?",tenant)).isEqualTo(row);
+        historySync.cancelSourceOrder(tenant, "sync-test", new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(
+                connector, "CANCELLED-METADATA", "CANCELLED", null, null, "别的名称", stamp,
+                new com.rigour.order.api.v1.model.HistorySyncModels.CancelledOrderAttribution(2L,"C2","OTHER","EMP-B","其他人",null,null,null)));
+        assertThat(jdbc.queryForMap("SELECT * FROM order_sales_order WHERE tenant_id=?",tenant)).isEqualTo(row);
+    }
+
     private String orderMainStatus(long id) {
         return jdbc.queryForObject("SELECT order_status_code FROM order_sales_order WHERE tenant_id=? AND id=?",String.class,tenant,id);
     }

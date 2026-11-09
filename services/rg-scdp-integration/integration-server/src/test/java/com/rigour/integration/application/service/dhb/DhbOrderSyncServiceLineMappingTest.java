@@ -60,7 +60,8 @@ class DhbOrderSyncServiceLineMappingTest {
         var raw = new DhbSyncStore.RawObjectPersistResult(UUID.randomUUID(), "hash", true);
         when(store.persistRawObject(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(raw);
         when(client.getOrderContent(any(), eq("D1"))).thenReturn(new DhbClient.OrderDetail("D1", "zeroSettlement".equals(scenario) ? "finished" : terminal,
-                BigDecimal.ONE, "zeroSettlement".equals(scenario) ? Map.of("DiscountTotal", "0.0000") : Map.of()));
+                BigDecimal.ONE, Map.of("DiscountTotal", "zeroSettlement".equals(scenario) ? "0.0000" : "1.00",
+                        "ClientName", "取消门店", "StaffName", "业务员", "AdminUser", "制单人")));
         when(projection.cancelSourceOrder(any(), any())).thenReturn(
                 new com.rigour.order.api.v1.model.HistorySyncModels.Intake(terminal, null, null));
         var method = DhbOrderSyncService.class.getDeclaredMethod("projectOrder",
@@ -69,9 +70,11 @@ class DhbOrderSyncServiceLineMappingTest {
         method.setAccessible(true);
         assertThat(method.invoke(service, caller, task, UUID.randomUUID(), summary, new HashMap<>(), new HashMap<>()))
                 .isEqualTo(DhbOrderSyncService.ProjectionOutcome.CHANGED);
-        verify(projection).cancelSourceOrder(any(), argThat(c -> c.connectorId().equals(connector) && c.sourceNo().equals("D1") && c.orderStatusCode().equals(terminal)));
+        verify(projection).cancelSourceOrder(any(), argThat(c -> c.connectorId().equals(connector) && c.sourceNo().equals("D1") && c.orderStatusCode().equals(terminal)
+                && c.customerName().equals("取消门店") && c.attribution().ownerEmployeeName().equals("业务员")
+                && c.attribution().sourceCreatorName().equals("制单人")));
         org.mockito.Mockito.verifyNoMoreInteractions(projection);
-        if (cancelledInList) org.mockito.Mockito.verifyNoInteractions(client);
+        if (cancelledInList) verify(client).getOrderContent(any(), eq("D1"));
         verify(store).markRawProcessed(tenant, raw.rawLandingId());
     }
 

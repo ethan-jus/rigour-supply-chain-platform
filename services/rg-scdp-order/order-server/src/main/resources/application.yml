@@ -48,6 +48,10 @@ rigour:
     # Order列表按员工编码查询HR员工主档展示名；业务表只保存employee_code。
     base-url: ${RIGOUR_HR_BASE_URL:http://rigour-hr-payroll-service}
   order:
+    voucher-recognition:
+      enabled: ${RIGOUR_VOUCHER_OCR_ENABLED:false}
+      discover-enabled: ${RIGOUR_VOUCHER_OCR_DISCOVER_ENABLED:true}
+      python: ${RIGOUR_VOUCHER_OCR_PYTHON:python3}
     http:
       # Order对下游ERP的连接和读取超时；订货宝同步统一收口到Integration编排器。
       connect-timeout: ${RIGOUR_ORDER_HTTP_CONNECT_TIMEOUT:3s}
