@@ -9,6 +9,9 @@ import org.springframework.web.bind.annotation.*;
 public interface OrderHistorySyncApi {
     String BASE = "/api/v1/orders/history-sync";
 
+    @GetMapping(BASE + "/source-orders/known")
+    ApiResponse<java.util.List<String>> knownSources(@RequestParam java.util.UUID connectorId, @RequestParam(required = false) String sourceNo);
+
     @GetMapping(BASE + "/orders/{orderId}/lifecycle")
     ApiResponse<java.util.List<SourceLifecycleEvent>> lifecycle(@PathVariable long orderId);
 

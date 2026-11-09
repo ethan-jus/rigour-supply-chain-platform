@@ -17,6 +17,10 @@ import java.util.Optional;
 
 /** Integration向Order投影自研销售订单、发货、回款、退款和资金单据的出站端口；实现只能调用Order公开API。 */
 public interface OrderSalesOrderProjectionClient {
+    default java.util.List<String> knownSourceOrders(CallerIdentity caller, java.util.UUID connectorId, String sourceNo) {
+        throw new UnsupportedOperationException("已同步来源订单查询不可用");
+    }
+
     default com.rigour.order.api.v1.model.HistorySyncModels.Intake cancelSourceOrder(CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder command) {
         throw new UnsupportedOperationException("来源取消接口未实现");

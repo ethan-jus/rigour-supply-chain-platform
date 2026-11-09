@@ -49,12 +49,12 @@ class DhbOrderSyncServiceLineMappingTest {
         var caller=(com.rigour.shared.context.CallerIdentity)callerMethod.invoke(null,tenant);
         when(store.loadTask(tenant,taskId)).thenReturn(new DhbSyncStore.SyncTaskContext(tenant,taskId,connector,
                 "orders","ORDER","ACTIVE","https://example.test","secret","ACTIVE",100,1,0,true));
-        when(store.syncedOrderNumbers(tenant,connector)).thenReturn(List.of("EXISTS","MISSING","TEMPORARY"));
+        when(projection.knownSourceOrders(any(), eq(connector), org.mockito.ArgumentMatchers.isNull())).thenReturn(List.of("EXISTS","MISSING","TEMPORARY"));
         var row=new DhbClient.OrderSummary("EXISTS","EXISTS","finished",BigDecimal.ONE,null,null,null,null,Map.of());
         var request=DhbClient.PageRequest.first(1000);
         when(client.getOrders(any(),any())).thenReturn(new DhbClient.Page<>(request,1001,List.of(row)));
         assertThatThrownBy(()->service.reconcileDeletedOrders(caller,taskId,1,x->{})).hasMessageContaining("分页不完整");
-        org.mockito.Mockito.verifyNoInteractions(projection);
+        verify(projection,org.mockito.Mockito.never()).cancelSourceOrder(any(),any());
         when(client.getOrders(any(),any())).thenReturn(new DhbClient.Page<>(request,1,List.of(row)));
         when(client.orderMissing(any(),eq("MISSING"))).thenReturn(true);
         when(client.orderMissing(any(),eq("TEMPORARY"))).thenReturn(false);
@@ -62,6 +62,7 @@ class DhbOrderSyncServiceLineMappingTest {
         service.reconcileDeletedOrders(caller,taskId,1,x->{});
         verify(projection).cancelSourceOrder(any(),argThat(c->"MISSING".equals(c.sourceNo()) && "DELETED".equals(c.orderStatusCode())
                 && c.sourceUpdatedAt()==null && c.evidence().operatorName()==null));
+        verify(projection,org.mockito.Mockito.times(2)).knownSourceOrders(any(),eq(connector),org.mockito.ArgumentMatchers.isNull());
         org.mockito.Mockito.verifyNoMoreInteractions(projection);
         org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).orderMissing(any(),eq("EXISTS"));
     }
@@ -127,8 +128,8 @@ class DhbOrderSyncServiceLineMappingTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
-    void protectedHistoryStillReadsChangesForMappedOrders(boolean mapped) throws Exception {
+    @org.junit.jupiter.params.provider.CsvSource({"true,false", "false,true", "false,false"})
+    void protectedHistoryStillReadsChangesForMappedOrders(boolean mapped, boolean historical) throws Exception {
         UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
         var store = mock(DhbSyncStore.class);
         var client = mock(DhbClient.class);
@@ -140,6 +141,7 @@ class DhbOrderSyncServiceLineMappingTest {
                 "orders", "ORDER", "ACTIVE", "https://example.test", "secret", "ACTIVE", 100, 1, 0, true);
         var summary = new DhbClient.OrderSummary("D1", "D1", "finished", BigDecimal.ONE,
                 Instant.now(), Instant.now(), null, null, Map.of("OrderDate", "2026-08-20 12:00:00"));
+        if (historical) when(projection.knownSourceOrders(any(), eq(connector), eq("D1"))).thenReturn(List.of("D1"));
         if (mapped) when(store.findActiveMapping(tenant, connector, "SALES_ORDER", "D1"))
                 .thenReturn(mapping("SALES_ORDER", "D1", "D1", "ORDER", "SALES_ORDER", 1L, "O1"));
         when(client.getOrderContent(any(), eq("D1"))).thenReturn(new DhbClient.OrderDetail("D1", "cancelled", BigDecimal.ONE, Map.of()));
@@ -151,8 +153,8 @@ class DhbOrderSyncServiceLineMappingTest {
                 UUID.class, DhbClient.OrderSummary.class, Map.class, Map.class);
         method.setAccessible(true);
         assertThat(method.invoke(service, caller, task, UUID.randomUUID(), summary, new HashMap<>(), new HashMap<>()))
-                .isEqualTo(mapped ? DhbOrderSyncService.ProjectionOutcome.CHANGED : DhbOrderSyncService.ProjectionOutcome.DUPLICATE);
-        verify(client, org.mockito.Mockito.times(mapped ? 1 : 0)).getOrderContent(any(), eq("D1"));
+                .isEqualTo(mapped || historical ? DhbOrderSyncService.ProjectionOutcome.CHANGED : DhbOrderSyncService.ProjectionOutcome.DUPLICATE);
+        verify(client, org.mockito.Mockito.times(mapped || historical ? 1 : 0)).getOrderContent(any(), eq("D1"));
     }
 
     @Test

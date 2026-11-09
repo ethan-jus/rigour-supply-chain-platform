@@ -36,7 +36,6 @@ public interface DhbSyncStore {
     ExternalObjectMapping findActiveMapping(UUID tenantId, UUID connectorId,
                                             String sourceObjectType, String sourceObjectId);
 
-    List<String> syncedOrderNumbers(UUID tenantId, UUID connectorId);
 
     List<TransferInboundReceiptCandidate> findTransferInboundReceiptCandidates(
             UUID tenantId, UUID connectorId, int limit);

@@ -717,7 +717,9 @@ public final class DhbOrderSyncService {
                     var mapped = store.findActiveMapping(caller.tenantId(), task.connectorId(),
                             SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
                     // 已关联历史单仍接收金额和状态变化；Order 保留原业务日期和回款凭证。
-                    if (mapped == null || mapped.internalObjectId() == null) return ProjectionOutcome.DUPLICATE;
+                    if ((mapped == null || mapped.internalObjectId() == null)
+                            && orderProjectionClient.knownSourceOrders(orderServiceCaller(caller.tenantId()),
+                                    task.connectorId(), sourceOrderNo).isEmpty()) return ProjectionOutcome.DUPLICATE;
                 }
             }
             if (summaryState != null) {
@@ -1401,7 +1403,7 @@ public final class DhbOrderSyncService {
     public com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView reconcileDeletedOrders(
             CallerIdentity caller, UUID taskId, int maxPages, java.util.function.Consumer<String> progress) {
         var task = store.loadTask(caller.tenantId(), taskId); validateTask(task);
-        var candidates = store.syncedOrderNumbers(caller.tenantId(), task.connectorId());
+        var candidates = orderProjectionClient.knownSourceOrders(orderServiceCaller(caller.tenantId()), task.connectorId(), null);
         var present = new java.util.HashSet<String>();
         PageRequest request = PageRequest.first(1000);
         long total = -1; boolean complete = false;

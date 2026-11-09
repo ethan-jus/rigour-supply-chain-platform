@@ -649,6 +649,16 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     }
 
     @Override
+    public List<String> knownSources(String tenant, UUID connectorId, String sourceNo) {
+        require(connectorId != null, "来源连接器缺失");
+        return jdbc.queryForList("SELECT s.source_no FROM order_sync_source s WHERE s.tenant_id=? AND s.connector_id=?"
+                + " AND (? IS NULL OR s.source_no=?) AND EXISTS (SELECT 1 FROM order_sales_order o WHERE o.tenant_id=?"
+                + " AND (o.source_system_code='DINGHUOBAO' AND o.source_order_no COLLATE utf8mb4_general_ci=s.source_no COLLATE utf8mb4_general_ci"
+                + " OR EXISTS(SELECT 1 FROM order_history_member m WHERE m.tenant_id=? AND m.order_id=o.id AND m.group_id=s.group_id)))",
+                String.class, tenant, connectorId.toString(), sourceNo, sourceNo, tenant, tenant);
+    }
+
+    @Override
     public List<SourceLifecycleEvent> lifecycleEvents(String tenant, long orderId) {
         return jdbc.query("SELECT a.source_json,a.created_at FROM order_dhb_projection_change_audit a"
                 + " WHERE a.tenant_id=? AND a.object_type='ORDER_LIFECYCLE' AND EXISTS"

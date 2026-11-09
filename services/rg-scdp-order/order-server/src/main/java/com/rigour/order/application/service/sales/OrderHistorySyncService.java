@@ -17,6 +17,11 @@ public class OrderHistorySyncService {
         this.store = store;
     }
 
+    public java.util.List<String> knownSources(java.util.UUID connectorId, String sourceNo) {
+        var a = actor(false, true);
+        return store.knownSources(a.tenantId().toString(), connectorId, sourceNo);
+    }
+
     public java.util.List<SourceLifecycleEvent> lifecycle(long orderId) {
         orders.salesOrder(orderId); // 使用订单详情相同的数据范围与权限校验。
         return store.lifecycleEvents(AuthorizationContext.requireCurrent().tenantId().toString(),orderId);
