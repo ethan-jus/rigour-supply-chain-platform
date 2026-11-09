@@ -843,7 +843,10 @@ public final class DhbOrderSyncService {
                         sourceSettlementAmount(detail, summary),
                         first(content, list, "ClientName", "ClientCompanyName", "clientName", "customerName"), summary.updatedAt(),
                         cancelledAttribution(caller.tenantId(), task.connectorId(), sourceOrderNo, content, list,
-                                employeeCache, customerRegionCache)));
+                                employeeCache, customerRegionCache),
+                        new com.rigour.order.api.v1.model.HistorySyncModels.SourceLifecycleEvidence(
+                                first(content,list,"CancelUserID","DeleteUserID"), first(content,list,"CancelUserName","DeleteUserName"),
+                                firstInstant(content,list,null,"CancelTime","DeleteTime"), "订货宝明确返回失效状态")));
         if (result == null) throw new IllegalStateException("来源取消接口未返回结果");
         if (!Set.of("CANCELLED", "DELETED", "STALE").contains(result.state())) {
             recordRejected(caller, task, runId, raw, sourceOrderNo, "DHB_CANCELLATION_REVIEW",
@@ -1392,6 +1395,43 @@ public final class DhbOrderSyncService {
                     Map.of("error", safeMessage(error)));
             return ProjectionOutcome.REJECTED;
         }
+    }
+
+    /** 增量接口不返回已删除订单；全量完整分页和单笔不存在回执共同证明来源删除。 */
+    public com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView reconcileDeletedOrders(
+            CallerIdentity caller, UUID taskId, int maxPages, java.util.function.Consumer<String> progress) {
+        var task = store.loadTask(caller.tenantId(), taskId); validateTask(task);
+        var candidates = store.syncedOrderNumbers(caller.tenantId(), task.connectorId());
+        var present = new java.util.HashSet<String>();
+        PageRequest request = PageRequest.first(1000);
+        long total = -1; boolean complete = false;
+        for (int pageNo = 0; pageNo < maxPages; pageNo++) {
+            var page = client.getOrders(task.connector(), new OrderQuery(request, "all", null, null, "all", "all", null, null));
+            if (page.total() < 0 || total >= 0 && total != page.total())
+                throw new IllegalStateException("来源订单总数未确定或扫描期间变化，本次不判定删除");
+            total = page.total();
+            for (var item : page.items()) {
+                if (blank(item.orderNumber()) || !present.add(item.orderNumber()))
+                    throw new IllegalStateException("来源订单分页缺号或重复，本次不判定删除");
+            }
+            progress.accept("核对来源删除状态：已读取 " + present.size() + " / " + total);
+            if (!page.hasNext()) { complete = present.size() == total; break; }
+            request = page.nextRequest();
+        }
+        if (!complete) throw new IllegalStateException("来源订单分页不完整，本次不判定删除");
+        long deleted = 0, review = 0;
+        for (String no : candidates) {
+            if (present.contains(no) || !client.orderMissing(task.connector(), no)) continue;
+            var result = orderProjectionClient.cancelSourceOrder(orderServiceCaller(caller.tenantId()),
+                    new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(task.connectorId(), no,
+                            "DELETED", null, null, null, null, null,
+                            new com.rigour.order.api.v1.model.HistorySyncModels.SourceLifecycleEvidence(
+                                    null, null, null, "完整订单列表缺失，单笔接口明确返回未查询到订单信息")));
+            if (result != null && "DELETED".equals(result.state())) deleted++; else review++;
+        }
+        return new com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView("ORDER", "SOURCE_PRESENCE",
+                review == 0 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS", null, total, deleted, review, Map.of(),
+                "来源存在性核对完成；已保留并标记删除 " + deleted + " 笔，需拆分核对 " + review + " 笔。", 0L,0L,deleted,0L,0L);
     }
 
     public boolean voucherBackfillEnabled() { return voucherBackfillEnabled; }

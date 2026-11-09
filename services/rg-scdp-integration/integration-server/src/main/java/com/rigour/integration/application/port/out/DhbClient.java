@@ -85,6 +85,13 @@ public interface DhbClient {
     /** 查询订货宝 getOrderContent 订单明细；必须以只读方式调用，不允许自动标记或自动审核。 */
     OrderDetail getOrderContent(Connector connector, String orderNumber);
 
+    /** 仅来源明确的“未查询到订单信息”返回 true；超时、鉴权或其他异常必须抛出。 */
+    default boolean orderMissing(Connector connector, String orderNumber) {
+        getOrderContent(connector, orderNumber);
+        return false;
+    }
+
+
     /** 查询指定订货单的getWaitShips物流数据；该接口没有分页，业务键为订单号。 */
     WaitShips getWaitShips(Connector connector, String orderNumber);
 

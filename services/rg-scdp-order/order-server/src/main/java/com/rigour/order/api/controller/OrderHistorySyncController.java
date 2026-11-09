@@ -16,6 +16,10 @@ public class OrderHistorySyncController implements OrderHistorySyncApi {
         this.service = service;
     }
 
+    public ApiResponse<java.util.List<SourceLifecycleEvent>> lifecycle(long orderId) {
+        return ApiResponse.success(service.lifecycle(orderId));
+    }
+
     public ApiResponse<StoreView> overview(Long id) {
         return ApiResponse.success(service.overview(id));
     }

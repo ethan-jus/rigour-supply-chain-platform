@@ -1263,6 +1263,14 @@ class OrderAttributionAndScopeIntegrationTest {
                 connector, "CANCELLED-METADATA", "CANCELLED", null, null, "别的名称", stamp,
                 new com.rigour.order.api.v1.model.HistorySyncModels.CancelledOrderAttribution(2L,"C2","OTHER","EMP-B","其他人",null,null,null)));
         assertThat(jdbc.queryForMap("SELECT * FROM order_sales_order WHERE tenant_id=?",tenant)).isEqualTo(row);
+        var events=historySync.lifecycleEvents(tenant, ((Number)row.get("id")).longValue());
+        assertThat(events).singleElement().satisfies(e -> {
+            assertThat(e.status()).isEqualTo("CANCELLED");
+            assertThat(e.operatorName()).isNull();
+            assertThat(e.operatedAt()).isNull();
+            assertThat(e.detectedAt()).isNotNull();
+        });
+        assertThat(historySync.lifecycleEvents(UUID.randomUUID().toString(),((Number)row.get("id")).longValue())).isEmpty();
     }
 
     private String orderMainStatus(long id) {

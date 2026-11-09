@@ -40,6 +40,32 @@ import static org.mockito.Mockito.when;
 
 class DhbOrderSyncServiceLineMappingTest {
 
+    @Test
+    void deletionRequiresCompleteStableSourceListAndExplicitMissingDetail() throws Exception {
+        UUID tenant=UUID.randomUUID(),connector=UUID.randomUUID(),taskId=UUID.randomUUID();
+        var store=mock(DhbSyncStore.class); var client=mock(DhbClient.class); var projection=mock(OrderSalesOrderProjectionClient.class);
+        var service=new DhbOrderSyncService(store,client,projection,proxy(HrDhbStaffSyncClient.class));
+        var callerMethod=DhbOrderSyncService.class.getDeclaredMethod("orderServiceCaller",UUID.class);callerMethod.setAccessible(true);
+        var caller=(com.rigour.shared.context.CallerIdentity)callerMethod.invoke(null,tenant);
+        when(store.loadTask(tenant,taskId)).thenReturn(new DhbSyncStore.SyncTaskContext(tenant,taskId,connector,
+                "orders","ORDER","ACTIVE","https://example.test","secret","ACTIVE",100,1,0,true));
+        when(store.syncedOrderNumbers(tenant,connector)).thenReturn(List.of("EXISTS","MISSING","TEMPORARY"));
+        var row=new DhbClient.OrderSummary("EXISTS","EXISTS","finished",BigDecimal.ONE,null,null,null,null,Map.of());
+        var request=DhbClient.PageRequest.first(1000);
+        when(client.getOrders(any(),any())).thenReturn(new DhbClient.Page<>(request,1001,List.of(row)));
+        assertThatThrownBy(()->service.reconcileDeletedOrders(caller,taskId,1,x->{})).hasMessageContaining("分页不完整");
+        org.mockito.Mockito.verifyNoInteractions(projection);
+        when(client.getOrders(any(),any())).thenReturn(new DhbClient.Page<>(request,1,List.of(row)));
+        when(client.orderMissing(any(),eq("MISSING"))).thenReturn(true);
+        when(client.orderMissing(any(),eq("TEMPORARY"))).thenReturn(false);
+        when(projection.cancelSourceOrder(any(),any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("DELETED",null,null));
+        service.reconcileDeletedOrders(caller,taskId,1,x->{});
+        verify(projection).cancelSourceOrder(any(),argThat(c->"MISSING".equals(c.sourceNo()) && "DELETED".equals(c.orderStatusCode())
+                && c.sourceUpdatedAt()==null && c.evidence().operatorName()==null));
+        org.mockito.Mockito.verifyNoMoreInteractions(projection);
+        org.mockito.Mockito.verify(client,org.mockito.Mockito.never()).orderMissing(any(),eq("EXISTS"));
+    }
+
     @org.junit.jupiter.params.ParameterizedTest
     @org.junit.jupiter.params.provider.ValueSource(strings = {"listCancelled", "detailCancelled", "zeroSettlement", "listDeleted", "detailDeleted"})
     void retainsInactiveSourceWithoutRequiringCustomerOrProductMapping(String scenario) throws Exception {

@@ -433,7 +433,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             return new Intake("CANCELLATION_REVIEW", group, "关联组仍有有效来源订单，需拆分核对失效部分");
         }
         var orders = jdbc.queryForList(
-                "SELECT o.id FROM order_sales_order o WHERE o.tenant_id=? AND"
+                "SELECT o.* FROM order_sales_order o WHERE o.tenant_id=? AND"
                         + " ((o.source_system_code='DINGHUOBAO' AND o.source_order_no=?) OR EXISTS"
                         + " (SELECT 1 FROM order_history_member m WHERE m.tenant_id=o.tenant_id"
                         + " AND m.order_id=o.id AND m.group_id=?)) FOR UPDATE", t, c.sourceNo(), group);
@@ -490,6 +490,12 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                     + ",revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6)"
                     + " WHERE tenant_id=? AND source_system_code='DINGHUOBAO' AND source_order_no=? AND order_status_code=?"
                     + " AND (" + String.join(" OR ", missing) + ")", args.toArray());
+        }
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit WHERE tenant_id=?"
+                + " AND connector_id=? AND object_type='ORDER_LIFECYCLE' AND source_no=?"
+                + " AND JSON_UNQUOTE(JSON_EXTRACT(source_json,'$.orderStatusCode'))=?", Long.class,
+                t,c.connectorId().toString(),c.sourceNo(),status) == 0) {
+            auditChange(t,c.connectorId(),"ORDER_LIFECYCLE",c.sourceNo(),orders,c);
         }
         return new Intake(status, group, null);
     }
@@ -640,6 +646,23 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         jdbc.update("UPDATE order_history_member SET opening_paid=? WHERE tenant_id=? AND order_id=?", openingPaid, t, id);
         refresh(t, id);
         return true;
+    }
+
+    @Override
+    public List<SourceLifecycleEvent> lifecycleEvents(String tenant, long orderId) {
+        return jdbc.query("SELECT a.source_json,a.created_at FROM order_dhb_projection_change_audit a"
+                + " WHERE a.tenant_id=? AND a.object_type='ORDER_LIFECYCLE' AND EXISTS"
+                + " (SELECT 1 FROM order_sales_order o WHERE o.tenant_id=? AND o.id=? AND"
+                + " (o.source_order_no COLLATE utf8mb4_general_ci=a.source_no COLLATE utf8mb4_general_ci OR EXISTS"
+                + " (SELECT 1 FROM order_history_member m JOIN order_sync_source s ON s.tenant_id=? AND s.group_id=m.group_id"
+                + " WHERE m.tenant_id=? AND m.order_id=o.id AND s.source_no COLLATE utf8mb4_general_ci=a.source_no COLLATE utf8mb4_general_ci)))"
+                + " ORDER BY a.created_at DESC", (rs,index) -> {
+                    var source=JSON.readValue(rs.getString("source_json"),CancelSourceOrder.class);
+                    var evidence=source.evidence();
+                    return new SourceLifecycleEvent(source.orderStatusCode(),evidence==null?null:evidence.operatorName(),
+                            evidence==null?null:evidence.operatedAt(),source.sourceUpdatedAt(),rs.getTimestamp("created_at").toInstant(),
+                            evidence==null?"订货宝来源状态同步":evidence.reason());
+                },tenant,tenant,orderId,tenant,tenant);
     }
 
     private void auditChange(String t, UUID connector, String type, String sourceNo, Object before, Object source) {

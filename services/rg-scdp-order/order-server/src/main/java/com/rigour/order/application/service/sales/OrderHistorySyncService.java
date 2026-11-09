@@ -11,8 +11,15 @@ import org.springframework.stereotype.Service;
 public class OrderHistorySyncService {
     private final OrderHistorySyncStore store;
 
-    public OrderHistorySyncService(OrderHistorySyncStore store) {
+    private final OrderSalesOrderService orders;
+    public OrderHistorySyncService(OrderHistorySyncStore store, OrderSalesOrderService orders) {
+        this.orders = orders;
         this.store = store;
+    }
+
+    public java.util.List<SourceLifecycleEvent> lifecycle(long orderId) {
+        orders.salesOrder(orderId); // 使用订单详情相同的数据范围与权限校验。
+        return store.lifecycleEvents(AuthorizationContext.requireCurrent().tenantId().toString(),orderId);
     }
 
     private CallerIdentity actor(boolean write, boolean source) {

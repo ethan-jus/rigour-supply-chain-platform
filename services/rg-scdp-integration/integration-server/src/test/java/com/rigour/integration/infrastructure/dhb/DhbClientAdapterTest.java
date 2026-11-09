@@ -38,6 +38,24 @@ class DhbClientAdapterTest {
             UUID.fromString("00000000-0000-0000-0000-000000000002"),
             "https://api.test/erp", "env://DHB_TEST");
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"未查询到订单信息", "服务异常", "sKey不存在"})
+    void onlyExplicitMissingOrderCanConfirmDeletion(String message) {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        server.expect(requestTo("https://api.test/erp")).andRespond(withSuccess(
+                "{\"rStatus\":100,\"rData\":{\"token\":\"opaque-token\",\"expires_in\":3600}}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://api.test/erp")).andRespond(withSuccess(
+                "{\"rStatus\":400,\"message\":\"" + message + "\"}", MediaType.APPLICATION_JSON));
+        var props = properties();
+        props.setMaxAttempts(1);
+        DhbClientAdapter client = new DhbClientAdapter(builder.build(),
+                ref -> new DhbSecretResolver.Credentials("fixture-account", "fixture-credential"), props);
+        if ("未查询到订单信息".equals(message)) assertThat(client.orderMissing(CONNECTOR, "DH-1")).isTrue();
+        else assertThatThrownBy(() -> client.orderMissing(CONNECTOR, "DH-1")).isInstanceOf(DhbClientException.class);
+        server.verify();
+    }
+
     @Test
     void authenticatesWithEnvelopeAndCachesTokenAcrossPages() {
         RestClient.Builder builder = RestClient.builder();

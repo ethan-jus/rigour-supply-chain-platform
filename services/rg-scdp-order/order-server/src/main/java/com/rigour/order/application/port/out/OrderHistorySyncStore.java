@@ -4,6 +4,8 @@ import com.rigour.order.api.v1.model.HistorySyncModels.*;
 
 /** Order独占历史关联与资金接续持久化，不读取其他领域Schema。 */
 public interface OrderHistorySyncStore {
+    java.util.List<SourceLifecycleEvent> lifecycleEvents(String tenant, long orderId);
+
     StoreView overview(String tenant, Long customerId);
 
     Intake sourceOrder(String tenant, SourceOrder c);

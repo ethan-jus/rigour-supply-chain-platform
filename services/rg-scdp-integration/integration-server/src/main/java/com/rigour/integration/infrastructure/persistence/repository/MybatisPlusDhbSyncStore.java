@@ -268,6 +268,16 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
     }
 
     @Override
+    public List<String> syncedOrderNumbers(UUID tenantId, UUID connectorId) {
+        return externalObjectMappingMapper.selectList(Wrappers.<ExternalObjectMappingEntity>query()
+                .eq("tenant_id", bin(tenantId)).eq("connector_id", bin(connectorId))
+                .eq("source_system", SOURCE_SYSTEM).eq("source_object_type", "SALES_ORDER")
+                .eq("internal_domain", "ORDER").eq("mapping_status", "ACTIVE")
+                .isNotNull("internal_object_id").isNull("deleted_at"))
+                .stream().map(row -> row.sourceObjectId).filter(java.util.Objects::nonNull).distinct().toList();
+    }
+
+    @Override
     public List<TransferInboundReceiptCandidate> findTransferInboundReceiptCandidates(
             UUID tenantId, UUID connectorId, int limit) {
         int queryLimit = limit < 1 ? 500 : Math.min(limit, 5000);
