@@ -8,7 +8,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 
-/** 原版 V133 同步前的本机临时启动入口；默认关闭，生产环境不装配。 */
+/** 原版 V133/V147 同步前的本机临时入口；沿用现有 V133 参数，默认关闭，生产环境不装配。 */
 @Configuration(proxyBeanMethods = false)
 @Profile("local & !prod")
 @ConditionalOnProperty(name = "rigour.iam.flyway.allow-missing-v133", havingValue = "true")

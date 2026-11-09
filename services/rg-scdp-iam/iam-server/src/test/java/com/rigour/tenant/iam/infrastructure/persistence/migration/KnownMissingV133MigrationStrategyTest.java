@@ -3,17 +3,26 @@ package com.rigour.tenant.iam.infrastructure.persistence.migration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.rigour.tenant.iam.infrastructure.config.LocalIamMigrationRecoveryConfiguration;
+
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.FlywayException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.UUID;
+
+import javax.sql.DataSource;
 
 class KnownMissingV133MigrationStrategyTest {
     @TempDir Path directory;
@@ -129,6 +138,91 @@ INSERT INTO "flyway_schema_history"
     void refusesDatabaseWithoutTheOriginalMigration() {
         jdbc.update("DELETE FROM \"flyway_schema_history\" WHERE \"version\"='133'");
         assertBlocked("不能用于跳过新库迁移");
+    }
+
+    @Test
+    void startsWithOnlyKnownV147MissingAndPreservesHistory() throws Exception {
+        prepareV147History();
+        Files.copy(
+                Path.of("src/main/resources/db/migration/V133__iam_native_app_session_client.sql"),
+                directory.resolve("V133__iam_native_app_session_client.sql"));
+        Files.writeString(
+                directory.resolve("V148__fixture.sql"), "INSERT INTO fixture VALUES (148);");
+        var original =
+                jdbc.queryForList("SELECT * FROM \"flyway_schema_history\" ORDER BY \"installed_rank\"");
+
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(FlywayAutoConfiguration.class))
+                .withUserConfiguration(LocalIamMigrationRecoveryConfiguration.class)
+                .withBean(DataSource.class, () -> flyway.getConfiguration().getDataSource())
+                .withPropertyValues(
+                        "spring.profiles.active=dev,local",
+                        "rigour.iam.flyway.allow-missing-v133=true",
+                        "spring.flyway.locations=filesystem:" + directory)
+                .run(context -> assertThat(context).hasNotFailed());
+
+        strategy.migrate(flyway);
+        assertThat(jdbc.queryForList(
+                        "SELECT * FROM \"flyway_schema_history\" WHERE \"installed_rank\"<=4"
+                                + " ORDER BY \"installed_rank\""))
+                .isEqualTo(original);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM fixture WHERE id=148", Integer.class))
+                .isOne();
+    }
+
+    @Test
+    void allowsKnownV147AsTheLatestAppliedVersion() {
+        prepareV147History();
+        var before = jdbc.queryForList("SELECT * FROM \"flyway_schema_history\"");
+        strategy.migrate(flyway);
+        assertThat(jdbc.queryForList("SELECT * FROM \"flyway_schema_history\""))
+                .isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"checksum", "script", "description", "type", "success"})
+    void refusesUnrecognizedOrFailedV147(String field) {
+        prepareV147History();
+        String value =
+                switch (field) {
+                    case "checksum" -> "1";
+                    case "success" -> "FALSE";
+                    case "type" -> "'JDBC'";
+                    default -> "'unrecognized'";
+                };
+        jdbc.update(
+                "UPDATE \"flyway_schema_history\" SET \"" + field + "\"=" + value
+                        + " WHERE \"version\"='147'");
+        assertThatThrownBy(() -> strategy.migrate(flyway))
+                .isInstanceOf(FlywayException.class)
+                .hasMessageContaining("其他迁移问题必须修复");
+    }
+
+    @Test
+    void refusesUnknownFutureVersionAlongsideKnownV147() {
+        prepareV147History();
+        jdbc.update(
+                """
+                INSERT INTO "flyway_schema_history"
+                ("installed_rank","version","description","type","script","checksum",
+                 "installed_by","execution_time","success")
+                VALUES (5,'149','other','SQL','V149__other.sql',1,'fixture',1,TRUE)
+                """);
+        assertThatThrownBy(() -> strategy.migrate(flyway))
+                .isInstanceOf(FlywayException.class)
+                .hasMessageContaining("其他迁移问题必须修复");
+    }
+
+    private void prepareV147History() {
+        strategy.migrate(flyway);
+        jdbc.update(
+                """
+                INSERT INTO "flyway_schema_history"
+                ("installed_rank","version","description","type","script","checksum",
+                 "installed_by","execution_time","success")
+                VALUES (4,'147','hr employee delete permission','SQL',
+                        'V147__hr_employee_delete_permission.sql',-1379744324,'fixture',1,TRUE)
+                """);
     }
 
     private void assertBlocked(String message) {

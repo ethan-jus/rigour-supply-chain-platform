@@ -10,3 +10,9 @@ NACOS_NAMESPACE: "ethan-local"
 ---
 server:
   port: 26892
+
+# 本机临时恢复：仅放行已核实的原版 V57 缺失，原件合入后删除此开关。
+rigour:
+  settings:
+    flyway:
+      allow-known-history-conflicts: true
