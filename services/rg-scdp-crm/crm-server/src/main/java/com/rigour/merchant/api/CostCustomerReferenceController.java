@@ -17,6 +17,11 @@ public final class CostCustomerReferenceController implements CostCustomerRefere
         this.service = service;
     }
 
+    public ApiResponse<List<CostCustomerView>> customersByCodes(
+            String cityCode, String action, List<String> codes) {
+        return ApiResponse.success(service.customersByCodes(cityCode, action, codes));
+    }
+
     public ApiResponse<List<CostCustomerView>> customers(
             String cityCode, String keyword, Long id, int begin, String action) {
         return ApiResponse.success(service.customers(cityCode, keyword, id, begin, action));

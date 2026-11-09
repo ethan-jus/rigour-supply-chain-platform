@@ -1,10 +1,11 @@
 package com.rigour.erp.api.v1;
 
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseCommand;
-import com.rigour.erp.api.v1.model.WarehouseLocationCatalogView;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
+import com.rigour.erp.api.v1.model.WarehouseLocationCatalogView;
 import com.rigour.shared.core.api.ApiResponse;
+
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -16,6 +17,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 /** ERP 仓库维护接口；仓库归属地区用于客户地区和库存履约关联。 */
 public interface ErpInventoryWarehouseApi {
     String BASE_PATH = "/api/v1/erp/inventory-warehouses";
+
+    @GetMapping(BASE_PATH + "/cost-departments")
+    ApiResponse<java.util.List<com.rigour.erp.api.v1.model.WarehouseDepartmentView>>
+            costDepartments();
 
     @GetMapping(BASE_PATH)
     ApiResponse<MasterDataPageView<InternalInventoryWarehouseView>> warehouses(
@@ -29,18 +34,19 @@ public interface ErpInventoryWarehouseApi {
             @RequestParam(required = false) String sourceWarehouseCode);
 
     @GetMapping(BASE_PATH + "/location-catalog")
-    ApiResponse<WarehouseLocationCatalogView> locationCatalog(@RequestParam(required = false) String version);
+    ApiResponse<WarehouseLocationCatalogView> locationCatalog(
+            @RequestParam(required = false) String version);
 
     @GetMapping(BASE_PATH + "/{id}")
     ApiResponse<InternalInventoryWarehouseView> warehouse(@PathVariable("id") Long id);
 
     @PostMapping(BASE_PATH)
-    ApiResponse<InternalInventoryWarehouseView> createWarehouse(@RequestBody InternalInventoryWarehouseCommand command);
+    ApiResponse<InternalInventoryWarehouseView> createWarehouse(
+            @RequestBody InternalInventoryWarehouseCommand command);
 
     @PutMapping(BASE_PATH + "/{id}")
     ApiResponse<InternalInventoryWarehouseView> updateWarehouse(
-            @PathVariable("id") Long id,
-            @RequestBody InternalInventoryWarehouseCommand command);
+            @PathVariable("id") Long id, @RequestBody InternalInventoryWarehouseCommand command);
 
     @DeleteMapping(BASE_PATH + "/{id}")
     ApiResponse<Void> deleteWarehouse(@PathVariable("id") Long id, @RequestParam int revision);

@@ -17,4 +17,42 @@ public record CostDashboardQuery(
         Integer page,
         Integer size,
         String snapshotId,
-        Boolean missingAmount) {}
+        Boolean missingAmount,
+        String department) {
+    public CostDashboardQuery(
+            Integer year,
+            Integer month,
+            String compare,
+            String city,
+            String scope,
+            String category,
+            String dimension,
+            String dimensionKey,
+            String status,
+            String payment,
+            String search,
+            String periodSide,
+            Integer page,
+            Integer size,
+            String snapshotId,
+            Boolean missingAmount) {
+        this(
+                year,
+                month,
+                compare,
+                city,
+                scope,
+                category,
+                dimension,
+                dimensionKey,
+                status,
+                payment,
+                search,
+                periodSide,
+                page,
+                size,
+                snapshotId,
+                missingAmount,
+                null);
+    }
+}

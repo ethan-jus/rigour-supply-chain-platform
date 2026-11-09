@@ -16,6 +16,10 @@ import org.springframework.web.bind.annotation.*;
 public interface CostDashboardApi {
     String ROOT = "/api/v1/analytics/supply/cost-dashboard";
 
+    @GetMapping(ROOT + "/departments")
+    ApiResponse<java.util.List<com.rigour.analytics.api.v1.model.CostDepartmentSummary>>
+            departments(@ModelAttribute CostDashboardQuery query);
+
     @GetMapping(ROOT + "/overview")
     ApiResponse<CostDashboardReport> overview(@ModelAttribute CostDashboardQuery query);
 

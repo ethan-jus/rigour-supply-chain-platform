@@ -20,45 +20,148 @@ import java.util.Set;
 @Component
 public final class HttpOrderLogisticsReferences implements OrderLogisticsReferences {
     @Override
+    public List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> ledgerCustomers(
+            String city, List<String> codes, String action) {
+        var uri =
+                UriComponentsBuilder.fromUriString(crm)
+                        .path("/api/v1/crm/cost-customer-references/batch")
+                        .queryParam("cityCode", city)
+                        .queryParam("action", action)
+                        .build()
+                        .encode()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.caller(
+                        signer, "POST", uri, AuthorizationContext.requireCurrent());
+        var response =
+                client.post()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .body(codes)
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<
+                                                List<
+                                                        com.rigour.order.api.v1.model
+                                                                .LogisticsCostPartyView>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("客户档案暂不可用，请重试");
+        return response.data().stream()
+                .map(
+                        r ->
+                                new com.rigour.order.api.v1.model.LogisticsLedgerPartyView(
+                                        r.id(),
+                                        r.code(),
+                                        r.name(),
+                                        city,
+                                        r.address(),
+                                        r.contactName(),
+                                        r.phone(),
+                                        "CUSTOMER"))
+                .toList();
+    }
+
+    @Override
     public List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> ledgerParties(
-            String kind, String code, Long id, String keyword, String city, int begin, String action) {
+            String kind,
+            String code,
+            Long id,
+            String keyword,
+            String city,
+            int begin,
+            String action) {
         var values = new java.util.LinkedHashMap<String, Object>();
-        values.put("action", action); values.put("begin", begin);
+        values.put("action", action);
+        values.put("begin", begin);
         if ("CUSTOMER".equals(kind)) {
-            values.put("cityCode", city); values.put("keyword", code == null ? keyword : code); values.put("id", id);
-            var rows = readLedger(crm, "/api/v1/crm/cost-customer-references", values,
-                    new ParameterizedTypeReference<ApiResponse<List<com.rigour.order.api.v1.model.LogisticsCostPartyView>>>() {});
-            return rows.stream().filter(r -> code == null || code.equals(r.code())).map(r ->
-                    new com.rigour.order.api.v1.model.LogisticsLedgerPartyView(r.id(), r.code(), r.name(), city, null, null, null, "CUSTOMER")).toList();
+            values.put("cityCode", city);
+            values.put("keyword", code == null ? keyword : code);
+            values.put("id", id);
+            var rows =
+                    readLedger(
+                            crm,
+                            "/api/v1/crm/cost-customer-references",
+                            values,
+                            new ParameterizedTypeReference<
+                                    ApiResponse<
+                                            List<
+                                                    com.rigour.order.api.v1.model
+                                                            .LogisticsCostPartyView>>>() {});
+            return rows.stream()
+                    .filter(r -> code == null || code.equals(r.code()))
+                    .map(
+                            r ->
+                                    new com.rigour.order.api.v1.model.LogisticsLedgerPartyView(
+                                            r.id(),
+                                            r.code(),
+                                            r.name(),
+                                            city,
+                                            r.address(),
+                                            r.contactName(),
+                                            r.phone(),
+                                            "CUSTOMER"))
+                    .toList();
         }
-        values.put("kind", kind); values.put("code", code); values.put("id", id); values.put("keyword", keyword);
-        return readLedger(erp, "/api/v1/erp/cost-ledger/parties", values,
-                new ParameterizedTypeReference<ApiResponse<List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView>>>() {});
+        values.put("kind", kind);
+        values.put("code", code);
+        values.put("id", id);
+        values.put("keyword", keyword);
+        return readLedger(
+                erp,
+                "/api/v1/erp/cost-ledger/parties",
+                values,
+                new ParameterizedTypeReference<
+                        ApiResponse<
+                                List<
+                                        com.rigour.order.api.v1.model
+                                                .LogisticsLedgerPartyView>>>() {});
     }
 
     @Override
     public List<LogisticsCostSourceView> ledgerSources(
             com.rigour.order.api.v1.model.LogisticsLedgerSourceQuery q, String action) {
         var values = new java.util.LinkedHashMap<String, Object>();
-        values.put("action", action); values.put("orderTypeCode", q.orderTypeCode());
-        values.put("documentNo", q.documentNo()); values.put("partyName", q.partyName());
-        values.put("sourceWarehouseCode", q.sourceWarehouseCode()); values.put("targetWarehouseCode", q.targetWarehouseCode());
-        values.put("cityCode", q.cityCode()); values.put("dateFrom", q.dateFrom()); values.put("dateTo", q.dateTo());
-        values.put("begin", q.begin()); values.put("exact", q.exact()); values.put("historical", q.historical());
-        return readLedger(erp, "/api/v1/erp/cost-ledger/sources", values,
+        values.put("action", action);
+        values.put("orderTypeCode", q.orderTypeCode());
+        values.put("documentNo", q.documentNo());
+        values.put("partyName", q.partyName());
+        values.put("sourceWarehouseCode", q.sourceWarehouseCode());
+        values.put("targetWarehouseCode", q.targetWarehouseCode());
+        values.put("cityCode", q.cityCode());
+        values.put("dateFrom", q.dateFrom());
+        values.put("dateTo", q.dateTo());
+        values.put("begin", q.begin());
+        values.put("exact", q.exact());
+        values.put("historical", q.historical());
+        return readLedger(
+                erp,
+                "/api/v1/erp/cost-ledger/sources",
+                values,
                 new ParameterizedTypeReference<ApiResponse<List<LogisticsCostSourceView>>>() {});
     }
 
-    private <T> T readLedger(String base, String path, java.util.Map<String, Object> values,
+    private <T> T readLedger(
+            String base,
+            String path,
+            java.util.Map<String, Object> values,
             ParameterizedTypeReference<ApiResponse<T>> type) {
         var builder = UriComponentsBuilder.fromUriString(base).path(path);
-        values.forEach((key, value) -> { if (value != null) builder.queryParam(key, value); });
+        values.forEach(
+                (key, value) -> {
+                    if (value != null) builder.queryParam(key, value);
+                });
         var uri = builder.build().encode().toUri();
-        var headers = OutboundContextHeaders.caller(signer, "GET", uri, AuthorizationContext.requireCurrent());
-        var response = client.get().uri(uri).headers(h -> headers.forEach(h::set)).retrieve().body(type);
-        if (response == null || !"OK".equals(response.code()) || response.data() == null) throw new IllegalStateException("费用来源引用暂不可用，请重试");
+        var headers =
+                OutboundContextHeaders.caller(
+                        signer, "GET", uri, AuthorizationContext.requireCurrent());
+        var response =
+                client.get().uri(uri).headers(h -> headers.forEach(h::set)).retrieve().body(type);
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("费用来源引用暂不可用，请重试");
         return response.data();
     }
+
     private final RestClient client;
     private final TrustedContextSigner signer;
     private final EffectiveDictionaryClient dictionary;
@@ -239,7 +342,8 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
 
     private record City(String code, String name) {}
 
-    public String city(String code, String action) {
+    @Override
+    public java.util.Map<String, String> cities(String action) {
         var uri =
                 UriComponentsBuilder.fromUriString(crm)
                         .path("/api/v1/crm/cost-city-references")
@@ -259,10 +363,12 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
         if (response == null || !"OK".equals(response.code()) || response.data() == null)
             throw new IllegalStateException("授权城市目录暂不可用");
         return response.data().stream()
-                .filter(c -> c.code().equals(code))
-                .findFirst()
-                .orElseThrow(
-                        () -> new com.rigour.shared.context.AuthorizationDeniedException(action))
-                .name();
+                .collect(java.util.stream.Collectors.toMap(City::code, City::name));
+    }
+
+    public String city(String code, String action) {
+        String name = cities(action).get(code);
+        if (name == null) throw new com.rigour.shared.context.AuthorizationDeniedException(action);
+        return name;
     }
 }

@@ -114,6 +114,8 @@ public class MybatisPlusCostSnapshotProjector implements CostDashboardRefresh {
                         tenantId, "CRM", "CRM_CUSTOMER_AREA", versions.get("CRM_CUSTOMER_AREA"));
         var cities = normalizer.cities(departments, areas);
         Map<String, List<String>> paths = new HashMap<>();
+        Map<String, String> departmentNames = new HashMap<>();
+        for (var d : departments) departmentNames.put(d.get("id"), d.get("department_name"));
         for (var d : departments) paths.put(d.get("id"), normalizer.path(d.get("department_path")));
         Map<String, Map<String, String>> employeeIndex = new HashMap<>();
         for (var e : employees) employeeIndex.put(e.get("employee_code"), e);
@@ -141,6 +143,17 @@ public class MybatisPlusCostSnapshotProjector implements CostDashboardRefresh {
                     for (var partition : CostLedgerPartitions.expand(d.source(), source, json)) {
                         var fact = normalizer.normalize(d.source(), partition, cities, paths);
                         if (fact == null) continue;
+                        if (fact.departmentId() != null
+                                && departmentNames.containsKey(fact.departmentId())) {
+                            var labels = new LinkedHashMap<>(fact.dimensions());
+                            labels.put(
+                                    "department",
+                                    new CostFact.Dimension(
+                                            fact.dimension("department").key(),
+                                            departmentNames.get(fact.departmentId()),
+                                            false));
+                            fact = fact.withDimensions(labels);
+                        }
                         if (!"HR".equals(fact.source())) originals.put(fact.key(), fact);
                         else fact = CostReimbursementReconciler.reconcile(fact, originals);
                         // 营销员工的当前部门用于源模块同义权限核验；同一批次带入现行员工归属。

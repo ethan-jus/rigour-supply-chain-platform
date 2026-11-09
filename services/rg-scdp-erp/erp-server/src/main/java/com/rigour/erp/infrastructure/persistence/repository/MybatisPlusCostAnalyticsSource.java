@@ -73,11 +73,17 @@ public class MybatisPlusCostAnalyticsSource {
                         .orderByAsc("id")
                         .last("LIMIT 1000");
         List<Map<String, String>> items = new ArrayList<>();
+        var departments =
+                goods == null ? Map.<String, String>of() : goods.warehouseDepartments(tenant);
         for (var row : mapper.selectMaps(query)) {
             Map<String, String> values = new LinkedHashMap<>();
             for (String column : COLUMNS) values.put(column, exact(row.get(column)));
-            if (goods != null && "PURCHASE".equals(values.get("category_code")))
+            if (goods != null && "PURCHASE".equals(values.get("category_code"))) {
                 values.put("data_json", goods.reconcileLegacy(tenant, values.get("data_json")));
+                values.put("department_id", departments.get(values.get("warehouse_id")));
+                values.put("owner_employee_code", null);
+                values.put("owner_employee_name", null);
+            }
             items.add(values);
         }
         if (goods != null)

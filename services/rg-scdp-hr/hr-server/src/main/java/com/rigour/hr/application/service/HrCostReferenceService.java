@@ -13,6 +13,35 @@ import java.util.Set;
 @Service
 public final class HrCostReferenceService {
     private final HrCostReferenceStore store;
+    private com.rigour.hr.application.port.out.HrOrganizationStore organization;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void organization(com.rigour.hr.application.port.out.HrOrganizationStore organization) {
+        this.organization = organization;
+    }
+
+    public List<com.rigour.hr.api.v1.HrCostReferenceApi.Department> warehouseDepartments(
+            String action) {
+        if (!Set.of(
+                        "erp:warehouse:read",
+                        "erp:warehouse:create",
+                        "erp:warehouse:update",
+                        "erp:product:read",
+                        "erp:product:write")
+                .contains(action))
+            throw new AuthorizationDeniedException("warehouse-department-reference");
+        var actor = AuthorizationContext.requireCurrent();
+        AuthorizationContext.requirePermission(action);
+        if (actor.tenantId() == null || !"TENANT".equals(actor.principalScope()))
+            throw new AuthorizationDeniedException(action);
+        return organization.departments(actor.tenantId().toString()).stream()
+                .filter(d -> "ACTIVE".equals(d.statusCode()))
+                .map(
+                        d ->
+                                new com.rigour.hr.api.v1.HrCostReferenceApi.Department(
+                                        d.id(), d.departmentName()))
+                .toList();
+    }
 
     public HrCostReferenceService(HrCostReferenceStore store) {
         this.store = store;

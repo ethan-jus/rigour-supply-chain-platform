@@ -2,9 +2,6 @@ package com.rigour.erp.infrastructure.persistence.repository;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
-import com.rigour.erp.infrastructure.persistence.mapper.MasterSourceBindingMapper;
-import com.rigour.erp.infrastructure.persistence.entity.MasterSourceBindingEntity;
-import org.springframework.beans.factory.annotation.Autowired;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseCommand;
@@ -13,10 +10,13 @@ import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore.WarehouseSearchCriteria;
 import com.rigour.erp.infrastructure.persistence.entity.InternalInventoryWarehouseEntity;
+import com.rigour.erp.infrastructure.persistence.entity.MasterSourceBindingEntity;
 import com.rigour.erp.infrastructure.persistence.mapper.InternalInventoryWarehouseMapper;
+import com.rigour.erp.infrastructure.persistence.mapper.MasterSourceBindingMapper;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,11 +39,16 @@ public class MybatisPlusInventoryWarehouseRepository
 
     public MybatisPlusInventoryWarehouseRepository(
             InternalInventoryWarehouseMapper mapper, Clock erpClock, ErpWarehouseDataScope scopes) {
-        this(mapper,erpClock,scopes,null);
+        this(mapper, erpClock, scopes, null);
     }
+
     @Autowired
-    public MybatisPlusInventoryWarehouseRepository(InternalInventoryWarehouseMapper mapper,Clock erpClock,ErpWarehouseDataScope scopes,MasterSourceBindingMapper sourceBindings) {
-        this.sourceBindings=sourceBindings;
+    public MybatisPlusInventoryWarehouseRepository(
+            InternalInventoryWarehouseMapper mapper,
+            Clock erpClock,
+            ErpWarehouseDataScope scopes,
+            MasterSourceBindingMapper sourceBindings) {
+        this.sourceBindings = sourceBindings;
         this.baseMapper = mapper;
         this.clock = erpClock;
         this.scopes = scopes;
@@ -54,17 +59,25 @@ public class MybatisPlusInventoryWarehouseRepository
             String tenantId, int begin, int step, WarehouseSearchCriteria criteria) {
         InternalInventoryWarehouseMapper mapper = getBaseMapper();
         long total = mapper.selectCount(query(tenantId, criteria));
-        var entities = mapper
-                        .selectList(
-                                query(tenantId, criteria)
-                                        .orderByDesc(
-                                                InternalInventoryWarehouseEntity::getDefaultFlag)
-                                        .orderByDesc(
-                                                InternalInventoryWarehouseEntity::getUpdatedTime)
-                                        .orderByDesc(InternalInventoryWarehouseEntity::getId)
-                                        .last("LIMIT " + step + " OFFSET " + begin));
-        var refs=sourceReferences(tenantId,entities.stream().map(InternalInventoryWarehouseEntity::getId).toList());
-        List<InternalInventoryWarehouseView> items=entities.stream().map(e->view(e).withSourceReferences(refs.getOrDefault(e.getId().toString(),List.of()))).toList();
+        var entities =
+                mapper.selectList(
+                        query(tenantId, criteria)
+                                .orderByDesc(InternalInventoryWarehouseEntity::getDefaultFlag)
+                                .orderByDesc(InternalInventoryWarehouseEntity::getUpdatedTime)
+                                .orderByDesc(InternalInventoryWarehouseEntity::getId)
+                                .last("LIMIT " + step + " OFFSET " + begin));
+        var refs =
+                sourceReferences(
+                        tenantId,
+                        entities.stream().map(InternalInventoryWarehouseEntity::getId).toList());
+        List<InternalInventoryWarehouseView> items =
+                entities.stream()
+                        .map(
+                                e ->
+                                        view(e).withSourceReferences(
+                                                        refs.getOrDefault(
+                                                                e.getId().toString(), List.of())))
+                        .toList();
         return new MasterDataPageView<>(total, begin, step, items);
     }
 
@@ -105,6 +118,10 @@ public class MybatisPlusInventoryWarehouseRepository
         entity.setWarehouseCode(warehouseCode);
         entity.setWarehouseName(command.warehouseName());
         entity.setRegionCode(command.regionCode());
+        entity.setCostDepartmentId(
+                command.costDepartmentId() == null || command.costDepartmentId() == 0
+                        ? null
+                        : command.costDepartmentId());
         entity.setLocationAreaCode(emptyLocation(command.locationAreaCode()));
         entity.setLocationAreaVersion(command.locationAreaVersion());
         entity.setWarehouseTypeCode(command.warehouseTypeCode());
@@ -149,11 +166,23 @@ public class MybatisPlusInventoryWarehouseRepository
                                         .set(
                                                 InternalInventoryWarehouseEntity::getRegionCode,
                                                 command.regionCode())
-                                        .set(command.locationAreaCode() != null,
-                                                InternalInventoryWarehouseEntity::getLocationAreaCode,
+                                        .set(
+                                                command.costDepartmentId() != null,
+                                                InternalInventoryWarehouseEntity
+                                                        ::getCostDepartmentId,
+                                                command.costDepartmentId() == null
+                                                                || command.costDepartmentId() == 0
+                                                        ? null
+                                                        : command.costDepartmentId())
+                                        .set(
+                                                command.locationAreaCode() != null,
+                                                InternalInventoryWarehouseEntity
+                                                        ::getLocationAreaCode,
                                                 emptyLocation(command.locationAreaCode()))
-                                        .set(command.locationAreaCode() != null,
-                                                InternalInventoryWarehouseEntity::getLocationAreaVersion,
+                                        .set(
+                                                command.locationAreaCode() != null,
+                                                InternalInventoryWarehouseEntity
+                                                        ::getLocationAreaVersion,
                                                 command.locationAreaVersion())
                                         .set(
                                                 InternalInventoryWarehouseEntity
@@ -243,8 +272,14 @@ public class MybatisPlusInventoryWarehouseRepository
                 Wrappers.<InternalInventoryWarehouseEntity>lambdaQuery()
                         .eq(InternalInventoryWarehouseEntity::getTenantId, tenantId)
                         .eq(InternalInventoryWarehouseEntity::getDeleted, 0);
-        if(criteria.sourceWarehouseCode()!=null) {
-            query.apply("EXISTS (SELECT 1 FROM erp_master_source_binding b WHERE b.tenant_id={0} AND b.source_system='DINGHUOBAO' AND b.source_object_type='WAREHOUSE' AND b.target_type='INVENTORY_WAREHOUSE' AND b.deleted=0 AND b.target_id=CONCAT('',erp_inventory_warehouse.id) AND LOCATE({1},b.source_code)>0)",tenantId,criteria.sourceWarehouseCode());
+        if (criteria.sourceWarehouseCode() != null) {
+            query.apply(
+                    "EXISTS (SELECT 1 FROM erp_master_source_binding b WHERE b.tenant_id={0} AND"
+                        + " b.source_system='DINGHUOBAO' AND b.source_object_type='WAREHOUSE' AND"
+                        + " b.target_type='INVENTORY_WAREHOUSE' AND b.deleted=0 AND"
+                        + " b.target_id=CONCAT('',erp_inventory_warehouse.id) AND"
+                        + " LOCATE({1},b.source_code)>0)",
+                    tenantId, criteria.sourceWarehouseCode());
         }
         if (criteria.warehouseCode() != null) {
             query.like(
@@ -288,36 +323,63 @@ public class MybatisPlusInventoryWarehouseRepository
         return LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
     }
 
-    private java.util.Map<String,List<InternalInventoryWarehouseView.SourceReference>> sourceReferences(String tenant,List<Long> ids) {
-        if(sourceBindings==null || ids.isEmpty()) return java.util.Map.of();
-        var map=new java.util.LinkedHashMap<String,List<InternalInventoryWarehouseView.SourceReference>>();
-        for(var b:sourceBindings.selectList(new QueryWrapper<MasterSourceBindingEntity>().eq("tenant_id",tenant).eq("source_object_type","WAREHOUSE").eq("target_type","INVENTORY_WAREHOUSE").eq("deleted",0).in("target_id",ids.stream().map(String::valueOf).toList()).orderByAsc("source_system","source_code","id"))) {
-            map.computeIfAbsent(b.targetId,k->new java.util.ArrayList<>()).add(new InternalInventoryWarehouseView.SourceReference(b.sourceSystem,b.sourceObjectId,b.sourceCode,b.sourceName,b.connectorId));
+    private java.util.Map<String, List<InternalInventoryWarehouseView.SourceReference>>
+            sourceReferences(String tenant, List<Long> ids) {
+        if (sourceBindings == null || ids.isEmpty()) return java.util.Map.of();
+        var map =
+                new java.util.LinkedHashMap<
+                        String, List<InternalInventoryWarehouseView.SourceReference>>();
+        for (var b :
+                sourceBindings.selectList(
+                        new QueryWrapper<MasterSourceBindingEntity>()
+                                .eq("tenant_id", tenant)
+                                .eq("source_object_type", "WAREHOUSE")
+                                .eq("target_type", "INVENTORY_WAREHOUSE")
+                                .eq("deleted", 0)
+                                .in("target_id", ids.stream().map(String::valueOf).toList())
+                                .orderByAsc("source_system", "source_code", "id"))) {
+            map.computeIfAbsent(b.targetId, k -> new java.util.ArrayList<>())
+                    .add(
+                            new InternalInventoryWarehouseView.SourceReference(
+                                    b.sourceSystem,
+                                    b.sourceObjectId,
+                                    b.sourceCode,
+                                    b.sourceName,
+                                    b.connectorId));
         }
         return map;
     }
-    private InternalInventoryWarehouseView viewWithSources(InternalInventoryWarehouseEntity entity) {
-        return view(entity).withSourceReferences(sourceReferences(entity.getTenantId(),List.of(entity.getId())).getOrDefault(entity.getId().toString(),List.of()));
+
+    private InternalInventoryWarehouseView viewWithSources(
+            InternalInventoryWarehouseEntity entity) {
+        return view(entity)
+                .withSourceReferences(
+                        sourceReferences(entity.getTenantId(), List.of(entity.getId()))
+                                .getOrDefault(entity.getId().toString(), List.of()));
     }
+
     private static InternalInventoryWarehouseView view(InternalInventoryWarehouseEntity entity) {
         return new InternalInventoryWarehouseView(
-                entity.getId(),
-                entity.getWarehouseCode(),
-                entity.getWarehouseName(),
-                entity.getRegionCode(),
-                entity.getWarehouseTypeCode(),
-                entity.getDefaultFlag(),
-                entity.getAddress(),
-                entity.getContactName(),
-                entity.getContactPhone(),
-                entity.getStatusCode(),
-                entity.getRemark(),
-                entity.getRevision(),
-                entity.getCreatedBy(),
-                instant(entity.getCreatedTime()),
-                entity.getUpdatedBy(),
-                instant(entity.getUpdatedTime()),
-                entity.getLocationAreaCode(), entity.getLocationAreaVersion(), null);
+                        entity.getId(),
+                        entity.getWarehouseCode(),
+                        entity.getWarehouseName(),
+                        entity.getRegionCode(),
+                        entity.getWarehouseTypeCode(),
+                        entity.getDefaultFlag(),
+                        entity.getAddress(),
+                        entity.getContactName(),
+                        entity.getContactPhone(),
+                        entity.getStatusCode(),
+                        entity.getRemark(),
+                        entity.getRevision(),
+                        entity.getCreatedBy(),
+                        instant(entity.getCreatedTime()),
+                        entity.getUpdatedBy(),
+                        instant(entity.getUpdatedTime()),
+                        entity.getLocationAreaCode(),
+                        entity.getLocationAreaVersion(),
+                        null)
+                .withCostDepartment(entity.getCostDepartmentId());
     }
 
     private static String emptyLocation(String code) {

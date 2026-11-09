@@ -3,50 +3,80 @@ package com.rigour.erp.infrastructure.persistence.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+
 import java.time.LocalDateTime;
 
 /** ERP 自研仓库实体，对应新业务主表 `erp_inventory_warehouse`。 */
 @TableName("erp_inventory_warehouse")
 public class InternalInventoryWarehouseEntity {
+    private Long costDepartmentId;
+
+    public Long getCostDepartmentId() {
+        return costDepartmentId;
+    }
+
+    public void setCostDepartmentId(Long value) {
+        costDepartmentId = value;
+    }
+
     /** ID。 */
     @TableId(type = IdType.AUTO)
     private Long id;
+
     /** 租户ID。 */
     private String tenantId;
+
     /** 仓库编码，由 ERP 编码规则生成。 */
     private String warehouseCode;
+
     /** 仓库名称。 */
     private String warehouseName;
+
     /** 仓库归属地区，关联 REGION 字典项。 */
     private String regionCode;
+
     /** 所在地区行政区县编码，与业务归属地区分开。 */
     private String locationAreaCode;
+
     /** 所在地区使用的已发布行政区划版本。 */
     private String locationAreaVersion;
+
     /** 仓库类型，关联 WAREHOUSE_TYPE 字典项。 */
     private String warehouseTypeCode;
+
     /** 是否默认仓库。 */
     private Boolean defaultFlag;
+
     /** 仓库地址。 */
     private String address;
+
     /** 联系人。 */
     private String contactName;
+
     /** 联系电话。 */
     private String contactPhone;
+
     /** 仓库状态，关联 WAREHOUSE_STATUS 字典项。 */
     private String statusCode;
+
     /** 备注。 */
     private String remark;
+
     /** 乐观锁。 */
     private Integer revision;
+
     /** 创建人。 */
     private String createdBy;
+
     /** 创建时间。 */
     private LocalDateTime createdTime;
+
     /** 更新人。 */
     private String updatedBy;
+
     /** 更新时间。 */
     private LocalDateTime updatedTime;
+
     /** 删除标识：0未删除，1已删除。 */
     private Integer deleted;
 
@@ -90,10 +120,21 @@ public class InternalInventoryWarehouseEntity {
         this.regionCode = regionCode;
     }
 
-    public String getLocationAreaCode() { return locationAreaCode; }
-    public void setLocationAreaCode(String value) { locationAreaCode = value; }
-    public String getLocationAreaVersion() { return locationAreaVersion; }
-    public void setLocationAreaVersion(String value) { locationAreaVersion = value; }
+    public String getLocationAreaCode() {
+        return locationAreaCode;
+    }
+
+    public void setLocationAreaCode(String value) {
+        locationAreaCode = value;
+    }
+
+    public String getLocationAreaVersion() {
+        return locationAreaVersion;
+    }
+
+    public void setLocationAreaVersion(String value) {
+        locationAreaVersion = value;
+    }
 
     public String getWarehouseTypeCode() {
         return warehouseTypeCode;

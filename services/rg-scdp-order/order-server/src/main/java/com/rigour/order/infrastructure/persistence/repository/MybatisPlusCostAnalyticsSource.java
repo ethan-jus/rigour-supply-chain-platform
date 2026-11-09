@@ -41,13 +41,37 @@ public class MybatisPlusCostAnalyticsSource {
                     "warehouse_name",
                     "sources_json");
     private final OrderLogisticsCostMapper mapper;
+    private org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private tools.jackson.databind.ObjectMapper json;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void attribution(
+            org.springframework.jdbc.core.JdbcTemplate jdbc,
+            tools.jackson.databind.ObjectMapper json) {
+        this.jdbc = jdbc;
+        this.json = json;
+    }
 
     public MybatisPlusCostAnalyticsSource(OrderLogisticsCostMapper mapper) {
         this.mapper = mapper;
     }
 
     public String version(String tenant) {
-        return mapper.analyticsVersion(tenant) + ":transport-types-v2";
+        String base = mapper.analyticsVersion(tenant) + ":transport-types-v2";
+        if (jdbc == null) return base;
+        return base
+                + ":sales-attribution-v1:"
+                + jdbc.queryForObject(
+                        "SELECT CONCAT(COUNT(*),':',COALESCE(SUM(revision),0)) FROM"
+                            + " order_attribution_snapshot WHERE tenant_id=?",
+                        String.class,
+                        tenant)
+                + ":"
+                + jdbc.queryForObject(
+                        "SELECT CONCAT(COUNT(*),':',COALESCE(SUM(revision),0)) FROM"
+                            + " order_sales_order WHERE tenant_id=?",
+                        String.class,
+                        tenant);
     }
 
     @Transactional(readOnly = true)
@@ -71,7 +95,73 @@ public class MybatisPlusCostAnalyticsSource {
             for (String column : COLUMNS) values.put(column, exact(row.get(column)));
             items.add(values);
         }
+        enrichLegacyAttribution(tenant, items);
         return new Page(version, items);
+    }
+
+    private void enrichLegacyAttribution(String tenant, List<Map<String, String>> items) {
+        if (jdbc == null) return;
+        Map<Map<String, String>, tools.jackson.databind.JsonNode> sources = new IdentityHashMap<>();
+        Set<String> codes = new LinkedHashSet<>();
+        for (var row : items) {
+            if (row.get("sources_json") == null
+                    || row.get("data_json") == null
+                    || !"DELIVERY"
+                            .equals(
+                                    json.readTree(row.get("data_json"))
+                                            .path("ledger")
+                                            .path("transportPurposeCode")
+                                            .asText())) continue;
+            var links = json.readTree(row.get("sources_json"));
+            sources.put(row, links);
+            for (var link : links)
+                if ("SALES_ORDER".equals(link.path("orderTypeCode").asText())
+                        && !link.hasNonNull("employeeCode"))
+                    codes.add(link.path("orderCode").asText());
+        }
+        Map<String, Map<String, Object>> values = new HashMap<>();
+        var list = new ArrayList<>(codes);
+        for (int offset = 0; offset < list.size(); offset += 500) {
+            var part = list.subList(offset, Math.min(offset + 500, list.size()));
+            var args = new ArrayList<Object>();
+            args.add(tenant);
+            args.addAll(part);
+            for (var row :
+                    jdbc.queryForList(
+                            "SELECT o.order_no,COALESCE(a.employee_code,o.owner_employee_code)"
+                                + " employee_code,COALESCE(a.employee_name,o.owner_employee_name_snapshot)"
+                                + " employee_name,a.department_id,a.department_name FROM"
+                                + " order_sales_order o LEFT JOIN order_attribution_snapshot a ON"
+                                + " a.tenant_id=o.tenant_id AND a.order_id=o.id AND"
+                                + " a.state='FROZEN' WHERE o.tenant_id=? AND o.deleted=0 AND"
+                                + " o.order_no IN ("
+                                    + String.join(",", Collections.nCopies(part.size(), "?"))
+                                    + ")",
+                            args.toArray())) values.put(row.get("order_no").toString(), row);
+        }
+        sources.forEach(
+                (row, links) -> {
+                    for (var link : links)
+                        if (!link.hasNonNull("employeeCode")) {
+                            var value = values.get(link.path("orderCode").asText());
+                            if (value == null) continue;
+                            var node = (tools.jackson.databind.node.ObjectNode) link;
+                            node.put(
+                                    "employeeCode",
+                                    Objects.toString(value.get("employee_code"), null));
+                            node.put(
+                                    "employeeName",
+                                    Objects.toString(value.get("employee_name"), null));
+                            if (value.get("department_id") != null)
+                                node.put(
+                                        "departmentId",
+                                        ((Number) value.get("department_id")).longValue());
+                            node.put(
+                                    "departmentName",
+                                    Objects.toString(value.get("department_name"), null));
+                        }
+                    row.put("sources_json", json.writeValueAsString(links));
+                });
     }
 
     private static String exact(Object v) {

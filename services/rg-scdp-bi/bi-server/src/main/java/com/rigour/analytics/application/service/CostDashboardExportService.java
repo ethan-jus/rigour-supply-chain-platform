@@ -89,7 +89,8 @@ public class CostDashboardExportService {
                         query.page(),
                         query.size(),
                         c.snapshot().id(),
-                        query.missingAmount());
+                        query.missingAmount(),
+                        query.department());
         store.create(
                 new CostExportStore.Task(
                         id,

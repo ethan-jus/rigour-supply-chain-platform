@@ -69,6 +69,91 @@ public class CostDashboardService {
             List<CostFact> rows,
             CostDashboardMeta meta) {}
 
+    public List<com.rigour.analytics.api.v1.model.CostDepartmentSummary> departments(
+            CostDashboardQuery query) {
+        var c = context(query);
+        var rows =
+                c.rows().stream()
+                        .filter(CostFact::confirmed)
+                        .filter(r -> r.inPeriod(c.period(), "previous".equals(c.filter().side())))
+                        .filter(
+                                r ->
+                                        c.filter().city() == null
+                                                || c.filter().city().equals(r.city()))
+                        .filter(
+                                r ->
+                                        c.filter().department() == null
+                                                || c.filter()
+                                                        .department()
+                                                        .equals(r.dimension("department").key()))
+                        .filter(
+                                r ->
+                                        "ALL".equals(c.filter().payment())
+                                                || c.filter().payment().equals(r.payment()))
+                        .filter(r -> Set.of("purchase", "freight").contains(r.category()))
+                        .toList();
+        var groups =
+                rows.stream()
+                        .collect(
+                                java.util.stream.Collectors.groupingBy(
+                                        r -> r.dimension("department").key(),
+                                        TreeMap::new,
+                                        java.util.stream.Collectors.toList()));
+        List<com.rigour.analytics.api.v1.model.CostDepartmentSummary> result = new ArrayList<>();
+        groups.forEach(
+                (id, facts) -> {
+                    BigDecimal goods = BigDecimal.ZERO,
+                            freight = BigDecimal.ZERO,
+                            logistics = BigDecimal.ZERO;
+                    Map<String, BigDecimal> people = new TreeMap<>();
+                    Map<String, CostFact> labels = new HashMap<>();
+                    for (var fact : facts) {
+                        if ("purchase".equals(fact.category())) {
+                            if ("FREIGHT".equals(fact.dimension("component").key()))
+                                freight = freight.add(fact.amount());
+                            else goods = goods.add(fact.amount());
+                        } else {
+                            logistics = logistics.add(fact.amount());
+                            String role =
+                                    "dict:COST_TRANSPORT_PURPOSE:DELIVERY"
+                                                    .equals(fact.dimension("leg").key())
+                                            ? "业务员"
+                                            : "费用负责人";
+                            String key = role + ":" + fact.dimension("employee").key();
+                            people.merge(key, fact.amount(), BigDecimal::add);
+                            labels.put(key, fact);
+                        }
+                    }
+                    var children =
+                            new ArrayList<
+                                    com.rigour.analytics.api.v1.model.CostDepartmentSummary
+                                            .Person>();
+                    people.forEach(
+                            (key, value) -> {
+                                var fact = labels.get(key);
+                                children.add(
+                                        new com.rigour.analytics.api.v1.model.CostDepartmentSummary
+                                                .Person(
+                                                fact.dimension("employee").key(),
+                                                fact.dimension("employee").missing()
+                                                        ? "待归属人员"
+                                                        : fact.dimension("employee").label(),
+                                                key.substring(0, key.indexOf(':')),
+                                                value.toPlainString()));
+                            });
+                    var dimension = facts.getFirst().dimension("department");
+                    result.add(
+                            new com.rigour.analytics.api.v1.model.CostDepartmentSummary(
+                                    id,
+                                    dimension.missing() ? "待归属部门" : dimension.label(),
+                                    goods.toPlainString(),
+                                    freight.toPlainString(),
+                                    logistics.toPlainString(),
+                                    List.copyOf(children)));
+                });
+        return result;
+    }
+
     public Context context(CostDashboardQuery q) {
         if (!enabled) throw new CostDashboardFailure("COST_DASHBOARD_DISABLED", 503, "成本看板尚未开放");
         var a = access.current();
@@ -570,7 +655,8 @@ public class CostDashboardService {
                 value(q.periodSide(), "current"),
                 q.page() == null ? 1 : q.page(),
                 q.size() == null ? 20 : q.size(),
-                Boolean.TRUE.equals(q.missingAmount()));
+                Boolean.TRUE.equals(q.missingAmount()),
+                blank(q.department()));
     }
 
     private static String blank(String s) {

@@ -25,6 +25,11 @@ public final class CostDashboardController implements CostDashboardApi {
         this.exports = exports;
     }
 
+    public ApiResponse<java.util.List<com.rigour.analytics.api.v1.model.CostDepartmentSummary>>
+            departments(CostDashboardQuery query) {
+        return ApiResponse.success(service.departments(query));
+    }
+
     public ApiResponse<CostDashboardReport> overview(CostDashboardQuery q) {
         return ApiResponse.success(service.overview(q));
     }
