@@ -67,7 +67,9 @@ public class JdbcCustomerResponsibilityStore implements CustomerResponsibilitySt
                                         r.getString("new_region_code"),
                                         r.getString("reason"),
                                         r.getString("actor_id"),
-                                        r.getTimestamp("effective_at").toInstant()),
+                                        r.getObject("effective_at", java.time.LocalDateTime.class).toInstant(java.time.ZoneOffset.UTC),
+                                        r.getObject("recorded_at", java.time.LocalDateTime.class).toInstant(java.time.ZoneOffset.UTC), r.getString("effective_kind"),
+                                        r.getString("source_system"), r.getString("new_department_name")),
                         tenant,
                         id);
         var conflicts =
@@ -184,6 +186,10 @@ public class JdbcCustomerResponsibilityStore implements CustomerResponsibilitySt
             boolean batch) {
         reason(c.reason());
         revision(before, c.revision());
+        var effective = c.effectiveAt() == null ? java.time.Instant.now() : c.effectiveAt();
+        if (effective.isAfter(java.time.Instant.now())) throw invalid("交接生效时间不能晚于当前时间");
+        var latest = jdbc.queryForObject("SELECT MAX(effective_at) FROM crm_customer_responsibility_history WHERE tenant_id=? AND customer_id=? AND effective_kind='CONFIRMED'", java.time.LocalDateTime.class, tenant, id);
+        if (latest != null && !effective.isAfter(latest.toInstant(java.time.ZoneOffset.UTC))) throw invalid("生效时间必须晚于最近一次已确认交接，历史纠错不能覆盖原记录");
         String owner = clean(c.employeeCode()), region = clean(c.regionCode());
         if (owner != null && owner.length() > 50) throw invalid("员工编码过长");
         if (region == null || region.length() > 128) throw invalid("请选择客户归属地区");
@@ -259,6 +265,9 @@ VALUES(?,?,?,?,?,?,?,?,'LOCAL_CONTROL',?,'LOCAL',?,?)
                     actor,
                     c.reason().trim(),
                     false);
+        jdbc.update("UPDATE crm_customer_responsibility_history SET effective_at=?,effective_kind='CONFIRMED',new_department_id=?,new_department_name=? WHERE tenant_id=? AND customer_id=? AND customer_revision=? AND source_system='LOCAL'",
+                java.time.LocalDateTime.ofInstant(effective, java.time.ZoneOffset.UTC), identity == null || c.effectiveAt() != null ? null : identity.departmentId(),
+                identity == null || c.effectiveAt() != null ? null : identity.departmentName(), tenant,id,c.revision()+1);
     }
 
     private static void revision(Map<String, Object> c, long expected) {

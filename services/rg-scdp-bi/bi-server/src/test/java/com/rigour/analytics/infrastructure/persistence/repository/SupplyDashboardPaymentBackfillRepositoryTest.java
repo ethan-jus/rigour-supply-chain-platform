@@ -66,7 +66,7 @@ public class SupplyDashboardPaymentBackfillRepositoryTest {
                 """
                 CREATE TABLE bi_source_order_order_payment_record (
                     tenant_id VARCHAR(64), id BIGINT, order_id BIGINT, customer_id BIGINT,
-                    collector_staff_code VARCHAR(50), payment_method_code VARCHAR(64),
+                    payment_owner_region_code VARCHAR(128),payment_owner_code VARCHAR(50),payment_owner_name VARCHAR(128),payment_owner_evidence VARCHAR(1024),collector_staff_code VARCHAR(50), payment_method_code VARCHAR(64),
                     paid_amount DECIMAL(24,6), deleted INT DEFAULT 0)
                 """);
         jdbc.execute(
@@ -144,11 +144,11 @@ CREATE TABLE bi_source_crm_crm_customer (
                 TENANT,
                 customerOwner);
         jdbc.update(
-                "INSERT INTO bi_source_order_order_payment_record VALUES (?, 101, 10, 20, ?,"
+                "INSERT INTO bi_source_order_order_payment_record(tenant_id,id,order_id,customer_id,collector_staff_code,payment_method_code,paid_amount,deleted) VALUES (?, 101, 10, 20, ?,"
                     + " 'BANK', 125.375, 0)",
                 TENANT,
                 collector);
-        fact(TENANT, 101, projectedOwner, collector, "125.375000", 0);
+        fact(TENANT, 101, null, collector, "125.375000", 0);
 
         assertThat(repository.refreshTargetNeedsBackfill(TENANT, "ORDER_PAYMENT_RECORD")).isFalse();
 

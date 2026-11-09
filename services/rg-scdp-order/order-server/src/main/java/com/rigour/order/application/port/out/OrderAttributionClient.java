@@ -8,5 +8,8 @@ public interface OrderAttributionClient {
     default com.rigour.merchant.api.v1.model.CustomerPaymentOwnerView paymentOwner(CallerIdentity actor,long id,java.time.Instant at) {
         return new com.rigour.merchant.api.v1.model.CustomerPaymentOwnerView(null,null,null,"历史归属接口尚未可用");
     }
+    default java.util.Map<Long,com.rigour.merchant.api.v1.model.CustomerPaymentOwnerView> paymentOwners(CallerIdentity actor, java.util.List<Long> ids, java.time.Instant at) {
+        return java.util.Map.of();
+    }
     CustomerOrderAttributionView resolve(CallerIdentity actor, long customerId);
 }

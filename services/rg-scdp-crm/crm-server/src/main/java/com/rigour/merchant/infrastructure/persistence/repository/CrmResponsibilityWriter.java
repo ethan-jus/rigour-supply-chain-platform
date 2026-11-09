@@ -77,6 +77,11 @@ SELECT tenant_id,id,?,?,?,?,?,?,?,?,?,?,revision FROM crm_customer WHERE tenant_
                 actor,
                 tenant,
                 customer);
+        if ("LOCAL".equals(source)) {
+            var owner = newOwner == null ? null : employees.owner(tenant,newOwner);
+            jdbc.update("UPDATE crm_customer_responsibility_history SET effective_kind='CONFIRMED',new_department_id=?,new_department_name=? WHERE tenant_id=? AND customer_id=? AND customer_revision=(SELECT revision FROM crm_customer WHERE tenant_id=? AND id=?) AND source_system='LOCAL'",
+                owner == null ? null : owner.departmentId(), owner == null ? null : owner.departmentName(),tenant,customer,tenant,customer);
+        }
         change(tenant, "CUSTOMER", Long.toString(customer));
     }
 

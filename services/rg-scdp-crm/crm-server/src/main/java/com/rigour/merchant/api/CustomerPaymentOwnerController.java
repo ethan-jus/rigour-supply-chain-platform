@@ -27,4 +27,15 @@ public class CustomerPaymentOwnerController {
             throw new AuthorizationDeniedException("service-caller-required");
         return ApiResponse.success(store.at(a.tenantId().toString(), id, at));
     }
+    @GetMapping("/internal/v1/crm/customers/payment-owners")
+    public ApiResponse<java.util.Map<Long,CustomerPaymentOwnerView>> owners(@RequestParam java.util.List<Long> ids,@RequestParam Instant at) {
+        var a=AuthorizationContext.requireCurrent();
+        AuthorizationContext.requirePermission("crm:customer:attribution-read");
+        if (!"SERVICE".equals(a.principalScope())) throw new AuthorizationDeniedException("service-caller-required");
+        if(ids.size()>200 || ids.stream().anyMatch(id->id==null || id<=0)) throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.BAD_REQUEST,"客户数量必须在200以内");
+        var result=new java.util.LinkedHashMap<Long,CustomerPaymentOwnerView>();
+        for (long id: new java.util.LinkedHashSet<>(ids)) result.put(id,store.at(a.tenantId().toString(),id,at));
+        return ApiResponse.success(result);
+    }
+
 }

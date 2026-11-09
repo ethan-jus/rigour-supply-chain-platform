@@ -531,7 +531,7 @@ class BiSupplyScopeIntegrationTest {
                 "NULL,CUSTOMER,1,NULL,NULL,NULL,NULL"
             },
             nullValues = "NULL")
-    void paymentPerformanceUsesCollectorThenCurrentCustomerWithoutChangingSourceOrCity(
+    void paymentPerformanceKeepsUnverifiedOwnersPendingWithoutChangingSourceOrCity(
             String collector, String customerOwner, int customerDeleted, String collectorSnapshot,
             String collectorHrName, String expectedOwner, String expectedName) {
         // 与后台 ETL 一致，不带浏览器租户请求的授权上下文。
@@ -566,8 +566,8 @@ class BiSupplyScopeIntegrationTest {
                        region_code,payment_time,paid_amount
                   FROM bi_sales_payment_fact WHERE tenant_id=? AND payment_id=101
                 """,tenant);
-        assertThat(original.get("owner_staff_code")).isEqualTo(expectedOwner);
-        assertThat(original.get("owner_staff_name")).isEqualTo(expectedName);
+        assertThat(original.get("owner_staff_code")).isNull();
+        assertThat(original.get("owner_staff_name")).isNull();
         assertThat(original.get("collector_staff_code")).isEqualTo(collector);
         assertThat(original.get("collector_staff_name")).isEqualTo(collectorSnapshot);
         assertThat(original.get("region_code")).isEqualTo("HZ");
@@ -589,6 +589,17 @@ class BiSupplyScopeIntegrationTest {
         assertThat(jdbc.queryForMap("SELECT collector_staff_code,collector_name_snapshot FROM bi_source_order_order_payment_record WHERE tenant_id=?",tenant))
                 .containsEntry("collector_staff_code",collector).containsEntry("collector_name_snapshot",collectorSnapshot);
         assertThat(jdbc.queryForObject("SELECT region_code FROM bi_source_order_order_sales_order WHERE tenant_id=?",String.class,tenant)).isEqualTo("HZ");
+    }
+
+    @Test
+    void confirmedPaymentOwnerDoesNotMoveWithCustomerOrRecorder() {
+        paymentPerformanceKeepsUnverifiedOwnersPendingWithoutChangingSourceOrCity("RECORDER","CURRENT",0,"录入人",null,null,null);
+        jdbc.update("UPDATE bi_source_order_order_payment_record SET payment_owner_code='LI',payment_owner_name='李四',payment_owner_evidence='CRM主责历史#2' WHERE tenant_id=?",tenant);
+        var now=java.time.LocalDateTime.parse("2026-11-09T00:00:00");
+        assertThat(productionMapper.alignPaymentOrderAttribution(tenant,now)).isEqualTo(1);
+        jdbc.update("UPDATE bi_source_crm_crm_customer SET owner_employee_code='WANG' WHERE tenant_id=?",tenant);
+        assertThat(productionMapper.alignPaymentOrderAttribution(tenant,now.plusHours(1))).isZero();
+        assertThat(jdbc.queryForMap("SELECT owner_staff_code,owner_staff_name,collector_staff_code FROM bi_sales_payment_fact WHERE tenant_id=?",tenant)).containsEntry("owner_staff_code","LI").containsEntry("owner_staff_name","李四").containsEntry("collector_staff_code","RECORDER");
     }
 
     @Test

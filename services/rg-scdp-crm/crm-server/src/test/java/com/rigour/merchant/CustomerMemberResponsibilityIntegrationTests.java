@@ -55,6 +55,27 @@ class CustomerMemberResponsibilityIntegrationTests {
     @MockitoBean SupplyAuthorizationClient authorizations;
 
     @Test
+    void manualTransferStoresActualEffectiveAndRecordedTimeWithoutRewritingHistory() {
+        try(var f=new Fixture()) {
+            long id=f.customer("交接测试","HZ","OLD");
+            var at=java.time.Instant.parse("2026-01-01T00:00:00Z");
+            var current=single.overview(f.tenant.toString(),id);
+            var result=single.transfer(f.tenant.toString(),id,new Change("EMP-TARGET","HZ",current.revision(),"确认实际交接日期",at),f.actor.toString());
+            var history=result.history().getFirst();
+            assertThat(history.occurredAt()).isEqualTo(at);
+            assertThat(history.recordedAt()).isAfter(at);
+            assertThat(history.effectiveKind()).isEqualTo("CONFIRMED");
+            assertThat(history.departmentName()).isNull(); // 补录交接不能把今天的部门当成历史部门。
+            assertThat(history.actor()).isEqualTo(f.actor.toString());
+            var historicalOwner = new com.rigour.merchant.infrastructure.persistence.repository.JdbcCustomerPaymentOwnerStore(jdbc);
+            assertThat(historicalOwner.at(f.tenant.toString(),id,at.minusSeconds(1)).usable()).isFalse();
+            assertThat(historicalOwner.at(f.tenant.toString(),id,at).employeeCode()).isEqualTo("EMP-TARGET");
+            assertThatThrownBy(()->single.transfer(f.tenant.toString(),id,new Change("EMP-TARGET","HZ",result.revision(),"倒序交接不允许",at),f.actor.toString())).hasMessageContaining("生效时间");
+            assertThat(single.overview(f.tenant.toString(),id).history()).hasSize(1);
+        }
+    }
+
+    @Test
     void candidatesAreScopedBeforeCountAndPagingAndOwnedKeepsOutOfLimitCustomers() {
         try (var f = new Fixture()) {
             long hz = f.customer("杭州客户", "HZ", null), child = f.customer("杭州下级", "HZ_CHILD", null);

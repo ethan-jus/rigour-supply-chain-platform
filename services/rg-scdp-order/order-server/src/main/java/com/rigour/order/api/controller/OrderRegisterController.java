@@ -503,7 +503,7 @@ public class OrderRegisterController implements OrderRegisterApi {
         var receiptLabels = statusLabels("PAYMENT_RECEIPT_STATUS");
         var confirmationLabels = statusLabels("PAYMENT_CONFIRMATION_STATUS");
         var headers = new ArrayList<>(List.of(
-                    "收款编码", "来源付款编码", "订单号", "客户名称", "归属地区", "业务员", "订单金额",
+                    "收款编码", "来源付款编码", "订单号", "客户名称", "归属地区", "下单业务员", "回款人（业绩归属）", "归属状态", "归属依据", "订单金额",
                     "收款金额", "回款状态", "财务确认", "收款时间", "交易单号", "财务确认人", "财务确认时间"
                 ));
         if (productIds != null) headers.add("筛选商品分摊金额");
@@ -519,6 +519,9 @@ public class OrderRegisterController implements OrderRegisterApi {
                                                 str(r.ownerEmployeeName() == null
                                                         ? r.ownerEmployeeCode()
                                                         : r.ownerEmployeeName()),
+                                                r.paymentOwner()==null || !"CONFIRMED".equals(r.paymentOwner().status()) ? "待确认" : str(r.paymentOwner().employeeName()==null ? r.paymentOwner().employeeCode() : r.paymentOwner().employeeName()),
+                                                r.paymentOwner()==null || !"CONFIRMED".equals(r.paymentOwner().status()) ? "待确认" : "已确认",
+                                                r.paymentOwner()==null ? "" : str(r.paymentOwner().evidence()),
                                                 dec(r.orderAmount()),
                                                 dec(r.paidAmount()),
                                                 receiptLabels.getOrDefault(str(r.receiptStatusCode()), str(r.receiptStatusCode())),
