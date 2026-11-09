@@ -2012,10 +2012,9 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 > 0) { projectOwner(t,c.connectorId(),c.receiptNo()); return; }
         try {
             var owner =
-                    owners.paymentOwner(
+                    owners.resolve(
                             com.rigour.shared.context.AuthorizationContext.requireCurrent(),
-                            customer,
-                            c.occurredAt());
+                            customer);
             if (owner != null && owner.usable())
                 jdbc.update(
                         "UPDATE order_sync_receipt SET"
@@ -2024,7 +2023,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             + " employee_code IS NULL",
                         owner.employeeCode(),
                         owner.employeeName(),
-                        owner.evidence(),
+                        PaymentOwnerResolver.currentEvidence(owner),
                         t,
                         c.connectorId().toString(),
                         c.receiptNo());

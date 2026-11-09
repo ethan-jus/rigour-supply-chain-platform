@@ -503,7 +503,7 @@ public class OrderRegisterController implements OrderRegisterApi {
         var receiptLabels = statusLabels("PAYMENT_RECEIPT_STATUS");
         var confirmationLabels = statusLabels("PAYMENT_CONFIRMATION_STATUS");
         var headers = new ArrayList<>(List.of(
-                    "收款编码", "来源付款编码", "订单号", "客户名称", "归属地区", "下单业务员", "回款人（业绩归属）", "归属状态", "归属依据", "订单金额",
+                    "收款编码", "来源付款编码", "订单号", "客户名称", "归属地区", "业务员", "回款人", "归属状态", "归属依据", "订单金额",
                     "收款金额", "回款状态", "财务确认", "收款时间", "交易单号", "财务确认人", "财务确认时间"
                 ));
         if (productIds != null) headers.add("筛选商品分摊金额");

@@ -72,7 +72,7 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
-    void paymentOwnerResolverUsesHistoryAndProtectsReceiptBasis() {
+    void newReceiptUsesCurrentCustomerOwnerAndFreezesItAcrossTransfers() {
         String tenant=UUID.randomUUID().toString();
         long orderId=order(tenant,"RESOLVE-O",1L,"C1","归属客户","HZ","ZHANG","张三","2026-09-01T00:00:00Z",100,0);
         insertPayment(tenant,"RESOLVE-P",orderId,"2026-09-02T00:00:00Z",100,"CHECKED",null);
@@ -82,13 +82,22 @@ class JdbcOrderRegisterStoreMySqlTest {
         var actor=new com.rigour.shared.context.CallerIdentity("SERVICE",UUID.randomUUID(),UUID.fromString(tenant),null,null,UUID.randomUUID(),0,0,0,java.util.Set.of(),java.util.Set.of());
         try(var context=org.mockito.Mockito.mockStatic(com.rigour.shared.context.AuthorizationContext.class)) {
             context.when(com.rigour.shared.context.AuthorizationContext::requireCurrent).thenReturn(actor);
-            org.mockito.Mockito.when(owners.paymentOwner(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.any())).thenReturn(new com.rigour.merchant.api.v1.model.CustomerPaymentOwnerView(null,null,null,"无历史"));
-            var resolver=new PaymentOwnerResolver(jdbc,owners); resolver.resolve(tenant,id);
+            var resolver=new PaymentOwnerResolver(jdbc,owners);
+            // 查询暂失败时不能用旧订单业务员替代新的回款人。
+            org.mockito.Mockito.when(owners.resolve(actor,1L)).thenThrow(new IllegalStateException("暂不可用"));
+            resolver.resolve(tenant,id);
             assertThat(jdbc.queryForObject("SELECT payment_owner_code FROM order_payment_record WHERE id=?",String.class,id)).isNull();
-            org.mockito.Mockito.when(owners.paymentOwner(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.eq(1L),org.mockito.ArgumentMatchers.any())).thenReturn(new com.rigour.merchant.api.v1.model.CustomerPaymentOwnerView("LI","李四","CRM主责历史#20",null));
+            var current=new com.rigour.merchant.api.v1.model.CustomerOrderAttributionView(tenant,1L,"C1","归属客户","LI","李四",12L,"杭州二部",java.util.List.of(12L),"HZ",java.util.List.of("HZ"),"v2",2,1,1,Instant.parse("2026-11-09T00:00:00Z"),true,null);
+            org.mockito.Mockito.doReturn(current).when(owners).resolve(actor,1L);
             resolver.resolve(tenant,id);
             assertThat(jdbc.queryForObject("SELECT payment_owner_code FROM order_payment_record WHERE id=?",String.class,id)).isEqualTo("LI");
+            assertThat(jdbc.queryForObject("SELECT payment_owner_department_id FROM order_payment_record WHERE id=?",Long.class,id)).isEqualTo(12L);
+            assertThat(jdbc.queryForObject("SELECT payment_owner_evidence FROM order_payment_record WHERE id=?",String.class,id)).contains("首次同步客户归属","v2");
+            org.mockito.Mockito.clearInvocations(owners);
+            resolver.resolve(tenant,id);
+            org.mockito.Mockito.verifyNoInteractions(owners);
             assertThat(jdbc.queryForObject("SELECT collector_staff_code FROM order_payment_record WHERE id=?",String.class,id)).isEqualTo("RECORDER");
+            assertThat(jdbc.queryForObject("SELECT paid_amount FROM order_payment_record WHERE id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("100");
             org.assertj.core.api.Assertions.assertThatThrownBy(()->resolver.requireStableBasis(tenant,id,1L,Instant.parse("2026-09-03T00:00:00Z"))).hasMessageContaining("归属已确认");
         }
     }
