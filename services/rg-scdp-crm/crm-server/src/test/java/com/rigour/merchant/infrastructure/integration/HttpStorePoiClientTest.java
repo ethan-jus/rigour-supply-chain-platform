@@ -18,7 +18,7 @@ class HttpStorePoiClientTest {
         var trust=new ContextTrustProperties();trust.setKeysBase64(Map.of("v1",Base64.getEncoder().encodeToString(new byte[32])));
         signer=new TrustedContextSigner(trust);
         server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
-        server.createContext("/internal/v1/sales/store-pois",exchange->{
+        server.createContext("/internal/v1/integration/store-pois",exchange->{
             request=new MockHttpServletRequest("GET",exchange.getRequestURI().getRawPath());
             request.setQueryString(exchange.getRequestURI().getRawQuery());
             exchange.getRequestHeaders().forEach((key,values)->request.addHeader(key,values.getFirst()));
@@ -35,7 +35,7 @@ class HttpStorePoiClientTest {
           """;
         assertThat(client.search(UUID.randomUUID().toString(),"球馆","330105")).singleElement().satisfies(p->assertThat(p.areaCode()).isEqualTo("330105"));
         assertThat(signer.verify(request)).isTrue();
-        assertThat(request.getHeader(RequestHeaders.PERMISSIONS)).isEqualTo("sales:store-poi:read");
+        assertThat(request.getHeader(RequestHeaders.PERMISSIONS)).isEqualTo("integration:amap:read");
     }
     @Test void preservesOnlyKnownProviderReasonWithoutRawRemoteMessage() {
         status=503;body="""

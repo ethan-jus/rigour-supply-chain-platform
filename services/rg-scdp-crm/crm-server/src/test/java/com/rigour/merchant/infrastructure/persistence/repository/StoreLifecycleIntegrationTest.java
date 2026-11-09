@@ -40,7 +40,7 @@ class StoreLifecycleIntegrationTest {
         db.update("UPDATE crm_store_summary SET deadline_at=? WHERE tenant_id=? AND store_id=?",Timestamp.from(t.plusSeconds(86400)),tenant,store);
     }
     StoreOrderFacts facts(Instant now,boolean pending,StoreOrderFacts.Fact... orders){return new StoreOrderFacts(tenant,store,ownership,now,"STORE_ORDER_V1",List.of(orders),pending,orders.length==0?null:orders[0].effectiveAt(),orders.length==0?null:orders[0].effectiveAt());}
-    RefreshResult refresh(Instant now,StoreOrderFacts facts){var c=lifecycle.current(tenant,store);return transaction(()->lifecycle.reconcile(c,facts,null,now));}
+    RefreshResult refresh(Instant now,StoreOrderFacts facts){var c=lifecycle.current(tenant,store);return transaction(()->lifecycle.reconcile(c,facts,now));}
     Visit visitAt(Instant time){var s=scope("crm:store:visit-write","1");var v=transaction(()->visits.checkIn(s,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",BigDecimal.ONE),new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",300),time));v=submit(v,time.plusSeconds(600));var value=v;return transaction(()->visits.review(scope("crm:store:visit-review","2"),store,value.id(),new ReviewVisit(value.revision(),"EFFECTIVE","主管核验证据通过"),time.plusSeconds(650)));}
     Visit submit(Visit v,Instant now){return transaction(()->visits.submit(scope("crm:store:visit-write","1"),store,v.id(),new SubmitVisit(v.revision(),"拜访结果",List.of("dev/photo.jpg")),now));}
     @Test void unchangedPollingDoesNotInvalidateAnOpenStatusFormButActualOrderChangesDo(){
@@ -50,7 +50,7 @@ class StoreLifecycleIntegrationTest {
         assertThat(refresh(t.plusSeconds(120),facts(t,false)).outcome()).isEqualTo("PROTECTED");
         assertThat(pool.detail(s,store).revision()).isEqualTo(opened.revision());
         assertThat(lifecycle.current(tenant,store).revision()).isGreaterThan(cycle.revision());
-        assertThat(transaction(()->lifecycle.reconcile(cycle,facts(t,false),null,t.plusSeconds(180))).outcome()).isEqualTo("RETRY");
+        assertThat(transaction(()->lifecycle.reconcile(cycle,facts(t,false),t.plusSeconds(180))).outcome()).isEqualTo("RETRY");
         transaction(()->{pool.businessStatus(s,store,new BusinessStatusChange(UUID.randomUUID().toString(),opened.revision(),"TEMP_CLOSED","装修核实",false));return null;});
         var beforeOrder=pool.detail(s,store);
         var order=new StoreOrderFacts.Fact("123",ownership,"1",t.plusSeconds(30),1);
@@ -72,7 +72,7 @@ class StoreLifecycleIntegrationTest {
     @Test void currentOrderEnablesSixtyDaysAndVisitExtendsWithoutChangingOrderTime(){var order=new StoreOrderFacts.Fact("123",ownership,"1",t.plusSeconds(3600),1);assertThat(refresh(t.plusSeconds(7200),facts(t,false,order)).phase()).isEqualTo("COOPERATING");visitAt(t.plusSeconds(50*86400));assertThat(lifecycle.current(tenant,store).deadline()).isEqualTo(t.plusSeconds(110*86400));assertThat(db.queryForObject("SELECT last_order_at FROM crm_store_summary WHERE tenant_id=? AND store_id=?",Timestamp.class,tenant,store).toInstant()).isEqualTo(order.effectiveAt());assertThat(refresh(t.plusSeconds(110*86400),facts(t,false,order)).outcome()).isEqualTo("RELEASED");assertThat(pool.detail(scope("crm:store:manage","2"),store).cooperationStatus()).isEqualTo("COOPERATED");}
     @Test void pendingReviewAndOrderPreventRecoveryButDraftDoesNot(){var s=scope("crm:store:visit-write","1");var v=transaction(()->visits.checkIn(s,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",null),new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",300),t.plusSeconds(3600)));submit(v,t.plusSeconds(7200));assertThat(refresh(t.plusSeconds(86400),facts(t,false)).holdReason()).isEqualTo("PENDING_REVIEW");}
     @Test void sourceFailureHoldsAndRecoveryResumesAfterAuthorityReturns(){var c=lifecycle.current(tenant,store);assertThat(transaction(()->lifecycle.hold(c,t.plusSeconds(86400))).holdReason()).isEqualTo("SOURCE_UNAVAILABLE");assertThat(lifecycle.current(tenant,store)).isNotNull();assertThat(refresh(t.plusSeconds(86460),facts(t,false)).outcome()).isEqualTo("RELEASED");}
-    @Test void authorizationRevisionInvalidatesPreviouslyReadRecoveryCandidate(){var before=lifecycle.current(tenant,store);var s=scope("crm:store:order-write","1");var c=new OrderAuthorization("55",ownership,UUID.randomUUID().toString());var permit=transaction(()->visits.authorize(s,store,c,t.plusSeconds(60)));assertThat(transaction(()->visits.authorize(s,store,c,t.plusSeconds(120)))).isEqualTo(permit);assertThat(transaction(()->lifecycle.reconcile(before,facts(t,false),null,t.plusSeconds(86400))).outcome()).isEqualTo("RETRY");}
+    @Test void authorizationRevisionInvalidatesPreviouslyReadRecoveryCandidate(){var before=lifecycle.current(tenant,store);var s=scope("crm:store:order-write","1");var c=new OrderAuthorization("55",ownership,UUID.randomUUID().toString());var permit=transaction(()->visits.authorize(s,store,c,t.plusSeconds(60)));assertThat(transaction(()->visits.authorize(s,store,c,t.plusSeconds(120)))).isEqualTo(permit);assertThat(transaction(()->lifecycle.reconcile(before,facts(t,false),t.plusSeconds(86400))).outcome()).isEqualTo("RETRY");}
     @Test void oldCycleOrderCannotProtectThisOwner(){var order=new StoreOrderFacts.Fact("123","999","2",t.plusSeconds(60),1);assertThat(refresh(t.plusSeconds(86400),facts(t,false,order)).outcome()).isEqualTo("RELEASED");assertThat(pool.detail(scope("crm:store:manage","2"),store).cooperationStatus()).isEqualTo("COOPERATED");}
     @Test void cancelledOrderAndRevokedVisitRecalculateWithoutRewardingNewTime(){var v=visitAt(t.plusSeconds(3600));var order=new StoreOrderFacts.Fact("123",ownership,"1",t.plusSeconds(7200),1);refresh(t.plusSeconds(8000),facts(t,false,order));assertThat(refresh(t.plusSeconds(9000),facts(t,false)).deadline()).isEqualTo(t.plusSeconds(3600+7*86400));transaction(()->visits.review(scope("crm:store:visit-review","2"),store,v.id(),new ReviewVisit(v.revision(),"VOID","重复或错误证据撤销"),t.plusSeconds(10000)));assertThat(lifecycle.current(tenant,store).deadline()).isEqualTo(t.plusSeconds(86400));}
     @Test void checkinRetryIsIdempotentAndLateNewWorkIsRejected(){var s=scope("crm:store:visit-write","1");var c=new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",null);var first=transaction(()->visits.checkIn(s,store,c,new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",300),t.plusSeconds(3600)));assertThat(transaction(()->visits.checkIn(s,store,c,new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",300),t.plusSeconds(7200))).visitedAt()).isEqualTo(first.visitedAt());assertThatThrownBy(()->submit(first,t.plusSeconds(86400))).hasMessageContaining("到期");assertThat(refresh(t.plusSeconds(86400),facts(t,false)).outcome()).isEqualTo("RELEASED");}
@@ -80,15 +80,15 @@ class StoreLifecycleIntegrationTest {
         String capture=UUID.randomUUID().toString();var s=scope("crm:store:visit-write","1");
         var v=transaction(()->visits.checkIn(s,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",BigDecimal.ONE,capture),new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",500),t.plusSeconds(600)));
         var submitted=submit(v,t.plusSeconds(1200));
-        var evidence=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Outcome(v.id(),capture,"E1","fixture",v.visitedAt(),t.plusSeconds(1200),t.plusSeconds(1200),"EFFECTIVE","证据完整",1);
-        var captures=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Facts(tenant,store,ownership,t.plusSeconds(86400),List.of(evidence));
-        var before=lifecycle.current(tenant,store);
-        var result=transaction(()->lifecycle.reconcile(before,facts(t,false),captures,t.plusSeconds(86400)));
-        assertThat(result.phase()).isEqualTo("FOLLOW_UP");assertThat(result.deadline()).isEqualTo(v.visitedAt().plusSeconds(7*86400));
+        var source=new JdbcStoreFactStore(db,new tools.jackson.databind.ObjectMapper(),lifecycle);
+        var evidence=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence(tenant,store,ownership,v.id(),capture,"E1","fixture",1,t.plusSeconds(86400),v.visitedAt(),t.plusSeconds(1200),t.plusSeconds(1200),"CONTACTED","证据完整",1,null,null,null,null,false);
+        transaction(()->{source.acceptEvidence(evidence,t.plusSeconds(86400));return null;});
+        assertThat(lifecycle.current(tenant,store).deadline()).isEqualTo(v.visitedAt().plusSeconds(7*86400));
         var effective=visits.visits(s,store).getFirst();assertThat(effective.status()).isEqualTo("EFFECTIVE");assertThat(effective.storeVisitNo()).isEqualTo(1);
         transaction(()->visits.review(scope("crm:store:visit-review","2"),store,v.id(),new ReviewVisit(effective.revision(),"VOID","主管确认采集重复"),t.plusSeconds(86500)));
         var current=lifecycle.current(tenant,store);
-        transaction(()->lifecycle.reconcile(current,facts(t,false),captures,t.plusSeconds(86600)));
+        transaction(()->{source.acceptEvidence(evidence,t.plusSeconds(86600));return null;});
+        refresh(t.plusSeconds(86600),facts(t,false));
         assertThat(visits.visits(s,store).getFirst().status()).isEqualTo("VOID");assertThat(lifecycle.current(tenant,store)).isNull();
     }
     @Test void cancellingCaptureDoesNotCreateProtectionAndAllowsFreshCheckin(){
@@ -102,6 +102,59 @@ class StoreLifecycleIntegrationTest {
         var next=transaction(()->visits.checkIn(s,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",BigDecimal.ONE),policy,t.plusSeconds(603)));
         assertThat(next.id()).isNotEqualTo(first.id());
         assertThat(refresh(t.plusSeconds(86400),facts(t,false)).outcome()).isEqualTo("RELEASED");
+    }
+
+    JdbcStoreFactStore source(){return new JdbcStoreFactStore(db,new tools.jackson.databind.ObjectMapper(),lifecycle);}
+    com.rigour.merchant.api.v1.model.StoreOrderResult orderResult(long seq,String status,boolean deleted){
+        return new com.rigour.merchant.api.v1.model.StoreOrderResult(tenant,"101",store,ownership,"1","request-order",seq,
+                "COMPLETED",status,deleted,new BigDecimal("5000"),t.plusSeconds(3600),t.plusSeconds(120),t.plusSeconds(4000));
+    }
+    @Test void orderedFactsRejectDuplicateAndStaleDeliveriesAndCancellationRemovesProtection(){
+        var source=source();
+        transaction(()->{source.acceptOrder(orderResult(2,"SUBMITTED",false),t.plusSeconds(4000));return null;});
+        assertThat(lifecycle.current(tenant,store).deadline()).isEqualTo(t.plusSeconds(3600+60*86400));
+        long revision=pool.detail(scope("crm:store:manage","1"),store).revision();
+        transaction(()->{source.acceptOrder(orderResult(2,"SUBMITTED",false),t.plusSeconds(4100));source.acceptOrder(orderResult(1,"CANCELLED",false),t.plusSeconds(4200));return null;});
+        assertThat(pool.detail(scope("crm:store:manage","1"),store).revision()).isEqualTo(revision);
+        transaction(()->{source.acceptOrder(orderResult(3,"CANCELLED",false),t.plusSeconds(4300));return null;});
+        assertThat(lifecycle.current(tenant,store).deadline()).isEqualTo(t.plusSeconds(86400));
+        assertThat(source.orders(lifecycle.current(tenant,store),t.plusSeconds(4400)).orders()).isEmpty();
+    }
+    @Test void priorOwnerResultUpdatesPublicHistoryWithoutRestoringOwnership(){
+        refresh(t.plusSeconds(86400),facts(t,false));
+        transaction(()->{source().acceptOrder(orderResult(1,"SUBMITTED",false),t.plusSeconds(86500));return null;});
+        assertThat(lifecycle.current(tenant,store)).isNull();
+        var detail=pool.detail(scope("crm:store:manage","1"),store);
+        assertThat(detail.cooperationStatus()).isEqualTo("COOPERATED");
+        assertThat(detail.poolType()).isEqualTo("PUBLIC");
+    }
+    @Test void unconfirmedCaptureHoldsOnlyItsOwnCycleAndLateMissingEvidenceAllowsExpiry(){
+        String capture=UUID.randomUUID().toString();var s=scope("crm:store:visit-write","1");
+        var v=transaction(()->visits.checkIn(s,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",BigDecimal.ONE,capture),new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",500),t.plusSeconds(600)));
+        assertThat(refresh(t.plusSeconds(86400),facts(t,false)).holdReason()).isEqualTo("SOURCE_UNAVAILABLE");
+        var evidence=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence(tenant,store,ownership,v.id(),capture,"E1","fixture",1,t.plusSeconds(86401),v.visitedAt(),null,null,null,null,0,null,null,null,null,false);
+        transaction(()->{source().acceptEvidence(evidence,t.plusSeconds(86401));return null;});
+        assertThat(refresh(t.plusSeconds(86402),facts(t,false)).outcome()).isEqualTo("RELEASED");
+    }
+    @Test void wrongCaptureIdentityCannotChangeStoredVisit(){
+        String capture=UUID.randomUUID().toString();var s=scope("crm:store:visit-write","1");
+        var v=transaction(()->visits.checkIn(s,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",BigDecimal.ONE,capture),new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",500),t.plusSeconds(600)));
+        var wrong=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence(tenant,store,ownership,v.id(),UUID.randomUUID().toString(),"E1","fixture",1,t.plusSeconds(1800),v.visitedAt(),t.plusSeconds(1200),t.plusSeconds(1200),"CONTACTED","伪造",1,null,null,null,null,false);
+        assertThatThrownBy(()->transaction(()->{source().acceptEvidence(wrong,t.plusSeconds(1800));return null;})).hasMessageContaining("身份不一致");
+        assertThat(visits.visits(s,store).getFirst().status()).isEqualTo("IN_PROGRESS");
+    }
+    @Test void submittedResultWithoutCheckoutStillHoldsRecoveryUntilEvidenceArrives(){
+        String capture=UUID.randomUUID().toString();var s=scope("crm:store:visit-write","1");
+        var v=transaction(()->visits.checkIn(s,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",BigDecimal.ONE,capture),new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",500),t.plusSeconds(600)));
+        var source=source();
+        var pending=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence(tenant,store,ownership,v.id(),capture,"E1","fixture",1,t.plusSeconds(86401),v.visitedAt(),null,t.plusSeconds(1200),"CONTACTED","已填写，等待离店",1,null,null,null,null,false);
+        transaction(()->{source.acceptEvidence(pending,t.plusSeconds(86401));return null;});
+        assertThat(visits.visits(s,store).getFirst().status()).isEqualTo("SUBMITTED");
+        assertThat(refresh(t.plusSeconds(86402),facts(t,false)).holdReason()).isEqualTo("PENDING_REVIEW");
+        var complete=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence(tenant,store,ownership,v.id(),capture,"E1","fixture",2,t.plusSeconds(86403),v.visitedAt(),t.plusSeconds(1500),t.plusSeconds(1200),"CONTACTED","证据完整",1,null,null,null,null,false);
+        transaction(()->{source.acceptEvidence(complete,t.plusSeconds(86403));return null;});
+        assertThat(visits.visits(s,store).getFirst().status()).isEqualTo("EFFECTIVE");
+        assertThat(lifecycle.current(tenant,store).deadline()).isEqualTo(v.visitedAt().plusSeconds(7*86400));
     }
 
 }

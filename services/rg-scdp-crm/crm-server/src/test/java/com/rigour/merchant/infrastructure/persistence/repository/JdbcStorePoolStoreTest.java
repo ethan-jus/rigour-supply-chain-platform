@@ -433,6 +433,57 @@ class JdbcStorePoolStoreTest {
                 .isInstanceOf(StateConflictException.class);
         assertThat(jdbc.queryForObject("SELECT status_code FROM crm_store_lead WHERE tenant_id=? AND id=?",String.class,tenant,lead.id())).isEqualTo("PENDING_REVIEW");
     }
+    @Test void combinedMaintenanceClosesOwnershipAtomicallyAndReplaysWithoutExtendingCooldown() {
+        String id=create("330105","合并维护门店");claim(id,hangzhou("crm:pool:claim","2"));
+        jdbc.update("UPDATE crm_store_summary SET cooperation_status='COOPERATED',customer_tier='B',last_order_at='2026-10-01 00:00:00' WHERE tenant_id=? AND store_id=?",tenant,id);
+        var manager=national("crm:store:manage","1");var old=store.detail(manager,id);
+        var command=new Update(old.revision(),UUID.randomUUID().toString(),"维护后门店","现场核实地址","0571-12345678",null,"修正资料并核实停业",null,null,new BusinessStatusUpdate("CLOSED","现场确认已撤店"));
+        inTx(()->{store.update(manager,id,command);return null;});
+        var after=store.detail(manager,id);
+        assertThat(after.name()).isEqualTo(command.name());assertThat(after.publicPhone()).isEqualTo(command.publicPhone());
+        assertThat(after.businessStatus()).isEqualTo("CLOSED");assertThat(after.businessStatusReason()).isEqualTo("现场确认已撤店");
+        assertThat(after.currentOwnershipId()).isNull();assertThat(after.cooperationStatus()).isEqualTo("COOPERATED");assertThat(after.lastOrderAt()).isEqualTo(old.lastOrderAt());
+        var history=jdbc.queryForMap("SELECT ended_at,cooldown_until,end_reason FROM crm_store_ownership WHERE tenant_id=? AND id=?",tenant,old.currentOwnershipId());
+        assertThat(history.get("end_reason")).isEqualTo("STORE_CLOSED");
+        assertThat(jdbc.queryForObject("SELECT TIMESTAMPDIFF(HOUR,ended_at,cooldown_until) FROM crm_store_ownership WHERE tenant_id=? AND id=?",Integer.class,tenant,old.currentOwnershipId())).isEqualTo(48);
+        inTx(()->{store.update(manager,id,command);return null;});
+        assertThat(store.detail(manager,id).revision()).isEqualTo(after.revision());
+        assertThat(jdbc.queryForMap("SELECT ended_at,cooldown_until,end_reason FROM crm_store_ownership WHERE tenant_id=? AND id=?",tenant,old.currentOwnershipId())).isEqualTo(history);
+        assertThat(jdbc.queryForList("SELECT event_type FROM crm_store_event WHERE tenant_id=? AND request_id=? ORDER BY event_seq",String.class,tenant,command.requestId())).containsExactly("PROFILE_UPDATED","BUSINESS_STATUS_CHANGED");
+        assertThat(store.events(national("crm:store:history-read","1"),id)).anySatisfy(event->{
+            assertThat(event.type()).isEqualTo("BUSINESS_STATUS_CHANGED");assertThat(event.actorUserId()).isEqualTo("account-1");
+            assertThat(event.beforeData()).contains("UNKNOWN",old.currentOwnershipId());assertThat(event.afterData()).contains("CLOSED","现场确认已撤店");
+        });
+        assertThat(store.list(national("crm:pool:public-read","1"),query("PUBLIC",null)).total()).isZero();
+        changeStatus(id,manager,"OPEN",true);
+        assertThat(store.detail(manager,id).poolType()).isEqualTo("PUBLIC");
+        assertThatThrownBy(()->claim(id,hangzhou("crm:pool:claim","2"))).isInstanceOf(StateConflictException.class).hasMessageContaining("冷却");
+        claim(id,hangzhou("crm:pool:claim","3"));
+    }
+    @Test void combinedMaintenanceRollsBackProfileLocationPoiAndAuditOnStatusFailure() {
+        String id=create("330105","事务回滚门店");var manager=national("crm:store:manage","1");
+        jdbc.update("UPDATE crm_store_master SET record_status='CLOSED' WHERE tenant_id=? AND id=?",tenant,id);
+        jdbc.update("UPDATE crm_store_summary SET record_status='CLOSED' WHERE tenant_id=? AND store_id=?",tenant,id);
+        var old=store.detail(manager,id);
+        var command=new Update(old.revision(),UUID.randomUUID().toString(),"不能部分保存","不能保存的地址",null,null,"归档后不允许变更经营状态",new Location("620102",BigDecimal.ONE,BigDecimal.ONE,"GCJ02"),"BROLLBACK",new BusinessStatusUpdate("OPEN","核实开业"));
+        assertThatThrownBy(()->inTx(()->{store.update(manager,id,command);return null;})).isInstanceOf(StateConflictException.class).hasMessageContaining("归档");
+        var after=store.detail(manager,id);
+        assertThat(after.name()).isEqualTo(old.name());assertThat(after.address()).isEqualTo(old.address());
+        assertThat(after.areaCode()).isEqualTo(old.areaCode());assertThat(after.primaryPoi()).isEqualTo(old.primaryPoi());
+        assertThat(after.businessStatus()).isEqualTo(old.businessStatus());assertThat(after.revision()).isEqualTo(old.revision());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_event WHERE tenant_id=? AND request_id=?",Integer.class,tenant,command.requestId())).isZero();
+    }
+    @Test void combinedTemporaryClosureRetainsProtectionAndCannotBypassManagePermission() {
+        String id=create("330105","合并暂时停业");claim(id,hangzhou("crm:pool:claim","2"));
+        var manager=national("crm:store:manage","1");var old=store.detail(manager,id);
+        var command=new Update(old.revision(),UUID.randomUUID().toString(),old.name(),old.address(),old.publicPhone(),null,"装修核实",null,null,new BusinessStatusUpdate("TEMP_CLOSED","正在装修"));
+        assertThatThrownBy(()->inTx(()->{store.update(hangzhou("crm:store:status-write","2"),id,command);return null;})).isInstanceOf(AuthorizationDeniedException.class);
+        inTx(()->{store.update(manager,id,command);return null;});
+        var after=store.detail(manager,id);
+        assertThat(after.currentOwnershipId()).isEqualTo(old.currentOwnershipId());assertThat(after.deadlineAt()).isEqualTo(old.deadlineAt());
+        assertThat(after.businessStatus()).isEqualTo("TEMP_CLOSED");
+        assertThatThrownBy(()->inTx(()->{store.update(manager,id,new Update(command.revision(),command.requestId(),command.name(),command.address(),null,null,command.reason(),null,null,new BusinessStatusUpdate("CLOSED","改变重试内容")));return null;})).isInstanceOf(StateConflictException.class);
+    }
     @Test void closureEndsOnlyCurrentOwnershipAndPreservesCooperationAndAudit() {
         String id=create("330105","经营状态门店");claim(id,hangzhou("crm:pool:claim","2"));
         jdbc.update("UPDATE crm_store_summary SET cooperation_status='COOPERATED',customer_tier='B',last_order_at='2026-10-01 00:00:00' WHERE tenant_id=? AND store_id=?",tenant,id);
@@ -487,7 +538,7 @@ class JdbcStorePoolStoreTest {
         changeStatus(id,hangzhou("crm:store:status-write","2"),"CLOSED",false);
         var now=java.time.Instant.now().plusSeconds(86400);
         var facts=new com.rigour.order.api.v1.model.StoreOrderFacts(tenant,id,candidate.id(),now,"TEST",List.of(),false,null,null);
-        assertThat(inTx(()->lifecycle.reconcile(candidate,facts,null,now)).outcome()).isEqualTo("RETRY");
+        assertThat(inTx(()->lifecycle.reconcile(candidate,facts,now)).outcome()).isEqualTo("RETRY");
         assertThat(lifecycle.current(tenant,id)).isNull();
         assertThat(store.detail(national("crm:store:library-read","1"),id).businessStatus()).isEqualTo("CLOSED");
     }

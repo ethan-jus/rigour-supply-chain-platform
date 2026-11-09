@@ -1,8 +1,8 @@
-package com.rigour.sales.api;
+package com.rigour.integration.api;
 
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
-import com.rigour.sales.application.port.out.AmapPoiClient;
+import com.rigour.integration.application.port.out.AmapPoiClient;
 import com.rigour.shared.context.*;
 import java.util.*;
 import org.junit.jupiter.api.*;
@@ -19,7 +19,7 @@ class StorePoiControllerTest {
         var clear=AuthorizationContext.class.getDeclaredMethod("clear");clear.setAccessible(true);clear.invoke(null);
     }
     @Test void tenantCannotAccessInternalPoiEndpointEvenWithServicePermission()throws Exception {
-        actor("TENANT",Set.of("sales:store-poi:read"));
+        actor("TENANT",Set.of("integration:amap:read"));
         assertThatThrownBy(()->controller.search("台球","330105")).isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(client);
     }
@@ -29,7 +29,7 @@ class StorePoiControllerTest {
         verifyNoInteractions(client);
     }
     @Test void permittedServiceUsesDistrictRestrictedSearch()throws Exception {
-        actor("SERVICE",Set.of("sales:store-poi:read"));
+        actor("SERVICE",Set.of("integration:amap:read"));
         when(client.searchText("台球","330105",1,20)).thenReturn(new AmapPoiClient.NearbyPoiPage(List.of(),1,20,0));
         assertThat(controller.search("台球","330105").data()).isEmpty();
         verify(client).searchText("台球","330105",1,20);

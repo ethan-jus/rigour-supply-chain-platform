@@ -1,12 +1,12 @@
-package com.rigour.sales.temporarycheckin;
+package com.rigour.integration.infrastructure.amap;
+import com.rigour.integration.application.port.out.ReverseGeocoder;
 
-import com.rigour.sales.infrastructure.config.AmapProperties;
+import com.rigour.integration.infrastructure.config.AmapProperties;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -18,10 +18,9 @@ import tools.jackson.databind.ObjectMapper;
 
 /** 本地完成坐标转换后调用一次高德逆地理编码；密钥不进入前端、业务数据或日志。 */
 @Component
-@ConditionalOnProperty(prefix = "rigour.sales.temporary-checkin", name = "enabled", havingValue = "true")
-public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReverseGeocoder {
+public class AmapReverseGeocoder implements ReverseGeocoder {
 
-    private static final Logger log = LoggerFactory.getLogger(AmapTemporaryCheckinReverseGeocoder.class);
+    private static final Logger log = LoggerFactory.getLogger(AmapReverseGeocoder.class);
     private static final int MAX_ADDRESS_LENGTH = 512;
 
     private final RestClient restClient;
@@ -31,7 +30,7 @@ public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReve
     private final java.util.concurrent.ConcurrentHashMap<String,CachedGeocode> cache = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Autowired
-    public AmapTemporaryCheckinReverseGeocoder(
+    public AmapReverseGeocoder(
             RestClient.Builder builder,
             AmapProperties properties,
             ObjectMapper objectMapper,
@@ -39,14 +38,14 @@ public class AmapTemporaryCheckinReverseGeocoder implements TemporaryCheckinReve
         this(createRestClient(builder, properties), properties, objectMapper, coordinateConverter);
     }
 
-    AmapTemporaryCheckinReverseGeocoder(
+    AmapReverseGeocoder(
             RestClient restClient,
             AmapProperties properties,
             ObjectMapper objectMapper) {
         this(restClient, properties, objectMapper, new Wgs84Gcj02Converter());
     }
 
-    AmapTemporaryCheckinReverseGeocoder(
+    AmapReverseGeocoder(
             RestClient restClient,
             AmapProperties properties,
             ObjectMapper objectMapper,

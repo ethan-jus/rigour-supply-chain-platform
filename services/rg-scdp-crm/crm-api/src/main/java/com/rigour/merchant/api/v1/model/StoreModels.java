@@ -59,14 +59,18 @@ public final class StoreModels {
     public record AmapAdmission(String requestId, String poiId) {}
     public record Admission(String storeId, String name) {}
     public record BusinessStatusChange(String requestId,long revision,String status,String reason,boolean management) {}
+    public record BusinessStatusUpdate(String status,String reason) {}
     public record Resubmit(long revision, LeadCommand proposal) {}
     public record Location(String areaCode, BigDecimal longitude, BigDecimal latitude, String coordinateSystem) {}
     public record Poi(String id, String name, String address, String publicPhone, String typeCode,
             String areaCode, BigDecimal longitude, BigDecimal latitude) {}
     public record Update(long revision, String requestId, String name, String address, String publicPhone,
-            String storeTypeCode, String reason, Location location, String amapPoiId) {
+            String storeTypeCode, String reason, Location location, String amapPoiId, BusinessStatusUpdate businessStatus) {
+        public Update(long revision, String requestId, String name, String address, String publicPhone, String storeTypeCode, String reason, Location location, String amapPoiId) {
+            this(revision,requestId,name,address,publicPhone,storeTypeCode,reason,location,amapPoiId,null);
+        }
         public Update(long revision, String requestId, String name, String address, String publicPhone, String storeTypeCode, String reason) {
-            this(revision,requestId,name,address,publicPhone,storeTypeCode,reason,null,null);
+            this(revision,requestId,name,address,publicPhone,storeTypeCode,reason,null,null,null);
         }
     }
     public record Event(String id, String type, String actorUserId, Instant occurredAt, String beforeData, String afterData, String reason) {}

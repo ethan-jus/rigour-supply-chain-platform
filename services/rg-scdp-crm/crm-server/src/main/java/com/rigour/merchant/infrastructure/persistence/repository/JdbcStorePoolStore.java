@@ -438,10 +438,11 @@ public class JdbcStorePoolStore implements StorePoolStore {
     @Override
     @Transactional
     public void update(StoreScope scope,String id,Update c) {
+        if(!"crm:store:manage".equals(scope.access().action()))throw new AuthorizationDeniedException("crm:store:manage");
         admissionLock(scope);lock(scope,id);var old=detail(scope,id);
+        if(replayed(scope,c.requestId(),"PROFILE_UPDATED","STORE",id,c))return;
         duplicate(scope,c.name(),c.address(),c.location()==null?old.areaCode():c.location().areaCode(),id);
         if(old.revision()!=c.revision())throw new StateConflictException("门店资料已变化，请刷新");
-        if(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_event WHERE tenant_id=? AND request_id=?",Integer.class,scope.access().tenantId(),c.requestId())>0)throw new StateConflictException("修改请求已处理，请刷新");
         var location=c.location();
         if(location!=null) {
             if(!scope.permitsArea(location.areaCode()))throw new AuthorizationDeniedException("store-area");
@@ -468,6 +469,8 @@ public class JdbcStorePoolStore implements StorePoolStore {
                 location==null?old.areaCode():location.areaCode(),location==null?old.longitude():location.longitude(),
                 location==null?old.latitude():location.latitude(),location==null?old.coordinateSystem():location.coordinateSystem(),
                 c.amapPoiId()==null?old.primaryPoi():c.amapPoiId(),c.reason(),c.requestId());
+        if(c.businessStatus()!=null)applyBusinessStatus(scope,id,old,c.businessStatus().status(),c.businessStatus().reason(),c.requestId(),2);
+        rememberCommand(scope,c.requestId(),c);
     }
     private void refreshDedupKey(StoreScope scope,String id) {
         jdbc.update("UPDATE crm_store_master SET dedup_key=UNHEX(SHA2(CONCAT_WS('|',admin_area_code,REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(name,'（','('),'）',')'))), '[[:space:]　]', ''),REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(address,'（','('),'）',')'))), '[[:space:]　]', '')),256)) WHERE tenant_id=? AND id=?",scope.access().tenantId(),id);
@@ -475,24 +478,30 @@ public class JdbcStorePoolStore implements StorePoolStore {
     @Override @Transactional public void businessStatus(StoreScope scope,String id,BusinessStatusChange c) {
         lock(scope,id);
         if(replayed(scope,c.requestId(),"BUSINESS_STATUS_CHANGED","STORE",id,c))return;
-        var current=detail(scope,id);String tenant=scope.access().tenantId(),actor=scope.access().userId();
+        var current=detail(scope,id);
         if(c.management()&&!"crm:store:manage".equals(scope.access().action()))throw new AuthorizationDeniedException("crm:store:manage");
         if(!c.management()&&(!"PRIVATE".equals(current.poolType())||scope.access().employeeId()==null||!scope.access().employeeId().equals(current.ownerEmployeeId())))throw new AuthorizationDeniedException("store-current-owner");
-        if(!"ACTIVE".equals(current.recordStatus()))throw new StateConflictException("归档或合并记录不能修改经营状态，请先核验档案");
         if(current.revision()!=c.revision())throw new StateConflictException("门店状态已变化，请刷新");
-        if(current.businessStatus().equals(c.status()))throw new StateConflictException("经营状态没有变化");
         if(!c.management()&&"CLOSED".equals(current.businessStatus()))throw new AuthorizationDeniedException("store-status-reopen");
         if(!c.management()&&"UNKNOWN".equals(c.status()))throw new StateConflictException("业务员请填写已核实的经营状态");
-        jdbc.update("UPDATE crm_store_master SET business_status=?,business_status_reason=?,updated_at=UTC_TIMESTAMP(6),updated_by=?,revision=revision+1 WHERE tenant_id=? AND id=?",c.status(),c.reason(),actor,tenant,id);
-        jdbc.update("UPDATE crm_store_summary SET business_status=?,revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE tenant_id=? AND store_id=?",c.status(),tenant,id);
+        applyBusinessStatus(scope,id,current,c.status(),c.reason(),c.requestId(),1);
+        jdbc.update("UPDATE crm_store_master SET updated_at=UTC_TIMESTAMP(6),updated_by=?,revision=revision+1 WHERE tenant_id=? AND id=?",scope.access().userId(),scope.access().tenantId(),id);
+        jdbc.update("UPDATE crm_store_summary SET revision=revision+1,updated_at=UTC_TIMESTAMP(6) WHERE tenant_id=? AND store_id=?",scope.access().tenantId(),id);
+        rememberCommand(scope,c.requestId(),c);
+    }
+    private void applyBusinessStatus(StoreScope scope,String id,Row current,String status,String reason,String requestId,int eventSeq) {
+        if(!"ACTIVE".equals(current.recordStatus()))throw new StateConflictException("归档或合并记录不能修改经营状态，请先核验档案");
+        if(current.businessStatus().equals(status))throw new StateConflictException("经营状态没有变化");
+        String tenant=scope.access().tenantId(),actor=scope.access().userId();
+        jdbc.update("UPDATE crm_store_master SET business_status=?,business_status_reason=? WHERE tenant_id=? AND id=?",status,reason,tenant,id);
+        jdbc.update("UPDATE crm_store_summary SET business_status=? WHERE tenant_id=? AND store_id=?",status,tenant,id);
         Long ownership=current.currentOwnershipId()==null?null:Long.valueOf(current.currentOwnershipId());
-        if("CLOSED".equals(c.status())&&ownership!=null) {
+        if("CLOSED".equals(status)&&ownership!=null) {
             jdbc.update("UPDATE crm_store_ownership o JOIN crm_pool_policy p ON p.tenant_id=o.tenant_id AND p.id=o.policy_id SET o.ended_at=UTC_TIMESTAMP(6),o.end_reason='STORE_CLOSED',o.cooldown_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL p.return_cooldown_hours HOUR),o.revision=o.revision+1,o.updated_at=UTC_TIMESTAMP(6),o.updated_by=? WHERE o.tenant_id=? AND o.id=? AND o.ended_at IS NULL",actor,tenant,ownership);
             jdbc.update("UPDATE crm_store_summary SET current_ownership_id=NULL,owner_employee_id=NULL,owner_employee_code=NULL,ownership_revision=NULL,phase=NULL,deadline_at=NULL WHERE tenant_id=? AND store_id=?",tenant,id);
         }
-        event(scope,id,ownership,"STORE",Long.parseLong(id),"BUSINESS_STATUS_CHANGED",c.requestId(),c.reason());
-        jdbc.update("UPDATE crm_store_event SET before_data=JSON_OBJECT('businessStatus',?,'ownershipId',?),after_data=JSON_OBJECT('businessStatus',?,'ownershipEnded',?) WHERE tenant_id=? AND request_id=?",current.businessStatus(),current.currentOwnershipId(),c.status(),"CLOSED".equals(c.status())&&ownership!=null,tenant,c.requestId());
-        rememberCommand(scope,c.requestId(),c);
+        jdbc.update("INSERT INTO crm_store_event(id,tenant_id,store_id,ownership_id,object_type,object_id,event_type,actor_user_id,actor_employee_id,occurred_at,request_id,event_seq,reason,before_data,after_data) VALUES(?,?,?,?,'STORE',?,'BUSINESS_STATUS_CHANGED',?,?,UTC_TIMESTAMP(6),?,?,?,JSON_OBJECT('businessStatus',?,'businessStatusReason',?,'ownershipId',?),JSON_OBJECT('businessStatus',?,'businessStatusReason',?,'ownershipEnded',?))",
+                IdWorker.getId(),tenant,id,ownership,id,actor,scope.access().employeeId(),requestId,eventSeq,reason,current.businessStatus(),current.businessStatusReason(),current.currentOwnershipId(),status,reason,"CLOSED".equals(status)&&ownership!=null);
     }
     private boolean replayed(StoreScope scope,String request,String event,String type,String object,Object command) {
         var rows=jdbc.queryForList("SELECT event_type,object_type,object_id,actor_user_id,JSON_EXTRACT(after_data,'$.command') command_payload FROM crm_store_event WHERE tenant_id=? AND request_id=? AND event_seq=1",scope.access().tenantId(),request);

@@ -1,8 +1,8 @@
-package com.rigour.sales.infrastructure.amap;
+package com.rigour.integration.infrastructure.amap;
 
-import com.rigour.sales.application.port.out.AmapPoiClient;
-import com.rigour.sales.application.port.out.AmapPoiException;
-import com.rigour.sales.infrastructure.config.AmapProperties;
+import com.rigour.integration.application.port.out.AmapPoiClient;
+import com.rigour.integration.application.port.out.AmapPoiException;
+import com.rigour.integration.infrastructure.config.AmapProperties;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;

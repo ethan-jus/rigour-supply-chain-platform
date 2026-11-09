@@ -73,7 +73,6 @@ class SalesWorkVisitIntegrationTests {
         registry.add("spring.flyway.url", () -> utcJdbcUrl(MYSQL));
         registry.add("spring.flyway.user", MYSQL::getUsername);
         registry.add("spring.flyway.password", MYSQL::getPassword);
-        registry.add("rigour.amap.web-key", () -> "test-amap-key");
         // 录音字节写入临时目录，避免测试在工程目录留下文件。
         registry.add("sales.recording.storage-dir",
                 () -> System.getProperty("java.io.tmpdir") + "/rigour-visit-test-recordings");
@@ -658,24 +657,26 @@ class SalesWorkVisitIntegrationTests {
 
     @Test
     void crmCaptureReusesPhotoAssessmentAndKeepsFinalBusinessFactOutOfSales() {
-        jdbc.update("UPDATE sales_visit_policy_version SET ai_asr_enabled=0,ai_relevance_enabled=0,ai_duplicate_enabled=0 WHERE tenant_id=? AND id=?",bin(tenantId),bin(visitPolicyVersionId));
+        var crmPolicyId=UUID.randomUUID();
         var day=attendanceService.checkIn(new CheckInCommand("crm-day-test","crm-test-client",Instant.now(),location("120.1000000","30.2000000"),null,"ONLINE"));
         var captureId=UUID.randomUUID();
-        var captureContext=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("200","100","300","TEST1",captureId.toString(),visitPolicyVersionId.toString(),Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS),"测试店","测试地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS");
+        var captureContext=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("200","100","300","TEST1",captureId.toString(),crmPolicyId.toString(),Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS),"测试店","测试地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS",new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy(crmPolicyId.toString(),500));
         captureStore.create(tenantId,profileId,day.id(),captureId,captureContext,location("120.1000000","30.2000000"));
         captureStore.create(tenantId,profileId,day.id(),captureId,captureContext,location("120.1000000","30.2000000"));
+        assertThat(jdbc.queryForObject("SELECT source_system FROM sales_visit_policy_version WHERE tenant_id=? AND id=?",String.class,bin(tenantId),bin(crmPolicyId))).isEqualTo("CRM");
+        assertThat(jdbc.queryForObject("SELECT publish_status FROM sales_visit_policy_version WHERE tenant_id=? AND id=?",String.class,bin(tenantId),bin(crmPolicyId))).isEqualTo("SNAPSHOT");
         var visit=visitService.visit(captureId);
         assertThat(captureStore.link(tenantId,captureId).visitId()).isEqualTo("200");
-        org.mockito.Mockito.when(crmVisit.context("100","200")).thenReturn(new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("200","100","300","TEST1",visit.id().toString(),visitPolicyVersionId.toString(),Instant.now(),"测试店","测试地址",BigDecimal.ONE,BigDecimal.ONE,"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS"));
+        org.mockito.Mockito.when(crmVisit.context("100","200")).thenReturn(new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("200","100","300","TEST1",visit.id().toString(),crmPolicyId.toString(),Instant.now(),"测试店","测试地址",BigDecimal.ONE,BigDecimal.ONE,"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS"));
         visitService.submitVisitResult(visit.id(),new VisitResultCommand("CONTACTED","测试KP","13800000000","HIGH","已接触"));
-        org.mockito.Mockito.verify(crmVisit).submit(org.mockito.ArgumentMatchers.eq("100"),org.mockito.ArgumentMatchers.eq("200"),org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verifyNoInteractions(crmVisit);
         visitService.checkOutVisit(visit.id(),new CheckOutVisitCommand("crm-checkout-test",Instant.now(),location("120.1000000","30.2000000"),"crm-device-out"));
-        var pending=captureStore.facts(tenantId,"100","300").items().getFirst();
-        assertThat(pending.decision()).isEqualTo("PENDING_REVIEW");assertThat(pending.reason()).contains("STOREFRONT_PHOTO_MISSING");
+        var pending=latestCrmEvidence(captureId);
+        assertThat(pending.verifiedPhotoCount()).isZero();assertThat(pending.submittedAt()).isNotNull();
         assertThat(managementService.reviewQueue(day.businessDate(),day.businessDate(),1,20).total()).isZero();
         evidenceService.uploadStorefrontPhoto(visit.id(),new MockMultipartFile("file","store.jpg","image/jpeg",jpegBytes(Color.BLUE)),"crm-photo-test","APP_CAMERA",Instant.now(),new BigDecimal("120.1"),new BigDecimal("30.2"),BigDecimal.TEN);
-        var effective=captureStore.facts(tenantId,"100","300").items().getFirst();
-        assertThat(effective.decision()).isEqualTo("EFFECTIVE");assertThat(effective.revision()).isGreaterThan(pending.revision());
+        var effective=latestCrmEvidence(captureId);
+        assertThat(effective.verifiedPhotoCount()).isEqualTo(1);assertThat(effective.revision()).isGreaterThan(pending.revision());
         assertThat(effective.checkedInAt()).isEqualTo(pending.checkedInAt());
         org.mockito.Mockito.when(crmVisit.evidenceAccess("100","200")).thenReturn(visit.id().toString());
         assertThat(managementService.reviewEvidence(visit.id()).photos()).hasSize(1);
@@ -685,6 +686,49 @@ class SalesWorkVisitIntegrationTests {
 
         assertThat(count("SELECT COUNT(*) FROM sales_visit WHERE tenant_id=? AND finalized_at IS NOT NULL",tenantId)).isZero();
         assertThat(count("SELECT COUNT(*) FROM sales_outbox_event WHERE tenant_id=? AND event_type='SalesVisitFinalized'",tenantId)).isZero();
+    }
+
+    @Test void crmEvidenceOutboxRollsBackWithVisitResult() {
+        var day=attendanceService.checkIn(new CheckInCommand("crm-rollback-day","crm-test-client",Instant.now(),location("120.1000000","30.2000000"),null,"ONLINE"));
+        var capture=UUID.randomUUID();
+        var context=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("201","101","301","TEST1",capture.toString(),visitPolicyVersionId.toString(),Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS),"测试店","地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS",new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy(visitPolicyVersionId.toString(),500));
+        captureStore.create(tenantId,profileId,day.id(),capture,context,location("120.1000000","30.2000000"));
+        var tx=new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        assertThatThrownBy(()->tx.execute(status->{
+            visitService.submitVisitResult(capture,new VisitResultCommand("CONTACTED","测试联系人","13800000000","HIGH","测试回滚"));
+            throw new IllegalStateException("rollback");
+        })).hasMessage("rollback");
+        assertThat(jdbc.queryForObject("SELECT result_submitted_at FROM sales_visit WHERE tenant_id=? AND id=?",Timestamp.class,bin(tenantId),bin(capture))).isNull();
+        assertThat(count("SELECT COUNT(*) FROM sales_outbox_event WHERE tenant_id=? AND event_type='CrmVisitEvidenceChanged'",tenantId)).isZero();
+    }
+
+    @Autowired private com.rigour.sales.application.port.out.CrmVisitEvidenceOutbox crmEvidenceOutbox;
+    @Autowired private org.springframework.transaction.PlatformTransactionManager transactionManager;
+    @Test void crmEvidenceDeliveryRetriesWithoutRecreatingVisit() throws Exception {
+        var day=attendanceService.checkIn(new CheckInCommand("crm-delivery-day","crm-test-client",Instant.now(),location("120.1000000","30.2000000"),null,"ONLINE"));
+        var capture=UUID.randomUUID();
+        var context=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("202","102","302","TEST1",capture.toString(),visitPolicyVersionId.toString(),Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS),"测试店","地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS",new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy(visitPolicyVersionId.toString(),500));
+        captureStore.create(tenantId,profileId,day.id(),capture,context,location("120.1000000","30.2000000"));
+        visitService.submitVisitResult(capture,new VisitResultCommand("CONTACTED","测试联系人","13800000000","HIGH","测试重试"));
+        var status=new java.util.concurrent.atomic.AtomicInteger(503);
+        var received=new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+        server.createContext("/internal/v1/crm/store-facts/visits",exchange->{received.add(new String(exchange.getRequestBody().readAllBytes(),java.nio.charset.StandardCharsets.UTF_8));byte[] body="{\"code\":\"OK\",\"data\":null}".getBytes();exchange.getResponseHeaders().set("Content-Type","application/json");exchange.sendResponseHeaders(status.get(),body.length);exchange.getResponseBody().write(body);exchange.close();});server.start();
+        try {
+            var keys=new com.rigour.shared.context.ContextTrustProperties();keys.setKeysBase64(java.util.Map.of("v1",java.util.Base64.getEncoder().encodeToString(new byte[32])));
+            var worker=new com.rigour.sales.infrastructure.integration.CrmVisitDeliveryScheduler(jdbc,transactionManager,crmEvidenceOutbox,org.springframework.web.client.RestClient.builder(),new com.rigour.shared.context.TrustedContextSigner(keys),java.time.Clock.systemUTC(),"http://127.0.0.1:"+server.getAddress().getPort());
+            worker.tick();
+            assertThat(jdbc.queryForObject("SELECT retry_count FROM sales_outbox_event WHERE tenant_id=? AND event_type='CrmVisitEvidenceChanged'",Integer.class,bin(tenantId))).isEqualTo(1);
+            status.set(200);jdbc.update("UPDATE sales_outbox_event SET next_retry_at=NULL WHERE tenant_id=?",bin(tenantId));worker.tick();
+            assertThat(jdbc.queryForObject("SELECT publish_status FROM sales_outbox_event WHERE tenant_id=? AND event_type='CrmVisitEvidenceChanged'",String.class,bin(tenantId))).isEqualTo("PUBLISHED");
+            var own=received.stream().filter(value->value.contains(tenantId.toString())).toList();assertThat(own).hasSize(2);assertThat(own.get(0)).isEqualTo(own.get(1));
+            assertThat(count("SELECT COUNT(*) FROM sales_visit WHERE tenant_id=?",tenantId)).isEqualTo(1);
+        } finally { server.stop(0); }
+    }
+
+    private com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence latestCrmEvidence(UUID capture) {
+        String payload=jdbc.queryForObject("SELECT payload_json FROM sales_outbox_event WHERE tenant_id=? AND aggregate_id=? AND event_type='CrmVisitEvidenceChanged' ORDER BY aggregate_version DESC LIMIT 1",String.class,bin(tenantId),bin(capture));
+        return new tools.jackson.databind.ObjectMapper().readValue(payload,com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence.class);
     }
 
     private void seedVisitPolicy(Instant now) {

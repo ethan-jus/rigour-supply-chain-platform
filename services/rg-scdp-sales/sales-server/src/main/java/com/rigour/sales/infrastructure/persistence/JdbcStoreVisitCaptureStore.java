@@ -17,13 +17,33 @@ public class JdbcStoreVisitCaptureStore implements StoreVisitCaptureStore {
         visits.lockSalesProfile(tenant,profile);
         var existing=link(tenant,capture);if(existing!=null){if(!existing.visitId().equals(c.visitId()))throw new StateConflictException("采集请求已被占用");return;}
         if(visits.findActiveVisit(tenant,profile).isPresent())throw new StateConflictException("请先结束当前进行中的拜访");
+        ensurePolicySnapshot(tenant,c);
         visits.insertVisit(capture,tenant,day,null,profile,"CRM_STORE",null,null,UUID.fromString(c.policyId()),c.checkedInAt());
         jdbc.update("UPDATE sales_visit SET crm_store_id=?,crm_visit_id=?,crm_ownership_id=?,crm_employee_code=? WHERE tenant_id=? AND id=?",c.storeId(),c.visitId(),c.ownershipId(),c.employeeCode(),SalesUuidCodec.encode(tenant),SalesUuidCodec.encode(capture));
         visits.insertTargetSnapshot(UUID.randomUUID(),tenant,capture,"CRM_STORE",null,null,null,c.storeName(),c.address(),c.longitude(),c.latitude(),profile,c.checkedInAt());
         visits.insertCheckpoint(UUID.randomUUID(),tenant,capture,"CHECK_IN","crm:"+c.visitId(),c.checkedInAt(),c.checkedInAt(),location.longitude(),location.latitude(),location.accuracyMeters(),c.distanceMeters(),"RECEIVED");
     }
-    @Transactional(readOnly=true) public Facts facts(UUID tenant,String store,String ownership){
-        var items=jdbc.query("SELECT v.crm_visit_id,BIN_TO_UUID(v.id) capture_id,v.crm_employee_code,BIN_TO_UUID(v.visit_policy_version_id) policy_id,v.checked_in_at,v.checked_out_at,v.result_submitted_at,r.decision,r.review_note,COALESCE(r.version,-1)+1 capture_revision FROM sales_visit v LEFT JOIN sales_visit_review r ON r.tenant_id=v.tenant_id AND r.visit_id=v.id AND r.review_type='AUTOMATIC_ASSESSMENT' WHERE v.tenant_id=? AND v.crm_store_id=? AND v.crm_ownership_id=? ORDER BY v.checked_in_at,v.id",(r,n)->new Outcome(r.getString("crm_visit_id"),r.getString("capture_id"),r.getString("crm_employee_code"),r.getString("policy_id"),r.getTimestamp("checked_in_at").toInstant(),r.getTimestamp("checked_out_at")==null?null:r.getTimestamp("checked_out_at").toInstant(),r.getTimestamp("result_submitted_at")==null?null:r.getTimestamp("result_submitted_at").toInstant(),"EFFECTIVE".equals(r.getString("decision"))?"EFFECTIVE":"PENDING_REVIEW",r.getString("review_note")==null?"采集证据尚未达标":r.getString("review_note"),r.getLong("capture_revision")),SalesUuidCodec.encode(tenant),store,ownership);
-        return new Facts(tenant.toString(),store,ownership,clock.instant(),items);
+    private void ensurePolicySnapshot(UUID tenant,Context context) {
+        var p=context.policy();
+        if(p==null || !p.id().equals(context.policyId())) throw new StateConflictException("CRM 拜访政策快照缺失");
+        byte[] tenantBytes=SalesUuidCodec.encode(tenant),id=SalesUuidCodec.encode(UUID.fromString(p.id()));
+        var existing=jdbc.queryForList("SELECT id FROM sales_visit_policy_version WHERE tenant_id=? AND id=?",tenantBytes,id);
+        if(!existing.isEmpty()) return;
+        UUID parent=UUID.nameUUIDFromBytes((tenant+":crm-policy:"+p.id()).getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        byte[] parentBytes=SalesUuidCodec.encode(parent);
+        var now=java.sql.Timestamp.from(clock.instant());
+        jdbc.update("INSERT INTO sales_visit_policy(id,tenant_id,policy_code,policy_name,status,version,created_at,updated_at) VALUES(?,?,?,?,'ACTIVE',0,?,?) ON DUPLICATE KEY UPDATE id=id",
+                parentBytes,tenantBytes,"CRM_"+p.id(),"CRM 拜访政策快照",now,now);
+        jdbc.update("""
+                INSERT INTO sales_visit_policy_version(id,tenant_id,policy_id,version_no,publish_status,
+                require_assigned_target,allow_prospect_target,check_in_radius_meters,minimum_dwell_minutes,
+                required_photo_count,recording_enabled,minimum_recording_seconds,maximum_clip_gap_seconds,
+                ai_asr_enabled,ai_relevance_enabled,ai_duplicate_enabled,ai_auto_confirm_threshold,
+                created_by,created_at,source_system)
+                VALUES(?,?,?,1,'SNAPSHOT',1,0,?,?,?,?,?,?,?,?,?,?,?,?,'CRM')
+                ON DUPLICATE KEY UPDATE id=id
+                """,id,tenantBytes,parentBytes,p.radiusMeters(),p.minimumDwellMinutes(),p.requiredPhotoCount(),
+                p.recordingEnabled(),p.minimumRecordingSeconds(),p.maximumClipGapSeconds(),p.aiAsrEnabled(),
+                p.aiRelevanceEnabled(),p.aiDuplicateEnabled(),p.aiAutoConfirmThreshold(),parentBytes,now);
     }
 }

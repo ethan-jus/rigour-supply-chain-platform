@@ -6,5 +6,4 @@ public interface CrmStoreVisitClient {
     String evidenceAccess(String store,String visit);
     Context context(String store,String visit);
     Visit cancel(String store,String visit,CancelVisit command);
-    Visit submit(String store,String visit,SubmitVisit command);
 }

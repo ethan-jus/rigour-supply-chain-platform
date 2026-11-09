@@ -1,4 +1,4 @@
-package com.rigour.sales.infrastructure.config;
+package com.rigour.integration.infrastructure.config;
 
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;

@@ -17,7 +17,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/** Reuses Sales' server-side Amap configuration; no provider key reaches CRM or the browser. */
+/** Integration owns provider credentials; CRM owns store admission and matching. */
 @Component
 public class HttpStorePoiClient implements StorePoiClient {
     private static final Logger log=LoggerFactory.getLogger(HttpStorePoiClient.class);
@@ -25,23 +25,23 @@ public class HttpStorePoiClient implements StorePoiClient {
     private final TrustedContextSigner signer;
     private final String base;
     public HttpStorePoiClient(RestClient.Builder builder, TrustedContextSigner signer,
-            @Value("${rigour.sales.base-url:http://rigour-sales-work-service}") String base) {
+            @Value("${rigour.integration.base-url:http://rigour-integration-migration-service}") String base) {
         var factory=new SimpleClientHttpRequestFactory();
         factory.setConnectTimeout(Duration.ofSeconds(3));factory.setReadTimeout(Duration.ofSeconds(8));
         this.client=builder.requestFactory(factory).build();this.signer=signer;this.base=base.replaceAll("/+$","");
     }
     public List<Poi> search(String tenant,String keyword,String areaCode) {
-        URI uri=UriComponentsBuilder.fromUriString(base).path("/internal/v1/sales/store-pois")
+        URI uri=UriComponentsBuilder.fromUriString(base).path("/internal/v1/integration/store-pois")
                 .queryParam("keyword",keyword).queryParam("areaCode",areaCode).build().encode().toUri();
         return get(tenant,uri,new ParameterizedTypeReference<ApiResponse<List<Poi>>>(){});
     }
     public Poi detail(String tenant,String id) {
-        return get(tenant,URI.create(base+"/internal/v1/sales/store-pois/"+id),new ParameterizedTypeReference<ApiResponse<Poi>>(){});
+        return get(tenant,URI.create(base+"/internal/v1/integration/store-pois/"+id),new ParameterizedTypeReference<ApiResponse<Poi>>(){});
     }
     private <T>T get(String tenant,URI uri,ParameterizedTypeReference<ApiResponse<T>> type) {
         try {
             var result=client.get().uri(uri).headers(h->OutboundContextHeaders.service(signer,"GET",uri,
-                    "rigour-merchant-crm-service",tenant,"sales:store-poi:read").forEach(h::set))
+                    "rigour-merchant-crm-service",tenant,"integration:amap:read").forEach(h::set))
                     .retrieve().body(type);
             if(result!=null&&"OK".equals(result.code())&&result.data()!=null)return result.data();
         } catch(RestClientResponseException error) {
@@ -51,12 +51,12 @@ public class HttpStorePoiClient implements StorePoiClient {
             catch(RuntimeException ignored) { /* Never expose arbitrary upstream error bodies. */ }
             if(failure!=null&&failure.details()!=null&&failure.details().stream()
                     .anyMatch(d->"amap".equals(d.field())&&"AMAP_IP_NOT_ALLOWED".equals(d.reason()))) {
-                String message="高德拒绝当前服务器 IP（10005），请将 Sales 服务出口公网 IP 加入 Web 服务 Key 的 IP 白名单";
+                String message="高德拒绝当前服务器 IP（10005），请将集成服务出口公网 IP 加入 Web 服务 Key 的 IP 白名单";
                 throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE,message,List.of(new ApiErrorDetail("amap","AMAP_IP_NOT_ALLOWED",message)));
             }
         } catch(RestClientException error) {
             log.warn("门店 POI 服务连接失败 reason={}",error.getClass().getSimpleName());
         }
-        throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE,"高德门店查询暂不可用，请检查销售服务及 Web 服务 Key 配置，或稍后重试",List.of());
+        throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE,"高德门店查询暂不可用，请检查集成服务及 Web 服务 Key 配置，或稍后重试",List.of());
     }
 }

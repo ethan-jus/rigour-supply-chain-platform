@@ -37,6 +37,7 @@ public class StorePoolService {
         if(c.storeTypeCode()!=null&&!c.storeTypeCode().isBlank()&&!c.storeTypeCode().matches("[A-Z][A-Z0-9_]{0,31}"))throw new RequestValidationException("门店类型编码无效");
         var access=scope("crm:store:manage");
         store.detail(access,id);
+        if(c.businessStatus()!=null)validateBusinessStatus(access,c.businessStatus().status(),c.businessStatus().reason());
         if(c.location()!=null) {
             maintenanceArea(access,c.location().areaCode());
             var l=c.location();
@@ -121,7 +122,7 @@ public class StorePoolService {
         var scope=scope("crm:pool:claim");employee(scope);store.claim(scope,id,command);
     }
     public void release(String id,Release command) {
-        id(id);request(command.requestId());required(command.reason(),500,"退回原因");
+        id(id);request(command.requestId());required(command.reason(),500,"释放原因");
         var scope=scope("crm:pool:release");employee(scope);store.release(scope,id,command);
     }
     public LeadPage leads(boolean review,int page,int size,String keyword,String status) {
@@ -188,11 +189,16 @@ public class StorePoolService {
         return store.review(scope("crm:lead:review"),id,c);
     }
     public void businessStatus(String id,BusinessStatusChange c) {
-        id(id);request(c.requestId());required(c.reason(),500,"核实依据");
-        if(c.revision()<1||!Set.of("UNKNOWN","OPEN","TEMP_CLOSED","CLOSED").contains(Objects.toString(c.status(),"")))throw new RequestValidationException("经营状态无效");
+        id(id);request(c.requestId());
+        if(c.revision()<1)throw new RequestValidationException("记录版本无效");
         var access=scope(c.management()?"crm:store:manage":"crm:store:status-write");
-        if(!references.businessStatusCodes(access.access().tenantId()).contains(c.status()))throw new RequestValidationException("请选择字典中启用的经营状态");
+        validateBusinessStatus(access,c.status(),c.reason());
         store.businessStatus(access,id,c);
+    }
+    private void validateBusinessStatus(StoreScope scope,String status,String reason) {
+        required(reason,500,"经营状态核实依据");
+        if(!Set.of("UNKNOWN","OPEN","TEMP_CLOSED","CLOSED").contains(Objects.toString(status,"")))throw new RequestValidationException("经营状态无效");
+        if(!references.businessStatusCodes(scope.access().tenantId()).contains(status))throw new RequestValidationException("请选择字典中启用的经营状态");
     }
     public Coverage coverage(Query q) {validate(q);var scope=scope("crm:coverage:read");return store.coverage(scope,q,typeCodes(scope,q));}
     private static void listView(String view){if(!Set.of("PUBLIC","MINE","TEAM","COOPERATED","ALL").contains(view))throw new RequestValidationException("门店列表视图无效");}

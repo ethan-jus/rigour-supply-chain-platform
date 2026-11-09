@@ -76,4 +76,19 @@ class StoreMaintenanceServiceTest {
                 .isInstanceOf(RequestValidationException.class);
         assertThatThrownBy(()->service.update("123",update(location("330100"),null))).isInstanceOf(RequestValidationException.class);
     }
+    @Test void combinedMaintenanceRequiresManagePermissionAndEnabledStatusWithEvidence() {
+        var c=new Update(1,UUID.randomUUID().toString(),"球馆","核实地址",null,null,"更新资料",null,null,new BusinessStatusUpdate("CLOSED","现场核实已撤店"));
+        when(refs.businessStatusCodes("T")).thenReturn(Set.of("OPEN"));
+        assertThatThrownBy(()->service.update("123",c)).isInstanceOf(RequestValidationException.class).hasMessageContaining("字典");
+        when(refs.businessStatusCodes("T")).thenReturn(Set.of("OPEN","CLOSED"));
+        var emptyReason=new Update(1,UUID.randomUUID().toString(),"球馆","核实地址",null,null,"更新资料",null,null,new BusinessStatusUpdate("CLOSED"," "));
+        assertThatThrownBy(()->service.update("123",emptyReason)).isInstanceOf(RequestValidationException.class);
+        verify(store,never()).update(any(),any(),any());
+        service.update("123",c);
+        verify(store).update(any(),eq("123"),eq(c));
+        clearInvocations(store);
+        when(refs.access("crm:store:manage")).thenThrow(new AuthorizationDeniedException("crm:store:manage"));
+        assertThatThrownBy(()->service.update("123",c)).isInstanceOf(AuthorizationDeniedException.class);
+        verifyNoInteractions(store,pois);
+    }
 }

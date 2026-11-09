@@ -1,7 +1,7 @@
-package com.rigour.sales.api;
+package com.rigour.integration.api;
 
 import com.rigour.merchant.api.v1.model.StoreModels.Poi;
-import com.rigour.sales.application.port.out.*;
+import com.rigour.integration.application.port.out.*;
 import com.rigour.shared.context.*;
 import com.rigour.shared.core.api.*;
 import com.rigour.shared.core.exception.*;
@@ -11,7 +11,7 @@ import org.springframework.web.bind.annotation.*;
 
 /** Provider lookup for CRM maintenance, accessible only through a signed service context. */
 @RestController
-@RequestMapping("/internal/v1/sales/store-pois")
+@RequestMapping("/internal/v1/integration/store-pois")
 public class StorePoiController {
     private final AmapPoiClient client;
     public StorePoiController(AmapPoiClient client){this.client=client;}
@@ -31,8 +31,8 @@ public class StorePoiController {
     private static void authorize() {
         var caller=AuthorizationContext.requireCurrent();
         if(!"SERVICE".equals(caller.principalScope())||caller.tenantId()==null)
-            throw new AuthorizationDeniedException("sales:store-poi:read");
-        AuthorizationContext.requirePermission("sales:store-poi:read");
+            throw new AuthorizationDeniedException("integration:amap:read");
+        AuthorizationContext.requirePermission("integration:amap:read");
     }
     private static <T>ApiResponse<T> call(Supplier<T> operation) {
         try{return ApiResponse.success(operation.get());}

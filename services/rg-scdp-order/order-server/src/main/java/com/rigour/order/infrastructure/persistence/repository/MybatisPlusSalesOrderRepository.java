@@ -64,6 +64,7 @@ public class MybatisPlusSalesOrderRepository
     private final Clock clock;
     private final OrderAttributionWriter attribution;
     private final OrderDataScope scopes;
+    private final JdbcStoreOrderOutbox crmOutbox;
 
     public MybatisPlusSalesOrderRepository(
             InternalSalesOrderMapper mapper,
@@ -71,13 +72,14 @@ public class MybatisPlusSalesOrderRepository
             InternalSalesShipmentMapper shipmentMapper,
             Clock orderClock,
             OrderAttributionWriter attribution,
-            OrderDataScope scopes) {
+            OrderDataScope scopes, JdbcStoreOrderOutbox crmOutbox) {
         this.baseMapper = mapper;
         this.lineMapper = lineMapper;
         this.shipmentMapper = shipmentMapper;
         this.clock = orderClock;
         this.attribution = attribution;
         this.scopes = scopes;
+        this.crmOutbox = crmOutbox;
     }
 
     @Override
@@ -305,6 +307,7 @@ public class MybatisPlusSalesOrderRepository
                                                 existing.getOrderStatusCode())
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
+        crmOutbox.enqueue(tenantId,id);
         logicDeleteLines(tenantId, id, actorId, now);
         insertLines(tenantId, id, command.lines(), actorId, now);
         attribution.prepare(tenantId, id, "SUBMITTED".equals(command.orderStatusCode()), true);
@@ -481,6 +484,7 @@ public class MybatisPlusSalesOrderRepository
                                                 command.revision())
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
+        crmOutbox.enqueue(tenantId,id);
         if (!command.lines().isEmpty() || lines(tenantId, id).isEmpty()) {
             logicDeleteLines(tenantId, id, actorId, now);
             insertLines(tenantId, id, command.lines(), actorId, now);
@@ -527,6 +531,7 @@ public class MybatisPlusSalesOrderRepository
                                         .eq(InternalSalesOrderEntity::getRevision, revision)
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
+        crmOutbox.enqueue(tenantId,id);
         return rawDetail(tenantId, id);
     }
 
@@ -615,6 +620,7 @@ public class MybatisPlusSalesOrderRepository
                                                 command.revision())
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
+        crmOutbox.enqueue(tenantId,id);
         return rawDetail(tenantId, id);
     }
 
@@ -663,6 +669,7 @@ public class MybatisPlusSalesOrderRepository
                                                 SalesOrderStatus.DRAFT.code())
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
+        crmOutbox.enqueue(tenantId,id);
         return rawDetail(tenantId, id);
     }
 
@@ -702,6 +709,7 @@ public class MybatisPlusSalesOrderRepository
                                         .eq(InternalSalesOrderEntity::getRevision, revision)
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
+        crmOutbox.enqueue(tenantId,id);
         return rawDetail(tenantId, id);
     }
 
@@ -747,6 +755,7 @@ public class MybatisPlusSalesOrderRepository
                                         .eq(InternalSalesOrderEntity::getRevision, revision)
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
+        crmOutbox.enqueue(tenantId,id);
         return rawDetail(tenantId, id);
     }
 
@@ -795,6 +804,7 @@ public class MybatisPlusSalesOrderRepository
                                                 SalesOrderOutboundStatus.PENDING.code())
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
+        crmOutbox.enqueue(tenantId,id);
         return rawDetail(tenantId, id);
     }
 
@@ -824,6 +834,7 @@ public class MybatisPlusSalesOrderRepository
                                                 SalesOrderStatus.DRAFT.code())
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
+        crmOutbox.enqueue(tenantId,id);
         logicDeleteLines(tenantId, id, actorId, now);
     }
 

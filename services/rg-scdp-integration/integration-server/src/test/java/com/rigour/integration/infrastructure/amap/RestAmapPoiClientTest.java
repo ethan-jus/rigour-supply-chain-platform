@@ -1,4 +1,4 @@
-package com.rigour.sales.infrastructure.amap;
+package com.rigour.integration.infrastructure.amap;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -7,9 +7,9 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
-import com.rigour.sales.application.port.out.AmapPoiClient.NearbyPoiPage;
-import com.rigour.sales.application.port.out.AmapPoiException;
-import com.rigour.sales.infrastructure.config.AmapProperties;
+import com.rigour.integration.application.port.out.AmapPoiClient.NearbyPoiPage;
+import com.rigour.integration.application.port.out.AmapPoiException;
+import com.rigour.integration.infrastructure.config.AmapProperties;
 import java.math.BigDecimal;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;

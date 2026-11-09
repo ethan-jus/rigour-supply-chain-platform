@@ -14,13 +14,8 @@ import org.springframework.stereotype.Service;
 public class StoreVisitCaptureService {
     public record Command(String requestId,String storeId,String ownershipId,UUID workDayId,LocationEvidence location){}
     public record Created(String visitId,UUID captureId,String storeId,String ownershipId){}
-    private final SalesWorkContextService context;private final SalesWorkAttendanceRepository days;private final SalesWorkQueryRepository queries;private final StoreVisitCaptureStore store;private final CrmStoreVisitClient crm;private final Clock clock;private final SalesWorkVisitRepository visits;
-    public StoreVisitCaptureService(SalesWorkContextService context,SalesWorkAttendanceRepository days,SalesWorkQueryRepository queries,StoreVisitCaptureStore store,CrmStoreVisitClient crm,Clock clock,SalesWorkVisitRepository visits){this.context=context;this.days=days;this.queries=queries;this.store=store;this.crm=crm;this.clock=clock;this.visits=visits;}
-    public Policy policy(){
-        var actor=AuthorizationContext.requireCurrent();AuthorizationContext.requirePermission("sales:visit:own:write");
-        var identity=context.resolveIdentity(actor,clock.instant());var policy=queries.findActiveVisitPolicy(actor.tenantId(),identity.profile().id(),identity.profile().cityOrgId(),clock.instant()).orElseThrow(()->new StateConflictException("未发布销售拜访政策"));
-        return new Policy(policy.id().toString(),policy.checkInRadiusMeters());
-    }
+    private final SalesWorkContextService context;private final SalesWorkAttendanceRepository days;private final StoreVisitCaptureStore store;private final CrmStoreVisitClient crm;private final Clock clock;private final SalesWorkVisitRepository visits;
+    public StoreVisitCaptureService(SalesWorkContextService context,SalesWorkAttendanceRepository days,StoreVisitCaptureStore store,CrmStoreVisitClient crm,Clock clock,SalesWorkVisitRepository visits){this.context=context;this.days=days;this.store=store;this.crm=crm;this.clock=clock;this.visits=visits;}
     public Created create(Command c){
         AuthorizationContext.requirePermission("sales:visit:own:write");var actor=AuthorizationContext.requireCurrent();
         if(c==null||c.requestId()==null||!c.requestId().matches("[A-Za-z0-9_-]{16,64}")||c.storeId()==null||!c.storeId().matches("[1-9][0-9]{0,18}")||c.ownershipId()==null||!c.ownershipId().matches("[1-9][0-9]{0,18}")||c.workDayId()==null||c.location()==null||c.location().longitude()==null||c.location().latitude()==null||c.location().accuracyMeters()==null)throw new RequestValidationException("新门店拜访参数无效");
@@ -41,11 +36,5 @@ public class StoreVisitCaptureService {
         var link=store.link(tenant,capture);if(link==null)return;
         if(!capture.toString().equals(crm.evidenceAccess(link.storeId(),link.visitId())))throw new AuthorizationDeniedException("crm:store:history-read");
     }
-    public void acceptResult(CallerIdentity actor,UUID capture,String outcome,String name,String phone,String intention,String note){
-        var link=store.link(actor.tenantId(),capture);if(link==null)return;
-        var snapshot=crm.context(link.storeId(),link.visitId());
-        String result=("CONTACTED".equals(outcome)?"已接触负责人":"未接触负责人："+outcome)+(name==null?"":"；联系人："+name)+(phone==null?"":"；电话："+phone)+(intention==null?"":"；意向："+intention)+(note==null?"":"；说明："+note);
-        // 先持久化CRM提交受理，阻止边界时刻的回收；采集写入失败可原请求重试。
-        crm.submit(link.storeId(),link.visitId(),new SubmitVisit(snapshot.revision(),result,List.of()));
-    }
+    public boolean isCapture(UUID tenant,UUID capture) { return store.link(tenant,capture)!=null; }
 }

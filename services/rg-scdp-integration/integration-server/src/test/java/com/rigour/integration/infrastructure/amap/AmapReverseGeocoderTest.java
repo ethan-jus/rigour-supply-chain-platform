@@ -1,4 +1,5 @@
-package com.rigour.sales.temporarycheckin;
+package com.rigour.integration.infrastructure.amap;
+import com.rigour.integration.application.port.out.ReverseGeocoder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
@@ -10,7 +11,7 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.match.MockRestRequestMatchers.requestTo;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
-import com.rigour.sales.infrastructure.config.AmapProperties;
+import com.rigour.integration.infrastructure.config.AmapProperties;
 import java.math.BigDecimal;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
@@ -19,7 +20,7 @@ import org.springframework.test.web.client.MockRestServiceServer;
 import org.springframework.web.client.RestClient;
 import tools.jackson.databind.json.JsonMapper;
 
-class AmapTemporaryCheckinReverseGeocoderTest {
+class AmapReverseGeocoderTest {
 
     @Test
     void convertsGpsLocallyAndCallsOnlyReverseGeocode() {
@@ -29,7 +30,7 @@ class AmapTemporaryCheckinReverseGeocoderTest {
         when(converter.convert(new BigDecimal("116.4251234"), new BigDecimal("39.8867886")))
                 .thenReturn(new Wgs84Gcj02Converter.Coordinates(
                         new BigDecimal("116.431200"), new BigDecimal("39.888300")));
-        AmapTemporaryCheckinReverseGeocoder geocoder = new AmapTemporaryCheckinReverseGeocoder(
+        AmapReverseGeocoder geocoder = new AmapReverseGeocoder(
                 builder.build(), properties("test-amap-key"), JsonMapper.builder().build(), converter);
         server.expect(requestTo(containsString("/geocode/regeo")))
                 .andExpect(queryParam("location", "116.431200,39.888300"))
@@ -46,7 +47,7 @@ class AmapTemporaryCheckinReverseGeocoderTest {
                         }}
                         """, MediaType.APPLICATION_JSON));
 
-        TemporaryCheckinReverseGeocoder.GeocodeResult result = geocoder.resolve(
+        ReverseGeocoder.GeocodeResult result = geocoder.resolve(
                 new BigDecimal("116.4251234"), new BigDecimal("39.8867886"));
 
         assertThat(result.status()).isEqualTo("RESOLVED");
@@ -65,10 +66,10 @@ class AmapTemporaryCheckinReverseGeocoderTest {
     @Test
     void doesNotCallAmapWhenWebServiceKeyIsMissing() {
         Wgs84Gcj02Converter converter = mock(Wgs84Gcj02Converter.class);
-        AmapTemporaryCheckinReverseGeocoder geocoder = new AmapTemporaryCheckinReverseGeocoder(
+        AmapReverseGeocoder geocoder = new AmapReverseGeocoder(
                 RestClient.builder().build(), properties(""), JsonMapper.builder().build(), converter);
 
-        TemporaryCheckinReverseGeocoder.GeocodeResult result = geocoder.resolve(
+        ReverseGeocoder.GeocodeResult result = geocoder.resolve(
                 new BigDecimal("116.4"), new BigDecimal("39.9"));
 
         assertThat(result.status()).isEqualTo("KEY_MISSING");
@@ -84,14 +85,14 @@ class AmapTemporaryCheckinReverseGeocoderTest {
         when(converter.convert(new BigDecimal("116.4"), new BigDecimal("39.9")))
                 .thenReturn(new Wgs84Gcj02Converter.Coordinates(
                         new BigDecimal("116.406000"), new BigDecimal("39.901000")));
-        AmapTemporaryCheckinReverseGeocoder geocoder = new AmapTemporaryCheckinReverseGeocoder(
+        AmapReverseGeocoder geocoder = new AmapReverseGeocoder(
                 builder.build(), properties("test-amap-key"), JsonMapper.builder().build(), converter);
         server.expect(requestTo(containsString("/geocode/regeo")))
                 .andRespond(withSuccess("""
                         {"status":"0","info":"INVALID_USER_KEY","infocode":"10001"}
                         """, MediaType.APPLICATION_JSON));
 
-        TemporaryCheckinReverseGeocoder.GeocodeResult result = geocoder.resolve(
+        ReverseGeocoder.GeocodeResult result = geocoder.resolve(
                 new BigDecimal("116.4"), new BigDecimal("39.9"));
 
         assertThat(result.status()).isEqualTo("FAILED");

@@ -1534,7 +1534,10 @@ class OrderAttributionAndScopeIntegrationTest {
                 new com.rigour.merchant.api.v1.model.StoreWorkModels.OrderPermit("100","200","232","27","测试门店",3,now),now);
         orderStore.submit(tenant,id,pending.revision(),actor.userId().toString());
         assertThat(jdbc.queryForObject("SELECT store_submission_status FROM order_sales_order WHERE id=?",String.class,id)).isEqualTo("COMPLETED");
-        assertThat(storeSubmissions.facts(tenant,"100","200",now.plusSeconds(1)).orders().getFirst().effectiveAt()).isEqualTo(now);
+        var delivered=new tools.jackson.databind.ObjectMapper().readValue(jdbc.queryForObject("SELECT payload_json FROM order_crm_result_outbox WHERE tenant_id=? AND order_id=? ORDER BY source_revision DESC LIMIT 1",String.class,tenant,id),com.rigour.merchant.api.v1.model.StoreOrderResult.class);
+        assertThat(delivered.effectiveAt()).isEqualTo(now);
+        assertThat(delivered.submissionStatus()).isEqualTo("COMPLETED");
+        assertThat(delivered.salespersonId()).isEqualTo("232");
     }
 
     private long order(String no, Long customerId) {

@@ -21,11 +21,10 @@ class StoreVisitCaptureServiceTest {
     final Instant now=Instant.parse("2026-10-28T05:00:00Z");
     final SalesWorkContextService context=mock(SalesWorkContextService.class);
     final SalesWorkAttendanceRepository days=mock(SalesWorkAttendanceRepository.class);
-    final SalesWorkQueryRepository queries=mock(SalesWorkQueryRepository.class);
     final SalesWorkVisitRepository visits=mock(SalesWorkVisitRepository.class);
     final StoreVisitCaptureStore store=mock(StoreVisitCaptureStore.class);
     final CrmStoreVisitClient crm=mock(CrmStoreVisitClient.class);
-    final StoreVisitCaptureService service=new StoreVisitCaptureService(context,days,queries,store,crm,Clock.fixed(now,ZoneOffset.UTC),visits);
+    final StoreVisitCaptureService service=new StoreVisitCaptureService(context,days,store,crm,Clock.fixed(now,ZoneOffset.UTC),visits);
     final LocationEvidence location=new LocationEvidence(new BigDecimal("120.1"),new BigDecimal("30.1"),BigDecimal.ONE,"GPS");
     final StoreVisitCaptureService.Command command=new StoreVisitCaptureService.Command("capture_request_12345","100","200",day,location);
 

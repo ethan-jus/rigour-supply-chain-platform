@@ -46,6 +46,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
         if(jdbc.queryForObject("SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND ownership_id=? AND status_code='IN_PROGRESS'",Long.class,tenant(s),cycle.id())>0)throw new StateConflictException("本轮已有未完成拜访，请先处理原记录");
         long id=IdWorker.getId();
         jdbc.update("INSERT INTO crm_visit(id,tenant_id,created_at,updated_at,created_by,updated_by,store_id,ownership_id,salesperson_id,department_id_snapshot,visited_at,accepted_at,checkin_accepted_at,checkin_longitude,checkin_latitude,checkin_coordinate_system,accuracy_meters,distance_meters,store_snapshot,validation_policy_version,request_id,capture_ref,employee_code_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,JSON_OBJECT('name',?,'address',?,'longitude',?,'latitude',?,'coordinateSystem',?,'areaCode',?,'areaVersion',?),?,?,?,?)",id,tenant(s),ts(now),ts(now),s.access().userId(),s.access().userId(),store,cycle.id(),cycle.employeeId(),s.access().departmentId(),ts(now),ts(now),ts(now),c.longitude(),c.latitude(),c.coordinateSystem(),c.accuracyMeters(),BigDecimal.valueOf(distance),row.name(),row.address(),row.longitude(),row.latitude(),row.coordinateSystem(),row.areaCode(),s.catalog().version(),policy.id(),c.requestId(),c.captureRef(),s.access().employeeCode());
+        jdbc.update("UPDATE crm_visit SET policy_snapshot=? WHERE tenant_id=? AND id=?",new tools.jackson.databind.ObjectMapper().writeValueAsString(policy),tenant(s),id);
         bump(cycle,now);event(s,store,cycle.id(),id,"VISIT_CHECKED_IN",null,now);
         return visit(s,store,Long.toString(id));
     }
@@ -109,6 +110,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
         var cycle=owner(s,store,c.ownershipId(),now);var row=pool.detail(s,store);
         if(Set.of("TEMP_CLOSED","CLOSED").contains(row.businessStatus()))throw new StateConflictException("门店已停业或暂停营业，请先核实经营状态，不能开始新作业");bump(cycle,now);
         var permit=new OrderPermit(store,cycle.id(),cycle.employeeId(),s.access().departmentId(),row.name(),cycle.revision()+1,now);
+        jdbc.update("INSERT INTO crm_store_order_request(tenant_id,order_id,store_id,ownership_id,request_id,accepted_at) VALUES(?,?,?,?,?,?)",tenant(s),c.orderId(),store,cycle.id(),c.requestId(),ts(now));
         jdbc.update("INSERT INTO crm_store_event(id,tenant_id,store_id,ownership_id,object_type,object_id,event_type,actor_user_id,actor_employee_id,occurred_at,request_id,event_seq,after_data) VALUES(?,?,?,?,'ORDER',?,'ORDER_AUTHORIZED',?,?,?,?,1,?)",IdWorker.getId(),tenant(s),store,cycle.id(),c.orderId(),s.access().userId(),s.access().employeeId(),ts(now),c.requestId(),new tools.jackson.databind.ObjectMapper().writeValueAsString(permit));
         return permit;
     }
@@ -116,9 +118,10 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
     @Override public com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context captureContext(StoreScope s,String store,String id){
         var v=visit(s,store,id);
         if(!Objects.equals(s.access().employeeId(),v.salespersonId()))throw new AuthorizationDeniedException("visit-owner");
-        var data=jdbc.queryForMap("SELECT capture_ref,employee_code_snapshot,validation_policy_version,store_snapshot,distance_meters FROM crm_visit WHERE tenant_id=? AND id=?",tenant(s),id);
+        var data=jdbc.queryForMap("SELECT capture_ref,employee_code_snapshot,validation_policy_version,store_snapshot,distance_meters,policy_snapshot FROM crm_visit WHERE tenant_id=? AND id=?",tenant(s),id);
         var snapshot=new tools.jackson.databind.ObjectMapper().readTree(data.get("store_snapshot").toString());
-        return new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context(id,store,v.ownershipId(),(String)data.get("employee_code_snapshot"),(String)data.get("capture_ref"),(String)data.get("validation_policy_version"),v.visitedAt(),snapshot.get("name").asText(),snapshot.get("address").asText(),new BigDecimal(snapshot.get("longitude").asText()),new BigDecimal(snapshot.get("latitude").asText()),snapshot.get("coordinateSystem").asText(),(BigDecimal)data.get("distance_meters"),v.revision(),v.status());
+        var policy=data.get("policy_snapshot")==null?null:new tools.jackson.databind.ObjectMapper().readValue(data.get("policy_snapshot").toString(),com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy.class);
+        return new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context(id,store,v.ownershipId(),(String)data.get("employee_code_snapshot"),(String)data.get("capture_ref"),(String)data.get("validation_policy_version"),v.visitedAt(),snapshot.get("name").asText(),snapshot.get("address").asText(),new BigDecimal(snapshot.get("longitude").asText()),new BigDecimal(snapshot.get("latitude").asText()),snapshot.get("coordinateSystem").asText(),(BigDecimal)data.get("distance_meters"),v.revision(),v.status(),policy);
     }
     private void bump(com.rigour.merchant.application.port.out.StoreLifecycleStore.Cycle c,Instant now){
         jdbc.update("UPDATE crm_store_ownership SET revision=revision+1,updated_at=?,next_check_at=? WHERE tenant_id=? AND id=?",ts(now),ts(now),c.tenant(),c.id());

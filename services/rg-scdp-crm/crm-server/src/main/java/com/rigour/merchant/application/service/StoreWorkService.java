@@ -17,8 +17,8 @@ public class StoreWorkService {
     private final StoreLifecycleStore cycles;
     private final StoreLifecycleService lifecycle;
     private final Clock clock;
-    private final com.rigour.merchant.application.port.out.StoreVisitCaptureClient captures;
-    public StoreWorkService(StorePoolService pools,StoreVisitStore visits,StoreLifecycleStore cycles,StoreLifecycleService lifecycle,Clock clock,com.rigour.merchant.application.port.out.StoreVisitCaptureClient captures){this.pools=pools;this.visits=visits;this.cycles=cycles;this.lifecycle=lifecycle;this.clock=clock;this.captures=captures;}
+    private final com.rigour.merchant.application.port.out.StoreVisitPolicyStore policies;
+    public StoreWorkService(StorePoolService pools,StoreVisitStore visits,StoreLifecycleStore cycles,StoreLifecycleService lifecycle,Clock clock,com.rigour.merchant.application.port.out.StoreVisitPolicyStore policies){this.pools=pools;this.visits=visits;this.cycles=cycles;this.lifecycle=lifecycle;this.clock=clock;this.policies=policies;}
     private StoreScope scope(String store,String action){
         id(store);var s=pools.scopeForStore(action,store);
         if(s.access().employeeId()==null&&action.endsWith("write"))throw new AuthorizationDeniedException("store-employee-required");
@@ -33,8 +33,7 @@ public class StoreWorkService {
         if(c.longitude()==null||c.latitude()==null||c.longitude().abs().doubleValue()>180||c.latitude().abs().doubleValue()>90||!Set.of("GCJ02","WGS84").contains(c.coordinateSystem()==null?"":c.coordinateSystem())||c.accuracyMeters()!=null&&c.accuracyMeters().signum()<0)throw new RequestValidationException("签到定位无效");
         if(c.captureRef()!=null)try{java.util.UUID.fromString(c.captureRef());}catch(IllegalArgumentException e){throw new RequestValidationException("采集标识无效");}
         var s=scope(store,"crm:store:visit-write");checkExpiry(s,store);
-        com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy policy;
-        try{policy=captures.policy();}catch(RuntimeException error){throw new com.rigour.shared.core.exception.StateConflictException("销售拜访政策暂不可用，请稍后重试签到");}
+        var policy=policies.active(s,store,clock.instant());
         return visits.checkIn(s,store,c,policy,clock.instant());
     }
     public com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context capture(String store,String visit){id(visit);return visits.captureContext(scope(store,"crm:store:visit-write"),store,visit);}

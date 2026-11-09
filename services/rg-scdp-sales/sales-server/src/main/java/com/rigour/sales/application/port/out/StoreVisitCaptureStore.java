@@ -6,5 +6,4 @@ public interface StoreVisitCaptureStore {
     record Link(String storeId,String visitId,String ownershipId){}
     Link link(UUID tenant,UUID capture);
     void create(UUID tenant,UUID profile,UUID workDay,UUID capture,Context context,LocationEvidence location);
-    Facts facts(UUID tenant,String store,String ownership);
 }

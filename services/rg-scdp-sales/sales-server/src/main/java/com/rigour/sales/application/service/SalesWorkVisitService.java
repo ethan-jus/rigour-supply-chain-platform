@@ -404,7 +404,6 @@ public class SalesWorkVisitService {
         if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status())) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE, "当前拜访状态不允许录入结果", List.of());
         }
-        crmCapture.acceptResult(caller,visitId,contactOutcome,kpName,kpPhone,intention,resultNote);
         if (visitRepository.updateVisitResult(caller.tenantId(), identity.profile().id(), visitId,
                 contactOutcome, kpName, kpPhone, intention, resultNote, receivedAt) != 1) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE);
@@ -413,7 +412,8 @@ public class SalesWorkVisitService {
                 "contactOutcome", contactOutcome,
                 "hasKp", Boolean.toString(contacted),
                 "intentionLevel", intention == null ? "" : intention));
-        if ("CHECKED_OUT".equals(visit.status())) assessmentService.assess(caller, visitId);
+        if ("CHECKED_OUT".equals(visit.status()) || crmCapture.isCapture(caller.tenantId(),visitId))
+            assessmentService.assess(caller, visitId);
         return visitView(caller.tenantId(), identity.profile().id(), visitId);
     }
 

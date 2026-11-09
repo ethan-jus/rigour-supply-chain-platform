@@ -39,24 +39,30 @@ public class SalesWorkVisitAssessmentService {
     private final AuditSink auditSink;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final com.rigour.sales.application.port.out.CrmVisitEvidenceOutbox crmEvidence;
 
     public SalesWorkVisitAssessmentService(
             SalesWorkManagementRepository repository,
             OutboxStore outboxStore,
             AuditSink auditSink,
             ObjectMapper objectMapper,
-            Clock clock) {
+            Clock clock, com.rigour.sales.application.port.out.CrmVisitEvidenceOutbox crmEvidence) {
         this.repository = repository;
         this.outboxStore = outboxStore;
         this.auditSink = auditSink;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.crmEvidence=crmEvidence;
     }
 
     @Transactional
     public AssessmentOutcome assess(CallerIdentity actor, UUID visitId) {
         if (actor == null || actor.tenantId() == null || visitId == null) {
             throw new IllegalArgumentException("自动判定必须携带租户、触发人和拜访");
+        }
+        if(repository.isCrmCapture(actor.tenantId(),visitId)) {
+            crmEvidence.enqueue(actor.tenantId(),visitId);
+            return new AssessmentOutcome("CRM_PENDING_SYNC",List.of(),null);
         }
         var target = repository.findReviewTarget(actor.tenantId(), visitId, true);
         if (target.isEmpty()) return new AssessmentOutcome("NOT_READY", List.of(), null);
@@ -73,13 +79,6 @@ public class SalesWorkVisitAssessmentService {
             repository.upsertAutomaticAssessment(assessmentId, actor.tenantId(), visitId,
                     "PENDING", null, anomalies.getFirst(), String.join(",", anomalies), assessedAt);
             return new AssessmentOutcome("PENDING_REVIEW", anomalies, null);
-        }
-
-        if(repository.isCrmCapture(actor.tenantId(),visitId)) {
-            repository.upsertAutomaticAssessment(assessmentId,actor.tenantId(),visitId,
-                    "DECIDED","EFFECTIVE",AUTO_REASON,"服务端硬证据完整，自动确认有效",assessedAt);
-            // CRM读取核验事实并决定业务有效性；不再生成第二条Sales最终拜访事实。
-            return new AssessmentOutcome("CRM_AUTO_EFFECTIVE",List.of(),assessedAt);
         }
 
         if (repository.finalizeVisit(actor.tenantId(), visitId, "EFFECTIVE", AUTO_REASON, assessedAt) != 1) {

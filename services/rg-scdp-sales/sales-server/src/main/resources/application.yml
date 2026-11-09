@@ -37,13 +37,6 @@ rigour:
       active-key-id: v1
       keys-base64:
         v1: ${RIGOUR_CONTEXT_TRUST_KEY_V1:}
-  amap:
-    base-url: ${RIGOUR_AMAP_BASE_URL:https://restapi.amap.com/v3}
-    web-key: ${RIGOUR_AMAP_WEB_KEY:}
-    connect-timeout: 3s
-    read-timeout: 5s
-    nearby-cache-ttl: 60s
-    nearby-cache-max-entries: 500
   sales:
     temporary-checkin:
       # 临时表单默认关闭；上线时由 Nacos/Secret 注入固定租户，不接受请求覆盖。
