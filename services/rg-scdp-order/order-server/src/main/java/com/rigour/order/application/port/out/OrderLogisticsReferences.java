@@ -6,8 +6,26 @@ import java.util.List;
 import java.util.Set;
 
 public interface OrderLogisticsReferences {
+    java.util.Map<String, String> cities(String action);
+
+    default List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> ledgerCustomers(
+            String city, List<String> codes, String action) {
+        return codes.stream()
+                .flatMap(
+                        code ->
+                                ledgerParties("CUSTOMER", code, null, null, city, 0, action)
+                                        .stream())
+                .toList();
+    }
+
     default List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> ledgerParties(
-            String kind, String code, Long id, String keyword, String city, int begin, String action) {
+            String kind,
+            String code,
+            Long id,
+            String keyword,
+            String city,
+            int begin,
+            String action) {
         throw new UnsupportedOperationException("编码收发方引用尚未接入");
     }
 
@@ -15,6 +33,7 @@ public interface OrderLogisticsReferences {
             com.rigour.order.api.v1.model.LogisticsLedgerSourceQuery query, String action) {
         throw new UnsupportedOperationException("编码单据引用尚未接入");
     }
+
     List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees(String action);
 
     String city(String code, String action);

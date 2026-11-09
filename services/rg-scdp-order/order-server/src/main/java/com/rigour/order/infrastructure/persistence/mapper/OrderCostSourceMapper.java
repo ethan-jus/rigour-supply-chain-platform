@@ -64,8 +64,12 @@ ORDER BY `date`,sourceId
 SELECT o.id,o.order_no documentNo,o.region_code cityCode,o.selected_warehouse_id warehouseId,
 o.customer_code_snapshot customerCode,o.customer_name_snapshot customerName,o.order_status_code statusCode,
 COALESCE(NULLIF(o.source_system_code,''),'SYSTEM') sourceSystem,o.source_order_no originalNo,DATE(CONVERT_TZ(o.order_date,'+00:00','+08:00')) documentDate,
-NULL destinationAddress
-FROM order_sales_order o ${ew.customSqlSegment}
+NULL destinationAddress,COALESCE(snap.employee_code,o.owner_employee_code) employeeCode,
+COALESCE(snap.employee_name,o.owner_employee_name_snapshot) employeeName,snap.department_id departmentId,snap.department_name departmentName,
+o.contact_name_snapshot contactName,o.contact_phone_snapshot contactPhone
+FROM order_sales_order o
+LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'
+${ew.customSqlSegment}
 """)
     List<OrderDeliveryCostSourceView> deliveries(@Param(Constants.WRAPPER) Wrapper<?> query);
 

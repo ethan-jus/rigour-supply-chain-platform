@@ -65,7 +65,7 @@ class ProcurementPersistenceTest {
         for (String version :
                 List.of(
                         "V20__", "V27__", "V29__", "V30__", "V32__", "V34__", "V35__", "V36__",
-                        "V41__", "V42__", "V44__")) {
+                        "V41__", "V42__", "V44__", "V46__")) {
             Path file;
             try (var files = Files.list(Path.of("src/main/resources/db/migration"))) {
                 file =

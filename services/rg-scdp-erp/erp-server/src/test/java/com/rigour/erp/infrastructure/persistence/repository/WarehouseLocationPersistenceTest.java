@@ -53,7 +53,7 @@ class WarehouseLocationPersistenceTest {
                                 ""));
         jdbc.execute(
                 "ALTER TABLE erp_inventory_warehouse ADD COLUMN status_code VARCHAR(64) NOT NULL"
-                    + " DEFAULT 'ACTIVE'");
+                        + " DEFAULT 'ACTIVE'");
         String migration =
                 Files.readString(
                                 Path.of(
@@ -64,6 +64,10 @@ class WarehouseLocationPersistenceTest {
                         .matcher(migration);
         while (additions.find())
             jdbc.execute("ALTER TABLE erp_inventory_warehouse " + additions.group());
+        jdbc.execute(
+                Files.readString(
+                        Path.of(
+                                "src/main/resources/db/migration/V46__warehouse_cost_department.sql")));
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(InternalInventoryWarehouseMapper.class);
@@ -95,6 +99,59 @@ CREATE TABLE erp_master_source_binding (id VARCHAR(36) PRIMARY KEY,tenant_id VAR
     @AfterEach
     void close() {
         ds.destroy();
+    }
+
+    @Test
+    void costDepartmentDoesNotReplaceWarehouseIdAndLegacyEditsPreserveIt() {
+        var created =
+                store.create(
+                        tenant,
+                        "WH-DEPT",
+                        new InternalInventoryWarehouseCommand(
+                                "仓库", "WH", "CITY", false, "地址", null, null, "ACTIVE", null, 0,
+                                null, null, 901L),
+                        "user");
+        assertThat(created.id()).isNotNull().isNotEqualTo(901L);
+        assertThat(created.costDepartmentId()).isEqualTo(901L);
+        var updated =
+                store.update(
+                        tenant,
+                        created.id(),
+                        new InternalInventoryWarehouseCommand(
+                                "仓库新名称",
+                                "WH",
+                                "CITY",
+                                false,
+                                "地址",
+                                null,
+                                null,
+                                "ACTIVE",
+                                null,
+                                created.revision()),
+                        "user");
+        assertThat(updated.id()).isEqualTo(created.id());
+        assertThat(updated.costDepartmentId()).isEqualTo(901L);
+        var cleared =
+                store.update(
+                        tenant,
+                        created.id(),
+                        new InternalInventoryWarehouseCommand(
+                                "仓库新名称",
+                                "WH",
+                                "CITY",
+                                false,
+                                "地址",
+                                null,
+                                null,
+                                "ACTIVE",
+                                null,
+                                updated.revision(),
+                                null,
+                                null,
+                                0L),
+                        "user");
+        assertThat(cleared.id()).isEqualTo(created.id());
+        assertThat(cleared.costDepartmentId()).isNull();
     }
 
     @Test

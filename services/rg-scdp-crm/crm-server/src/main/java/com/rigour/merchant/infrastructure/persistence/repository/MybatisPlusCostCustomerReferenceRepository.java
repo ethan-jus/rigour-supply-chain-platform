@@ -11,12 +11,34 @@ import org.springframework.stereotype.Repository;
 import java.util.List;
 
 @Repository
-public class MybatisPlusCostCustomerReferenceRepository
-        implements CostCustomerReferenceStore {
+public class MybatisPlusCostCustomerReferenceRepository implements CostCustomerReferenceStore {
     private final InternalCustomerMapper mapper;
 
     public MybatisPlusCostCustomerReferenceRepository(InternalCustomerMapper mapper) {
         this.mapper = mapper;
+    }
+
+    @Override
+    public List<CostCustomerView> customersByCodes(String tenant, String city, List<String> codes) {
+        return mapper
+                .selectList(
+                        new LambdaQueryWrapper<InternalCustomerEntity>()
+                                .eq(InternalCustomerEntity::getTenantId, tenant)
+                                .eq(InternalCustomerEntity::getRegionCode, city)
+                                .eq(InternalCustomerEntity::getDeleted, 0)
+                                .eq(InternalCustomerEntity::getStatusCode, "ACTIVE")
+                                .in(InternalCustomerEntity::getCustomerCode, codes))
+                .stream()
+                .map(
+                        r ->
+                                new CostCustomerView(
+                                        r.getId().toString(),
+                                        r.getCustomerCode(),
+                                        r.getCustomerName(),
+                                        r.getContactName(),
+                                        r.getContactPhone(),
+                                        r.getAddress()))
+                .toList();
     }
 
     public List<CostCustomerView> customers(
@@ -26,7 +48,10 @@ public class MybatisPlusCostCustomerReferenceRepository
                         .select(
                                 InternalCustomerEntity::getId,
                                 InternalCustomerEntity::getCustomerCode,
-                                InternalCustomerEntity::getCustomerName)
+                                InternalCustomerEntity::getCustomerName,
+                                InternalCustomerEntity::getContactName,
+                                InternalCustomerEntity::getContactPhone,
+                                InternalCustomerEntity::getAddress)
                         .eq(InternalCustomerEntity::getTenantId, tenant)
                         .eq(InternalCustomerEntity::getRegionCode, city)
                         .eq(InternalCustomerEntity::getDeleted, 0)
@@ -46,7 +71,10 @@ public class MybatisPlusCostCustomerReferenceRepository
                                 new CostCustomerView(
                                         r.getId().toString(),
                                         r.getCustomerCode(),
-                                        r.getCustomerName()))
+                                        r.getCustomerName(),
+                                        r.getContactName(),
+                                        r.getContactPhone(),
+                                        r.getAddress()))
                 .toList();
     }
 }

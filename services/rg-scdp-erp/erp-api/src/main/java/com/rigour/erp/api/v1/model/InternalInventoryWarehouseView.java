@@ -23,7 +23,8 @@ public record InternalInventoryWarehouseView(
         String locationAreaCode,
         String locationAreaVersion,
         String locationDisplay,
-        java.util.List<SourceReference> sourceReferences) {
+        java.util.List<SourceReference> sourceReferences,
+        Long costDepartmentId) {
     public record SourceReference(
             String sourceSystem,
             String sourceObjectId,
@@ -103,7 +104,8 @@ public record InternalInventoryWarehouseView(
                 locationAreaCode,
                 locationAreaVersion,
                 locationDisplay,
-                refs);
+                refs,
+                costDepartmentId);
     }
 
     public InternalInventoryWarehouseView(
@@ -166,6 +168,77 @@ public record InternalInventoryWarehouseView(
                 locationAreaCode,
                 locationAreaVersion,
                 display,
-                sourceReferences);
+                sourceReferences,
+                costDepartmentId);
+    }
+
+    public InternalInventoryWarehouseView(
+            Long id,
+            String warehouseCode,
+            String warehouseName,
+            String regionCode,
+            String warehouseTypeCode,
+            Boolean defaultFlag,
+            String address,
+            String contactName,
+            String contactPhone,
+            String statusCode,
+            String remark,
+            Integer revision,
+            String createdBy,
+            Instant createdTime,
+            String updatedBy,
+            Instant updatedTime,
+            String locationAreaCode,
+            String locationAreaVersion,
+            String locationDisplay,
+            java.util.List<SourceReference> sourceReferences) {
+        this(
+                id,
+                warehouseCode,
+                warehouseName,
+                regionCode,
+                warehouseTypeCode,
+                defaultFlag,
+                address,
+                contactName,
+                contactPhone,
+                statusCode,
+                remark,
+                revision,
+                createdBy,
+                createdTime,
+                updatedBy,
+                updatedTime,
+                locationAreaCode,
+                locationAreaVersion,
+                locationDisplay,
+                sourceReferences,
+                null);
+    }
+
+    public InternalInventoryWarehouseView withCostDepartment(Long departmentId) {
+        return new InternalInventoryWarehouseView(
+                id,
+                warehouseCode,
+                warehouseName,
+                regionCode,
+                warehouseTypeCode,
+                defaultFlag,
+                address,
+                contactName,
+                contactPhone,
+                statusCode,
+                remark,
+                revision,
+                createdBy,
+                createdTime,
+                updatedBy,
+                updatedTime,
+                locationAreaCode,
+                locationAreaVersion,
+                locationDisplay,
+                sourceReferences,
+                departmentId);
     }
 }

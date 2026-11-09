@@ -139,6 +139,62 @@ class CostDashboardServiceTest {
     }
 
     @Test
+    void departmentSummaryReconcilesToConfirmedPurchaseAndLogisticsAndDrillsByDepartment() {
+        var result = service.departments(query(null, null, "current", "ALL"));
+        var expected =
+                facts.stream()
+                        .filter(CostFact::confirmed)
+                        .filter(r -> Set.of("purchase", "freight").contains(r.category()))
+                        .filter(
+                                r ->
+                                        r.inPeriod(
+                                                CostPeriod.resolve(
+                                                        2026,
+                                                        10,
+                                                        "previous",
+                                                        LocalDate.of(2026, 10, 16)),
+                                                false))
+                        .toList();
+        BigDecimal total =
+                result.stream()
+                        .map(
+                                r ->
+                                        new BigDecimal(r.purchaseGoods())
+                                                .add(new BigDecimal(r.purchaseFreight()))
+                                                .add(new BigDecimal(r.logistics())))
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
+        assertThat(total).isEqualByComparingTo(CostAnalysis.amount(expected));
+        for (var department : result) {
+            assertThat(
+                            department.people().stream()
+                                    .map(p -> new BigDecimal(p.amount()))
+                                    .reduce(BigDecimal.ZERO, BigDecimal::add))
+                    .isEqualByComparingTo(department.logistics());
+            var q =
+                    new CostDashboardQuery(
+                            2026,
+                            10,
+                            "previous",
+                            null,
+                            "opex",
+                            "freight",
+                            null,
+                            null,
+                            "CONFIRMED",
+                            "ALL",
+                            null,
+                            "current",
+                            1,
+                            20,
+                            null,
+                            false,
+                            department.departmentId());
+            assertThat(service.records(q).summary().confirmed())
+                    .isEqualTo(new BigDecimal(department.logistics()).setScale(2).toPlainString());
+        }
+    }
+
+    @Test
     void recordsWorkspaceUsesOneAuthorizationAndOneCompleteSnapshot() {
         authorize(null);
         var q = query(null, null, "current", "ALL");
@@ -556,8 +612,22 @@ class CostDashboardServiceTest {
         useFacts(List.of(orderFreight, erpPurchase));
         var q =
                 new CostDashboardQuery(
-                        2026, 10, "previous", null, "purchase", "purchase", null, null,
-                        "CONFIRMED", "ALL", null, "current", 1, 20, null, false);
+                        2026,
+                        10,
+                        "previous",
+                        null,
+                        "purchase",
+                        "purchase",
+                        null,
+                        null,
+                        "CONFIRMED",
+                        "ALL",
+                        null,
+                        "current",
+                        1,
+                        20,
+                        null,
+                        false);
         var orderPolicy = sources.get("freight");
         var erpPolicy = sources.get("purchase");
         sources.clear();
@@ -573,7 +643,12 @@ class CostDashboardServiceTest {
                 .thenReturn(new CostSourceDetail.State("CONFIRMED", orderFreight.revision()));
         var linked =
                 new CostDashboardService(
-                        store, mock(CostDashboardRefreshService.class), access, original, true, clock);
+                        store,
+                        mock(CostDashboardRefreshService.class),
+                        access,
+                        original,
+                        true,
+                        clock);
         assertThat(linked.detail(q, "ORDER", orderFreight.sourceId()).sourceRoute())
                 .isEqualTo("/supply-chain/cost/logistics?sourceId=" + orderFreight.sourceId());
 

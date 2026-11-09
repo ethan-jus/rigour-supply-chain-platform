@@ -81,6 +81,44 @@ class CostLedgerPartitionsTest {
     }
 
     @Test
+    void salesDeliveryAllocatesToSalesDepartmentsAndPeopleRatherThanTheExpenseOwner() {
+        var r =
+                row(
+                        "300.01",
+                        """
+{"ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","costMonth":"2026-11","feeItems":[{"feeKey":"F","feeTypeCode":"FREIGHT","ourAmount":300.01}]}}
+""");
+        r.put("payer_code", "COMPANY");
+        r.put("owner_employee_code", "RECORDER");
+        r.put("department_id", "999");
+        r.put(
+                "sources_json",
+                """
+[{"linkRoleCode":"COST","employeeCode":"E1","employeeName":"张三","departmentId":10,"departmentName":"销售一部","allocations":[{"feeKey":"F","cityCode":"C1","amount":100.00}]},
+ {"linkRoleCode":"COST","employeeCode":"E2","employeeName":"李四","departmentId":20,"departmentName":"销售二部","allocations":[{"feeKey":"F","cityCode":"C1","amount":200.01}]},
+ {"linkRoleCode":"TRACE","employeeCode":"RECORDER","allocations":[]}]
+""");
+        var rows = CostLedgerPartitions.expand("ORDER", r, json);
+        assertThat(rows).hasSize(2);
+        assertThat(rows).extracting(x -> x.get("department_id")).containsExactly("10", "20");
+        assertThat(rows).extracting(x -> x.get("owner_employee_code")).containsExactly("E1", "E2");
+        assertThat(
+                        rows.stream()
+                                .map(x -> new BigDecimal(x.get("amount")))
+                                .reduce(BigDecimal.ZERO, BigDecimal::add))
+                .isEqualByComparingTo("300.01");
+        var normalizer = new CostSourceNormalizer(json);
+        var facts =
+                rows.stream()
+                        .map(x -> normalizer.normalize("ORDER", x, List.of(), Map.of()))
+                        .toList();
+        assertThat(CostAnalysis.count(facts)).isEqualTo(1);
+        assertThat(facts)
+                .extracting(x -> x.dimension("department").key())
+                .containsExactly("department:10", "department:20");
+    }
+
+    @Test
     void missingAmountsStayUnknownAndUnrelatedSourcesAreUntouched() {
         var r =
                 row(

@@ -96,6 +96,7 @@ final class CostLedgerPartitions {
         SortedMap<Bucket, BigDecimal> amounts = new TreeMap<>();
         Map<String, BigDecimal> expected = new HashMap<>(), allocated = new HashMap<>();
         Map<String, String> types = new HashMap<>();
+        Map<Bucket, Map<String, String>> attribution = new HashMap<>();
         BigDecimal total = BigDecimal.ZERO;
         boolean missing = false;
         for (var fee : plan.path("feeItems")) {
@@ -120,7 +121,32 @@ final class CostLedgerPartitions {
                 if (!expected.containsKey(fee) || city.isBlank() || amount == null)
                     throw new IllegalStateException("物流来源分摊无效");
                 allocated.merge(fee, amount, BigDecimal::add);
-                amounts.merge(new Bucket(city, types.get(fee)), amount, BigDecimal::add);
+                boolean delivery = "DELIVERY".equals(plan.path("transportPurposeCode").asText());
+                String employee =
+                        delivery
+                                ? link.path("employeeCode").asText("")
+                                : Objects.toString(row.get("owner_employee_code"), "");
+                String department =
+                        delivery
+                                ? link.path("departmentId").asText("")
+                                : Objects.toString(row.get("department_id"), "");
+                var bucket = new Bucket(city + "|" + department + "|" + employee, types.get(fee));
+                Map<String, String> attributes = new HashMap<>();
+                attributes.put("city", city);
+                attributes.put("department_id", department.isBlank() ? null : department);
+                attributes.put("owner_employee_code", employee.isBlank() ? null : employee);
+                attributes.put(
+                        "department_name",
+                        delivery
+                                ? link.path("departmentName").asText(null)
+                                : row.get("department_name"));
+                attributes.put(
+                        "owner_employee_name",
+                        delivery
+                                ? link.path("employeeName").asText(null)
+                                : row.get("owner_employee_name"));
+                attribution.put(bucket, attributes);
+                amounts.merge(bucket, amount, BigDecimal::add);
             }
         }
         expected.forEach(
@@ -140,17 +166,27 @@ final class CostLedgerPartitions {
         List<Map<String, String>> result = new ArrayList<>();
         final boolean unknown = missing;
         amounts.forEach(
-                (bucket, amount) ->
-                        result.add(
-                                partition(
-                                        row,
-                                        data,
-                                        json,
-                                        "CITY:" + bucket.key() + ":" + month,
-                                        month,
-                                        bucket.owner(),
-                                        bucket.feeType(),
-                                        unknown ? null : amount)));
+                (bucket, amount) -> {
+                    var attributes = attribution.get(bucket);
+                    var part =
+                            partition(
+                                    row,
+                                    data,
+                                    json,
+                                    "CITY:" + bucket.key() + ":" + month,
+                                    month,
+                                    attributes == null ? bucket.owner() : attributes.get("city"),
+                                    bucket.feeType(),
+                                    unknown ? null : amount);
+                    if (attributes != null)
+                        for (String key :
+                                List.of(
+                                        "department_id",
+                                        "department_name",
+                                        "owner_employee_code",
+                                        "owner_employee_name")) part.put(key, attributes.get(key));
+                    result.add(part);
+                });
         return result;
     }
 

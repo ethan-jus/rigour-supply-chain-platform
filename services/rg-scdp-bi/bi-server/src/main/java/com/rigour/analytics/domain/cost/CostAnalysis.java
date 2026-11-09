@@ -9,7 +9,7 @@ import java.util.function.Function;
 public final class CostAnalysis {
     private CostAnalysis() {}
 
-    public static final String NORMALIZATION_VERSION = "9";
+    public static final String NORMALIZATION_VERSION = "10";
 
     public static final Map<String, String> CATEGORIES;
 
@@ -37,6 +37,7 @@ public final class CostAnalysis {
                             "feeType",
                             "deliveryMode",
                             "route",
+                            "department",
                             "employee"),
                     "warehouse",
                     List.of("feeType", "premises", "contract"),
@@ -49,7 +50,7 @@ public final class CostAnalysis {
                     "expense",
                     List.of("type", "employee", "department", "trip", "destination", "payee"),
                     "purchase",
-                    List.of("component", "supplier", "warehouse", "product"),
+                    List.of("component", "department", "supplier", "warehouse", "product"),
                     "loss",
                     List.of("product", "lossReason", "warehouse"),
                     "premises_unknown",
@@ -92,7 +93,43 @@ public final class CostAnalysis {
             String side,
             int page,
             int size,
-            boolean missingAmount) {
+            boolean missingAmount,
+            String department) {
+        public Filter(
+                int year,
+                int month,
+                String compare,
+                String city,
+                String scope,
+                String category,
+                String dimension,
+                String dimensionKey,
+                String status,
+                String payment,
+                String search,
+                String side,
+                int page,
+                int size,
+                boolean missingAmount) {
+            this(
+                    year,
+                    month,
+                    compare,
+                    city,
+                    scope,
+                    category,
+                    dimension,
+                    dimensionKey,
+                    status,
+                    payment,
+                    search,
+                    side,
+                    page,
+                    size,
+                    missingAmount,
+                    null);
+        }
+
         public Filter {
             if (!Set.of("opex", "purchase", "loss").contains(scope))
                 throw new IllegalArgumentException("未知统计范围");
@@ -116,7 +153,8 @@ public final class CostAnalysis {
                     || !Set.of(20, 50, 100).contains(size))
                 throw new IllegalArgumentException("分页或期间参数无效");
             if (search != null && search.length() > 120
-                    || dimensionKey != null && dimensionKey.length() > 500)
+                    || dimensionKey != null && dimensionKey.length() > 500
+                    || department != null && department.length() > 100)
                 throw new IllegalArgumentException("筛选内容超长");
         }
 
@@ -124,6 +162,7 @@ public final class CostAnalysis {
             return scope.equals(r.scope())
                     && (city == null || city.equals(r.city()))
                     && (category == null || category.equals(r.category()))
+                    && (department == null || department.equals(r.dimension("department").key()))
                     && (dimensionKey == null || dimensionKey.equals(r.dimension(dimension).key()));
         }
 

@@ -35,7 +35,7 @@ class LogisticsWarehouseRegionTest {
         String other = warehouse.replace("\"WAREHOUSE\",\"partyCode\":\"WH1\"", "\"OTHER\",\"manualName\":\"门店\"");
         return json.readValue("""
                 {"cityCode":"WH","costDate":"2026-11-04","paymentStatusCode":"UNPAID","ledger":{
-                "schemaVersion":2,"transportPurposeCode":"DELIVERY","deliveryModeCode":"SELF","costMonth":"2026-11",
+                "schemaVersion":2,"transportPurposeCode":"OTHER","nonSalesPurposeCode":"活动","deliveryModeCode":"SELF","costMonth":"2026-11",
                 "sender":%s,"receivingPoints":[%s],
                 "feeItems":[{"feeKey":"F1","feeTypeCode":"FREIGHT","feeAmount":20,"bearerCode":"COMPANY","ourAmount":20,"allocationMethodCode":"MANUAL"}],
                 "sources":[{"orderTypeCode":"NONE","linkRoleCode":"COST","noSourceReason":"独立运输","allocations":[{"feeKey":"F1","receivingPointCode":"P1","cityCode":"WH","amount":20}]}]}}

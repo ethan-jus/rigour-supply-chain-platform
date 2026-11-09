@@ -18,6 +18,11 @@ public final class HrCostReferenceController implements HrCostReferenceApi {
     }
 
     @Override
+    public ApiResponse<List<HrCostReferenceApi.Department>> warehouseDepartments(String action) {
+        return ApiResponse.success(service.warehouseDepartments(action));
+    }
+
+    @Override
     public ApiResponse<List<HrCostEmployeeView>> employees(String action) {
         return ApiResponse.success(service.employees(action));
     }

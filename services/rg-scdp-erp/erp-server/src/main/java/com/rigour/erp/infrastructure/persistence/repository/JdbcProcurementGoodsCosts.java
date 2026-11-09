@@ -25,7 +25,7 @@ SELECT %s id,d.id order_id,l.id line_id,d.tenant_id,d.procurement_no,d.source_sy
   d.revision+COALESCE(l.revision,0) revision,d.created_by,d.created_time,d.updated_time,
   d.total_amount order_goods_amount,g.goods_amount,g.unknown_prices,g.line_count,
   COALESCE(d.purchase_date,DATE(d.created_time)) cost_date,
-  w.id warehouse_id,w.warehouse_name,w.region_code city_code,s.id supplier_id,s.supplier_name,
+  w.id warehouse_id,w.warehouse_name,w.region_code city_code,w.cost_department_id,s.id supplier_id,s.supplier_name,
   p.id product_id,COALESCE(p.product_name,l.product_name_snapshot,l.product_code) product_name,
   v.id variant_id,v.specification_snapshot specification,l.unit_code,l.quantity,l.unit_price,l.line_amount
 FROM erp_procurement_order d
@@ -54,7 +54,7 @@ SELECT %s id,d.id order_id,NULL line_id,d.tenant_id,d.procurement_no,d.source_sy
   d.revision revision,d.created_by,d.created_time,d.updated_time,
   d.total_amount order_goods_amount,g.goods_amount,g.unknown_prices,g.line_count,
   COALESCE(d.purchase_date,DATE(d.created_time)) cost_date,
-  w.id warehouse_id,w.warehouse_name,w.region_code city_code,s.id supplier_id,s.supplier_name,
+  w.id warehouse_id,w.warehouse_name,w.region_code city_code,w.cost_department_id,s.id supplier_id,s.supplier_name,
   NULL product_id,NULL product_name,NULL variant_id,NULL specification,NULL unit_code,
   d.total_quantity quantity,NULL unit_price,NULL line_amount
 FROM erp_procurement_order d
@@ -119,6 +119,18 @@ WHERE d.tenant_id=? AND d.deleted=0 AND d.confirmation_status_code='CONFIRMED' A
         return UUID.nameUUIDFromBytes(
                         String.join("/", parts).getBytes(java.nio.charset.StandardCharsets.UTF_8))
                 .toString();
+    }
+
+    public Map<String, String> warehouseDepartments(String tenant) {
+        Map<String, String> result = new HashMap<>();
+        for (var row :
+                jdbc.queryForList(
+                        "SELECT id,cost_department_id FROM erp_inventory_warehouse WHERE"
+                            + " tenant_id=? AND deleted=0",
+                        tenant))
+            if (row.get("cost_department_id") != null)
+                result.put(row.get("id").toString(), row.get("cost_department_id").toString());
+        return result;
     }
 
     public Optional<ErpCostDetailView> detail(String tenant, String id, String action) {
@@ -290,6 +302,7 @@ WHERE d.tenant_id=? AND d.deleted=0 AND d.confirmation_status_code='CONFIRMED' A
         f.put("title", command.title());
         f.put("type_code", "PURCHASE");
         f.put("city_code", command.cityCode());
+        f.put("department_id", Objects.toString(r.get("cost_department_id"), null));
         f.put("cost_date", date.toString());
         f.put("amount", amount == null ? null : amount.toPlainString());
         f.put("status_code", "CONFIRMED");

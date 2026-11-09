@@ -23,6 +23,23 @@ public final class CostCustomerReferenceService {
 
     public List<CostCustomerView> customers(
             String city, String keyword, Long id, int begin, String action) {
+        if (keyword == null || keyword.length() > 200 || begin < 0 || begin > 100000)
+            throw new AuthorizationDeniedException(action);
+        String tenant = authorize(city, action);
+        return store.customers(tenant, city, keyword, id, begin);
+    }
+
+    public List<CostCustomerView> customersByCodes(String city, String action, List<String> codes) {
+        String tenant = authorize(city, action);
+        if (codes == null
+                || codes.isEmpty()
+                || codes.size() > 100
+                || codes.stream().anyMatch(c -> c == null || c.isBlank() || c.length() > 100))
+            throw new AuthorizationDeniedException(action);
+        return store.customersByCodes(tenant, city, codes.stream().distinct().toList());
+    }
+
+    private String authorize(String city, String action) {
         if (!Set.of(
                         "order:logistics-cost:read",
                         "order:logistics-cost:write",
@@ -31,11 +48,8 @@ public final class CostCustomerReferenceService {
                 .contains(action)) throw new AuthorizationDeniedException(action);
         var caller = AuthorizationContext.requireCurrent();
         AuthorizationContext.requirePermission(action);
-        if (caller.tenantId() == null
-                || city == null
-                || city.isBlank()
-                || city.length() > 64
-                || keyword.length() > 200) throw new AuthorizationDeniedException(action);
+        if (caller.tenantId() == null || city == null || city.isBlank() || city.length() > 64)
+            throw new AuthorizationDeniedException(action);
         if ("TENANT".equals(caller.principalScope())) {
             var policy =
                     SupplyAuthorizationContext.current().isPresent()
@@ -45,6 +59,6 @@ public final class CostCustomerReferenceService {
                 throw new AuthorizationDeniedException(action);
             ManualCostScope.require(policy, "INVENTORY", city, action);
         }
-        return store.customers(caller.tenantId().toString(), city, keyword, id, Math.max(0, begin));
+        return caller.tenantId().toString();
     }
 }

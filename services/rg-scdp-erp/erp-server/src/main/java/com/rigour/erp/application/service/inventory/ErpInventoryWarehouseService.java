@@ -4,11 +4,11 @@ import com.rigour.erp.api.v1.model.InternalInventoryWarehouseCommand;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.api.v1.model.WarehouseLocationCatalogView;
-import com.rigour.settings.api.v1.model.AdminDivisionCatalog;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore.WarehouseSearchCriteria;
 import com.rigour.erp.application.service.support.ErpServiceValidation;
 import com.rigour.erp.domain.code.ErpBusinessCodeRules;
+import com.rigour.settings.api.v1.model.AdminDivisionCatalog;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
@@ -34,15 +34,42 @@ public final class ErpInventoryWarehouseService {
     private final ErpInventoryWarehouseStore store;
     private final BusinessCodeGenerator codeGenerator;
     private WarehouseLocationService locations;
+    private com.rigour.erp.application.port.out.WarehouseDepartments departments;
 
     @Autowired
-    void locationService(WarehouseLocationService locations) { this.locations = locations; }
+    void departments(com.rigour.erp.application.port.out.WarehouseDepartments departments) {
+        this.departments = departments;
+    }
+
+    public List<com.rigour.erp.api.v1.model.WarehouseDepartmentView> costDepartments() {
+        tenant(READ_PERMISSION);
+        String action =
+                com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
+                                .map(
+                                        com.rigour.tenant.iam.client.SupplyAuthorizationContext
+                                                ::active)
+                                .orElse(false)
+                        ? "erp:warehouse:read"
+                        : READ_PERMISSION;
+        return departments.departments(action);
+    }
+
+    @Autowired
+    void locationService(WarehouseLocationService locations) {
+        this.locations = locations;
+    }
 
     public WarehouseLocationCatalogView locationCatalog(String version) {
         tenant(READ_PERMISSION);
         var catalog = locations.catalog(version);
-        return new WarehouseLocationCatalogView(catalog.version(), catalog.nodes().stream()
-                .map(n -> new WarehouseLocationCatalogView.Node(n.code(), n.name(), n.level(), n.parentCode())).toList());
+        return new WarehouseLocationCatalogView(
+                catalog.version(),
+                catalog.nodes().stream()
+                        .map(
+                                n ->
+                                        new WarehouseLocationCatalogView.Node(
+                                                n.code(), n.name(), n.level(), n.parentCode()))
+                        .toList());
     }
 
     @Autowired
@@ -64,7 +91,15 @@ public final class ErpInventoryWarehouseService {
             String regionCode,
             Boolean defaultFlag,
             String statusCode) {
-        return warehouses(begin,step,warehouseCode,warehouseName,regionCode,defaultFlag,statusCode,null);
+        return warehouses(
+                begin,
+                step,
+                warehouseCode,
+                warehouseName,
+                regionCode,
+                defaultFlag,
+                statusCode,
+                null);
     }
 
     public MasterDataPageView<InternalInventoryWarehouseView> warehouses(
@@ -74,7 +109,8 @@ public final class ErpInventoryWarehouseService {
             String warehouseName,
             String regionCode,
             Boolean defaultFlag,
-            String statusCode, String sourceWarehouseCode) {
+            String statusCode,
+            String sourceWarehouseCode) {
         String tenantId = tenant(READ_PERMISSION);
         WarehouseSearchCriteria criteria =
                 new WarehouseSearchCriteria(
@@ -83,7 +119,7 @@ public final class ErpInventoryWarehouseService {
                         ErpServiceValidation.code(regionCode, "regionCode", false),
                         defaultFlag,
                         ErpServiceValidation.code(statusCode, "statusCode", false),
-                        ErpServiceValidation.text(sourceWarehouseCode,100,"sourceWarehouseCode"));
+                        ErpServiceValidation.text(sourceWarehouseCode, 100, "sourceWarehouseCode"));
         MasterDataPageView<InternalInventoryWarehouseView> result =
                 store.warehouses(
                         tenantId,
@@ -102,7 +138,10 @@ public final class ErpInventoryWarehouseService {
                 result.items().size(),
                 result.total());
         var catalogs = new java.util.HashMap<String, AdminDivisionCatalog>();
-        return new MasterDataPageView<>(result.total(), result.begin(), result.step(),
+        return new MasterDataPageView<>(
+                result.total(),
+                result.begin(),
+                result.step(),
                 result.items().stream().map(row -> decorate(row, catalogs)).toList());
     }
 
@@ -178,9 +217,32 @@ public final class ErpInventoryWarehouseService {
             InternalInventoryWarehouseCommand command, boolean update) {
         if (command == null) throw badRequest("仓库参数不能为空");
         ErpServiceValidation.checkRevision(command.revision(), update);
-        String locationCode = command.locationAreaCode() == null ? null : command.locationAreaCode().strip();
-        String locationVersion = ErpServiceValidation.text(command.locationAreaVersion(), 32, "locationAreaVersion");
-        if (locationCode != null || locationVersion != null) locations.validate(locationCode, locationVersion);
+        String locationCode =
+                command.locationAreaCode() == null ? null : command.locationAreaCode().strip();
+        String locationVersion =
+                ErpServiceValidation.text(command.locationAreaVersion(), 32, "locationAreaVersion");
+        if (locationCode != null || locationVersion != null)
+            locations.validate(locationCode, locationVersion);
+        Long department = command.costDepartmentId();
+        if (department != null
+                && department != 0
+                && (department < 0
+                        || departments
+                                .departments(
+                                        com.rigour.tenant.iam.client.SupplyAuthorizationContext
+                                                        .current()
+                                                        .map(
+                                                                com.rigour.tenant.iam.client
+                                                                                .SupplyAuthorizationContext
+                                                                        ::active)
+                                                        .orElse(false)
+                                                ? (update
+                                                        ? "erp:warehouse:update"
+                                                        : "erp:warehouse:create")
+                                                : WRITE_PERMISSION)
+                                .stream()
+                                .noneMatch(d -> department.equals(d.id()))))
+            throw badRequest("请选择有效的仓库成本归属部门");
         return new InternalInventoryWarehouseCommand(
                 ErpServiceValidation.required(command.warehouseName(), "warehouseName不能为空", 120),
                 ErpServiceValidation.code(command.regionCode(), "regionCode", false),
@@ -192,10 +254,14 @@ public final class ErpInventoryWarehouseService {
                 ErpServiceValidation.text(command.contactPhone(), 50, "contactPhone"),
                 ErpServiceValidation.defaultCode(command.statusCode(), "statusCode", "ACTIVE"),
                 ErpServiceValidation.text(command.remark(), 1000, "remark"),
-                update ? command.revision() : 0, locationCode, locationVersion);
+                update ? command.revision() : 0,
+                locationCode,
+                locationVersion,
+                department);
     }
 
-    private InternalInventoryWarehouseView decorate(InternalInventoryWarehouseView row,
+    private InternalInventoryWarehouseView decorate(
+            InternalInventoryWarehouseView row,
             java.util.Map<String, AdminDivisionCatalog> catalogs) {
         if (row == null || row.locationAreaCode() == null) return row;
         String display;
