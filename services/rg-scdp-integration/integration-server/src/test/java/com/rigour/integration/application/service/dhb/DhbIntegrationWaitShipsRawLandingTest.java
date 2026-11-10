@@ -35,7 +35,7 @@ class DhbIntegrationWaitShipsRawLandingTest {
 
     @Mock private DhbIntegrationStore store;
     @Mock private DhbClient client;
-    @Mock private DhbOrderSyncService orderSyncService;
+    @Mock private DhbSyncOrchestrationService orderSyncService;
     @Mock private ProductMediaStorage productMediaStorage;
     @Mock private ProductImageObjectKeyFactory productImageObjectKeyFactory;
     @Mock private ProductMediaSyncStore productMediaSyncStore;

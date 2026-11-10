@@ -41,7 +41,6 @@ import java.util.Set;
 @Service
 public class OrderInvoiceService {
     private static final Logger log = LoggerFactory.getLogger(OrderInvoiceService.class);
-    static final String READ_PERMISSION = "order:read";
     static final String WRITE_PERMISSION = "order:invoice:write";
     static final int MAX_ATTACHMENTS = 5;
     static final long MAX_ATTACHMENT_BYTES = 10L * 1024 * 1024;
@@ -69,7 +68,7 @@ public class OrderInvoiceService {
 
     /** 查订单的发票登记；未申请/已撤回没有记录时返回空数据，前端按未申请展示。 */
     public OrderInvoiceView view(String orderNo) {
-        CallerIdentity actor = actor(READ_PERMISSION);
+        CallerIdentity actor = actor(InvoiceReadPermission.current());
         String tenantId = actor.tenantId().toString();
         String normalized = text(orderNo, 80, "orderNo");
         if (normalized == null) throw badRequest("orderNo不能为空");
@@ -87,7 +86,7 @@ public class OrderInvoiceService {
             String customerName,
             Instant appliedFrom,
             Instant appliedTo) {
-        CallerIdentity actor = actor(READ_PERMISSION);
+        CallerIdentity actor = actor(InvoiceReadPermission.current());
         String tenantId = actor.tenantId().toString();
         String normalizedStatus =
                 status == null || status.isBlank() ? null : enumValue(status, PAGE_STATUSES, "status");
@@ -339,7 +338,7 @@ public class OrderInvoiceService {
 
     /** 客户开票资料列表；最近使用优先，用于申请弹窗下拉选择与回显。 */
     public List<OrderInvoiceProfileView> profilesByOrderNo(String orderNo) {
-        CallerIdentity actor = actor(READ_PERMISSION);
+        CallerIdentity actor = actor(InvoiceReadPermission.current());
         String tenantId = actor.tenantId().toString();
         String normalized = text(orderNo, 80, "orderNo");
         if (normalized == null) throw badRequest("orderNo不能为空");

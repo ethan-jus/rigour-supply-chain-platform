@@ -168,13 +168,13 @@ public final class DhbIntegrationService {
 
     private final DhbIntegrationStore store;
     private final DhbClient client;
-    private final DhbOrderSyncService orderSyncService;
+    private final DhbSyncOrchestrationService orderSyncService;
     private final ProductMediaStorage productMediaStorage;
     private final ProductImageObjectKeyFactory productImageObjectKeyFactory;
     private final ProductMediaSyncStore productMediaSyncStore;
 
     public DhbIntegrationService(DhbIntegrationStore store, DhbClient client,
-                                 DhbOrderSyncService orderSyncService,
+                                 DhbSyncOrchestrationService orderSyncService,
                                  ProductMediaStorage productMediaStorage,
                                  ProductImageObjectKeyFactory productImageObjectKeyFactory,
                                  ProductMediaSyncStore productMediaSyncStore) {
@@ -758,7 +758,7 @@ public final class DhbIntegrationService {
     /** 手动执行第一阶段订单同步；定时调度和供应商写接口暂不在本用例启用。 */
     public SyncRunView runOrderPull(UUID taskId, SyncRunCommand command) {
         CallerIdentity caller = requireWriteCaller();
-        return orderSyncService.runOrderPull(caller, taskId, command);
+        return orderSyncService.runTask(caller, taskId, command);
     }
 
     public List<OrderMirrorView> orderMirrors(int limit, int offset) {

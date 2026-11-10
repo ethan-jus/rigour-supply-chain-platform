@@ -83,6 +83,8 @@ class DhbSyncOrchestrationServiceTest {
 
     @BeforeEach
     void setUp() {
+        lenient().when(crmClient.syncLatestCustomers(any(), any(), any(), anyInt(), any())).thenReturn(crmResult());
+        lenient().when(crmClient.syncLatestCustomersInBackground(any(), any(), any(), anyInt(), any(), any())).thenReturn(crmResult());
         lenient().when(orderSyncService.reconcileDeletedOrders(any(), any(), anyInt(), any()))
                 .thenReturn(new com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView(
                         "ORDER", "SOURCE_PRESENCE", "SUCCEEDED", null, 0, 0, 0, Map.of(), "来源核对完成"));
@@ -634,20 +636,54 @@ class DhbSyncOrchestrationServiceTest {
         assertThat(result.triggerType()).isEqualTo("MANUAL");
         assertThat(result.status()).isEqualTo("SUCCEEDED");
         assertThat(result.tenants()).singleElement().satisfies(tenant ->
-                assertThat(tenant.steps()).singleElement().satisfies(step -> {
+                assertThat(tenant.steps().stream().filter(step -> "ORDER".equals(step.domain())).toList()).singleElement().satisfies(step -> {
                     assertThat(step.domain()).isEqualTo("ORDER");
                     assertThat(step.objectType()).isEqualTo("ORDER_DOMAIN");
                     assertThat(step.status()).isEqualTo("SUCCEEDED");
                 }));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"FAILED", "PARTIAL", "SKIPPED"})
+    void receiptPageDoesNotReadPaymentsWhenCustomerRefreshFails(String status) {
+        when(crmClient.syncLatestCustomers(any(),any(),any(),anyInt(),any()))
+                .thenReturn(new SyncResult(UUID.randomUUID(),status,crmResult().objects()));
+        var result=service.runPage(manualCaller(),new DhbPageSyncCommand(DhbPageSyncCommand.Scope.RECEIPT,CONNECTOR_ID,Instant.parse("2026-08-01T00:00:00Z"),Instant.parse("2026-08-02T00:00:00Z"),10));
+        org.mockito.Mockito.verifyNoInteractions(orderSyncService);
+        assertThat(result.tenants().getFirst().steps()).anyMatch(step -> "RECEIPT".equals(step.objectType()) && "SKIPPED".equals(step.status()));
+    }
+
     @Test
-    void receiptPageDispatchesOnlyReceiptAndNoMasterData() {
+    void singleReceiptReplayRefreshesCustomersOnceBeforeOrder() {
+        var command = new SyncRunCommand(null, null, null, "RECEIPT", "receipt-1");
+        when(orderSyncService.runOrderPull(any(), eq(ORDER_TASK_ID), eq(command))).thenReturn(orderResult());
+        service.runTask(manualCaller(), ORDER_TASK_ID, command);
+        var ordered = org.mockito.Mockito.inOrder(crmClient, orderSyncService);
+        ordered.verify(crmClient).syncLatestCustomers(any(), eq(CONNECTOR_ID), eq(CRM_TASK_ID), anyInt(), any());
+        ordered.verify(orderSyncService).runOrderPull(any(), eq(ORDER_TASK_ID), eq(command));
+        ordered.verifyNoMoreInteractions();
+    }
+
+    @Test
+    void singleReceiptReplayStopsWhenCustomersIncomplete() {
+        when(crmClient.syncLatestCustomers(any(), any(), any(), anyInt(), any()))
+                .thenReturn(new SyncResult(UUID.randomUUID(), "FAILED", crmResult().objects()));
+        assertThatThrownBy(() -> service.runTask(manualCaller(), ORDER_TASK_ID,
+                new SyncRunCommand(null, null, null, "RECEIPT", "receipt-1")))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("客户同步未完整成功");
+        org.mockito.Mockito.verifyNoInteractions(orderSyncService);
+    }
+
+    @Test
+    void receiptPageRefreshesCustomersBeforeReceipt() {
         var from=Instant.parse("2026-08-01T00:00:00Z");var to=Instant.parse("2026-08-20T00:00:00Z");
         when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),argThat(c->"RECEIPT".equals(c.syncScope())&&from.equals(c.from())&&to.equals(c.to())),eq(10))).thenReturn(orderResult());
         var result=service.runPage(manualCaller(),new com.rigour.integration.api.v1.model.DhbPageSyncCommand(com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.RECEIPT,CONNECTOR_ID,from,to,10));
-        assertThat(result.tenants().getFirst().steps()).extracting("objectType").containsExactly("RECEIPT");
-        org.mockito.Mockito.verifyNoInteractions(erpClient,crmClient,hrEmployeeClient,dhbClient,dictionaryClient);
+        assertThat(result.tenants().getFirst().steps()).extracting("objectType").containsExactly("CRM_MASTER_DATA", "RECEIPT");
+        org.mockito.Mockito.verifyNoInteractions(erpClient,hrEmployeeClient,dhbClient,dictionaryClient);
+        var ordered = org.mockito.Mockito.inOrder(crmClient, orderSyncService);
+        ordered.verify(crmClient).syncLatestCustomers(any(),eq(CONNECTOR_ID),eq(CRM_TASK_ID),eq(10),any());
+        ordered.verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10));
         org.mockito.Mockito.verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10));
         org.mockito.Mockito.verifyNoMoreInteractions(orderSyncService);
     }
@@ -673,9 +709,9 @@ class DhbSyncOrchestrationServiceTest {
 
         assertThat(calls).containsExactly("SALES_ORDER","RECEIPT","PAYMENT");
         assertThat(result.status()).isEqualTo("FAILED");
-        assertThat(result.tenants().getFirst().steps())
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList())
                 .extracting("objectType").containsExactly("SALES_ORDER","RECEIPT","PAYMENT");
-        assertThat(result.tenants().getFirst().steps())
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList())
                 .extracting("status").containsExactly("SUCCEEDED","FAILED","SUCCEEDED");
     }
 
@@ -704,7 +740,7 @@ class DhbSyncOrchestrationServiceTest {
                 DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE, CONNECTOR_ID, null, null, 10, true));
 
         assertThat(result.status()).isEqualTo("SUCCEEDED");
-        assertThat(result.tenants().getFirst().steps())
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList())
                 .extracting("objectType").containsExactly("SALES_ORDER", "RECEIPT", "PAYMENT", "SOURCE_PRESENCE");
         verify(objectCheckpoints).completed(eq(TENANT_ID), eq(CONNECTOR_ID), eq("SALES_ORDER"), eq(end), any());
         verify(objectCheckpoints).completed(eq(TENANT_ID), eq(CONNECTOR_ID), eq("RECEIPT"), eq(end), any());
@@ -728,7 +764,7 @@ class DhbSyncOrchestrationServiceTest {
                     assertThat(c.from()).isEqualTo(Instant.parse("2026-09-03T16:00:00Z"));
                     assertThat(c.to()).isEqualTo(Instant.parse("2026-09-22T07:58:00Z"));
                 });
-        assertThat(stages).hasSize(7).anyMatch(s->s.contains("订单及明细")).anyMatch(s->s.contains("收款"));
+        assertThat(stages).hasSize(8).anyMatch(s->s.contains("订单及明细")).anyMatch(s->s.contains("收款"));
     }
 
     @Test
@@ -754,7 +790,7 @@ class DhbSyncOrchestrationServiceTest {
         assertThat(result.status()).isEqualTo("PARTIAL");
         verify(objectCheckpoints, org.mockito.Mockito.times(3)).completed(any(), any(), any(),
                 eq(Instant.parse("2026-09-05T07:58:00Z")), any());
-        assertThat(result.tenants().getFirst().steps()).filteredOn(step -> !"SOURCE_PRESENCE".equals(step.objectType())).extracting("message")
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList()).filteredOn(step -> !"SOURCE_PRESENCE".equals(step.objectType())).extracting("message")
                 .allSatisfy(message -> assertThat(String.valueOf(message)).contains("不表示全部入账成功"));
     }
 
@@ -780,9 +816,9 @@ class DhbSyncOrchestrationServiceTest {
                 DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE, CONNECTOR_ID, null, null, 10, true));
 
         assertThat(result.status()).isEqualTo("SUCCEEDED");
-        assertThat(result.tenants().getFirst().steps())
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList())
                 .extracting("status").containsExactly("SUCCEEDED", "SUCCEEDED", "SUCCEEDED", "SUCCEEDED");
-        assertThat(result.tenants().getFirst().steps()).filteredOn(step -> !"SOURCE_PRESENCE".equals(step.objectType())).extracting("message")
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList()).filteredOn(step -> !"SOURCE_PRESENCE".equals(step.objectType())).extracting("message")
                 .allSatisfy(message -> assertThat(String.valueOf(message))
                         .contains("再次点击")
                         .doesNotContain("scheduled-window-from"));
@@ -859,7 +895,7 @@ class DhbSyncOrchestrationServiceTest {
                 DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE, CONNECTOR_ID, null, null, 10, true));
 
         assertThat(result.status()).isEqualTo("SUCCEEDED_WITH_WARNINGS");
-        assertThat(result.tenants().getFirst().steps())
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList())
                 .extracting("status").containsExactly("SKIPPED", "SKIPPED", "SKIPPED", "SUCCEEDED");
         verify(orderSyncService).reconcileDeletedOrders(any(), eq(ORDER_TASK_ID), eq(10), any());
         verify(orderSyncService, never()).runOrderPull(any(), any(), any(),
@@ -888,9 +924,9 @@ class DhbSyncOrchestrationServiceTest {
                 DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE, CONNECTOR_ID, null, null, 10, true));
 
         assertThat(result.status()).isEqualTo("FAILED");
-        assertThat(result.tenants().getFirst().steps())
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList())
                 .extracting("status").containsExactly("SUCCEEDED", "FAILED", "SUCCEEDED", "SUCCEEDED");
-        assertThat(result.tenants().getFirst().steps().getFirst().message()).contains("再次点击");
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList().getFirst().message()).contains("再次点击");
         verify(objectCheckpoints).completed(eq(TENANT_ID), eq(CONNECTOR_ID), eq("SALES_ORDER"),
                 eq(firstSliceTo), any());
         verify(objectCheckpoints, never()).completed(eq(TENANT_ID), eq(CONNECTOR_ID),
@@ -921,7 +957,7 @@ class DhbSyncOrchestrationServiceTest {
         assertThat(result.status()).isEqualTo("SUCCEEDED");
         assertThat(calls).containsEntry("SALES_ORDER", 1)
                 .containsEntry("RECEIPT", 1).containsEntry("PAYMENT", 1);
-        assertThat(result.tenants().getFirst().steps()).filteredOn(step -> !"SOURCE_PRESENCE".equals(step.objectType())).extracting("message")
+        assertThat(result.tenants().getFirst().steps().stream().filter(step -> "ORDER".equals(step.domain())).toList()).filteredOn(step -> !"SOURCE_PRESENCE".equals(step.objectType())).extracting("message")
                 .allSatisfy(message -> assertThat(String.valueOf(message)).contains("再次点击"));
         verify(objectCheckpoints).completed(eq(TENANT_ID), eq(CONNECTOR_ID), eq("SALES_ORDER"),
                 eq(Instant.parse("2026-09-10T16:00:00Z")), any());
@@ -938,7 +974,7 @@ class DhbSyncOrchestrationServiceTest {
         var result = service.runPage(manualCaller(), new DhbPageSyncCommand(
                 DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE, CONNECTOR_ID, from, to, 10));
 
-        var step = result.tenants().getFirst().steps().getFirst();
+        var step = result.tenants().getFirst().steps().stream().filter(item -> "ORDER".equals(item.domain())).toList().getFirst();
         assertThat(step.fetched()).isEqualTo(10);
         assertThat(step.created()).isEqualTo(3);
         assertThat(step.updated()).isEqualTo(5);

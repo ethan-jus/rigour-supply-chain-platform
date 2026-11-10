@@ -1819,6 +1819,28 @@ SELECT COUNT(*) FROM crm_contact c
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer WHERE tenant_id=? AND customer_code='SHIP-BAD'",Integer.class,tenant)).isZero();
     }
 
+    @Test
+    void dhbSyncRefreshesOwnerOnExistingCustomerAndRecordsHistoryOnce() {
+        UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID(), actor=UUID.randomUUID();
+        var type=CrmMasterDataObjectType.CUSTOMER; var run=start(tenant,connector,actor,type);
+        var initial=customerRecord("归属变更门店");
+        store.importRecord(tenant,connector,run,type,initial);
+        long id=jdbcTemplate.queryForObject("SELECT id FROM crm_customer WHERE tenant_id=?",Long.class,tenant.toString());
+        var before=jdbcTemplate.queryForMap("SELECT created_time,business_created_at,customer_code FROM crm_customer WHERE id=?",id);
+        // 曾手工维护过的客户也不能漏掉订货宝本次业务员变更。
+        jdbcTemplate.update("UPDATE crm_customer SET owner_management_mode='LOCAL',created_by='MANUAL',updated_by='MANUAL' WHERE id=?",id);
+        var fields=new LinkedHashMap<String,Object>(initial.sourceFields());
+        fields.put("staffID","NEW-STAFF"); fields.put("staffName","新业务员");
+        fields.put("_employeeBySourceId",Map.of("NEW-STAFF",Map.of("employeeCode","NEW-EMP","employeeName","新业务员")));
+        var changed=new SourceRecord(initial.sourceId(),initial.sourceCode(),initial.sourceName(),initial.sourceStatus(),initial.sourceCreatedAt(),Instant.parse("2026-11-10T01:00:00Z"),fields);
+        store.importRecord(tenant,connector,run,type,changed);
+        assertThat(jdbcTemplate.queryForObject("SELECT owner_employee_code FROM crm_customer WHERE id=?",String.class,id)).isEqualTo("NEW-EMP");
+        assertThat(jdbcTemplate.queryForMap("SELECT created_time,business_created_at,customer_code FROM crm_customer WHERE id=?",id)).isEqualTo(before);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer_responsibility_history WHERE tenant_id=? AND customer_id=? AND new_employee_code='NEW-EMP'",Long.class,tenant.toString(),id)).isEqualTo(1);
+        store.importRecord(tenant,connector,run,type,changed);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer_responsibility_history WHERE tenant_id=? AND customer_id=? AND new_employee_code='NEW-EMP'",Long.class,tenant.toString(),id)).isEqualTo(1);
+    }
+
     private UUID start(
             UUID tenantId, UUID connectorId, UUID actorId, CrmMasterDataObjectType type) {
         if (type == CrmMasterDataObjectType.CUSTOMER && jdbcTemplate.queryForObject(

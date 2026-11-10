@@ -39,9 +39,11 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
                     + " ON o.tenant_id=inv.tenant_id AND o.id=inv.sales_order_id";
 
     private final JdbcTemplate jdbc;
+    private final OrderDataScope scopes;
 
-    public JdbcOrderInvoiceStore(JdbcTemplate jdbc) {
+    public JdbcOrderInvoiceStore(JdbcTemplate jdbc, OrderDataScope scopes) {
         this.jdbc = jdbc;
+        this.scopes = scopes;
     }
 
     @Override
@@ -54,6 +56,7 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
                         tenantId,
                         orderNo)
                 .stream()
+                .filter(row -> visible(tenantId, row))
                 .findFirst();
     }
 
@@ -66,6 +69,7 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
                         tenantId,
                         salesOrderId)
                 .stream()
+                .filter(row -> visible(tenantId, row))
                 .findFirst();
     }
 
@@ -78,7 +82,17 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
                         tenantId,
                         id)
                 .stream()
+                .filter(row -> visible(tenantId, row))
                 .findFirst();
+    }
+
+    private boolean visible(String tenantId, OrderInvoiceRow row) {
+        String permission = com.rigour.order.application.service.sales.InvoiceReadPermission.current();
+        if (!com.rigour.shared.context.AuthorizationContext.hasPermission(permission)
+                && com.rigour.shared.context.AuthorizationContext.hasPermission("order:invoice:write"))
+            permission = "order:invoice:write";
+        scopes.requireOrder(tenantId, row.salesOrderId(), permission);
+        return true;
     }
 
     @Override
@@ -232,11 +246,14 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
         return Map.copyOf(counts);
     }
 
-    private static Where invoiceWhere(
+    private Where invoiceWhere(
             String tenantId, InvoicePageCriteria criteria, boolean withStatus) {
         StringBuilder sql = new StringBuilder("inv.tenant_id=? AND inv.deleted=0");
         List<Object> args = new ArrayList<>();
         args.add(tenantId);
+        var scope = scopes.predicate(com.rigour.order.application.service.sales.InvoiceReadPermission.current(), "o.", null);
+        sql.append(" AND o.deleted=0 AND ").append(scope.sql());
+        args.addAll(scope.args());
         if (withStatus && criteria.status() != null) {
             sql.append(" AND inv.status=?");
             args.add(criteria.status());
