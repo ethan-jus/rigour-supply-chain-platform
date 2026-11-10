@@ -54,6 +54,11 @@ class ManualCostPersistenceTest {
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN deleted INT NOT NULL DEFAULT 0");
 
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN source_system VARCHAR(20)");
+        // 手工费用没有平台来源；保留空来源表以执行确认时的真实关联检查。
+        jdbc.execute(
+                "CREATE TABLE order_logistics_import_order(tenant_id VARCHAR(36),"
+                        + "cost_id VARCHAR(36),source_json LONGTEXT,bill_verification_json LONGTEXT,"
+                        + "source_difference INT NOT NULL DEFAULT 0)");
         String attachmentDdl =
                 Files.readString(
                                 Path.of(
