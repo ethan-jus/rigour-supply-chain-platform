@@ -115,6 +115,8 @@ public final class OrderLogisticsCostService {
         text(q.remark(), 1000, "备注");
         text(q.trackingNo(), 100, "运单号");
         text(q.sourceDocumentNo(), 100, "来源单号");
+        text(q.sourceEmployeeName(), 100, "业务员");
+        text(q.sourceDepartmentName(), 100, "归属部门");
         if (q.dateFrom() != null && q.dateTo() != null && q.dateTo().isBefore(q.dateFrom()))
             throw bad("截止日期不能早于开始日期");
         var page =
@@ -146,7 +148,9 @@ public final class OrderLogisticsCostService {
                                 q.carrierName(),
                                 q.costMonth(),
                                 q.orderTypeCode(),
-                                q.carrierCode()),
+                                q.carrierCode(),
+                                q.sourceEmployeeName(),
+                                q.sourceDepartmentName()),
                         p);
         return page.items().stream().noneMatch(row -> row.data().ledger() != null)
                 ? page

@@ -111,6 +111,36 @@ public class LogisticsCostFilterTest {
     }
 
     @Test
+    void relatedCostCountsRemainScopedAndDeduplicateAllocations() {
+        assertThat(store.sourceUsage("T1", List.of("SRC-A"), "cost:read"))
+                .containsEntry("SRC-A", 1);
+        jdbc.update(
+                "UPDATE order_logistics_cost SET sources_json=? WHERE id='good'",
+                "[{\"orderCode\":\"SRC-A\"},{\"orderCode\":\"SRC-A\"}]");
+        assertThat(store.sourceUsage("T1", List.of("SRC-A"), "cost:read"))
+                .containsEntry("SRC-A", 1);
+        jdbc.update("UPDATE order_logistics_cost SET status_code='VOID' WHERE id='good'");
+        assertThat(store.sourceUsage("T1", List.of("SRC-A"), "cost:read")).isEmpty();
+    }
+
+    @Test
+    void businessOwnershipFiltersUseFrozenSourcesInsteadOfBookingOwner() {
+        jdbc.update(
+                "UPDATE order_logistics_cost SET data_json=?",
+                "{\"ledger\":{\"schemaVersion\":2,\"sources\":[{\"employeeName\":\"销售张三\",\"departmentName\":\"武汉销售部\"}]}}");
+        var match =
+                JSON.readValue(
+                        "{\"begin\":0,\"step\":20,\"sourceEmployeeName\":\"张三\",\"sourceDepartmentName\":\"武汉\"}",
+                        LogisticsCostQuery.class);
+        assertThat(store.entries("T1", "LOGISTICS", match, "cost:read").total()).isEqualTo(1);
+        var wrong =
+                JSON.readValue(
+                        "{\"begin\":0,\"step\":20,\"sourceEmployeeName\":\"下单人李四\"}",
+                        LogisticsCostQuery.class);
+        assertThat(store.entries("T1", "LOGISTICS", wrong, "cost:read").total()).isZero();
+    }
+
+    @Test
     void selectedExportStillIntersectsTenantAndWarehouseScope() {
         var rows = store.selectedEntries("T1", List.of("good", "other", "hidden"), "cost:export");
         assertThat(rows).extracting(r -> r.id()).containsExactly("good");

@@ -24,4 +24,11 @@ public interface OrderLogisticsCostMapper extends BaseMapper<OrderLogisticsCostE
             "SELECT COALESCE((SELECT version FROM order_logistics_cost_guard WHERE"
                     + " tenant_id=#{tenant}),0)")
     String analyticsVersion(@org.apache.ibatis.annotations.Param("tenant") String tenant);
+
+    @Select(
+            "SELECT source_json,bill_verification_json,CAST(source_difference AS SIGNED) AS"
+                + " source_difference FROM order_logistics_import_order WHERE tenant_id=#{tenant}"
+                + " AND cost_id=#{id} FOR UPDATE")
+    java.util.List<java.util.Map<String, Object>> lockCarrierSource(
+            @Param("tenant") String tenant, @Param("id") String id);
 }

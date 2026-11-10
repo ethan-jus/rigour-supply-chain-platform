@@ -166,6 +166,11 @@ class CostDashboardServiceTest {
         assertThat(total).isEqualByComparingTo(CostAnalysis.amount(expected));
         for (var department : result) {
             assertThat(
+                            department.transportTypes().stream()
+                                    .map(t -> new BigDecimal(t.amount()))
+                                    .reduce(BigDecimal.ZERO, BigDecimal::add))
+                    .isEqualByComparingTo(department.logistics());
+            assertThat(
                             department.people().stream()
                                     .map(p -> new BigDecimal(p.amount()))
                                     .reduce(BigDecimal.ZERO, BigDecimal::add))

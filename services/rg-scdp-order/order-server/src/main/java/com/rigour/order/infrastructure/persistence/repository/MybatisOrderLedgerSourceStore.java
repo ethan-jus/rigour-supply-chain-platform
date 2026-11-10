@@ -13,11 +13,20 @@ import java.util.List;
 public class MybatisOrderLedgerSourceStore implements OrderLedgerSourceStore {
     private final OrderCostSourceMapper mapper;
     private final LogisticsWarehouseDataScope scope;
+    private final MybatisPlusOrderLogisticsCostRepository costs;
 
     public MybatisOrderLedgerSourceStore(
-            OrderCostSourceMapper mapper, LogisticsWarehouseDataScope scope) {
+            OrderCostSourceMapper mapper,
+            LogisticsWarehouseDataScope scope,
+            MybatisPlusOrderLogisticsCostRepository costs) {
         this.mapper = mapper;
         this.scope = scope;
+        this.costs = costs;
+    }
+
+    public java.util.Map<String, Integer> logisticsUsage(
+            String tenant, List<String> documentNos, String action) {
+        return costs.sourceUsage(tenant, documentNos, action);
     }
 
     public List<OrderDeliveryCostSourceView> sales(
@@ -48,6 +57,8 @@ public class MybatisOrderLedgerSourceStore implements OrderLedgerSourceStore {
             q.apply(
                     "LOCATE({0},COALESCE(snap.employee_name,o.owner_employee_name_snapshot,''))>0",
                     f.employeeName());
+        if (text(f.departmentName()))
+            q.apply("LOCATE({0},COALESCE(snap.department_name,''))>0", f.departmentName());
         q.like(text(f.partyName()), "o.customer_name_snapshot", f.partyName());
         q.ge(
                 f.dateFrom() != null,

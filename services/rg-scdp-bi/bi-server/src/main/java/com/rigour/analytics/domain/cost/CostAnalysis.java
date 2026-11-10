@@ -9,7 +9,7 @@ import java.util.function.Function;
 public final class CostAnalysis {
     private CostAnalysis() {}
 
-    public static final String NORMALIZATION_VERSION = "10";
+    public static final String NORMALIZATION_VERSION = "11";
 
     public static final Map<String, String> CATEGORIES;
 

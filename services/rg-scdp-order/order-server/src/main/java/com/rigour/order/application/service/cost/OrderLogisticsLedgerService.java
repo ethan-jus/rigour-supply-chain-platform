@@ -40,6 +40,7 @@ public final class OrderLogisticsLedgerService {
     public List<LogisticsCostSourceView> sources(LogisticsLedgerSourceQuery q, String action) {
         if (q == null
                 || q.employeeName() != null && q.employeeName().length() > 100
+                || q.departmentName() != null && q.departmentName().length() > 100
                 || q.historical()
                         && (!q.exact() || q.documentNo() == null || q.documentNo().isBlank())
                 || q.begin() < 0
@@ -48,7 +49,8 @@ public final class OrderLogisticsLedgerService {
                 || q.partyName() != null && q.partyName().length() > 200
                 || q.dateFrom() != null && q.dateTo() != null && q.dateTo().isBefore(q.dateFrom()))
             throw bad("单据筛选条件无效");
-        if (!"SALES_ORDER".equals(q.orderTypeCode())) return references.ledgerSources(q, action);
+        if (!"SALES_ORDER".equals(q.orderTypeCode()))
+            return withUsage(references.ledgerSources(q, action), q, action);
         Long warehouseId = null;
         if (q.sourceWarehouseCode() != null && !q.sourceWarehouseCode().isBlank())
             warehouseId =
@@ -152,7 +154,20 @@ public final class OrderLogisticsLedgerService {
                             warehouse == null ? null : warehouse.cityCode(),
                             issue));
         }
-        return result;
+        return withUsage(result, q, action);
+    }
+
+    private List<LogisticsCostSourceView> withUsage(
+            List<LogisticsCostSourceView> rows, LogisticsLedgerSourceQuery query, String action) {
+        if (query.exact() || query.historical() || rows.isEmpty()) return rows;
+        var counts =
+                sales.logisticsUsage(
+                        AuthorizationContext.requireCurrent().tenantId().toString(),
+                        rows.stream().map(LogisticsCostSourceView::documentNo).toList(),
+                        action);
+        return rows.stream()
+                .map(row -> row.withLinkedLogisticsCount(counts.getOrDefault(row.documentNo(), 0)))
+                .toList();
     }
 
     private LogisticsLedgerPartyView party(String kind, String code, String city, String action) {

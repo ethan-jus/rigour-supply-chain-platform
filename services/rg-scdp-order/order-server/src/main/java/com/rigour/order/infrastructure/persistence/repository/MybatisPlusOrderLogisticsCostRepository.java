@@ -96,6 +96,39 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         return q;
     }
 
+    /**
+     * Batch source references under the same tenant, city and complete warehouse policy as the cost
+     * list.
+     */
+    public java.util.Map<String, Integer> sourceUsage(
+            String tenant, java.util.List<String> documents, String action) {
+        if (documents.isEmpty()) return java.util.Map.of();
+        var q = where(tenant, "LOGISTICS", action).ne("status_code", "VOID").select("sources_json");
+        q.and(
+                w -> {
+                    for (String document : documents)
+                        w.or().apply(
+                                        "JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].orderCode','$[*].documentNo')"
+                                            + " IS NOT NULL",
+                                        document.replace("\\", "\\\\")
+                                                .replace("%", "\\%")
+                                                .replace("_", "\\_"));
+                });
+        var result = new java.util.HashMap<String, Integer>();
+        var keys = new java.util.HashSet<>(documents);
+        for (var row : mapper.selectMaps(q)) {
+            var counted = new java.util.HashSet<String>();
+            for (var source :
+                    json.readTree(java.util.Objects.toString(row.get("sources_json"), "[]"))) {
+                String code =
+                        source.path("orderCode").asString(source.path("documentNo").asString(""));
+                if (keys.contains(code)) counted.add(code);
+            }
+            counted.forEach(code -> result.merge(code, 1, Integer::sum));
+        }
+        return result;
+    }
+
     private static void partyFilter(
             QueryWrapper<OrderLogisticsCostEntity> q, String field, String value) {
         // field is a fixed internal path; user text is always bound and JSON_SEARCH wildcards are
@@ -134,8 +167,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         if (text(filter.orderTypeCode()))
             q.apply(
                     "(JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].orderTypeCode') IS NOT NULL OR"
-                        + " JSON_SEARCH(sources_json,'one',{1},NULL,'$[*].sourceType') IS NOT"
-                        + " NULL)",
+                            + " JSON_SEARCH(sources_json,'one',{1},NULL,'$[*].sourceType') IS NOT"
+                            + " NULL)",
                     filter.orderTypeCode(),
                     switch (filter.orderTypeCode()) {
                         case "PURCHASE_ORDER" -> "PURCHASE";
@@ -169,6 +202,30 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         + " JSON_SEARCH(data_json,'one',{1},NULL,'$.logistics.externalDocuments[*].documentNo','$.logistics.externalDocuments[*].receiverName')"
                         + " IS NOT NULL)",
                     filter.objectName().trim(), objectPattern);
+        }
+        // Filter the frozen business-document ownership, never the booking employee's current HR
+        // department.
+        for (var field :
+                java.util.Map.of(
+                                "employeeName",
+                                java.util.Objects.toString(filter.sourceEmployeeName(), ""),
+                                "departmentName",
+                                java.util.Objects.toString(filter.sourceDepartmentName(), ""))
+                        .entrySet()) {
+            if (!text(field.getValue())) continue;
+            String pattern =
+                    "%"
+                            + field.getValue()
+                                    .trim()
+                                    .replace("\\", "\\\\")
+                                    .replace("%", "\\%")
+                                    .replace("_", "\\_")
+                            + "%";
+            q.apply(
+                    "JSON_SEARCH(data_json,'one',{0},NULL,'$.ledger.sources[*]."
+                            + field.getKey()
+                            + "') IS NOT NULL",
+                    pattern);
         }
         if (text(filter.senderName())) partyFilter(q, "senderName", filter.senderName());
         if (text(filter.receiverName())) partyFilter(q, "receiverName", filter.receiverName());
@@ -246,11 +303,11 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                                 "COALESCE(SUM(status_code<>'VOID' AND amount IS"
                                                         + " NULL),0) missing",
                                                 "COALESCE(SUM(CASE WHEN status_code='DRAFT' THEN"
-                                                    + " amount ELSE 0 END),0) pending_amount",
+                                                        + " amount ELSE 0 END),0) pending_amount",
                                                 "COALESCE(SUM(status_code='CONFIRMED' AND amount=0"
-                                                    + " AND payer_code IN"
-                                                    + " ('SUPPLIER','CUSTOMER','OTHER')),0)"
-                                                    + " third_party"))
+                                                        + " AND payer_code IN"
+                                                        + " ('SUPPLIER','CUSTOMER','OTHER')),0)"
+                                                        + " third_party"))
                         .getFirst();
         var rows =
                 mapper
@@ -477,6 +534,39 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         lock(tenant);
         var old = entry(tenant, category, id, action);
         boolean confirm = action.endsWith(":confirm");
+        if (confirm) {
+            var sources = mapper.lockCarrierSource(tenant, id);
+            if (sources != null)
+                for (var source : sources) {
+                    var carrier =
+                            json.readValue(
+                                    source.get("source_json").toString(),
+                                    com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder
+                                            .class);
+                    if (((Number) source.get("source_difference")).intValue() != 0)
+                        throw conflict("货拉拉来源账单已变化，请先核对来源差异");
+                    var verification =
+                            source.get("bill_verification_json") == null
+                                    ? null
+                                    : json.readValue(
+                                            source.get("bill_verification_json").toString(),
+                                            com.rigour.order.api.v1.model.LogisticsImportModels
+                                                    .BillVerification.class);
+                    if (carrier.facts() == null && verification == null) continue;
+                    var amount =
+                            verification == null
+                                    ? carrier.facts().billAmount()
+                                    : verification.amount();
+                    if (verification == null && !"FINAL".equals(carrier.facts().billState())
+                            || amount == null
+                            || old.data().amount() == null
+                            || amount.compareTo(old.data().amount()) != 0
+                            || old.data().ledger() == null
+                            || !carrier.orderNo().equals(old.data().ledger().trackingNo())
+                            || !"HLL".equals(old.data().ledger().carrierCode()))
+                        throw conflict("运输费用、货拉拉单号及已核对净账单不一致，请重新编辑后确认");
+                }
+        }
         if (confirm
                 && old.data().ledger() == null
                 && old.data().logistics().sourceIds() != null
@@ -591,15 +681,27 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                 .orderByDesc("id"))
                 .stream()
                 .map(
-                        a ->
-                                new LogisticsCostAuditView(
-                                        a.getActionCode(),
-                                        a.getActorId(),
-                                        a.getReason(),
-                                        a.getCreatedTime().toInstant(ZoneOffset.UTC),
-                                        json.readValue(
-                                                a.getSnapshotJson(),
-                                                LogisticsCostDetailView.class)))
+                        a -> {
+                            boolean evidence =
+                                    java.util.Set.of("SOURCE_ACCEPT", "BILL_VERIFY")
+                                            .contains(a.getActionCode());
+                            return new LogisticsCostAuditView(
+                                    a.getActionCode(),
+                                    a.getActorId(),
+                                    a.getReason(),
+                                    a.getCreatedTime().toInstant(ZoneOffset.UTC),
+                                    evidence
+                                            ? null
+                                            : json.readValue(
+                                                    a.getSnapshotJson(),
+                                                    LogisticsCostDetailView.class),
+                                    evidence
+                                            ? json.readValue(
+                                                    a.getSnapshotJson(),
+                                                    new tools.jackson.core.type.TypeReference<
+                                                            java.util.Map<String, Object>>() {})
+                                            : null);
+                        })
                 .toList();
     }
 

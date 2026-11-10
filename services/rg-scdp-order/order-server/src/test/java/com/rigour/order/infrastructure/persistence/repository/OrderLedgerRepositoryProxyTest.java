@@ -94,7 +94,8 @@ class OrderLedgerRepositoryProxyTest {
                         () ->
                                 new MybatisOrderLedgerSourceStore(
                                         mock(OrderCostSourceMapper.class),
-                                        mock(LogisticsWarehouseDataScope.class)))
+                                        mock(LogisticsWarehouseDataScope.class),
+                                        mock(MybatisPlusOrderLogisticsCostRepository.class)))
                 .run(
                         context -> {
                             assertThat(context).hasNotFailed();

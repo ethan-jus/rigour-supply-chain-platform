@@ -329,6 +329,14 @@ public final class CostSourceNormalizer {
                                 ? dictionaryDimension("COST_DELIVERY_MODE", "SELF")
                                 : dimension(null, text(data, "logistics", "carrierName"), "carrier")
                         : dictionaryDimension("COST_CARRIER", carrier));
+        dims.put(
+                "transportTrackingNo",
+                dimension(
+                        null,
+                        first(
+                                text(data, "ledger", "trackingNo"),
+                                text(data, "logistics", "trackingNo")),
+                        "tracking"));
         String sender = partyName(data.path("ledger").path("sender"));
         List<String> receivers = new ArrayList<>();
         for (var point : data.path("ledger").path("receivingPoints")) {

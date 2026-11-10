@@ -106,6 +106,8 @@ public class CostDashboardService {
                             freight = BigDecimal.ZERO,
                             logistics = BigDecimal.ZERO;
                     Map<String, BigDecimal> people = new TreeMap<>();
+                    Map<String, BigDecimal> transports = new TreeMap<>();
+                    Map<String, String> transportLabels = new HashMap<>();
                     Map<String, CostFact> labels = new HashMap<>();
                     for (var fact : facts) {
                         if ("purchase".equals(fact.category())) {
@@ -114,6 +116,9 @@ public class CostDashboardService {
                             else goods = goods.add(fact.amount());
                         } else {
                             logistics = logistics.add(fact.amount());
+                            var leg = fact.dimension("leg");
+                            transports.merge(leg.key(), fact.amount(), BigDecimal::add);
+                            transportLabels.put(leg.key(), leg.label());
                             String role =
                                     "dict:COST_TRANSPORT_PURPOSE:DELIVERY"
                                                     .equals(fact.dimension("leg").key())
@@ -149,7 +154,17 @@ public class CostDashboardService {
                                     goods.toPlainString(),
                                     freight.toPlainString(),
                                     logistics.toPlainString(),
-                                    List.copyOf(children)));
+                                    List.copyOf(children),
+                                    transports.entrySet().stream()
+                                            .map(
+                                                    t ->
+                                                            new com.rigour.analytics.api.v1.model
+                                                                    .CostDepartmentSummary
+                                                                    .Transport(
+                                                                    t.getKey(),
+                                                                    transportLabels.get(t.getKey()),
+                                                                    t.getValue().toPlainString()))
+                                            .toList()));
                 });
         return result;
     }
@@ -498,6 +513,8 @@ public class CostDashboardService {
                     if (value != null) dimensions.put(label, value.label());
                 });
         Map.of(
+                        "transportTrackingNo",
+                        "货拉拉／运单号",
                         "courier_contents",
                         "寄送内容",
                         "courier_recipientName",

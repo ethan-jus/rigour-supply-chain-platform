@@ -14,7 +14,37 @@ public record LogisticsLedgerSourceQuery(
         Integer begin,
         Boolean exact,
         Boolean historical,
-        String employeeName) {
+        String employeeName,
+        String departmentName) {
+    public LogisticsLedgerSourceQuery(
+            String orderTypeCode,
+            String documentNo,
+            String partyName,
+            String sourceWarehouseCode,
+            String targetWarehouseCode,
+            String cityCode,
+            LocalDate dateFrom,
+            LocalDate dateTo,
+            Integer begin,
+            Boolean exact,
+            Boolean historical,
+            String employeeName) {
+        this(
+                orderTypeCode,
+                documentNo,
+                partyName,
+                sourceWarehouseCode,
+                targetWarehouseCode,
+                cityCode,
+                dateFrom,
+                dateTo,
+                begin,
+                exact,
+                historical,
+                employeeName,
+                null);
+    }
+
     public LogisticsLedgerSourceQuery {
         begin = begin == null ? 0 : begin;
         exact = Boolean.TRUE.equals(exact);

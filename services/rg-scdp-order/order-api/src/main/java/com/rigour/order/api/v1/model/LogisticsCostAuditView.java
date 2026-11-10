@@ -7,4 +7,14 @@ public record LogisticsCostAuditView(
         String actorId,
         String reason,
         Instant occurredTime,
-        LogisticsCostDetailView snapshot) {}
+        LogisticsCostDetailView snapshot,
+        java.util.Map<String, Object> evidence) {
+    public LogisticsCostAuditView(
+            String action,
+            String actorId,
+            String reason,
+            Instant occurredTime,
+            LogisticsCostDetailView snapshot) {
+        this(action, actorId, reason, occurredTime, snapshot, null);
+    }
+}

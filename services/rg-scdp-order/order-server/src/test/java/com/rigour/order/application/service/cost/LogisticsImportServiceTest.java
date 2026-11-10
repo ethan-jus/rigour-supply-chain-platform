@@ -24,6 +24,13 @@ class LogisticsImportServiceTest {
 
     @BeforeEach
     void setup() {
+        when(store.lockManaged(any(), any(), anyBoolean(), any()))
+                .thenAnswer(
+                        invocation ->
+                                store.lock(
+                                        invocation.getArgument(0),
+                                        invocation.getArgument(1),
+                                        invocation.getArgument(3)));
         TestAuthorizationContext.set(
                 new CallerIdentity(
                         "TENANT",
@@ -62,7 +69,7 @@ class LogisticsImportServiceTest {
 
     LogisticsCostCommand command() {
         return json.readValue(
-                """
+"""
 {"costDate":"2026-11-06","ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","deliveryModeCode":"THIRD_PARTY","carrierCode":"HLL","trackingNo":"3616894445226123730",
 "sources":[{"orderTypeCode":"SALES_ORDER","orderCode":"SO001","linkRoleCode":"COST","allocations":[]}],
 "feeItems":[{"feeKey":"F1","feeAmount":40.5,"ourAmount":40.5,"bearerCode":"COMPANY"}]}}
@@ -128,13 +135,13 @@ class LogisticsImportServiceTest {
                         json.writeValueAsString(command()).replace("SALES_ORDER", "NONE"),
                         LogisticsCostCommand.class);
         assertThatThrownBy(() -> service.generate("R1", new Generated(1, missing)))
-                .hasMessageContaining("已有销售单");
+                .hasMessageContaining("已有业务单据");
         var changed =
                 json.readValue(
                         json.writeValueAsString(command()).replace("40.5", "47.04"),
                         LogisticsCostCommand.class);
         assertThatThrownBy(() -> service.generate("R1", new Generated(1, changed)))
-                .hasMessageContaining("实付金额");
+                .hasMessageContaining("已核对来源金额");
         when(store.lock(any(), any(), eq("R1"))).thenReturn(row("已取消", null));
         assertThatThrownBy(() -> service.generate("R1", new Generated(1, command())))
                 .hasMessageContaining("已取消");

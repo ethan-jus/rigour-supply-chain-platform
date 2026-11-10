@@ -23,6 +23,36 @@ public final class LogisticsImportController {
         return ApiResponse.success(service.rows(begin));
     }
 
+    @GetMapping("/sources")
+    public ApiResponse<List<Row>> sources(
+            @RequestParam(defaultValue = "0") int begin,
+            @RequestParam(required = false) String orderNo,
+            @RequestParam(required = false) String state,
+            @RequestParam(defaultValue = "false") boolean differencesOnly) {
+        return ApiResponse.success(
+                service.query(new SourceQuery(begin, orderNo, state, differencesOnly)));
+    }
+
+    @PostMapping("/api-sources")
+    public ApiResponse<Row> receive(@RequestBody ApiSource source) {
+        return ApiResponse.success(service.receive(source));
+    }
+
+    @PostMapping("/{id}/accept-source")
+    public ApiResponse<Row> accept(@PathVariable String id, @RequestBody AcceptSource command) {
+        return ApiResponse.success(service.accept(id, command));
+    }
+
+    @PostMapping("/{id}/verify-bill")
+    public ApiResponse<Row> verify(@PathVariable String id, @RequestBody VerifyBill command) {
+        return ApiResponse.success(service.verifyBill(id, command));
+    }
+
+    @GetMapping("/by-cost/{costId}")
+    public ApiResponse<Row> byCost(@PathVariable String costId) {
+        return ApiResponse.success(service.byCost(costId));
+    }
+
     @PostMapping
     public ApiResponse<List<Row>> stage(@RequestBody Upload upload) {
         return ApiResponse.success(service.stage(upload));
