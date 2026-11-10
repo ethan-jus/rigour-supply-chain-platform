@@ -62,7 +62,58 @@ public final class LogisticsImportModels {
             List<Stop> stops,
             List<Fee> fees,
             List<Voucher> receipts,
-            List<Voucher> billVouchers) {
+            List<Voucher> billVouchers,
+            Long employeeMappingRevision) {
+        public SourceFacts {
+            employeeMappingRevision =
+                    employeeMappingRevision == null ? 0L : employeeMappingRevision;
+        }
+
+        public SourceFacts(
+                String connectorId,
+                String rawLandingId,
+                String sourceUserId,
+                String sourceStaffId,
+                String sourceEmployeeName,
+                String mappedEmployeeCode,
+                BigDecimal orderAmount,
+                BigDecimal billAmount,
+                BigDecimal unpaidAmount,
+                BigDecimal refundAmount,
+                BigDecimal couponAmount,
+                BigDecimal bonusAmount,
+                String completeTime,
+                String billUpdatedTime,
+                String billState,
+                String issue,
+                List<Stop> stops,
+                List<Fee> fees,
+                List<Voucher> receipts,
+                List<Voucher> billVouchers) {
+            this(
+                    connectorId,
+                    rawLandingId,
+                    sourceUserId,
+                    sourceStaffId,
+                    sourceEmployeeName,
+                    mappedEmployeeCode,
+                    orderAmount,
+                    billAmount,
+                    unpaidAmount,
+                    refundAmount,
+                    couponAmount,
+                    bonusAmount,
+                    completeTime,
+                    billUpdatedTime,
+                    billState,
+                    issue,
+                    stops,
+                    fees,
+                    receipts,
+                    billVouchers,
+                    0L);
+        }
+
         public SourceFacts(
                 String connectorId,
                 String rawLandingId,
@@ -129,6 +180,14 @@ public final class LogisticsImportModels {
             String orderNo,
             String lineId,
             Voucher voucher) {}
+
+    /** 员工映射按版本投递；只更新平台下单人关联，不参与费用或销售单归属。 */
+    public record EmployeeMappingUpdate(
+            String connectorId,
+            String enterpriseId,
+            String userId,
+            String employeeCode,
+            long revision) {}
 
     public record ApiSource(String connectorId, String payloadHash, CarrierOrder order) {}
 

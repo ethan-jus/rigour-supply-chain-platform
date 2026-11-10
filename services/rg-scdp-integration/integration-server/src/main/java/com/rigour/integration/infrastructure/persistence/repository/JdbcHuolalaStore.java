@@ -617,6 +617,78 @@ public class JdbcHuolalaStore implements HuolalaStore {
                 internal == null ? "CANCELLED" : "ACTIVE",
                 bytes(actor),
                 bytes(actor));
+        // 与关联保存同一事务写入现有出站队列，Order不可用时也不会丢失传播任务。
+        if (external.userId() != null && !external.userId().isBlank()) {
+            var update =
+                    new com.rigour.order.api.v1.model.LogisticsImportModels.EmployeeMappingUpdate(
+                            c.id(),
+                            c.enterpriseId(),
+                            external.userId(),
+                            internal == null ? null : internal.employeeCode(),
+                            revision + 1);
+            String payload = json.writeValueAsString(update);
+            jdbc.update(
+                    "INSERT INTO"
+                        + " integration_outbox_event(id,tenant_id,aggregate_type,aggregate_id,event_type,event_key,payload_json,payload_checksum,status,attempts,available_at,created_at,updated_at)"
+                        + " VALUES(?,?,'HLL_EMPLOYEE',?,'HLL_EMPLOYEE_MAPPING',?,?,?,'PENDING',0,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",
+                    bytes(UUID.randomUUID()),
+                    bytes(tenant),
+                    bytes(connector),
+                    "HLL_EMPLOYEE:" + c.id() + ":" + external.userId() + ":" + (revision + 1),
+                    payload,
+                    sha(payload));
+        }
+    }
+
+    @Override
+    public List<PendingBinding> bindingsDue(Instant now) {
+        return jdbc.query(
+                "SELECT id,tenant_id,attempts,payload_json FROM integration_outbox_event WHERE"
+                    + " event_type='HLL_EMPLOYEE_MAPPING' AND status IN ('PENDING','FAILED') AND"
+                    + " available_at<=? ORDER BY created_at LIMIT 20",
+                (r, n) ->
+                        new PendingBinding(
+                                uuid(r.getBytes("id")),
+                                uuid(r.getBytes("tenant_id")),
+                                r.getInt("attempts"),
+                                json.readValue(
+                                        r.getString("payload_json"),
+                                        com.rigour.order.api.v1.model.LogisticsImportModels
+                                                .EmployeeMappingUpdate.class)),
+                utc(now));
+    }
+
+    @Override
+    public boolean claimBinding(PendingBinding job, Instant now) {
+        return jdbc.update(
+                        "UPDATE integration_outbox_event SET"
+                            + " attempts=attempts+1,available_at=?,updated_at=? WHERE tenant_id=?"
+                            + " AND id=? AND event_type='HLL_EMPLOYEE_MAPPING' AND attempts=? AND"
+                            + " status IN ('PENDING','FAILED') AND available_at<=?",
+                        utc(now.plusSeconds(120)),
+                        utc(now),
+                        bytes(job.tenant()),
+                        bytes(job.id()),
+                        job.attempts(),
+                        utc(now))
+                == 1;
+    }
+
+    @Override
+    public void finishBinding(PendingBinding job, boolean success, Instant now) {
+        jdbc.update(
+                "UPDATE integration_outbox_event SET"
+                    + " status=?,available_at=?,published_at=?,last_error=?,updated_at=? WHERE"
+                    + " tenant_id=? AND id=? AND event_type='HLL_EMPLOYEE_MAPPING' AND attempts=?"
+                    + " AND status IN ('PENDING','FAILED')",
+                success ? "PUBLISHED" : "FAILED",
+                utc(now.plusSeconds(60L * Math.min(30, job.attempts() + 1))),
+                success ? utc(now) : null,
+                success ? null : "运输记录员工关联更新未完成，将自动重试",
+                utc(now),
+                bytes(job.tenant()),
+                bytes(job.id()),
+                job.attempts() + 1);
     }
 
     @Override

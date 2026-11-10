@@ -221,7 +221,39 @@ public class HuolalaService {
                 internal,
                 command.revision(),
                 command.reason().strip());
+        publishEmployeeBindings();
         return store.employees(a.tenantId());
+    }
+
+    private final java.util.concurrent.atomic.AtomicBoolean bindingPublication =
+            new java.util.concurrent.atomic.AtomicBoolean();
+
+    @Scheduled(fixedDelayString = "${rigour.integration.huolala.employee-binding-delay-ms:5000}")
+    public void publishEmployeeBindings() {
+        if (!bindingPublication.compareAndSet(false, true)) return;
+        try {
+            executor.execute(
+                    () -> {
+                        try {
+                            for (var job : store.bindingsDue(Instant.now())) {
+                                if (!store.claimBinding(job, Instant.now())) continue;
+                                boolean success = false;
+                                try {
+                                    domains.employeeMapping(service(job.tenant()), job.update());
+                                    success = true;
+                                } catch (RuntimeException ignored) {
+                                    // 持久化任务保留，独立重试；不能将失败消息误报成已同步。
+                                }
+                                store.finishBinding(job, success, Instant.now());
+                            }
+                        } finally {
+                            bindingPublication.set(false);
+                        }
+                    });
+        } catch (RuntimeException rejected) {
+            // 后台队列繁忙不阻塞人工保存，持久化事件会在下一轮继续投递。
+            bindingPublication.set(false);
+        }
     }
 
     public List<Run> runs() {
@@ -291,7 +323,30 @@ public class HuolalaService {
                     throw new IllegalStateException("货拉拉令牌刷新失败，请重新授权");
                 }
             }
-            if (!"ORDERS".equals(q.scope())) token = syncEmployees(tenant, c, run, token, count);
+            if (!"ORDERS".equals(q.scope())) {
+                // 员工接口能力独立于订单查询；目录暂不可用不应丢弃整批订单。
+                if ("EMPLOYEES".equals(q.scope()))
+                    token = syncEmployees(tenant, c, run, token, count);
+                else {
+                    try {
+                        token = syncEmployees(tenant, c, run, token, count);
+                    } catch (RuntimeException directoryFailure) {
+                        count[3]++;
+                        String raw =
+                                store.raw(
+                                        tenant,
+                                        UUID.fromString(c.id()),
+                                        run,
+                                        "EMPLOYEE_DIRECTORY_FAILED",
+                                        "DIRECTORY",
+                                        json.createObjectNode());
+                        store.delivery(
+                                tenant, run, raw, "DIRECTORY", "员工目录暂未获取，订单继续同步；请检查员工查询权限后重试");
+                        // 目录处理过程中可能已换过令牌；重新读取当前令牌再处理订单。
+                        token = gateway.load(tenant.toString(), c.id());
+                    }
+                }
+            }
             if (!"EMPLOYEES".equals(q.scope())) syncOrders(tenant, c, run, q, token, count);
         } catch (RuntimeException e) {
             error = safeError(e);
@@ -353,12 +408,14 @@ public class HuolalaService {
             HuolalaGateway.Token token,
             long[] count) {
         var staff = store.employees(tenant);
+        Map<String, Long> mappingRevisions = new HashMap<>();
         Map<String, String> names = new HashMap<>(),
                 mappings = new HashMap<>(),
                 phones = new HashMap<>(),
                 staffIds = new HashMap<>();
         for (var e : staff)
             if (!e.userId().isBlank()) {
+                mappingRevisions.put(e.userId(), e.revision());
                 names.put(e.userId(), e.name());
                 phones.put(e.userId(), e.phone());
                 staffIds.put(e.userId(), e.staffId());
@@ -411,6 +468,7 @@ public class HuolalaService {
                                     names.get(user),
                                     staffIds.get(user),
                                     phones.get(user));
+                    summary = withMappingRevision(summary, mappingRevisions.getOrDefault(user, 0L));
                     var row =
                             domains.receive(
                                     service(tenant),
@@ -442,6 +500,9 @@ public class HuolalaService {
                                         names.get(user),
                                         staffIds.get(user),
                                         phones.get(user));
+                        normalized =
+                                withMappingRevision(
+                                        normalized, mappingRevisions.getOrDefault(user, 0L));
                         if (vouchers != null) vouchers.enqueue(tenant, c.id(), normalized, detail);
                         var detailedRow =
                                 domains.receive(
@@ -480,6 +541,15 @@ public class HuolalaService {
                 return;
         }
         throw new IllegalStateException("订单超过单次10000条上限，请缩小时间范围后补同步");
+    }
+
+    private com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder withMappingRevision(
+            com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder order, long revision) {
+        var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
+        ((tools.jackson.databind.node.ObjectNode) node.path("facts"))
+                .put("employeeMappingRevision", revision);
+        return json.treeToValue(
+                node, com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder.class);
     }
 
     private HuolalaGateway.Token renew(UUID tenant, Connection c, HuolalaGateway.Token token) {

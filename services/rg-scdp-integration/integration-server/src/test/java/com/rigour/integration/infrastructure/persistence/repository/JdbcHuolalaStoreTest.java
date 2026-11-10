@@ -73,7 +73,7 @@ public class JdbcHuolalaStoreTest {
         create("V1__integration_dinghuobao.sql", "integration_raw_landing");
         jdbc.execute(
                 "ALTER TABLE integration_raw_landing DROP CONSTRAINT"
-                    + " uk_integration_raw_landing_source");
+                        + " uk_integration_raw_landing_source");
         for (String column :
                 List.of(
                         "connector_id BINARY(16)",
@@ -88,6 +88,7 @@ public class JdbcHuolalaStoreTest {
                     + " integration_raw_landing(tenant_id,source_system,source_object_type,source_id,payload_checksum)");
         create("V2__integration_sync_runtime.sql", "integration_sync_run");
         create("V2__integration_sync_runtime.sql", "integration_dead_letter");
+        create("V2__integration_sync_runtime.sql", "integration_outbox_event");
         create(
                 "V14__upgrade_external_object_mapping_schema.sql",
                 "integration_external_object_mapping");
@@ -238,5 +239,82 @@ public class JdbcHuolalaStoreTest {
                 1);
         store.finishRun(tenant, run, 1, 1, 0, 0, null, now.plusSeconds(1));
         assertThat(store.historyDue(tenant, today)).isFalse();
+    }
+
+    @Test
+    void employeeBindingOutboxIsDurableClaimedAndRetriedWithoutRepeatingUserAction()
+            throws Exception {
+        var c = UUID.fromString(store.connection(tenant).orElseThrow().id());
+        var run = store.startRun(tenant, actor, "ALL", "MANUAL", Instant.now());
+        store.observeEmployee(
+                tenant,
+                c,
+                run,
+                json.readTree(
+                        "{\"staff_id\":11,\"user_id\":22,\"ep_id\":12345,\"staff_name\":\"甲\"}"));
+        var external = store.employees(tenant).getFirst();
+        store.bind(
+                tenant,
+                actor,
+                external,
+                new EmployeeCandidate(91L, "EMP91", "李经理", "13800000000", "销售一部", "ACTIVE"),
+                0,
+                "关联");
+        var now = Instant.now().plusSeconds(1);
+        var job = store.bindingsDue(now).getFirst();
+        assertThat(job.tenant()).isEqualTo(tenant);
+        assertThat(job.update().userId()).isEqualTo("22");
+        assertThat(job.update().employeeCode()).isEqualTo("EMP91");
+        assertThat(job.update().revision()).isEqualTo(1);
+        assertThat(store.claimBinding(job, now)).isTrue();
+        assertThat(store.claimBinding(job, now)).isFalse();
+        store.finishBinding(job, false, now);
+        assertThat(store.bindingsDue(now.plusSeconds(10))).isEmpty();
+        var retry = store.bindingsDue(now.plusSeconds(61)).getFirst();
+        assertThat(retry.id()).isEqualTo(job.id());
+        assertThat(retry.attempts()).isEqualTo(1);
+        assertThat(store.claimBinding(retry, now.plusSeconds(61))).isTrue();
+        store.finishBinding(job, true, now.plusSeconds(62));
+        // 旧租约不能将重试任务误标为成功。
+        assertThat(store.bindingsDue(now.plusSeconds(200))).hasSize(1);
+        store.finishBinding(retry, true, now.plusSeconds(63));
+        assertThat(store.bindingsDue(now.plusSeconds(500))).isEmpty();
+        assertThat(store.employees(tenant).getFirst().employeeCode()).isEqualTo("EMP91");
+    }
+
+    @Test
+    void bindingAndPropagationEventCommitTogetherOrBothRollback() throws Exception {
+        var c = UUID.fromString(store.connection(tenant).orElseThrow().id());
+        var run = store.startRun(tenant, actor, "ALL", "MANUAL", Instant.now());
+        store.observeEmployee(
+                tenant,
+                c,
+                run,
+                json.readTree(
+                        "{\"staff_id\":11,\"user_id\":22,\"ep_id\":12345,\"staff_name\":\"甲\"}"));
+        var external = store.employees(tenant).getFirst();
+        jdbc.execute("DROP TABLE integration_outbox_event");
+        assertThatThrownBy(
+                        () ->
+                                store.bind(
+                                        tenant,
+                                        actor,
+                                        external,
+                                        new EmployeeCandidate(
+                                                91L,
+                                                "EMP91",
+                                                "李经理",
+                                                "13800000000",
+                                                "销售一部",
+                                                "ACTIVE"),
+                                        0,
+                                        "关联"))
+                .isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThat(store.employees(tenant).getFirst().employeeCode()).isNull();
+        assertThat(store.mappedEmployee(tenant, "22")).isNull();
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM integration_manual_resolution", Long.class))
+                .isZero();
     }
 }

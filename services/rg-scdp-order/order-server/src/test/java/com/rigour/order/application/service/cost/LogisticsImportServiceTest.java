@@ -69,7 +69,7 @@ class LogisticsImportServiceTest {
 
     LogisticsCostCommand command() {
         return json.readValue(
-"""
+                """
 {"costDate":"2026-11-06","ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","deliveryModeCode":"THIRD_PARTY","carrierCode":"HLL","trackingNo":"3616894445226123730",
 "sources":[{"orderTypeCode":"SALES_ORDER","orderCode":"SO001","linkRoleCode":"COST","allocations":[]}],
 "feeItems":[{"feeKey":"F1","feeAmount":40.5,"ourAmount":40.5,"bearerCode":"COMPANY"}]}}
@@ -216,5 +216,49 @@ class LogisticsImportServiceTest {
         assertThatThrownBy(() -> service.generate("R1", new Generated(1, command())))
                 .isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(store, costs);
+    }
+
+    @Test
+    void employeeMappingRequiresTrustedServiceAndCannotChangeCosts() {
+        var update = new EmployeeMappingUpdate("connector", "12345", "22", "EMP1", 2);
+        assertThatThrownBy(() -> service.employeeMapping(update))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        TestAuthorizationContext.set(
+                new CallerIdentity(
+                        "SERVICE",
+                        user,
+                        tenant,
+                        null,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        Set.of(),
+                        Set.of("integration:huolala:sync")));
+        service.employeeMapping(update);
+        verify(store).employeeMapping(tenant.toString(), update);
+        verifyNoInteractions(costs);
+        assertThatThrownBy(
+                        () ->
+                                service.employeeMapping(
+                                        new EmployeeMappingUpdate(
+                                                "connector", "12345", "22", "EMP1", 0)))
+                .hasMessageContaining("关联信息无效");
+        TestAuthorizationContext.set(
+                new CallerIdentity(
+                        "SERVICE",
+                        user,
+                        tenant,
+                        null,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        Set.of(),
+                        Set.of()));
+        assertThatThrownBy(() -> service.employeeMapping(update))
+                .isInstanceOf(AuthorizationDeniedException.class);
     }
 }

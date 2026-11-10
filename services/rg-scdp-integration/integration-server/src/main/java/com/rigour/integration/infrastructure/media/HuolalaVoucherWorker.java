@@ -73,6 +73,7 @@ public class HuolalaVoucherWorker implements HuolalaVouchers {
             String lineId,
             JsonNode urls,
             String name) {
+        if (!urls.isArray()) return;
         int image = 0;
         for (var value : urls) {
             String url = value.asText("");

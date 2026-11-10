@@ -116,6 +116,29 @@ public final class HttpHuolalaDomainClient implements HuolalaDomainClient {
     }
 
     @Override
+    public void employeeMapping(CallerIdentity caller, EmployeeMappingUpdate update) {
+        URI uri = order.resolve("/api/v1/orders/logistics-costs/imports/api-employee-mappings");
+        ApiResponse<Void> response =
+                http.post()
+                        .uri(uri)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .headers(
+                                h ->
+                                        SignedDomainRequest.signedHeaders(
+                                                        signer, "POST", uri, caller)
+                                                .forEach(h::set))
+                        .body(update)
+                        .exchange(
+                                (request, r) ->
+                                        SignedDomainRequest.readResponse(
+                                                r,
+                                                new TypeReference<ApiResponse<Void>>() {},
+                                                "运输记录员工关联更新"));
+        if (response == null || !"OK".equals(response.code()))
+            throw new IllegalStateException("运输记录员工关联更新未完成");
+    }
+
+    @Override
     public void voucher(CallerIdentity caller, VoucherUpdate update) {
         URI uri = order.resolve("/api/v1/orders/logistics-costs/imports/api-vouchers");
         ApiResponse<Void> response =

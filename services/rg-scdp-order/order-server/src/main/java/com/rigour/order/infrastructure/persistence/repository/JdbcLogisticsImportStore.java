@@ -239,11 +239,39 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
             var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
             var prior = json.valueToTree(last);
             for (var field :
-                    Map.of("fees", "费用明细已提供", "receipts", "回单已提供", "billVouchers", "账单凭证已提供")
+                    Map.of(
+                                    "fees",
+                                    "费用明细已提供",
+                                    "receipts",
+                                    "回单已提供",
+                                    "billVouchers",
+                                    "账单凭证已提供",
+                                    "stops",
+                                    "路线已提供")
                             .entrySet())
                 if ("false".equals(order.raw().get(field.getValue())))
                     ((tools.jackson.databind.node.ObjectNode) tree.path("facts"))
                             .set(field.getKey(), prior.path("facts").path(field.getKey()));
+            for (String field :
+                    List.of(
+                            "orderAmount",
+                            "billAmount",
+                            "refundAmount",
+                            "couponAmount",
+                            "bonusAmount",
+                            "unpaidAmount"))
+                if (tree.path("facts").path(field).isNull())
+                    ((tools.jackson.databind.node.ObjectNode) tree.path("facts"))
+                            .set(field, prior.path("facts").path(field));
+            if (tree.path("paidAmount").isNull()) tree.set("paidAmount", prior.path("paidAmount"));
+            if (sameEmployee(order, last))
+                for (String field : List.of("sourceEmployeeName", "sourceStaffId"))
+                    if (tree.path("facts").path(field).asText("").isBlank())
+                        ((tools.jackson.databind.node.ObjectNode) tree.path("facts"))
+                                .set(field, prior.path("facts").path(field));
+            if ("false".equals(order.raw().get("路线已提供")))
+                ((tools.jackson.databind.node.ObjectNode) tree.path("raw"))
+                        .set("收货人信息", prior.path("raw").path("收货人信息"));
             for (String field : List.of("司机", "司机联系电话", "车牌号", "下单员工手机号"))
                 if (tree.path("raw").path(field).asText("").isBlank()
                         && !prior.path("raw").path(field).asText("").isBlank())
@@ -252,46 +280,66 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
             order = json.treeToValue(tree, CarrierOrder.class);
             encoded = json.writeValueAsString(order);
         }
+        // 旧批次的目录快照不能撤回已经投递的新员工关联。
+        if (sameEmployee(order, last)
+                && last.facts().employeeMappingRevision()
+                        > order.facts().employeeMappingRevision()) {
+            order =
+                    mapped(
+                            order,
+                            last.facts().mappedEmployeeCode(),
+                            last.facts().employeeMappingRevision());
+            encoded = json.writeValueAsString(order);
+        }
         // 凭证由独立下载队列补齐；后续账单同步不能把已保存的自有COS引用退回待获取。
         if (!partial && last.facts() != null && order.facts() != null) {
-            var ready = new HashMap<String, Voucher>();
+            var known = new HashMap<String, Voucher>();
             for (var fee : last.facts().fees())
                 for (var v : fee.vouchers() == null ? List.<Voucher>of() : fee.vouchers())
-                    if ("READY".equals(v.state())) ready.put(v.id(), v);
+                    if ("READY".equals(v.state()) || "PENDING".equals(v.state()))
+                        known.put(v.id(), v);
             for (var list : Arrays.asList(last.facts().receipts(), last.facts().billVouchers()))
                 if (list != null)
-                    for (var v : list) if ("READY".equals(v.state())) ready.put(v.id(), v);
-            if (!ready.isEmpty()) {
+                    for (var v : list)
+                        if ("READY".equals(v.state()) || "PENDING".equals(v.state()))
+                            known.put(v.id(), v);
+            if (!known.isEmpty()) {
                 var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
                 for (var fee : tree.path("facts").path("fees"))
                     for (var v : fee.path("vouchers"))
-                        if (ready.containsKey(v.path("id").asText()))
+                        if (known.containsKey(v.path("id").asText())
+                                && "READY".equals(known.get(v.path("id").asText()).state()))
                             ((tools.jackson.databind.node.ObjectNode) v)
                                     .setAll(
                                             (tools.jackson.databind.node.ObjectNode)
                                                     json.valueToTree(
-                                                            ready.get(v.path("id").asText())));
+                                                            known.get(v.path("id").asText())));
                 for (String field : List.of("receipts", "billVouchers"))
                     for (var v : tree.path("facts").path(field))
-                        if (ready.containsKey(v.path("id").asText()))
+                        if (known.containsKey(v.path("id").asText())
+                                && "READY".equals(known.get(v.path("id").asText()).state()))
                             ((tools.jackson.databind.node.ObjectNode) v)
                                     .setAll(
                                             (tools.jackson.databind.node.ObjectNode)
                                                     json.valueToTree(
-                                                            ready.get(v.path("id").asText())));
+                                                            known.get(v.path("id").asText())));
                 for (var next : tree.path("facts").path("fees"))
                     for (var oldFee : json.valueToTree(last).path("facts").path("fees")) {
                         if (!next.path("lineId").asText().equals(oldFee.path("lineId").asText())
                                 || !next.path("name").asText().equals(oldFee.path("name").asText())
-                                || !next.path("amount")
-                                        .asText()
-                                        .equals(oldFee.path("amount").asText())) continue;
+                                || !sameMoney(
+                                        next.path("amount").isNumber()
+                                                ? next.path("amount").decimalValue()
+                                                : null,
+                                        oldFee.path("amount").isNumber()
+                                                ? oldFee.path("amount").decimalValue()
+                                                : null)) continue;
                         var node = (tools.jackson.databind.node.ObjectNode) next;
                         var list = node.withArray("vouchers");
                         var ids = new HashSet<String>();
                         for (var v : list) ids.add(v.path("id").asText());
                         for (var v : oldFee.path("vouchers"))
-                            if ("READY".equals(v.path("state").asText())
+                            if (Set.of("READY", "PENDING").contains(v.path("state").asText())
                                     && ids.add(v.path("id").asText())) list.add(v);
                     }
                 order = json.treeToValue(tree, CarrierOrder.class);
@@ -299,7 +347,7 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
             }
         }
         String incoming =
-                partial && "DETAIL".equals(last.raw().get("详情状态"))
+                (partial && "DETAIL".equals(last.raw().get("详情状态"))) || sameBill(order, last)
                         ? previous
                         : source.payloadHash();
         boolean difference = current.costId() != null && !Objects.equals(incoming, accepted);
@@ -344,6 +392,89 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
                 current.id());
         return lockManaged(tenant, actor, true, current.id())
                 .withSyncOutcome(inserted ? "CREATED" : changed ? "UPDATED" : "UNCHANGED");
+    }
+
+    @Override
+    public void employeeMapping(String tenant, EmployeeMappingUpdate update) {
+        // 只改来源中的当前人员关联，不改账单历史、成本金额、单据关联及归属快照。
+        var rows =
+                jdbc.query(
+                        "SELECT * FROM order_logistics_import_order WHERE tenant_id=? AND"
+                                + " enterprise_id=? FOR UPDATE",
+                        mapper(),
+                        tenant,
+                        update.enterpriseId());
+        for (var row : rows) {
+            var source = mapIfNewer(row.order(), update);
+            var latest = row.latestOrder() == null ? null : mapIfNewer(row.latestOrder(), update);
+            if (source == row.order() && latest == row.latestOrder()) continue;
+            jdbc.update(
+                    "UPDATE order_logistics_import_order SET source_json=?,latest_source_json=?"
+                            + " WHERE tenant_id=? AND id=?",
+                    json.writeValueAsString(source),
+                    latest == null ? null : json.writeValueAsString(latest),
+                    tenant,
+                    row.id());
+        }
+    }
+
+    private CarrierOrder mapIfNewer(CarrierOrder order, EmployeeMappingUpdate update) {
+        var f = order.facts();
+        if (f == null
+                || !Objects.equals(f.connectorId(), update.connectorId())
+                || !Objects.equals(f.sourceUserId(), update.userId())
+                || f.employeeMappingRevision() >= update.revision()) return order;
+        return mapped(order, update.employeeCode(), update.revision());
+    }
+
+    private CarrierOrder mapped(CarrierOrder order, String employeeCode, long revision) {
+        var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
+        var facts = (tools.jackson.databind.node.ObjectNode) node.path("facts");
+        facts.put("mappedEmployeeCode", employeeCode);
+        facts.put("employeeMappingRevision", revision);
+        return json.treeToValue(node, CarrierOrder.class);
+    }
+
+    private static boolean sameEmployee(CarrierOrder a, CarrierOrder b) {
+        return a.facts() != null
+                && b.facts() != null
+                && Objects.equals(a.facts().connectorId(), b.facts().connectorId())
+                && a.facts().sourceUserId() != null
+                && !a.facts().sourceUserId().isBlank()
+                && Objects.equals(a.facts().sourceUserId(), b.facts().sourceUserId());
+    }
+
+    /** 比较合并后的金额事实，避免缺项回执、数值精度及凭证更新制造虚假账单差异。 */
+    private static boolean sameBill(CarrierOrder left, CarrierOrder right) {
+        var a = left.facts();
+        var b = right.facts();
+        if (a == null || b == null) return false;
+        return Objects.equals(left.enterpriseId(), right.enterpriseId())
+                && Objects.equals(left.orderNo(), right.orderNo())
+                && sameMoney(a.billAmount(), b.billAmount())
+                && sameMoney(a.refundAmount(), b.refundAmount())
+                && sameMoney(a.couponAmount(), b.couponAmount())
+                && sameMoney(a.bonusAmount(), b.bonusAmount())
+                && billFees(a.fees()).equals(billFees(b.fees()));
+    }
+
+    private static boolean sameMoney(java.math.BigDecimal a, java.math.BigDecimal b) {
+        return a == null ? b == null : b != null && a.compareTo(b) == 0;
+    }
+
+    private static Map<List<String>, Long> billFees(List<Fee> fees) {
+        var result = new HashMap<List<String>, Long>();
+        for (var f : fees == null ? List.<Fee>of() : fees) {
+            var key =
+                    Arrays.asList(
+                            f.code(),
+                            f.name(),
+                            f.amount() == null
+                                    ? null
+                                    : f.amount().stripTrailingZeros().toPlainString());
+            result.merge(key, 1L, Long::sum);
+        }
+        return result;
     }
 
     @Override

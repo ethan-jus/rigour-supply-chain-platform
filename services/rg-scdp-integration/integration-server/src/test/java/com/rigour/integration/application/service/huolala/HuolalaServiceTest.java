@@ -262,4 +262,120 @@ class HuolalaServiceTest {
                                 }));
         verify(store).startRun(eq(tenant), any(), eq("ALL"), eq("SCHEDULED"), any());
     }
+
+    @Test
+    void employeeDirectoryFailureDoesNotBlockOrderSyncAndIsReportedSeparately() {
+        var token = new HuolalaGateway.Token("access", "refresh", Instant.now().plusSeconds(3600));
+        when(gateway.load(any(), any())).thenReturn(token);
+        when(gateway.read(any(), eq(token), eq("e-staff-construct"), any()))
+                .thenThrow(new IllegalStateException("directory permission unavailable"));
+        var list = json.createObjectNode().put("total", 1);
+        list.putArray("order_arr")
+                .addObject()
+                .put("order_display_id", "3624071813921329726")
+                .put("ep_id", "12345")
+                .put("user_id", 22)
+                .put("order_status", 2)
+                .put("order_time", "2026-11-08 10:00:00")
+                .put("price_fen", 13764);
+        when(gateway.read(any(), eq(token), eq("e-order-list"), any())).thenReturn(list);
+        var detail = json.createObjectNode();
+        detail.putObject("order_detail_item")
+                .putObject("order_item")
+                .put("order_display_id", "3624071813921329726")
+                .put("ep_id", "12345")
+                .put("order_status", 2)
+                .put("order_time", "2026-11-08 10:00:00")
+                .put("price_fen", 13764)
+                .put("paid_amount", 13764)
+                .put("unpaid_amount", 0)
+                .put("refund_amount", 0);
+        when(gateway.read(any(), eq(token), eq("e-order-detail"), any())).thenReturn(detail);
+        when(store.raw(any(), any(), any(), any(), any(), any()))
+                .thenReturn(UUID.randomUUID().toString());
+        when(domains.receive(any(), any()))
+                .thenReturn(
+                        new com.rigour.order.api.v1.model.LogisticsImportModels.Row(
+                                        "R1", 1, "UNMATCHED", null, "接口", null)
+                                .withSyncOutcome("CREATED"));
+        service.sync(new SyncCommand("ALL", LocalDate.now().minusDays(1), LocalDate.now(), null));
+        verify(store)
+                .delivery(
+                        eq(tenant),
+                        eq(run),
+                        any(),
+                        eq("DIRECTORY"),
+                        eq("员工目录暂未获取，订单继续同步；请检查员工查询权限后重试"));
+        verify(store)
+                .finishRun(eq(tenant), eq(run), eq(1L), eq(1L), eq(0L), eq(1L), isNull(), any());
+        var receipts =
+                org.mockito.ArgumentCaptor.forClass(
+                        com.rigour.order.api.v1.model.LogisticsImportModels.ApiSource.class);
+        verify(domains, times(2)).receive(any(), receipts.capture());
+        assertThat(receipts.getAllValues())
+                .allSatisfy(
+                        r -> {
+                            assertThat(r.order().orderNo()).isEqualTo("3624071813921329726");
+                            assertThat(r.order().facts().mappedEmployeeCode()).isNull();
+                            assertThat(r.order().facts().sourceEmployeeName()).isNull();
+                        });
+        assertThat(receipts.getAllValues().get(1).order().facts().billAmount())
+                .isEqualByComparingTo("137.64");
+    }
+
+    @Test
+    void employeesOnlyFailureStaysFailedAndExpiredAuthorizationDoesNotReadOrders() {
+        var token = new HuolalaGateway.Token("access", "refresh", Instant.now().plusSeconds(3600));
+        when(gateway.load(any(), any())).thenReturn(token);
+        when(gateway.read(any(), any(), eq("e-staff-construct"), any()))
+                .thenThrow(new IllegalStateException("directory unavailable"));
+        service.sync(new SyncCommand("EMPLOYEES", LocalDate.now(), LocalDate.now(), null));
+        verify(gateway, never()).read(any(), any(), eq("e-order-list"), any());
+        verify(store)
+                .finishRun(
+                        eq(tenant),
+                        eq(run),
+                        anyLong(),
+                        anyLong(),
+                        anyLong(),
+                        anyLong(),
+                        eq("directory unavailable"),
+                        any());
+        reset(gateway, store);
+        setup();
+        when(gateway.load(any(), any()))
+                .thenReturn(new HuolalaGateway.Token("old", "old", Instant.EPOCH));
+        when(gateway.refresh(any(), any())).thenThrow(new IllegalStateException("expired"));
+        service.sync(new SyncCommand("ALL", LocalDate.now(), LocalDate.now(), null));
+        verify(store).expired(tenant);
+        verify(gateway, never()).read(any(), any(), any(), any());
+    }
+
+    @Test
+    void employeeMappingDeliveryRetriesAndDoesNotNeedPlatformAuthorizationOrOrderResync() {
+        var update =
+                new com.rigour.order.api.v1.model.LogisticsImportModels.EmployeeMappingUpdate(
+                        connector.toString(), "12345", "22", "EMP91", 4);
+        var job = new HuolalaStore.PendingBinding(UUID.randomUUID(), tenant, 0, update);
+        when(store.bindingsDue(any())).thenReturn(List.of(job));
+        when(store.claimBinding(eq(job), any())).thenReturn(true);
+        doThrow(new IllegalStateException("Order temporarily unavailable"))
+                .doNothing()
+                .when(domains)
+                .employeeMapping(any(), eq(update));
+        service.publishEmployeeBindings();
+        verify(store).finishBinding(eq(job), eq(false), any());
+        service.publishEmployeeBindings();
+        verify(store).finishBinding(eq(job), eq(true), any());
+        verify(domains, times(2))
+                .employeeMapping(
+                        argThat(
+                                c ->
+                                        "SERVICE".equals(c.principalScope())
+                                                && tenant.equals(c.tenantId())
+                                                && c.permissions()
+                                                        .contains("integration:huolala:sync")),
+                        eq(update));
+        verifyNoInteractions(gateway);
+    }
 }

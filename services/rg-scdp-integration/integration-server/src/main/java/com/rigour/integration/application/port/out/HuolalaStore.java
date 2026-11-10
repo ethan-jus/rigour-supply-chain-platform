@@ -79,4 +79,20 @@ public interface HuolalaStore {
             String reason);
 
     String mappedEmployee(UUID tenant, String userId);
+
+    record PendingBinding(
+            UUID id,
+            UUID tenant,
+            int attempts,
+            com.rigour.order.api.v1.model.LogisticsImportModels.EmployeeMappingUpdate update) {}
+
+    default List<PendingBinding> bindingsDue(Instant now) {
+        return List.of();
+    }
+
+    default boolean claimBinding(PendingBinding job, Instant now) {
+        return false;
+    }
+
+    default void finishBinding(PendingBinding job, boolean success, Instant now) {}
 }

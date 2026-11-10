@@ -161,4 +161,26 @@ class HuolalaOrderNormalizerTest {
                 .isEqualTo(order.facts().fees().get(1).vouchers().getFirst().id());
         assertThat(HuolalaOrderNormalizer.fingerprint(renewed, json)).isEqualTo(before);
     }
+
+    @Test
+    void nullOrMalformedArraysAreMissingNotAnExplicitInstructionToClearEvidence() {
+        var d = detail();
+        var item = (ObjectNode) d.at("/order_detail_item/order_item");
+        item.putNull("order_price_arr")
+                .put("receipt_url", "temporarily unavailable")
+                .putObject("img_urls");
+        var missing = HuolalaOrderNormalizer.normalize(c, list(), d, "raw", null, null);
+        assertThat(missing.raw())
+                .containsEntry("费用明细已提供", "false")
+                .containsEntry("回单已提供", "false")
+                .containsEntry("账单凭证已提供", "false");
+        item.putArray("order_price_arr");
+        item.putArray("receipt_url");
+        item.putArray("img_urls");
+        var empty = HuolalaOrderNormalizer.normalize(c, list(), d, "raw", null, null);
+        assertThat(empty.raw())
+                .containsEntry("费用明细已提供", "true")
+                .containsEntry("回单已提供", "true")
+                .containsEntry("账单凭证已提供", "true");
+    }
 }

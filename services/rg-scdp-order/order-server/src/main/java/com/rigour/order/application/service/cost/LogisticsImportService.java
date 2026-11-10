@@ -164,6 +164,29 @@ public class LogisticsImportService {
     }
 
     @Transactional
+    public void employeeMapping(EmployeeMappingUpdate update) {
+        var caller = AuthorizationContext.requireCurrent();
+        if (!"SERVICE".equals(caller.principalScope()) || caller.tenantId() == null)
+            throw new com.rigour.shared.context.AuthorizationDeniedException("integration-service");
+        AuthorizationContext.requirePermission("integration:huolala:sync");
+        if (update == null
+                || update.connectorId() == null
+                || update.connectorId().isBlank()
+                || update.connectorId().length() > 80
+                || update.enterpriseId() == null
+                || !update.enterpriseId().matches("[A-Za-z0-9_-]{1,80}")
+                || update.userId() == null
+                || !update.userId().matches("[0-9]{1,32}")
+                || update.revision() < 1
+                || update.employeeCode() != null
+                        && (update.employeeCode().isBlank() || update.employeeCode().length() > 64))
+            throw bad("员工关联信息无效");
+        String t = caller.tenantId().toString();
+        if (platform != null) platform.lockTenant(t);
+        store.employeeMapping(t, update);
+    }
+
+    @Transactional
     public void voucher(VoucherUpdate update) {
         var caller = AuthorizationContext.requireCurrent();
         if (!"SERVICE".equals(caller.principalScope()) || caller.tenantId() == null)

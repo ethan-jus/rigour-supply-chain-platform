@@ -45,6 +45,10 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
         jdbc.execute(
                 "CREATE TABLE order_logistics_cost(tenant_id VARCHAR(36),carrier_code"
                         + " VARCHAR(40),tracking_no VARCHAR(100))");
+        jdbc.execute(
+                "CREATE TABLE order_logistics_cost_audit(tenant_id VARCHAR(36),entry_id"
+                        + " VARCHAR(36),action_code VARCHAR(40),actor_id VARCHAR(36),reason"
+                        + " VARCHAR(500),snapshot_json CLOB)");
         store = new JdbcLogisticsImportStore(jdbc, JsonMapper.builder().build());
     }
 
@@ -217,5 +221,189 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
         assertThat(updated.latestOrder().facts().fees().getFirst().vouchers().getFirst().fileKey())
                 .contains("integration-huolala-vouchers");
         assertThat(updated.syncOutcome()).isEqualTo("UNCHANGED");
+    }
+
+    @Test
+    void omittedFeeDetailsAndMoneyScaleDoNotInventBillChangesOrClearVerification() {
+        var json = JsonMapper.builder().build();
+        var tree =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(api("137.64", "a").order());
+        tree.withObject("raw").put("详情状态", "DETAIL").put("费用明细已提供", "true");
+        tree.withObject("facts")
+                .putArray("fees")
+                .addObject()
+                .put("code", "23")
+                .put("name", "路桥费")
+                .put("amount", new BigDecimal("20.00"));
+        var first =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "a".repeat(64),
+                                json.treeToValue(tree, CarrierOrder.class)));
+        store.generated("T1", first.id(), first.revision(), "C1");
+        var linked = store.byCost("T1", "C1").orElseThrow();
+        store.verifyBill(
+                "T1",
+                first.id(),
+                linked.revision(),
+                new BillVerification(
+                        new BigDecimal("137.64"), "已核对", "U1", java.time.Instant.now()));
+        var revision = store.byCost("T1", "C1").orElseThrow().revision();
+        tree.withObject("raw").put("费用明细已提供", "false");
+        tree.withObject("facts").putArray("fees");
+        tree.withObject("facts")
+                .putNull("billAmount")
+                .putNull("refundAmount")
+                .putNull("couponAmount")
+                .putNull("bonusAmount");
+        tree.putNull("paidAmount");
+        var missing =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "b".repeat(64),
+                                json.treeToValue(tree, CarrierOrder.class)));
+        assertThat(missing.syncOutcome()).isEqualTo("UNCHANGED");
+        assertThat(missing.revision()).isEqualTo(revision);
+        assertThat(missing.sourceDifference()).isFalse();
+        assertThat(missing.verification()).isNotNull();
+        assertThat(missing.latestOrder().facts().fees()).hasSize(1);
+        assertThat(missing.latestOrder().facts().billAmount()).isEqualByComparingTo("137.64");
+        assertThat(missing.latestOrder().paidAmount()).isEqualByComparingTo("137.64");
+        tree.withObject("raw").put("费用明细已提供", "true");
+        tree.withObject("facts")
+                .putArray("fees")
+                .addObject()
+                .put("code", "23")
+                .put("name", "路桥费")
+                .put("amount", 20);
+        assertThat(
+                        store.receive(
+                                        "T1",
+                                        "SYSTEM",
+                                        new ApiSource(
+                                                "connector",
+                                                "c".repeat(64),
+                                                json.treeToValue(tree, CarrierOrder.class)))
+                                .syncOutcome())
+                .isEqualTo("UNCHANGED");
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT bill_history_json FROM order_logistics_import_order WHERE"
+                                        + " id=?",
+                                String.class,
+                                first.id()))
+                .isNull();
+        tree.withObject("facts").put("billAmount", new BigDecimal("142.64"));
+        var changed =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "d".repeat(64),
+                                json.treeToValue(tree, CarrierOrder.class)));
+        assertThat(changed.sourceDifference()).isTrue();
+        assertThat(changed.verification()).isNull();
+        assertThat(changed.order().facts().billAmount()).isEqualByComparingTo("137.64");
+        assertThat(changed.latestOrder().facts().billAmount()).isEqualByComparingTo("142.64");
+    }
+
+    @Test
+    void employeeBindingUpdatesExistingSourcesAndStaleSyncCannotRevertOrChangeCostEvidence() {
+        var first = store.receive("T1", "SYSTEM", api("40.50", "a"));
+        store.generated("T1", first.id(), first.revision(), "C1");
+        store.receive("T2", "SYSTEM", api("40.50", "a"));
+        var json = JsonMapper.builder().build();
+        var second =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(api("40.50", "a").order());
+        second.put("orderNo", "3616894445226123731");
+        store.receive(
+                "T1",
+                "SYSTEM",
+                new ApiSource(
+                        "connector", "a".repeat(64), json.treeToValue(second, CarrierOrder.class)));
+        store.employeeMapping(
+                "T1", new EmployeeMappingUpdate("other-connector", "AC1", "user", "OTHER", 3));
+        assertThat(
+                        store.byCost("T1", "C1")
+                                .orElseThrow()
+                                .latestOrder()
+                                .facts()
+                                .mappedEmployeeCode())
+                .isNull();
+        store.employeeMapping(
+                "T1", new EmployeeMappingUpdate("connector", "AC1", "user", "EMP1", 1));
+        var bound = store.byCost("T1", "C1").orElseThrow();
+        assertThat(bound.order().facts().mappedEmployeeCode()).isEqualTo("EMP1");
+        assertThat(bound.latestOrder().facts().mappedEmployeeCode()).isEqualTo("EMP1");
+        assertThat(store.rows("T1", "SYSTEM", 0))
+                .hasSize(2)
+                .allSatisfy(
+                        r -> assertThat(r.order().facts().mappedEmployeeCode()).isEqualTo("EMP1"));
+        assertThat(bound.sourceDifference()).isFalse();
+        assertThat(store.rows("T2", "SYSTEM", 0).getFirst().order().facts().mappedEmployeeCode())
+                .isNull();
+        store.employeeMapping("T1", new EmployeeMappingUpdate("connector", "AC1", "user", null, 3));
+        store.employeeMapping(
+                "T1", new EmployeeMappingUpdate("connector", "AC1", "user", "EMP2", 2));
+        var stale = store.receive("T1", "SYSTEM", api("40.50", "a"));
+        assertThat(stale.latestOrder().facts().mappedEmployeeCode()).isNull();
+        assertThat(stale.latestOrder().facts().employeeMappingRevision()).isEqualTo(3);
+        assertThat(stale.syncOutcome()).isEqualTo("UNCHANGED");
+        assertThat(stale.order().facts().billAmount()).isEqualByComparingTo("40.50");
+        assertThat(stale.costId()).isEqualTo("C1");
+        assertThat(stale.revision()).isEqualTo(bound.revision());
+    }
+
+    @Test
+    void unchangedFeeKeepsPendingVoucherUntilIndependentDownloadCompletes() {
+        var json = JsonMapper.builder().build();
+        var tree =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(api("40.50", "a").order());
+        tree.withObject("raw").put("详情状态", "DETAIL").put("费用明细已提供", "true");
+        var fee =
+                tree.withObject("facts")
+                        .putArray("fees")
+                        .addObject()
+                        .put("code", "23")
+                        .put("name", "路桥费")
+                        .put("amount", new BigDecimal("20.00"))
+                        .put("lineId", "fee-0");
+        fee.putArray("vouchers")
+                .addObject()
+                .put("id", "V1")
+                .put("name", "路桥凭证")
+                .put("state", "PENDING");
+        var first =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "a".repeat(64),
+                                json.treeToValue(tree, CarrierOrder.class)));
+        store.generated("T1", first.id(), first.revision(), "C1");
+        fee.put("amount", 20).putArray("vouchers");
+        var repeated =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "b".repeat(64),
+                                json.treeToValue(tree, CarrierOrder.class)));
+        assertThat(repeated.syncOutcome()).isEqualTo("UNCHANGED");
+        assertThat(repeated.latestOrder().facts().fees().getFirst().vouchers()).hasSize(1);
+        assertThat(repeated.latestOrder().facts().fees().getFirst().vouchers().getFirst().state())
+                .isEqualTo("PENDING");
     }
 }

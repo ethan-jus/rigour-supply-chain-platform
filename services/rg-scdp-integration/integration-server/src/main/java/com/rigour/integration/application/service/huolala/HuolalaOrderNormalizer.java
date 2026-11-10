@@ -49,7 +49,7 @@ public final class HuolalaOrderNormalizer {
                 coupon = cents(list, "coupon_fen"),
                 bonus = cents(item, "bonus_pay_fen");
         List<Stop> stops = new ArrayList<>();
-        for (var s : item.path("addr_info_arr"))
+        for (var s : array(item.path("addr_info_arr")))
             stops.add(
                     new Stop(
                             s.path("name").asText(""),
@@ -59,11 +59,11 @@ public final class HuolalaOrderNormalizer {
                                     .asText(s.path("contacts_phone_no").asText(""))));
         List<Fee> fees = new ArrayList<>();
         int feeIndex = 0;
-        for (var f : item.path("order_price_arr")) {
+        for (var f : array(item.path("order_price_arr"))) {
             String lineId = "fee-" + (feeIndex++), name = f.path("bill_name").asText("");
             List<Voucher> vouchers = new ArrayList<>();
             int imageIndex = 0;
-            for (var image : f.path("img_urls")) {
+            for (var image : array(f.path("img_urls"))) {
                 String url = image.asText("");
                 if (!url.isBlank())
                     vouchers.add(
@@ -111,9 +111,10 @@ public final class HuolalaOrderNormalizer {
         raw.put("用车原由", item.path("order_reason").asText(""));
         raw.put("订单备注", item.path("remark").asText(""));
         raw.put("详情状态", detailed ? "DETAIL" : "LIST");
-        raw.put("费用明细已提供", String.valueOf(item.has("order_price_arr")));
-        raw.put("回单已提供", String.valueOf(item.has("receipt_url")));
-        raw.put("账单凭证已提供", String.valueOf(item.has("img_urls")));
+        raw.put("路线已提供", String.valueOf(item.path("addr_info_arr").isArray()));
+        raw.put("费用明细已提供", String.valueOf(item.path("order_price_arr").isArray()));
+        raw.put("回单已提供", String.valueOf(item.path("receipt_url").isArray()));
+        raw.put("账单凭证已提供", String.valueOf(item.path("img_urls").isArray()));
         raw.put("下单时间", item.path("create_time").asText(list.path("create_time").asText("")));
         raw.put("司机", detail.path("driver_info").path("name").asText(""));
         raw.put("司机联系电话", detail.path("driver_info").path("phone_no").asText(""));
@@ -154,11 +155,15 @@ public final class HuolalaOrderNormalizer {
         return new CarrierOrder(enterprise, no, label, useTime, paid, raw, List.of(), 0, facts);
     }
 
+    private static Iterable<JsonNode> array(JsonNode node) {
+        return node.isArray() ? node : List.of();
+    }
+
     static List<Voucher> voucherList(
             String connector, String no, String line, JsonNode urls, String name) {
         var values = new ArrayList<Voucher>();
         int index = 0;
-        for (var value : urls)
+        for (var value : array(urls))
             if (!value.asText("").isBlank())
                 values.add(
                         new Voucher(

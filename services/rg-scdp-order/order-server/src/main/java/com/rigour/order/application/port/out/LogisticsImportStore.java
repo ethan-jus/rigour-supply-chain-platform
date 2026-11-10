@@ -27,6 +27,10 @@ public interface LogisticsImportStore {
         throw new UnsupportedOperationException("API来源尚未接通");
     }
 
+    default void employeeMapping(String tenant, EmployeeMappingUpdate update) {
+        throw new UnsupportedOperationException("员工关联更新尚未接通");
+    }
+
     default void accept(String tenant, String id, int revision, String actor, String reason) {
         throw new UnsupportedOperationException("来源确认尚未接通");
     }

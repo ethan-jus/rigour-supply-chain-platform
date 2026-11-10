@@ -38,6 +38,12 @@ public final class LogisticsImportController {
         return ApiResponse.success(service.receive(source));
     }
 
+    @PostMapping("/api-employee-mappings")
+    public ApiResponse<Void> employeeMapping(@RequestBody EmployeeMappingUpdate update) {
+        service.employeeMapping(update);
+        return ApiResponse.success(null);
+    }
+
     @PostMapping("/api-vouchers")
     public ApiResponse<Void> voucher(@RequestBody VoucherUpdate update) {
         service.voucher(update);
