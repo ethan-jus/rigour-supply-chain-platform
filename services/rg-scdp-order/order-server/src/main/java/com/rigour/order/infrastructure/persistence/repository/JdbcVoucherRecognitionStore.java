@@ -13,7 +13,7 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.JsonNode;
 
-/** Durable OCR jobs contain only tenant-owned keys; manual evidence is never overwritten. */
+/** Durable OCR jobs contain only tenant-owned keys; known evidence is preserved while missing fields are enriched. */
 @Repository
 public class JdbcVoucherRecognitionStore {
     private final JdbcTemplate jdbc;
@@ -22,8 +22,8 @@ public class JdbcVoucherRecognitionStore {
         int added = jdbc.update("INSERT IGNORE INTO order_payment_voucher_transaction"
                 + " (tenant_id,payment_id,voucher_key,created_by,recognition_status) VALUES(?,?,?,'VOUCHER_OCR','PENDING')", tenant,paymentId,key);
         if (added == 0 && jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_voucher_transaction"
-                + " WHERE tenant_id=? AND payment_id=? AND voucher_key=? AND created_by='VOUCHER_OCR'"
-                + " AND recognition_status IN ('PENDING','FAILED')",Integer.class,tenant,paymentId,key)==0) return;
+                + " WHERE tenant_id=? AND payment_id=? AND voucher_key=?"
+                + " AND (transaction_no IS NULL OR transaction_no='' OR voucher_paid_time IS NULL)",Integer.class,tenant,paymentId,key)==0) return;
         String id;
         try { id = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest((tenant+"\n"+key).getBytes(StandardCharsets.UTF_8))); }
         catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
@@ -39,7 +39,10 @@ public class JdbcVoucherRecognitionStore {
                 + " JOIN JSON_TABLE(COALESCE(p.voucher_keys_json,JSON_ARRAY()), '$[*]' COLUMNS(voucher_key VARCHAR(512) PATH '$')) j"
                 + " WHERE p.deleted=0 AND NOT EXISTS(SELECT 1 FROM order_payment_voucher_transaction e"
                 + " WHERE e.tenant_id COLLATE utf8mb4_general_ci=p.tenant_id COLLATE utf8mb4_general_ci"
-                + " AND e.payment_id=p.id AND e.voucher_key COLLATE utf8mb4_general_ci=j.voucher_key COLLATE utf8mb4_general_ci)"
+                + " AND e.payment_id=p.id AND e.voucher_key COLLATE utf8mb4_general_ci=j.voucher_key COLLATE utf8mb4_general_ci"
+                + " AND (NULLIF(e.transaction_no,'') IS NOT NULL AND e.voucher_paid_time IS NOT NULL"
+                + " OR EXISTS(SELECT 1 FROM order_voucher_recognition_job v WHERE v.tenant_id=e.tenant_id"
+                + " AND v.voucher_key=e.voucher_key)))"
                 + " ORDER BY p.id LIMIT ?", Math.max(1,Math.min(100,limit)));
         for (var row : rows) enqueue(jdbc,(String)row.get("tenant_id"),((Number)row.get("id")).longValue(),(String)row.get("voucher_key"));
         return rows.size();
@@ -64,12 +67,15 @@ public class JdbcVoucherRecognitionStore {
         String tenant=(String)job.get("tenant_id"),key=(String)job.get("voucher_key");
         // Re-check the current attachment set after OCR: a cancelled/removed image cannot reappear.
         jdbc.update("UPDATE order_payment_voucher_transaction e JOIN order_payment_record p"
-                + " ON p.tenant_id=? AND p.id=e.payment_id SET e.voucher_amount=?,e.transaction_no=?,"
-                + " e.voucher_paid_time=?,e.voucher_paid_time_precision=?,e.recognition_status=?,e.payee=?,e.payment_result=?,e.evidence_note=?"
-                + " WHERE e.tenant_id=? AND e.voucher_key=? AND e.created_by='VOUCHER_OCR' AND p.deleted=0"
+                + " ON p.tenant_id=? AND p.id=e.payment_id SET e.voucher_amount=COALESCE(e.voucher_amount,?),e.transaction_no=COALESCE(NULLIF(e.transaction_no,''),?),"
+                + " e.voucher_paid_time_precision=IF(e.voucher_paid_time IS NULL,?,e.voucher_paid_time_precision),"
+                + " e.voucher_paid_time=COALESCE(e.voucher_paid_time,?),e.recognition_status=?,"
+                + " e.payee=COALESCE(NULLIF(e.payee,''),?),e.payment_result=COALESCE(NULLIF(e.payment_result,''),?),"
+                + " e.evidence_note=COALESCE(NULLIF(e.evidence_note,''),?)"
+                + " WHERE e.tenant_id=? AND e.voucher_key=? AND p.deleted=0"
                 + " AND JSON_CONTAINS(p.voucher_keys_json,JSON_QUOTE(e.voucher_key))",
-                tenant,value(result,"amount"),value(result,"transactionNo"),value(result,"paidTime")==null?null:LocalDateTime.ofInstant(Instant.parse(value(result,"paidTime")),ZoneOffset.UTC),
-                value(result,"paidTimePrecision"),value(result,"recognitionStatus"),value(result,"payee"),value(result,"paymentResult"),
+                tenant,value(result,"amount"),value(result,"transactionNo"),value(result,"paidTimePrecision"),
+                value(result,"paidTime")==null?null:LocalDateTime.ofInstant(Instant.parse(value(result,"paidTime")),ZoneOffset.UTC),value(result,"recognitionStatus"),value(result,"payee"),value(result,"paymentResult"),
                 value(result,"note"),tenant,key);
         jdbc.update("UPDATE order_voucher_recognition_job SET status='SUCCEEDED',result_json=?,error_code=NULL,lease_token=NULL,lease_until=NULL,updated_time=UTC_TIMESTAMP(6) WHERE id=?",json,job.get("id"));
     }

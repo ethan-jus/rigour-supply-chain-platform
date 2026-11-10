@@ -524,6 +524,20 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     }
 
     @Override
+    public java.util.List<String> knownSourceOrders(CallerIdentity caller, UUID connectorId, String sourceNo) {
+        requireCaller(caller);
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE + "/source-orders/known")
+                .queryParam("connectorId", connectorId).queryParamIfPresent("sourceNo", Optional.ofNullable(sourceNo))
+                .build().encode().toUri();
+        var response = restClient.get().uri(uri).accept(MediaType.APPLICATION_JSON)
+                .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(httpResponse,
+                        new TypeReference<ApiResponse<java.util.List<String>>>() {}, "已同步来源订单"));
+        return SignedDomainRequest.required(response, "Order已同步来源订单");
+    }
+
+    @Override
     public com.rigour.order.api.v1.model.HistorySyncModels.Intake cancelSourceOrder(CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder command) {
         return historyIntake(caller, "/source-orders/cancel", command);

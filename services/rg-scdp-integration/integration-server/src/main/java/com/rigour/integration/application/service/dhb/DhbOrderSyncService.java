@@ -717,14 +717,25 @@ public final class DhbOrderSyncService {
                     var mapped = store.findActiveMapping(caller.tenantId(), task.connectorId(),
                             SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
                     // 已关联历史单仍接收金额和状态变化；Order 保留原业务日期和回款凭证。
-                    if (mapped == null || mapped.internalObjectId() == null) return ProjectionOutcome.DUPLICATE;
+                    if ((mapped == null || mapped.internalObjectId() == null)
+                            && orderProjectionClient.knownSourceOrders(orderServiceCaller(caller.tenantId()),
+                                    task.connectorId(), sourceOrderNo).isEmpty()) return ProjectionOutcome.DUPLICATE;
                 }
             }
             if (summaryState != null) {
+                OrderDetail inactiveDetail = null;
+                try {
+                    inactiveDetail = client.getOrderContent(task.connector(), sourceOrderNo);
+                } catch (RuntimeException error) {
+                    // 已删除的来源可能无法读取；不能因此漏掉取消状态或清空原归属。
+                    store.recordSyncLog(caller.tenantId(), task.taskId(), runId, "WARN",
+                            "失效订单详情暂不可读，保留现有归属 orderNo=" + sourceOrderNo, "DHB_INACTIVE_DETAIL_UNAVAILABLE");
+                }
                 raw = store.persistRawObject(caller.tenantId(), task.connectorId(), runId,
                         "ORDER", sourceOrderNo, summary.updatedAt() == null ? null : summary.updatedAt().toString(),
-                        summary.updatedAt(), map(summary.attributes()), Instant.now());
-                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw, summaryState, summary, null);
+                        summary.updatedAt(), inactiveDetail == null ? map(summary.attributes()) : combinedPayload(summary, inactiveDetail), Instant.now());
+                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw, summaryState, summary, inactiveDetail,
+                        employeeCache, customerRegionCache);
             }
             OrderDetail detail = client.getOrderContent(task.connector(), sourceOrderNo);
             Map<String, Object> payload = combinedPayload(summary, detail);
@@ -734,12 +745,12 @@ public final class DhbOrderSyncService {
                     summary == null ? null : summary.updatedAt(), payload, Instant.now());
             String detailState = inactiveOrderStatus(detail.status(), map(detail.attributes()));
             if (detailState != null) {
-                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw, detailState, summary, detail);
+                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw, detailState, summary, detail, employeeCache, customerRegionCache);
             }
             // 只有来源明确的零结算额才取消；缺失金额不能默认为零。
             BigDecimal settlement = sourceSettlementAmount(detail, summary);
             if (settlement != null && settlement.signum() == 0) {
-                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw, "CANCELLED", summary, detail);
+                return cancelSourceOrder(caller, task, runId, sourceOrderNo, raw, "CANCELLED", summary, detail, employeeCache, customerRegionCache);
             }
             syncObservedUnitDictionaries(caller.tenantId(), task.taskId(), runId,
                     "orderLine.sourceUnit", payload);
@@ -824,14 +835,20 @@ public final class DhbOrderSyncService {
 
     private ProjectionOutcome cancelSourceOrder(CallerIdentity caller, SyncTaskContext task, UUID runId,
                                                 String sourceOrderNo, RawObjectPersistResult raw, String status,
-                                                OrderSummary summary, OrderDetail detail) {
+                                                OrderSummary summary, OrderDetail detail, Map<String, EmployeeProjection> employeeCache,
+                                                Map<Long, Optional<String>> customerRegionCache) {
         Map<String, Object> content = map(detail == null ? null : detail.attributes());
         Map<String, Object> list = map(summary.attributes());
         var result = orderProjectionClient.cancelSourceOrder(orderServiceCaller(caller.tenantId()),
                 new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(task.connectorId(), sourceOrderNo,
                         status, firstInstant(content, list, summary.createdAt(), "OrderDate", "order_date", "createdAt"),
                         sourceSettlementAmount(detail, summary),
-                        first(content, list, "ClientName", "clientName", "customerName"), summary.updatedAt()));
+                        first(content, list, "ClientName", "ClientCompanyName", "clientName", "customerName"), summary.updatedAt(),
+                        cancelledAttribution(caller.tenantId(), task.connectorId(), sourceOrderNo, content, list,
+                                employeeCache, customerRegionCache),
+                        new com.rigour.order.api.v1.model.HistorySyncModels.SourceLifecycleEvidence(
+                                first(content,list,"CancelUserID","DeleteUserID"), first(content,list,"CancelUserName","DeleteUserName"),
+                                firstInstant(content,list,null,"CancelTime","DeleteTime"), "订货宝明确返回失效状态")));
         if (result == null) throw new IllegalStateException("来源取消接口未返回结果");
         if (!Set.of("CANCELLED", "DELETED", "STALE").contains(result.state())) {
             recordRejected(caller, task, runId, raw, sourceOrderNo, "DHB_CANCELLATION_REVIEW",
@@ -1382,6 +1399,43 @@ public final class DhbOrderSyncService {
         }
     }
 
+    /** 增量接口不返回已删除订单；全量完整分页和单笔不存在回执共同证明来源删除。 */
+    public com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView reconcileDeletedOrders(
+            CallerIdentity caller, UUID taskId, int maxPages, java.util.function.Consumer<String> progress) {
+        var task = store.loadTask(caller.tenantId(), taskId); validateTask(task);
+        var candidates = orderProjectionClient.knownSourceOrders(orderServiceCaller(caller.tenantId()), task.connectorId(), null);
+        var present = new java.util.HashSet<String>();
+        PageRequest request = PageRequest.first(1000);
+        long total = -1; boolean complete = false;
+        for (int pageNo = 0; pageNo < maxPages; pageNo++) {
+            var page = client.getOrders(task.connector(), new OrderQuery(request, "all", null, null, "all", "all", null, null));
+            if (page.total() < 0 || total >= 0 && total != page.total())
+                throw new IllegalStateException("来源订单总数未确定或扫描期间变化，本次不判定删除");
+            total = page.total();
+            for (var item : page.items()) {
+                if (blank(item.orderNumber()) || !present.add(item.orderNumber()))
+                    throw new IllegalStateException("来源订单分页缺号或重复，本次不判定删除");
+            }
+            progress.accept("核对来源删除状态：已读取 " + present.size() + " / " + total);
+            if (!page.hasNext()) { complete = present.size() == total; break; }
+            request = page.nextRequest();
+        }
+        if (!complete) throw new IllegalStateException("来源订单分页不完整，本次不判定删除");
+        long deleted = 0, review = 0;
+        for (String no : candidates) {
+            if (present.contains(no) || !client.orderMissing(task.connector(), no)) continue;
+            var result = orderProjectionClient.cancelSourceOrder(orderServiceCaller(caller.tenantId()),
+                    new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(task.connectorId(), no,
+                            "DELETED", null, null, null, null, null,
+                            new com.rigour.order.api.v1.model.HistorySyncModels.SourceLifecycleEvidence(
+                                    null, null, null, "完整订单列表缺失，单笔接口明确返回未查询到订单信息")));
+            if (result != null && "DELETED".equals(result.state())) deleted++; else review++;
+        }
+        return new com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView("ORDER", "SOURCE_PRESENCE",
+                review == 0 ? "SUCCEEDED" : "SUCCEEDED_WITH_WARNINGS", null, total, deleted, review, Map.of(),
+                "来源存在性核对完成；已保留并标记删除 " + deleted + " 笔，需拆分核对 " + review + " 笔。", 0L,0L,deleted,0L,0L);
+    }
+
     public boolean voucherBackfillEnabled() { return voucherBackfillEnabled; }
 
     /** Only attachments are projected; no source amounts, dates or business checkpoints are replayed. */
@@ -1868,32 +1922,10 @@ public final class DhbOrderSyncService {
                 .subtract(zeroIfNull(line.discountAmount()))).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
-    private PreparedSalesOrder prepareSalesOrder(UUID tenantId, UUID connectorId,
-                                                 String sourceOrderNo, OrderSummary summary,
-                                                 OrderDetail detail,
-                                                 Map<String, EmployeeProjection> employeeCache,
-                                                 boolean allowRegionFallback,
-                                                 Map<Long, Optional<String>> customerRegionCache) {
-        Map<String, Object> list = map(summary == null ? null : summary.attributes());
-        Map<String, Object> content = map(detail == null ? null : detail.attributes());
-        String sourceStatus = firstNonBlank(
-                detail == null ? null : detail.status(),
-                first(content, list, "OrderStatus", "orderStatus", "order_status",
-                        "OrderStatusName", "orderStatusName", "order_status_name",
-                        "StatusName", "statusName", "status_name", "status"),
-                summary == null ? null : summary.status());
-        List<String> customerSourceIds = candidates(content, list,
-                "ClientGUID", "clientGUID", "ClientGuid", "clientGuid", "client_guid",
-                "ClientNO", "clientNO", "ClientNum", "clientNum", "client_num",
-                "ClientID", "clientID", "ClientId", "clientId", "customerNumber",
-                "customerNo", "CustomerNo", "customerCode", "CustomerCode",
-                "clientAccount", "ClientAccount");
-        ExternalObjectMapping customer = mappingAny(tenantId, connectorId, List.of("CUSTOMER"),
-                customerSourceIds,
-                sourceOrderNo, "客户");
-        List<SalesOrderLineCommand> lines = salesOrderLines(tenantId, connectorId, sourceOrderNo, content);
-        String internalStatusCode = requireDhbOrderStatusCode(sourceStatus, sourceOrderNo);
-        boolean cancelled = isCancelled(internalStatusCode);
+    private record OrderPeople(EmployeeProjection owner, EmployeeProjection creator, String creatorId) {}
+
+    private OrderPeople orderPeople(UUID tenantId, UUID connectorId, Map<String, Object> content,
+            Map<String, Object> list, Map<String, EmployeeProjection> employeeCache) {
         List<String> ownerSourceStaffIds = candidates(content, list,
                 "SalesmanID", "SalesmanId", "salesmanID", "salesmanId", "salesman_id",
                 "BusinessStaffID", "BusinessStaffId", "businessStaffID", "businessStaffId",
@@ -1933,6 +1965,57 @@ public final class DhbOrderSyncService {
                 "AccountName", "accountName", "account_name", "accounts_name");
         EmployeeProjection sourceCreator = resolveEmployee(tenantId, connectorId, sourceCreatorIds,
                 sourceCreatorNames, employeeCache);
+        return new OrderPeople(owner, sourceCreator, firstClean(sourceCreatorIds));
+    }
+
+    private com.rigour.order.api.v1.model.HistorySyncModels.CancelledOrderAttribution cancelledAttribution(
+            UUID tenantId, UUID connectorId, String sourceNo, Map<String,Object> content, Map<String,Object> list,
+            Map<String,EmployeeProjection> employeeCache, Map<Long,Optional<String>> customerRegionCache) {
+        ExternalObjectMapping customer = null;
+        try {
+            customer = mappingAny(tenantId, connectorId, List.of("CUSTOMER"),
+                    candidates(content, list, "ClientGUID", "ClientNO", "OrderClientNo", "ClientNum", "ClientID", "customerNumber"), sourceNo, "客户");
+        } catch (ProjectionRejected unavailable) {
+            // 取消状态仍需接收；客户尚未对应时仅保存来源明确提供的名称和人员。
+        }
+        OrderPeople people = orderPeople(tenantId, connectorId, content, list, employeeCache);
+        String region = customerAreaCode(tenantId, connectorId, content, list);
+        if (region == null) region = customerRegionCode(tenantId, customer, customerRegionCache);
+        return new com.rigour.order.api.v1.model.HistorySyncModels.CancelledOrderAttribution(
+                customer == null ? null : customer.internalObjectId(), customer == null ? null : customer.internalObjectNo(),
+                region, people.owner().employeeCode(), people.owner().employeeName(), people.creatorId(),
+                people.creator().employeeCode(), people.creator().employeeName());
+    }
+
+    private PreparedSalesOrder prepareSalesOrder(UUID tenantId, UUID connectorId,
+                                                 String sourceOrderNo, OrderSummary summary,
+                                                 OrderDetail detail,
+                                                 Map<String, EmployeeProjection> employeeCache,
+                                                 boolean allowRegionFallback,
+                                                 Map<Long, Optional<String>> customerRegionCache) {
+        Map<String, Object> list = map(summary == null ? null : summary.attributes());
+        Map<String, Object> content = map(detail == null ? null : detail.attributes());
+        String sourceStatus = firstNonBlank(
+                detail == null ? null : detail.status(),
+                first(content, list, "OrderStatus", "orderStatus", "order_status",
+                        "OrderStatusName", "orderStatusName", "order_status_name",
+                        "StatusName", "statusName", "status_name", "status"),
+                summary == null ? null : summary.status());
+        List<String> customerSourceIds = candidates(content, list,
+                "ClientGUID", "clientGUID", "ClientGuid", "clientGuid", "client_guid",
+                "ClientNO", "clientNO", "ClientNum", "clientNum", "client_num",
+                "ClientID", "clientID", "ClientId", "clientId", "customerNumber",
+                "customerNo", "CustomerNo", "customerCode", "CustomerCode",
+                "clientAccount", "ClientAccount");
+        ExternalObjectMapping customer = mappingAny(tenantId, connectorId, List.of("CUSTOMER"),
+                customerSourceIds,
+                sourceOrderNo, "客户");
+        List<SalesOrderLineCommand> lines = salesOrderLines(tenantId, connectorId, sourceOrderNo, content);
+        String internalStatusCode = requireDhbOrderStatusCode(sourceStatus, sourceOrderNo);
+        boolean cancelled = isCancelled(internalStatusCode);
+        OrderPeople people = orderPeople(tenantId, connectorId, content, list, employeeCache);
+        EmployeeProjection owner = people.owner();
+        EmployeeProjection sourceCreator = people.creator();
         List<String> sourceModifierIds = candidates(content, list,
                 "ModifierID", "ModifierId", "modifierID", "modifierId", "modifier_id",
                 "UpdateUserID", "UpdateUserId", "updateUserID", "updateUserId", "update_user_id",
@@ -1981,9 +2064,9 @@ public final class DhbOrderSyncService {
                 SOURCE_SYSTEM_DINGHUOBAO,
                 sourceOrderNo,
                 internalStatusCode,
-                firstClean(sourceCreatorIds),
+                people.creatorId(),
                 sourceCreator.employeeCode(),
-                firstNonBlank(sourceCreator.employeeName(), firstClean(sourceCreatorNames)),
+                sourceCreator.employeeName(),
                 customer.internalObjectNo(),
                 firstNonBlank(first(content, list, "ClientName", "ClientCompanyName", "client_name"),
                         customer.sourceObjectNo(), customer.internalObjectNo(), "订货宝客户"),

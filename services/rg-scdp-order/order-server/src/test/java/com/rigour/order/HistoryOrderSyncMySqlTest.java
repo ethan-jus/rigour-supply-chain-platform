@@ -38,6 +38,18 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
         return ds;
     }
 
+    @org.junit.jupiter.api.Test
+    void knownSourcesIncludeBoundHistoryButExcludeUnlinkedSourcesAndOtherTenants() {
+        order(1, 1, "78", "0", "1");
+        intake("HISTORY", 1, "78", "1");
+        intake("UNLINKED", 1, "78", "1");
+        bind(java.util.List.of("HISTORY"), java.util.List.of(base(1, "0")));
+        org.assertj.core.api.Assertions.assertThat(store.knownSources(tenant,connector,null)).containsExactly("HISTORY");
+        org.assertj.core.api.Assertions.assertThat(store.knownSources(tenant,connector,"UNLINKED")).isEmpty();
+        org.assertj.core.api.Assertions.assertThat(store.knownSources(java.util.UUID.randomUUID().toString(),connector,null)).isEmpty();
+        org.assertj.core.api.Assertions.assertThat(store.knownSources(tenant,java.util.UUID.randomUUID(),null)).isEmpty();
+    }
+
     private void cancellationColumns() {
         db.execute("ALTER TABLE order_sales_order ADD updated_by VARCHAR(64), ADD source_status_code VARCHAR(64), ADD source_updated_at DATETIME(6), ADD created_by VARCHAR(64), ADD data_quality_status_code VARCHAR(32), ADD data_quality_message VARCHAR(256), MODIFY id BIGINT AUTO_INCREMENT, ADD UNIQUE KEY uk_test_id(id)");
         db.execute("ALTER TABLE order_sales_order_line ADD revision INT DEFAULT 0, ADD updated_by VARCHAR(64), ADD updated_time TIMESTAMP");

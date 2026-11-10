@@ -4505,14 +4505,14 @@ INSERT INTO bi_etl_run (
             """
             SELECT COUNT(*) AS rowCount,
                    COALESCE(SUM(p.paid_amount), 0) AS amount,
-                   COUNT(DISTINCT NULLIF(NULLIF(o.region_code, ''), '')) AS regionCount,
+                   COUNT(DISTINCT COALESCE(NULLIF(p.payment_owner_region_code,''),NULLIF(o.region_code, ''))) AS regionCount,
                    COUNT(DISTINCT
 """ + OWNER + """
 ) AS ownerCount,
                    COALESCE(SUM(CRC32(CONCAT_WS('|',
                        p.id,
                        p.order_id,
-                       COALESCE(NULLIF(o.region_code, ''), ''),
+                       COALESCE(COALESCE(NULLIF(p.payment_owner_region_code,''),NULLIF(o.region_code, '')), ''),
                        COALESCE(""" + OWNER + """
 , ''),
                        COALESCE(p.collector_staff_code, ''),
@@ -5241,7 +5241,7 @@ SELECT p.tenant_id, p.id, p.payment_no, p.order_id, COALESCE(p.sales_order_no_sn
        COALESCE(p.customer_code_snapshot, o.customer_code_snapshot, c.customer_code),
        COALESCE(p.customer_name_snapshot, o.customer_name_snapshot, c.customer_name),
        c.customer_type_code, ct.type_name,
-       NULLIF(o.region_code, ''), ca.area_name,
+       COALESCE(NULLIF(p.payment_owner_region_code,''),NULLIF(o.region_code, '')), ca.area_name,
        """ + OWNER + "," + NAME + """
 ,
        p.collector_staff_code, p.collector_name_snapshot,
@@ -5257,7 +5257,7 @@ SELECT p.tenant_id, p.id, p.payment_no, p.order_id, COALESCE(p.sales_order_no_sn
   LEFT JOIN bi_source_crm_crm_customer c
     ON c.tenant_id = p.tenant_id AND c.id = COALESCE(p.customer_id, o.customer_id)
   LEFT JOIN bi_source_crm_crm_customer_area ca
-    ON ca.tenant_id = UUID_TO_BIN(p.tenant_id) AND ca.area_code = NULLIF(o.region_code, '')
+    ON ca.tenant_id = UUID_TO_BIN(p.tenant_id) AND ca.area_code = COALESCE(NULLIF(p.payment_owner_region_code COLLATE utf8mb4_general_ci,''),NULLIF(o.region_code, ''))
   LEFT JOIN bi_source_crm_crm_customer_type ct
     ON ct.tenant_id = UUID_TO_BIN(p.tenant_id) AND ct.type_code = c.customer_type_code
  WHERE p.tenant_id = #{tenantId}

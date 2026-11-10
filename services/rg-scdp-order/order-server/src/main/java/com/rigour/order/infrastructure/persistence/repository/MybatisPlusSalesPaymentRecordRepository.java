@@ -57,6 +57,17 @@ public class MybatisPlusSalesPaymentRecordRepository
     private final OrderDataScope scopes;
     private final PaymentVoucherWriteGuard voucherGuard;
 
+    private PaymentOwnerResolver paymentOwners;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public MybatisPlusSalesPaymentRecordRepository(
+            InternalSalesPaymentRecordMapper mapper, InternalSalesOrderMapper orders,
+            InternalSalesRefundRecordMapper refunds, Clock clock, OrderDataScope scopes,
+            PaymentVoucherWriteGuard guard, PaymentOwnerResolver owners) {
+        this(mapper,orders,refunds,clock,scopes,guard);
+        this.paymentOwners=owners;
+    }
+
     public MybatisPlusSalesPaymentRecordRepository(
             InternalSalesPaymentRecordMapper mapper,
             InternalSalesOrderMapper orderMapper,
@@ -153,6 +164,7 @@ public class MybatisPlusSalesPaymentRecordRepository
         } catch (DataIntegrityViolationException exception) {
             throw conflict("销售回款单号已存在或销售订单引用无效");
         }
+        if (paymentOwners != null) paymentOwners.resolve(tenantId, entity.getId());
         return rawDetail(tenantId, entity.getId()).orElseThrow(() -> notFound("销售回款记录不存在"));
     }
 
@@ -167,6 +179,8 @@ public class MybatisPlusSalesPaymentRecordRepository
         requireOrder(tenantId, command.orderId());
         scopes.requireStableAssociation(existing.getOrderId(), command.orderId());
         LocalDateTime now = now();
+        if (paymentOwners != null) paymentOwners.requireStableBasis(tenantId,id,command.customerId(),
+                HistorySyncRules.businessDate(command.sourceSystemCode(),command.paymentTime(),instant(existing.getPaymentTime())));
         var update =
                 Wrappers.<InternalSalesPaymentRecordEntity>lambdaUpdate()
                                         .set(
@@ -277,6 +291,7 @@ public class MybatisPlusSalesPaymentRecordRepository
         if (!Objects.equals(existing.getOrderId(), command.orderId())) {
             refreshOrderPayment(tenantId, command.orderId(), actorId, now);
         }
+        if (paymentOwners != null) paymentOwners.resolve(tenantId, id);
         return rawDetail(tenantId, id).orElseThrow(() -> notFound("销售回款记录不存在"));
     }
 

@@ -403,6 +403,15 @@ SELECT position_name FROM hr_position WHERE tenant_id=? AND position_code=?
                                             c.positionCode());
                             if (positionNames.size() != 1)
                                 throw new IllegalArgumentException("请选择有效岗位职位");
+                            // 手工维护与来源同步持有同一租户锁，查重和写入必须在同一事务。
+                            if (c.mobile() != null && !c.mobile().isBlank()) {
+                                var duplicate = jdbc.query(
+                                        "SELECT employee_code,employee_name FROM hr_employee WHERE tenant_id=? AND deleted=0 AND mobile=? AND (? IS NULL OR id<>?) LIMIT 1",
+                                        (r, n) -> r.getString("employee_name") + "（" + r.getString("employee_code") + "）",
+                                        tenant, c.mobile().strip(), id, id);
+                                if (!duplicate.isEmpty()) throw new BusinessException(ErrorCode.CONFLICT,
+                                        "手机号已属于员工" + duplicate.getFirst() + "，请使用已有档案，不要重复新增", List.of());
+                            }
                             String code =
                                     old == null
                                             ? codes.generateUnique(

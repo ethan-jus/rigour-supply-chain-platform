@@ -1,0 +1,5 @@
+# glibc 2.17 runtime: pair with RIGOUR_VOUCHER_OCR_MODEL=PP-OCRv4.
+rapidocr==3.10.0
+onnxruntime==1.16.3
+numpy==1.26.4
+opencv-python-headless==4.10.0.84

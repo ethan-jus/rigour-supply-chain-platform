@@ -1,11 +1,13 @@
 """Local OCR only. Extract labeled facts; never infer dates from IDs or receipt records."""
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
-VERSION = 'rapidocr-3.10.0/ppocrv6/rules-1'
+MODEL = os.environ.get('RIGOUR_VOUCHER_OCR_MODEL', 'PP-OCRv6')
+VERSION = f'rapidocr-3.10.0/{MODEL}/rules-1'
 MIN_SCORE = .96
 
 
@@ -81,8 +83,16 @@ def extract(lines):
 
 
 def main():
-    from rapidocr import RapidOCR
-    result = RapidOCR()(sys.argv[1])
+    from rapidocr import RapidOCR, OCRVersion, ModelType
+    params = {'EngineConfig.onnxruntime.intra_op_num_threads': 1,
+              'EngineConfig.onnxruntime.inter_op_num_threads': 1}
+    # CentOS 7 uses the compatible v4 mobile models with ONNX Runtime 1.16.3.
+    if MODEL == 'PP-OCRv4':
+        params.update({'Det.ocr_version': OCRVersion.PPOCRV4, 'Det.model_type': ModelType.MOBILE,
+                       'Rec.ocr_version': OCRVersion.PPOCRV4, 'Rec.model_type': ModelType.MOBILE})
+    elif MODEL != 'PP-OCRv6':
+        raise ValueError('Unsupported voucher OCR model')
+    result = RapidOCR(params=params)(sys.argv[1])
     lines = [] if result.txts is None else [dict(text=t, score=float(s), box=b.tolist()) for t, s, b in zip(result.txts, result.scores, result.boxes)]
     with open(sys.argv[2], 'w', encoding='utf-8') as target:
         json.dump(extract(lines), target, ensure_ascii=False)

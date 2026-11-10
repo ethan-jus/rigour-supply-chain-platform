@@ -68,6 +68,12 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
     private final JdbcTemplate jdbc;
     private final OrderDataScope scopes;
 
+    private com.rigour.order.application.port.out.OrderAttributionClient owners;
+    @org.springframework.beans.factory.annotation.Autowired
+    public JdbcOrderRegisterStore(JdbcTemplate jdbc, OrderDataScope scopes, com.rigour.order.application.port.out.OrderAttributionClient owners) {
+        this(jdbc,scopes); this.owners=owners;
+    }
+
     public JdbcOrderRegisterStore(JdbcTemplate jdbc, OrderDataScope scopes) {
         this.jdbc = jdbc;
         this.scopes = scopes;
@@ -354,11 +360,11 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         "SELECT " + selectedPaymentAmount("p.paid_amount", criteria) + " AS allocated_payment_amount,p.id,p.payment_no,COALESCE(NULLIF(p.source_record_id,''),NULLIF(p.source_document_no,'')) AS source_record_id,p.order_id,o.order_no,"
                                 + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                                 + " p.customer_id,p.customer_code_snapshot,p.customer_name_snapshot,"
-                                + " COALESCE(snap.region_code,o.region_code) AS region_code,"
+                                + " COALESCE(p.payment_owner_region_code COLLATE utf8mb4_general_ci,snap.region_code,o.region_code) AS region_code,"
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
                                 + " snap.department_id,snap.department_name,o.order_date,o.payable_amount,"
-                                + " p.paid_amount,p.payment_status_code,p.payment_time,p.transaction_no,"
+                                + " p.payment_owner_code,p.payment_owner_name,p.payment_owner_evidence,p.payment_owner_department_name,p.payment_owner_region_code,p.paid_amount,p.payment_status_code,p.payment_time,p.transaction_no,"
                                 + " p.voucher_keys_json,p.created_by,p.created_time,p.updated_by,p.updated_time,"
                                 + " p.synced_by,p.synced_at,p.checked_by,p.checked_at,p.revision,"
                                 + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at "
@@ -748,41 +754,53 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
             var where = orderWhere(tenantId, criteria);
             where.and("o.payable_amount>0");
             where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
-            // 先按订单聚合回款，避免多笔回款放大交易额；保留范围之前下单的历史欠款。
+            // 交易、回款和待收各自按责任人聚合，避免多笔回款放大订单金额。
             var args = new ArrayList<Object>();
-            args.add(month.toString());
-            args.add(Timestamp.from(monthFrom));
-            args.add(Timestamp.from(monthTo));
-            args.add(Timestamp.from(monthTo));
-            args.add(Timestamp.from(monthFrom));
-            args.add(tenantId);
-            args.add(Timestamp.from(monthTo));
-            args.add(tenantId);
-            args.add(Timestamp.from(monthTo));
-            args.addAll(where.args());
+            args.add(month.toString()); args.add(Timestamp.from(monthFrom)); args.add(Timestamp.from(monthTo)); args.addAll(where.args());
             rows.addAll(jdbc.query("SELECT ? AS month,"
                             + " NULLIF(TRIM(COALESCE(snap.region_code,o.region_code)),'') AS region_code,"
                             + " NULLIF(TRIM(COALESCE(snap.employee_code,o.owner_employee_code)),'') AS employee_code,"
                             + " MAX(COALESCE(NULLIF(snap.employee_name,''),NULLIF(o.owner_employee_name_snapshot,''))) AS employee_name,"
-                            + " SUM(CASE WHEN o.order_date>=? AND o.order_date<? THEN o.payable_amount ELSE 0 END) AS transaction_amount,"
-                            + " SUM(COALESCE(p.month_paid,0)) AS received_amount,"
-                            + " SUM(CASE WHEN o.order_date<? THEN GREATEST(o.payable_amount-COALESCE(p.total_paid,0)+COALESCE(r.refunded,0),0) ELSE 0 END) AS unpaid_amount"
+                            + " SUM(o.payable_amount) AS transaction_amount"
                             + " FROM order_sales_order o LEFT JOIN order_attribution_snapshot snap"
                             + " ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'"
-                            + " LEFT JOIN (SELECT order_id,SUM(paid_amount) total_paid,"
-                            + " SUM(CASE WHEN payment_time>=? THEN paid_amount ELSE 0 END) month_paid"
-                            + " FROM order_payment_record WHERE tenant_id=? AND deleted=0"
-                            + " AND payment_status_code IN ('RECEIVED','CHECKED') AND payment_time<? GROUP BY order_id) p ON p.order_id=o.id"
-                            + " LEFT JOIN (SELECT order_id,SUM(refund_amount) refunded FROM order_refund_record"
-                            + " WHERE tenant_id=? AND deleted=0 AND refund_status_code='CONFIRMED' AND refund_time<? GROUP BY order_id) r ON r.order_id=o.id"
-                            + " WHERE " + where.sql()
-                            + " GROUP BY 2,3 HAVING transaction_amount<>0 OR received_amount<>0 OR unpaid_amount<>0 ORDER BY 2,3",
+                            + " WHERE o.order_date>=? AND o.order_date<? AND " + where.sql()
+                            + " GROUP BY 2,3 ORDER BY 2,3",
                     (rs,i) -> new OrderRegisterModels.MonthlyPerformanceRow(rs.getString("month"),rs.getString("region_code"),null,
-                            rs.getString("employee_code"),rs.getString("employee_name"),rs.getBigDecimal("transaction_amount"),
-                            rs.getBigDecimal("received_amount"),rs.getBigDecimal("unpaid_amount")),args.toArray()));
+                            rs.getString("employee_code"),rs.getString("employee_name"),rs.getBigDecimal("transaction_amount"),ZERO,ZERO),args.toArray()));
+            // 回款人员按已确认快照独立分组，不能挂到下单业务员上；未知归属保留单独一行。
+            var paymentArgs = new ArrayList<Object>();
+            paymentArgs.add(month.toString()); paymentArgs.add(Timestamp.from(monthFrom)); paymentArgs.add(Timestamp.from(monthTo)); paymentArgs.addAll(where.args());
+            rows.addAll(jdbc.query("SELECT ? month,COALESCE(p.payment_owner_region_code COLLATE utf8mb4_general_ci,snap.region_code,o.region_code) region_code,"
+                    + " p.payment_owner_code employee_code,MAX(p.payment_owner_name) employee_name,SUM(p.paid_amount) received_amount"
+                    + " FROM order_payment_record p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id"
+                    + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'"
+                    + " WHERE p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time>=? AND p.payment_time<? AND " + where.sql()
+                    + " GROUP BY 2,3", (rs,i)->new OrderRegisterModels.MonthlyPerformanceRow(rs.getString("month"),rs.getString("region_code"),null,
+                        rs.getString("employee_code"),rs.getString("employee_code")==null ? "回款归属待确认" : rs.getString("employee_name"),ZERO,rs.getBigDecimal("received_amount"),ZERO),paymentArgs.toArray()));
+            // 待收余额按月末客户责任归属单独计算，不用个人交易额减个人回款额。
+            var debtArgs=new ArrayList<Object>(); debtArgs.add(Timestamp.from(monthTo)); debtArgs.add(Timestamp.from(monthTo)); debtArgs.add(Timestamp.from(monthTo)); debtArgs.addAll(where.args());
+            var debts=jdbc.queryForList("SELECT o.customer_id,COALESCE(snap.region_code,o.region_code) region_code,"
+                + " GREATEST(o.payable_amount-COALESCE((SELECT SUM(p.paid_amount) FROM order_payment_record p WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time<?),0)"
+                + " +COALESCE((SELECT SUM(r.refund_amount) FROM order_refund_record r WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id AND r.deleted=0 AND r.refund_status_code='CONFIRMED' AND r.refund_time<?),0),0) unpaid_amount"
+                + " FROM order_sales_order o LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' WHERE o.order_date<? AND " + where.sql(),debtArgs.toArray());
+            var customerIds=debts.stream().filter(r->r.get("customer_id")!=null && ((BigDecimal)r.get("unpaid_amount")).signum()>0).map(r->((Number)r.get("customer_id")).longValue()).distinct().toList();
+            var debtOwners=owners==null ? Map.<Long,com.rigour.merchant.api.v1.model.CustomerPaymentOwnerView>of() : owners.paymentOwners(com.rigour.shared.context.AuthorizationContext.requireCurrent(),customerIds,monthTo.minusNanos(1000));
+            for(var debt:debts) {
+                BigDecimal unpaid=(BigDecimal)debt.get("unpaid_amount"); if(unpaid.signum()==0) continue;
+                var owner=debt.get("customer_id")==null ? null : debtOwners.get(((Number)debt.get("customer_id")).longValue());
+                boolean known=owner!=null && owner.usable();
+                rows.add(new OrderRegisterModels.MonthlyPerformanceRow(month.toString(),known && owner.regionCode()!=null ? owner.regionCode() : (String)debt.get("region_code"),null,
+                    known ? owner.employeeCode() : null,known ? owner.employeeName() : "归属待确认",ZERO,ZERO,unpaid));
+            }
             month = month.plusMonths(1);
         }
-        return rows;
+        var combined = new LinkedHashMap<List<String>, OrderRegisterModels.MonthlyPerformanceRow>();
+        for (var row:rows) {
+            var key=java.util.Arrays.asList(row.month(),row.regionCode(),row.employeeCode());
+            combined.merge(key,row,(l,r)->new OrderRegisterModels.MonthlyPerformanceRow(l.month(),l.regionCode(),l.regionName(),l.employeeCode(),l.employeeName()==null?r.employeeName():l.employeeName(),l.transactionAmount().add(r.transactionAmount()),l.receivedAmount().add(r.receivedAmount()),l.unpaidAmount().add(r.unpaidAmount())));
+        }
+        return combined.values().stream().filter(r->r.transactionAmount().signum()!=0 || r.receivedAmount().signum()!=0 || r.unpaidAmount().signum()!=0).toList();
     }
 
     private static java.util.Set<Long> variantIds(Long legacyId, List<Long> ids) {
@@ -849,6 +867,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 jdbc.queryForMap(
                         "SELECT SUM(CASE WHEN " + amount + " IS NULL THEN 1 ELSE 0 END) unallocated_count,"
                                 + " COALESCE(SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') THEN " + amount + " ELSE 0 END),0) received_amount,"
+                                + " COALESCE(SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') AND (p.payment_owner_evidence IS NULL OR p.payment_owner_code IS NULL) THEN " + amount + " ELSE 0 END),0) owner_pending_amount,"
                                 + " COALESCE(SUM(CASE WHEN p.payment_status_code='CHECKED' THEN " + amount + " ELSE 0 END),0) checked_amount,"
                                 + " COALESCE(SUM(CASE WHEN p.payment_status_code='PENDING' THEN " + amount + " ELSE 0 END),0) pending_amount,"
                                 + " COALESCE(SUM(CASE WHEN p.payment_status_code='CANCELLED' THEN " + amount + " ELSE 0 END),0) cancelled_amount "
@@ -876,6 +895,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 where.args().toArray());
         Map<String, BigDecimal> totals = new LinkedHashMap<>();
         totals.put("unallocatedCount", decimal(row, "unallocated_count"));
+        totals.put("ownerPendingAmount", decimal(row, "owner_pending_amount"));
         totals.put("receivedAmount", decimal(row, "received_amount"));
         totals.put("checkedAmount", decimal(row, "checked_amount"));
         totals.put("pendingDocumentAmount", decimal(row, "pending_amount"));
@@ -1155,9 +1175,10 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         eq(where, "o.customer_id", c.customerId());
         like(where, "o.customer_name_snapshot", c.customerName());
         like(where, "o.customer_code_snapshot", c.customerCode());
-        like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
-        eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
-        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
+        like(where, "COALESCE(p.payment_owner_region_code COLLATE utf8mb4_general_ci,snap.region_code,o.region_code)", c.regionCode());
+        if ("__PENDING__".equals(c.ownerEmployeeCode())) where.and("(p.payment_owner_evidence IS NULL OR p.payment_owner_code IS NULL)");
+        else eq(where, "p.payment_owner_code", c.ownerEmployeeCode());
+        inIds(where, "p.payment_owner_department_id", c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
@@ -1388,18 +1409,20 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 instant(rs, "synced_at"),
                 rs.getString("checked_by"),
                 instant(rs, "checked_at"),
-                rs.getInt("revision"));
+                rs.getInt("revision")).withPaymentOwner(new OrderRegisterModels.PaymentOwner(
+                    rs.getString("payment_owner_code"),rs.getString("payment_owner_name"),rs.getString("payment_owner_evidence"),
+                    rs.getString("payment_owner_department_name"),rs.getString("payment_owner_region_code")));
     }
 
     private static final String PAYMENT_ROW_SELECT =
             "SELECT p.id,p.payment_no,COALESCE(NULLIF(p.source_record_id,''),NULLIF(p.source_document_no,'')) AS source_record_id,p.order_id,o.order_no,"
                     + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                     + " p.customer_id,p.customer_code_snapshot,p.customer_name_snapshot,"
-                    + " COALESCE(snap.region_code,o.region_code) AS region_code,"
+                    + " COALESCE(p.payment_owner_region_code COLLATE utf8mb4_general_ci,snap.region_code,o.region_code) AS region_code,"
                     + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                     + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
                     + " snap.department_id,snap.department_name,o.order_date,o.payable_amount,"
-                    + " p.paid_amount,p.payment_status_code,p.payment_time,p.transaction_no,"
+                    + " p.payment_owner_code,p.payment_owner_name,p.payment_owner_evidence,p.payment_owner_department_name,p.payment_owner_region_code,p.paid_amount,p.payment_status_code,p.payment_time,p.transaction_no,"
                     + " p.voucher_keys_json,p.created_by,p.created_time,p.updated_by,p.updated_time,"
                     + " p.synced_by,p.synced_at,p.checked_by,p.checked_at,p.revision,"
                     + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at"

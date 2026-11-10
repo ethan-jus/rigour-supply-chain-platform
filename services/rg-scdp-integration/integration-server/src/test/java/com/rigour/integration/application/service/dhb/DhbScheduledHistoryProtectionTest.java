@@ -124,6 +124,8 @@ class DhbScheduledHistoryProtectionTest {
         // 历史订单先只读检查关联；未关联订单和历史收款仍不得发生任何写入。
         if (object.equals("order")) {
             verify(store).findActiveMapping(tenant, task.connectorId(), "SALES_ORDER", "D1");
+            verify(projection).knownSourceOrders(argThat(c -> tenant.equals(c.tenantId())
+                    && "SERVICE".equals(c.principalScope())), eq(task.connectorId()), eq("D1"));
         }
         verifyNoMoreInteractions(store);
         if (object.equals("payment")) verify(projection).syncReceiptVouchers(any(), argThat(c -> c.sourceStatus().equals("CANCELLED") && c.objectKeys().isEmpty()));

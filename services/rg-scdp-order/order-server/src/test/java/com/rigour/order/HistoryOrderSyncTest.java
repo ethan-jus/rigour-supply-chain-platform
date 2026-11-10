@@ -81,6 +81,12 @@ class HistoryOrderSyncTest {
                     + " TIMESTAMP,paid_amount DECIMAL(20,2),remark VARCHAR(1000),created_by"
                     + " VARCHAR(50),updated_by VARCHAR(50),created_time TIMESTAMP,updated_time"
                     + " TIMESTAMP,revision INT,deleted INT)");
+        db.execute("ALTER TABLE order_payment_record ADD payment_owner_code VARCHAR(50)");
+        db.execute("ALTER TABLE order_payment_record ADD payment_owner_name VARCHAR(128)");
+        db.execute("ALTER TABLE order_payment_record ADD payment_owner_evidence VARCHAR(1024)");
+        db.execute("ALTER TABLE order_payment_record ADD payment_owner_department_id BIGINT");
+        db.execute("ALTER TABLE order_payment_record ADD payment_owner_department_name VARCHAR(200)");
+        db.execute("ALTER TABLE order_payment_record ADD payment_owner_region_code VARCHAR(128)");
         db.execute("ALTER TABLE order_payment_record ADD checked_by VARCHAR(50)");
         db.execute("ALTER TABLE order_payment_record ADD checked_at TIMESTAMP");
         db.execute("ALTER TABLE order_sync_receipt ADD confirmed_by VARCHAR(50)");
@@ -603,9 +609,14 @@ class HistoryOrderSyncTest {
                                         version,
                                         "LI",
                                         "李四",
-                                        "门店交接生效记录与该笔回款时间核对")));
+                                        "依据记录".repeat(250))));
         assertThat(db.queryForObject("SELECT employee_code FROM order_sync_receipt", String.class))
                 .isEqualTo("LI");
+        assertThat(db.queryForObject("SELECT payment_owner_code FROM order_payment_record", String.class)).isEqualTo("LI");
+        assertThat(db.queryForObject("SELECT collector_staff_code FROM order_payment_record", String.class)).isNull();
+        assertThat(db.queryForObject("SELECT payment_owner_evidence FROM order_payment_record", String.class)).hasSize(1005);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sync_receipt_revision WHERE revision=?", Integer.class, version+1)).isEqualTo(1);
+        assertThat(paid(1)).isEqualByComparingTo("500");
         assertThat(
                         db.queryForObject(
                                 "SELECT owner_employee_code FROM order_sales_order", String.class))
@@ -623,6 +634,10 @@ class HistoryOrderSyncTest {
                                                 "王五",
                                                 "后续门店再次交接不改写该款业绩")))
                 .hasMessageContaining("冻结");
+        assertThat(pay(new Receipt(connector,"R1","D1",1L,new BigDecimal("500"),paidAt.plusSeconds(86400),
+                "CONFIRMED",paidAt.plusSeconds(172800),"new-date")).state()).isEqualTo("SOURCE_CHANGED_REVIEW");
+        assertThat(db.queryForObject("SELECT payment_time FROM order_payment_record", java.time.LocalDateTime.class).toInstant(java.time.ZoneOffset.UTC)).isEqualTo(paidAt);
+        assertThat(db.queryForObject("SELECT payment_owner_code FROM order_payment_record", String.class)).isEqualTo("LI");
     }
 
     @Test

@@ -21,25 +21,34 @@ public class JdbcCustomerPaymentOwnerStore implements CustomerPaymentOwnerStore 
 
     public CustomerPaymentOwnerView at(String tenant, long customer, Instant at) {
         if (at == null) return new CustomerPaymentOwnerView(null, null, null, "缺少实际回款时间");
+        if (jdbc.queryForObject(
+                "SELECT COUNT(*) FROM crm_responsibility_source_conflict WHERE tenant_id=?"
+                        + " AND customer_id=? AND status='PENDING' AND created_at<=?",
+                Long.class, tenant, customer, LocalDateTime.ofInstant(at, ZoneOffset.UTC)) > 0)
+            return new CustomerPaymentOwnerView(null, null, null, "客户归属存在未处理的来源差异，需先核实");
         var rows =
                 jdbc.queryForList(
-                        "SELECT id,new_employee_code,new_employee_name,effective_at FROM"
-                            + " crm_customer_responsibility_history WHERE tenant_id=? AND"
-                            + " customer_id=? AND effective_at<=? AND change_type IN"
-                            + " ('CREATE','OWNER','OWNER_AND_REGION') ORDER BY effective_at DESC,id"
+                        "SELECT id,new_employee_code,new_employee_name,effective_at,effective_kind,new_department_id,new_department_name,new_region_code FROM"
+                            + " crm_customer_responsibility_history h WHERE tenant_id=? AND"
+                            + " customer_id=? AND effective_at<=? AND (effective_kind='CONFIRMED' OR NOT EXISTS"
+                            + " (SELECT 1 FROM crm_customer_responsibility_history c WHERE c.tenant_id=h.tenant_id AND c.customer_id=h.customer_id AND c.effective_kind='CONFIRMED' AND c.recorded_at>=h.recorded_at AND c.effective_at<=?)) AND change_type IN"
+                            + " ('CREATE','OWNER','OWNER_AND_REGION','LOCAL_CONTROL','REGION') ORDER BY effective_at DESC,id"
                             + " DESC LIMIT 2",
                         tenant,
                         customer,
-                        LocalDateTime.ofInstant(at, ZoneOffset.UTC));
+                        LocalDateTime.ofInstant(at, ZoneOffset.UTC), LocalDateTime.ofInstant(at, ZoneOffset.UTC));
         if (rows.isEmpty())
             return new CustomerPaymentOwnerView(null, null, null, "该时点没有已确认门店业务员历史");
         var row = rows.getFirst();
+        if (!"CONFIRMED".equals(row.get("effective_kind")))
+            return new CustomerPaymentOwnerView(null, null, null, "归属仅有同步发现时间，实际交接时间待确认");
         if (rows.size() > 1 && row.get("effective_at").equals(rows.get(1).get("effective_at")))
             return new CustomerPaymentOwnerView(null, null, null, "同一生效时刻存在多条归属变更，需核对");
         return new CustomerPaymentOwnerView(
                 (String) row.get("new_employee_code"),
                 (String) row.get("new_employee_name"),
-                "CRM主责历史#" + row.get("id"),
-                null);
+                "CRM主责历史#" + row.get("id"), null,
+                row.get("new_department_id") == null ? null : ((Number)row.get("new_department_id")).longValue(),
+                (String)row.get("new_department_name"), (String)row.get("new_region_code"));
     }
 }

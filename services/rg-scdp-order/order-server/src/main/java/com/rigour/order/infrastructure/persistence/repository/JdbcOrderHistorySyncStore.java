@@ -433,7 +433,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             return new Intake("CANCELLATION_REVIEW", group, "关联组仍有有效来源订单，需拆分核对失效部分");
         }
         var orders = jdbc.queryForList(
-                "SELECT o.id FROM order_sales_order o WHERE o.tenant_id=? AND"
+                "SELECT o.* FROM order_sales_order o WHERE o.tenant_id=? AND"
                         + " ((o.source_system_code='DINGHUOBAO' AND o.source_order_no=?) OR EXISTS"
                         + " (SELECT 1 FROM order_history_member m WHERE m.tenant_id=o.tenant_id"
                         + " AND m.order_id=o.id AND m.group_id=?)) FOR UPDATE", t, c.sourceNo(), group);
@@ -459,6 +459,43 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         ts(c.sourceUpdatedAt()), ts(c.sourceUpdatedAt()), status, status, status,
                         ts(c.sourceUpdatedAt()), ts(c.sourceUpdatedAt()));
             }
+        }
+        // 同版本重放也补齐早期取消分支遗漏的快照；已有归属及历史飞书主体保持不变。
+        var fields = new LinkedHashMap<String, Object>();
+        fields.put("customer_name_snapshot", c.customerName());
+        if (c.attribution() != null) {
+            var a = c.attribution();
+            fields.put("customer_id", a.customerId());
+            fields.put("customer_code_snapshot", a.customerCode());
+            fields.put("region_code", a.regionCode());
+            fields.put("owner_employee_code", a.ownerEmployeeCode());
+            fields.put("owner_employee_name_snapshot", a.ownerEmployeeName());
+            fields.put("source_creator_id", a.sourceCreatorId());
+            fields.put("source_creator_staff_code", a.sourceCreatorCode());
+            fields.put("source_creator_name", a.sourceCreatorName());
+        }
+        fields.entrySet().removeIf(e -> e.getValue() == null || e.getValue() instanceof String v && v.isBlank());
+        if (!fields.isEmpty()) {
+            var set = new ArrayList<String>();
+            var missing = new ArrayList<String>();
+            var args = new ArrayList<Object>();
+            fields.forEach((column, value) -> {
+                String current = value instanceof String ? "NULLIF(" + column + ",'')" : column;
+                set.add(column + "=COALESCE(" + current + ",?)");
+                missing.add(current + " IS NULL");
+                args.add(value);
+            });
+            args.add(actor); args.add(t); args.add(c.sourceNo()); args.add(status);
+            jdbc.update("UPDATE order_sales_order SET " + String.join(",", set)
+                    + ",revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6)"
+                    + " WHERE tenant_id=? AND source_system_code='DINGHUOBAO' AND source_order_no=? AND order_status_code=?"
+                    + " AND (" + String.join(" OR ", missing) + ")", args.toArray());
+        }
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit WHERE tenant_id=?"
+                + " AND connector_id=? AND object_type='ORDER_LIFECYCLE' AND source_no=?"
+                + " AND JSON_UNQUOTE(JSON_EXTRACT(source_json,'$.orderStatusCode'))=?", Long.class,
+                t,c.connectorId().toString(),c.sourceNo(),status) == 0) {
+            auditChange(t,c.connectorId(),"ORDER_LIFECYCLE",c.sourceNo(),orders,c);
         }
         return new Intake(status, group, null);
     }
@@ -609,6 +646,33 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         jdbc.update("UPDATE order_history_member SET opening_paid=? WHERE tenant_id=? AND order_id=?", openingPaid, t, id);
         refresh(t, id);
         return true;
+    }
+
+    @Override
+    public List<String> knownSources(String tenant, UUID connectorId, String sourceNo) {
+        require(connectorId != null, "来源连接器缺失");
+        return jdbc.queryForList("SELECT s.source_no FROM order_sync_source s WHERE s.tenant_id=? AND s.connector_id=?"
+                + " AND (? IS NULL OR s.source_no=?) AND EXISTS (SELECT 1 FROM order_sales_order o WHERE o.tenant_id=?"
+                + " AND (o.source_system_code='DINGHUOBAO' AND o.source_order_no COLLATE utf8mb4_general_ci=s.source_no COLLATE utf8mb4_general_ci"
+                + " OR EXISTS(SELECT 1 FROM order_history_member m WHERE m.tenant_id=? AND m.order_id=o.id AND m.group_id=s.group_id)))",
+                String.class, tenant, connectorId.toString(), sourceNo, sourceNo, tenant, tenant);
+    }
+
+    @Override
+    public List<SourceLifecycleEvent> lifecycleEvents(String tenant, long orderId) {
+        return jdbc.query("SELECT a.source_json,a.created_at FROM order_dhb_projection_change_audit a"
+                + " WHERE a.tenant_id=? AND a.object_type='ORDER_LIFECYCLE' AND EXISTS"
+                + " (SELECT 1 FROM order_sales_order o WHERE o.tenant_id=? AND o.id=? AND"
+                + " (o.source_order_no COLLATE utf8mb4_general_ci=a.source_no COLLATE utf8mb4_general_ci OR EXISTS"
+                + " (SELECT 1 FROM order_history_member m JOIN order_sync_source s ON s.tenant_id=? AND s.group_id=m.group_id"
+                + " WHERE m.tenant_id=? AND m.order_id=o.id AND s.source_no COLLATE utf8mb4_general_ci=a.source_no COLLATE utf8mb4_general_ci)))"
+                + " ORDER BY a.created_at DESC", (rs,index) -> {
+                    var source=JSON.readValue(rs.getString("source_json"),CancelSourceOrder.class);
+                    var evidence=source.evidence();
+                    return new SourceLifecycleEvent(source.orderStatusCode(),evidence==null?null:evidence.operatorName(),
+                            evidence==null?null:evidence.operatedAt(),source.sourceUpdatedAt(),rs.getTimestamp("created_at").toInstant(),
+                            evidence==null?"订货宝来源状态同步":evidence.reason());
+                },tenant,tenant,orderId,tenant,tenant);
     }
 
     private void auditChange(String t, UUID connector, String type, String sourceNo, Object before, Object source) {
@@ -1430,6 +1494,12 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         if (rows.isEmpty()) return false;
         long orderId = num(rows.getFirst(), "order_id");
         if (rows.stream().anyMatch(p -> num(p, "order_id") != orderId || num(p, "customer_id") != customer)) return false;
+        // 实际回款时间是业绩归属依据；已确认后来源改期必须进入差异核实。
+        if (old.get("occurred_at") != null && !instant(old.get("occurred_at")).isBefore(HistorySyncRules.CUTOVER)
+                && rows.stream().anyMatch(p -> p.get("payment_owner_evidence") != null
+                    && Objects.equals(instant(p.get("payment_time")), instant(old.get("occurred_at")))
+                    && !Objects.equals(instant(p.get("payment_time")), HistorySyncRules.businessDate(
+                        "DINGHUOBAO", c.occurredAt(), instant(p.get("payment_time")))))) return false;
         var o = order(t, orderId);
         BigDecimal beforeTotal = rows.stream().map(p -> money(p, "paid_amount")).reduce(BigDecimal.ZERO, BigDecimal::add);
         boolean cancelled = "CANCELLED".equals(c.status());
@@ -1720,31 +1790,18 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 c.connectorId().toString(),
                 c.receiptNo(),
                 a.orderId());
+        projectOwner(t, c.connectorId(), c.receiptNo());
     }
 
     private void projectOwner(String t, UUID connector, String receipt) {
-        var row =
-                one(
-                        "SELECT * FROM order_sync_receipt WHERE tenant_id=? AND connector_id=? AND"
-                            + " receipt_no=?",
-                        t,
-                        connector.toString(),
-                        receipt);
-        if (row.get("employee_code") == null || row.get("pending_payload") != null) return;
-        jdbc.update(
-                "UPDATE order_payment_record SET"
-                    + " collector_staff_code=?,collector_name_snapshot=?,updated_time=?,revision=revision+1"
-                    + " WHERE tenant_id=? AND connector_id=? AND source_system_code='DINGHUOBAO'"
-                    + " AND source_document_no=? AND customer_id=? AND payment_time=? AND"
-                    + " collector_staff_code IS NULL AND deleted=0",
-                row.get("employee_code"),
-                row.get("employee_name"),
-                ts(Instant.now()),
-                t,
-                connector.toString(),
-                receipt,
-                row.get("customer_id"),
-                row.get("occurred_at"));
+        var row=one("SELECT * FROM order_sync_receipt WHERE tenant_id=? AND connector_id=? AND receipt_no=?",t,connector.toString(),receipt);
+        if(row.get("pending_payload")!=null) return;
+        var ids=jdbc.queryForList("SELECT id FROM order_payment_record WHERE tenant_id=? AND connector_id=? AND source_document_no=? AND customer_id=? AND payment_time=? AND deleted=0 AND payment_owner_evidence IS NULL",Long.class,t,connector.toString(),receipt,row.get("customer_id"),row.get("occurred_at"));
+        for (long id:ids) {
+            if(row.get("employee_code")!=null && row.get("owner_evidence")!=null && row.get("owner_actor")!=null && !"SYSTEM".equals(row.get("owner_actor"))) {
+                jdbc.update("UPDATE order_payment_record SET payment_owner_code=?,payment_owner_name=?,payment_owner_evidence=?,updated_time=?,revision=revision+1 WHERE tenant_id=? AND id=? AND customer_id=? AND payment_time=? AND payment_owner_evidence IS NULL",row.get("employee_code"),row.get("employee_name"),"人工确认："+row.get("owner_evidence"),ts(Instant.now()),t,id,row.get("customer_id"),row.get("occurred_at"));
+            } else new PaymentOwnerResolver(jdbc,owners).resolve(t,id);
+        }
     }
 
     /** 产品核销必须对应已确认订单核销，按每个原订单分别守恒，不推测合单款用途。 */
@@ -1857,13 +1914,13 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         to);
         var receipts =
                 jdbc.queryForList(
-                        "SELECT p.collector_staff_code employee_code,MAX(p.collector_name_snapshot)"
+                        "SELECT p.payment_owner_code employee_code,MAX(p.payment_owner_name)"
                             + " employee_name,SUM(p.paid_amount) amount FROM order_payment_record p"
                             + " JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id"
                             + " WHERE p.tenant_id=? AND p.deleted=0 AND o.deleted=0"
                             + " AND o.order_status_code NOT IN ('CANCELLED','DELETED')"
                             + " AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time>=? AND"
-                            + " p.payment_time<? GROUP BY p.collector_staff_code",
+                            + " p.payment_time<? GROUP BY p.payment_owner_code",
                         t,
                         from,
                         to);
@@ -1897,7 +1954,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         to);
         var pending =
                 one(
-                        "SELECT COUNT(*) receipt_count,COALESCE(SUM(CASE WHEN employee_code IS NULL"
+                        "SELECT COUNT(*) receipt_count,COALESCE(SUM(CASE WHEN NOT EXISTS(SELECT 1 FROM order_payment_record verified WHERE verified.tenant_id=r.tenant_id AND verified.connector_id=r.connector_id AND verified.source_document_no=r.receipt_no AND verified.payment_owner_evidence IS NOT NULL AND verified.deleted=0)"
                             + " THEN amount ELSE 0 END),0) owner_pending_amount,COALESCE(SUM(CASE"
                             + " WHEN state NOT IN"
                             + " ('ALLOCATED','BASELINE_COVERED','NEW','CANCELLED') THEN amount ELSE"
@@ -1952,13 +2009,12 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         t,
                         c.connectorId().toString(),
                         c.receiptNo())
-                > 0) return;
+                > 0) { projectOwner(t,c.connectorId(),c.receiptNo()); return; }
         try {
             var owner =
-                    owners.paymentOwner(
+                    owners.resolve(
                             com.rigour.shared.context.AuthorizationContext.requireCurrent(),
-                            customer,
-                            c.occurredAt());
+                            customer);
             if (owner != null && owner.usable())
                 jdbc.update(
                         "UPDATE order_sync_receipt SET"
@@ -1967,7 +2023,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                             + " employee_code IS NULL",
                         owner.employeeCode(),
                         owner.employeeName(),
-                        owner.evidence(),
+                        PaymentOwnerResolver.currentEvidence(owner),
                         t,
                         c.connectorId().toString(),
                         c.receiptNo());
@@ -1986,7 +2042,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     public void confirmOwner(String t, String actor, OwnerReview c) {
         HistorySyncRules.evidence(c.evidence());
         id(c.employeeCode());
-        require(c.employeeCode().length() <= 50, "员工编码过长");
+        require(c.employeeCode().length() <= 50 && !Set.of("UNKNOWN","MULTI").contains(c.employeeCode().trim().toUpperCase(java.util.Locale.ROOT)), "请选择明确的回款归属员工");
         require(c.employeeName() != null && c.employeeName().length() <= 100, "请填写核实的员工姓名");
         var receipt =
                 one(
@@ -1997,10 +2053,12 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         c.receiptNo());
         require(
                 num(receipt, "revision") == c.revision()
-                        && receipt.get("employee_code") == null
+                        && (receipt.get("employee_code") == null || "SYSTEM".equals(receipt.get("owner_actor")))
                         && receipt.get("customer_id") != null
                         && receipt.get("occurred_at") != null,
                 "归属已冻结或缺少回款门店/时间，不能覆盖");
+        require(jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE tenant_id=? AND connector_id=? AND source_document_no=? AND payment_owner_evidence IS NOT NULL AND deleted=0",Long.class,t,c.connectorId().toString(),c.receiptNo())==0,"回款业绩归属已确认，不能重复覆盖");
+        jdbc.update("INSERT INTO order_sync_receipt_revision(tenant_id,connector_id,receipt_no,revision,payload,created_at) VALUES(?,?,?,?,?,?)",t,c.connectorId().toString(),c.receiptNo(),c.revision()+1,JSON.writeValueAsString(receipt),ts(Instant.now()));
         jdbc.update(
                 "UPDATE order_sync_receipt SET"
                     + " employee_code=?,employee_name=?,owner_evidence=?,owner_actor=?,revision=revision+1"

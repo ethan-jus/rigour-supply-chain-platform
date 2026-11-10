@@ -20,11 +20,28 @@ public final class HistorySyncModels {
 
     public record CancelSourceOrder(UUID connectorId, String sourceNo, String orderStatusCode,
                                     Instant orderDate, BigDecimal amount, String customerName,
-                                    Instant sourceUpdatedAt) {
+                                    Instant sourceUpdatedAt, CancelledOrderAttribution attribution, SourceLifecycleEvidence evidence) {
+        public CancelSourceOrder(UUID connectorId, String sourceNo, String orderStatusCode,
+                Instant orderDate, BigDecimal amount, String customerName, Instant sourceUpdatedAt, CancelledOrderAttribution attribution) {
+            this(connectorId,sourceNo,orderStatusCode,orderDate,amount,customerName,sourceUpdatedAt,attribution,null);
+        }
+        public CancelSourceOrder(UUID connectorId, String sourceNo, String orderStatusCode,
+                                 Instant orderDate, BigDecimal amount, String customerName, Instant sourceUpdatedAt) {
+            this(connectorId, sourceNo, orderStatusCode, orderDate, amount, customerName, sourceUpdatedAt, null);
+        }
         public CancelSourceOrder(UUID connectorId, String sourceNo) {
             this(connectorId, sourceNo, "CANCELLED", null, null, null, null);
         }
     }
+
+    public record SourceLifecycleEvidence(String operatorId, String operatorName, Instant operatedAt, String reason) {}
+    public record SourceLifecycleEvent(String status, String operatorName, Instant operatedAt,
+            Instant sourceUpdatedAt, Instant detectedAt, String reason) {}
+
+    /** 取消不依赖商品映射；来源仍可读取时保留已知的客户、人员和地区。 */
+    public record CancelledOrderAttribution(Long customerId, String customerCode, String regionCode,
+            String ownerEmployeeCode, String ownerEmployeeName, String sourceCreatorId,
+            String sourceCreatorCode, String sourceCreatorName) {}
 
     public record SourceOrder(
             UUID connectorId,

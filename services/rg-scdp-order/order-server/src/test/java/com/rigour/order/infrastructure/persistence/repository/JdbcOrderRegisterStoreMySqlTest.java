@@ -72,6 +72,59 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
+    void newReceiptUsesCurrentCustomerOwnerAndFreezesItAcrossTransfers() {
+        String tenant=UUID.randomUUID().toString();
+        long orderId=order(tenant,"RESOLVE-O",1L,"C1","归属客户","HZ","ZHANG","张三","2026-09-01T00:00:00Z",100,0);
+        insertPayment(tenant,"RESOLVE-P",orderId,"2026-09-02T00:00:00Z",100,"CHECKED",null);
+        long id=jdbc.queryForObject("SELECT id FROM order_payment_record WHERE tenant_id=?",Long.class,tenant);
+        jdbc.update("UPDATE order_payment_record SET customer_id=1,collector_staff_code='RECORDER' WHERE tenant_id=?",tenant);
+        var owners=org.mockito.Mockito.mock(com.rigour.order.application.port.out.OrderAttributionClient.class);
+        var actor=new com.rigour.shared.context.CallerIdentity("SERVICE",UUID.randomUUID(),UUID.fromString(tenant),null,null,UUID.randomUUID(),0,0,0,java.util.Set.of(),java.util.Set.of());
+        try(var context=org.mockito.Mockito.mockStatic(com.rigour.shared.context.AuthorizationContext.class)) {
+            context.when(com.rigour.shared.context.AuthorizationContext::requireCurrent).thenReturn(actor);
+            var resolver=new PaymentOwnerResolver(jdbc,owners);
+            // 查询暂失败时不能用旧订单业务员替代新的回款人。
+            org.mockito.Mockito.when(owners.resolve(actor,1L)).thenThrow(new IllegalStateException("暂不可用"));
+            resolver.resolve(tenant,id);
+            assertThat(jdbc.queryForObject("SELECT payment_owner_code FROM order_payment_record WHERE id=?",String.class,id)).isNull();
+            var current=new com.rigour.merchant.api.v1.model.CustomerOrderAttributionView(tenant,1L,"C1","归属客户","LI","李四",12L,"杭州二部",java.util.List.of(12L),"HZ",java.util.List.of("HZ"),"v2",2,1,1,Instant.parse("2026-11-09T00:00:00Z"),true,null);
+            org.mockito.Mockito.doReturn(current).when(owners).resolve(actor,1L);
+            resolver.resolve(tenant,id);
+            assertThat(jdbc.queryForObject("SELECT payment_owner_code FROM order_payment_record WHERE id=?",String.class,id)).isEqualTo("LI");
+            assertThat(jdbc.queryForObject("SELECT payment_owner_department_id FROM order_payment_record WHERE id=?",Long.class,id)).isEqualTo(12L);
+            assertThat(jdbc.queryForObject("SELECT payment_owner_evidence FROM order_payment_record WHERE id=?",String.class,id)).contains("首次同步客户归属","v2");
+            org.mockito.Mockito.clearInvocations(owners);
+            resolver.resolve(tenant,id);
+            org.mockito.Mockito.verifyNoInteractions(owners);
+            assertThat(jdbc.queryForObject("SELECT collector_staff_code FROM order_payment_record WHERE id=?",String.class,id)).isEqualTo("RECORDER");
+            assertThat(jdbc.queryForObject("SELECT paid_amount FROM order_payment_record WHERE id=?",java.math.BigDecimal.class,id)).isEqualByComparingTo("100");
+            org.assertj.core.api.Assertions.assertThatThrownBy(()->resolver.requireStableBasis(tenant,id,1L,Instant.parse("2026-09-03T00:00:00Z"))).hasMessageContaining("归属已确认");
+        }
+    }
+
+    @Test
+    void paymentOwnerPendingDoesNotFallBackToOrderAndConfirmedSnapshotIsFrozen() {
+        String tenant=UUID.randomUUID().toString();
+        long orderId=order(tenant,"OWNER-O",1L,"C1","交接客户","HZ","ZHANG","张三","2026-09-01T00:00:00Z",100,0);
+        insertPayment(tenant,"OWNER-P",orderId,"2026-09-02T00:00:00Z",100,"CHECKED",null);
+        var page=store.payments(tenant,0,20,allocationCriteria(null,null));
+        assertThat(page.items().getFirst().paymentOwner().status()).isEqualTo("PENDING");
+        assertThat(page.items().getFirst().ownerEmployeeCode()).isEqualTo("ZHANG");
+        assertThat(page.totals().get("ownerPendingAmount")).isEqualByComparingTo("100");
+        assertThat(page.totals().get("receivedAmount")).isEqualByComparingTo("100");
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code='LI',payment_owner_name='李四',payment_owner_evidence='人工确认交接' WHERE tenant_id=?",tenant);
+        var owners=org.mockito.Mockito.mock(com.rigour.order.application.port.out.OrderAttributionClient.class);
+        new PaymentOwnerResolver(jdbc,owners).resolve(tenant,page.items().getFirst().id());
+        org.mockito.Mockito.verifyNoInteractions(owners);
+        page=store.payments(tenant,0,20,allocationCriteria(null,null));
+        assertThat(page.items().getFirst().paymentOwner().employeeCode()).isEqualTo("LI");
+        assertThat(page.totals().get("ownerPendingAmount")).isZero();
+        var report=store.monthlyPerformance(tenant,Instant.parse("2026-08-31T16:00:00Z"),Instant.parse("2026-09-30T16:00:00Z"));
+        assertThat(report.stream().filter(r->"LI".equals(r.employeeCode())).findFirst().orElseThrow().receivedAmount()).isEqualByComparingTo("100");
+        assertThat(report.stream().filter(r->"ZHANG".equals(r.employeeCode())).findFirst().orElseThrow().receivedAmount()).isZero();
+    }
+
+    @Test
     void ownedVoucherSyncPreservesMoneyManualFilesAndRemovesOnlyCancelledSourceLinks() {
         String tenant=UUID.randomUUID().toString(); UUID connector=UUID.randomUUID();
         long orderId=order(tenant,"VOUCHER-O",1L,"C1","凭证客户","HZ","E1","业务员","2026-09-01T00:00:00Z",300,0);
@@ -110,6 +163,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         insertLine(tenant,a,1,"商品","100");insertLine(tenant,b,1,"商品","80");
         insertPayment(tenant,"CITY-P1",a,"2026-10-02T00:00:00Z",100,"CHECKED",null);
         insertPayment(tenant,"CITY-P2",b,"2026-10-02T00:00:00Z",80,"CHECKED",null);
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code='E1',payment_owner_evidence='归属已核实',payment_owner_department_id=CASE WHEN order_id=? THEN 11 ELSE 28 END WHERE tenant_id=?",a,tenant);
         var regions = Map.of("SJZ",11L,"TS",28L);
         for (var departments : List.of(java.util.Set.of(27L,11L,28L),java.util.Set.of(11L),java.util.Set.of(28L))) {
             var employees = departments.contains(11L) ? java.util.Set.of("E1") : java.util.Set.<String>of();
@@ -448,6 +502,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                 + "department_id,department_name,department_path,region_code,region_path,source_version,"
                 + "customer_revision,employee_revision,organization_version,resolved_at,frozen_at,revision)"
                 + " VALUES(?,?,'FROZEN','E1','新归属',11,'武汉市','[]','NEW','[]','v1',1,1,1,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),1)", tenant, a);
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code='E1',payment_owner_name='回款负责人',payment_owner_evidence='确认交接',payment_owner_department_id=11 WHERE tenant_id=? AND order_id=?",tenant,a);
         for (java.util.Set<Long> departments : java.util.List.of(java.util.Set.of(11L), java.util.Set.of(12L))) {
             long expected = departments.contains(11L) ? 1 : 0;
             var orders = store.orders(tenant, 0, 20, new OrderCriteria(null,null,null,null,"NEW","E1",departments,
@@ -882,7 +937,7 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
-    void missingDepartmentSnapshotUsesEmployeeFallbackForAllListsAndTotalsWithoutWideningScope() {
+    void missingPaymentDepartmentDoesNotUseCurrentEmployeeDepartment() {
         String tenant = UUID.randomUUID().toString();
         long a = order(tenant,"DEPT-A",1L,"C1","部门甲","HZ","E1","张三","2026-09-01T00:00:00Z",100,0);
         long b = order(tenant,"DEPT-B",2L,"C2","部门乙","HZ","E2","李四","2026-09-01T00:00:00Z",200,0);
@@ -895,10 +950,10 @@ class JdbcOrderRegisterStoreMySqlTest {
         var lc = new LineCriteria(null,null,null,null,null,null,ids,null,null,null,null,null,null,null,null,null,null,null,null,null,null,codes);
         var pc = new PaymentCriteria(null,null,null,null,null,null,ids,null,null,null,null,null,null,null,null,null,null,null,null,null,null,codes);
         var orders=store.orders(tenant,0,20,oc); var lines=store.lines(tenant,0,20,lc); var payments=store.payments(tenant,0,20,pc);
-        assertThat(orders.total()).isEqualTo(1); assertThat(lines.total()).isEqualTo(1); assertThat(payments.total()).isEqualTo(1);
+        assertThat(orders.total()).isEqualTo(1); assertThat(lines.total()).isEqualTo(1); assertThat(payments.total()).isZero();
         assertThat(orders.totals().get("payableAmount")).isEqualByComparingTo("100");
         assertThat(lines.totals().get("orderAmount")).isEqualByComparingTo("100");
-        assertThat(payments.totals().get("receivedAmount")).isEqualByComparingTo("40");
+        assertThat(payments.totals().get("receivedAmount")).isZero();
         var restricted = org.mockito.Mockito.mock(OrderDataScope.class);
         org.mockito.Mockito.when(restricted.predicate("order:read","o.",null)).thenReturn(new OrderDataScope.Predicate("o.owner_employee_code=?",List.of("E2")));
         var scoped = new JdbcOrderRegisterStore(jdbc,restricted);
@@ -967,12 +1022,13 @@ class JdbcOrderRegisterStoreMySqlTest {
         order(tenant,"MONTH-OUTSIDE",1L,"C1","范围外","HZ","EMP-1","张三","2026-09-30T16:00:00Z",100,0);
         var from=Instant.parse("2026-03-31T16:00:00Z");
         var to=Instant.parse("2026-09-30T16:00:00Z");
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code='EMP-1',payment_owner_name='张三',payment_owner_evidence='CRM主责历史#1',payment_owner_region_code='HZ' WHERE tenant_id=?",tenant);
         var rows=store.monthlyPerformance(tenant,from,to);
-        assertThat(rows).hasSize(20);
+        assertThat(rows).isNotEmpty();
         var row=rows.stream().filter(v -> "2026-04".equals(v.month()) && "HZ".equals(v.regionCode()) && "EMP-1".equals(v.employeeCode())).findFirst().orElseThrow();
         assertThat(row.transactionAmount()).isEqualByComparingTo("100");
         assertThat(row.receivedAmount()).isEqualByComparingTo("0");
-        assertThat(row.unpaidAmount()).isEqualByComparingTo("100");
+        assertThat(rows.stream().filter(v->"2026-04".equals(v.month())).map(v->v.unpaidAmount()).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("145");
         var mayRow=rows.stream().filter(v -> "2026-05".equals(v.month()) && "HZ".equals(v.regionCode()) && "EMP-1".equals(v.employeeCode())).findFirst().orElseThrow();
         assertThat(mayRow.transactionAmount()).isEqualByComparingTo("20");
         assertThat(mayRow.receivedAmount()).isEqualByComparingTo("120");
@@ -982,12 +1038,12 @@ class JdbcOrderRegisterStoreMySqlTest {
         var partial=store.monthlyPerformance(tenant,from,Instant.parse("2026-05-10T00:00:00Z"));
         var partialMay=partial.stream().filter(v -> "2026-05".equals(v.month()) && "HZ".equals(v.regionCode()) && "EMP-1".equals(v.employeeCode())).findFirst().orElseThrow();
         assertThat(partialMay.receivedAmount()).isEqualByComparingTo("40");
-        assertThat(partialMay.unpaidAmount()).isEqualByComparingTo("80");
+        assertThat(partial.stream().filter(v->"2026-05".equals(v.month())).map(v->v.unpaidAmount()).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("125");
         assertThat(rows.stream().map(v -> v.transactionAmount()).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("165");
         assertThat(store.monthlyPerformance(UUID.randomUUID().toString(),from,to)).isEmpty();
         var scope=org.mockito.Mockito.mock(OrderDataScope.class);
         org.mockito.Mockito.when(scope.predicate("order:read","o.",null)).thenReturn(new OrderDataScope.Predicate("o.id=?",List.of(april)));
-        assertThat(new JdbcOrderRegisterStore(jdbc,scope).monthlyPerformance(tenant,from,to)).hasSize(2);
+        assertThat(new JdbcOrderRegisterStore(jdbc,scope).monthlyPerformance(tenant,from,to).stream().map(v->v.receivedAmount()).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("100");
     }
 
     private static PaymentCriteria allocationCriteria(List<Long> products, Instant before) {

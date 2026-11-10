@@ -842,7 +842,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         if (matched != null && matched.getPartyId() != null && bindingMapper.selectCount(
                 Wrappers.<SourceBindingEntity>query().eq("tenant_id", bytes(tenantId))
                         .eq("connector_id", bytes(connectorId)).eq("source_object_type", "CUSTOMER")
-                        .eq("target_id", matched.getPartyId()).eq("binding_status", "RESOLVED").eq("deleted", 0)
+                        // 待核对/停用的绑定仍占有来源身份，不能复用后撞唯一键或改写原门店。
+                        .eq("target_id", matched.getPartyId())
                         .ne("source_object_id", record.sourceId())) > 0)
             return Target.unresolved("CUSTOMER_IDENTITY_REVIEW_REQUIRED", "同名客户已关联其他订货宝账号，需核对后合并");
         sourceChanged = sourceChanged || matched != null;

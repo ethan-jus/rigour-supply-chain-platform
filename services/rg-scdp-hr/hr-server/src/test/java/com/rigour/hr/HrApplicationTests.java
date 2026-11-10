@@ -46,6 +46,23 @@ class HrApplicationTests {
 
     @Autowired private com.rigour.hr.application.port.out.HrPositionStore positionStore;
 
+    @Autowired private com.rigour.hr.application.port.out.HrEmployeeStore employeeResolution;
+
+    @Test
+    void mobileResolutionUsesScopedBindingNotDuplicateNameOrEmploymentStatus() {
+        String tenant = java.util.UUID.randomUUID().toString();
+        jdbcTemplate.update("INSERT INTO hr_employee(tenant_id,employee_code,employee_name,employment_status) VALUES(?,'E1','同名员工','LEFT'),(?,'E2','同名员工','ACTIVE')", tenant, tenant);
+        jdbcTemplate.update("INSERT INTO hr_employee_source_binding(tenant_id,employee_code,source_system,source_tenant_key,source_employee_id,source_mobile,source_employee_name) VALUES(?,'E1','DINGHUOBAO','A','s1','13800000001','同名员工'),(?,'E2','DINGHUOBAO','B','s2','13800000001','同名员工')", tenant, tenant);
+        assertThat(employeeResolution.resolveExternalEmployees(tenant, "DINGHUOBAO", "A",
+                java.util.List.of("13800000001"), java.util.List.of("同名员工")))
+                .singleElement().satisfies(e -> assertThat(e.employeeCode()).isEqualTo("E1"));
+        assertThat(employeeResolution.resolveExternalEmployees("other", "DINGHUOBAO", "A",
+                java.util.List.of("13800000001"), java.util.List.of("同名员工"))).isEmpty();
+        jdbcTemplate.update("UPDATE hr_employee_source_binding SET source_tenant_key='A' WHERE tenant_id=? AND source_employee_id='s2'", tenant);
+        assertThat(employeeResolution.resolveExternalEmployees(tenant, "DINGHUOBAO", "A",
+                java.util.List.of("13800000001"), java.util.List.of("同名员工"))).isEmpty();
+    }
+
     @Test
     void employeeIdentityDoesNotBorrowNestedConnectionsWithOneConnectionPool() throws Exception {
         String tenant = java.util.UUID.randomUUID().toString();
@@ -111,10 +128,11 @@ class HrApplicationTests {
         organizations.saveDepartment(tenant, null,
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(otherRoot.id(), "石家庄市", 0, "ACTIVE", 0, null, null, null), "admin");
         long existing = organizations.saveEmployee(tenant, null, employee("张三", city.id(), "LEFT", 0), "admin");
+        jdbcTemplate.update("UPDATE hr_employee SET mobile='13800000001' WHERE tenant_id=? AND id=?", tenant, existing);
         var before = jdbcTemplate.queryForMap("SELECT * FROM hr_employee WHERE tenant_id=? AND id=?", tenant, existing);
         var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();
         var result = employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(
-                salesperson("s1", "张三", null, "石家庄市"),
+                salesperson("s1", "张三", "13800000001", "石家庄市"),
                 salesperson("s2", "新业务员", "13800000002", "石家庄市")), "sync", codes);
         assertThat(result.failed()).isZero();
         assertThat(result.updated()).isEqualTo(1);
@@ -158,7 +176,7 @@ class HrApplicationTests {
         assertThat(jdbcTemplate.queryForMap("SELECT * FROM hr_employee WHERE tenant_id=? AND id=?", tenant, existing)).isEqualTo(before);
         assertThat(employeeStore.employee(tenant, newEmployee.employeeId()).orElseThrow().mobile()).isEqualTo("13800000002");
         var secondId = employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(
-                salesperson("s3", "张三", null, "石家庄市")), "sync", codes);
+                salesperson("s3", "张三", "13800000001", "石家庄市")), "sync", codes);
         assertThat(secondId.updated()).isEqualTo(1);
         assertThat(employeeStore.employee(tenant, existing).orElseThrow().dhbStaffIds()).containsExactly("s1", "s3");
         assertThat(employeeStore.employee(java.util.UUID.randomUUID().toString(), existing)).isEmpty();
@@ -179,7 +197,7 @@ class HrApplicationTests {
         var result = employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(
                 salesperson("ambiguous", "同名员工", null, "北京市"),
                 salesperson("deleted", "已删员工", null, "北京市"),
-                salesperson("unmapped", "未建员工", null, "运营部")), "sync", new com.rigour.shared.core.code.BusinessCodeGenerator());
+                salesperson("unmapped", "未建员工", "13800000003", "运营部")), "sync", new com.rigour.shared.core.code.BusinessCodeGenerator());
         assertThat(result.failed()).isEqualTo(3);
         assertThat(result.failureMessages()).anyMatch(m -> m.contains("订货宝登录账号 login-ambiguous")
                 && m.contains("同名员工") && m.contains("来源ID ambiguous"));
@@ -193,6 +211,35 @@ class HrApplicationTests {
         assertThat(ambiguousPhone.failed()).isEqualTo(1);
         assertThat(reviews.pending(tenant)).isEmpty();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee_source_binding WHERE tenant_id=?",Integer.class,tenant)).isZero();
+    }
+
+    @Test
+    void manualAndDhbCreationShareMobileIdentityAndConcurrentManualRequestsCannotDuplicate() throws Exception {
+        String tenant = java.util.UUID.randomUUID().toString();
+        jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
+        var sales = organizations.saveDepartment(tenant, null, new com.rigour.hr.api.v1.model.HrDepartmentCommand(null,"销售部",0,"ACTIVE",0,null,null,null),"admin");
+        var city = organizations.saveDepartment(tenant, null, new com.rigour.hr.api.v1.model.HrDepartmentCommand(sales.id(),"测试市",0,"ACTIVE",0,null,null,null),"admin");
+        var manual = new com.rigour.hr.api.v1.model.HrEmployeeCommand("防重员工",city.id(),"SALES","ACTIVE","13800000777",null,null,null,null,0,null,null);
+        long id = organizations.saveEmployee(tenant,null,manual,"admin");
+        var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();
+        var synced = employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(salesperson("same-person","防重员工","13800000777","测试市")),"sync",codes);
+        assertThat(synced.created()).isZero(); assertThat(synced.failed()).isZero();
+        assertThat(employeeStore.resolveExternalEmployees(tenant,"DINGHUOBAO","test-source",java.util.List.of("same-person"),java.util.List.of())).singleElement().satisfies(e -> assertThat(e.employeeId()).isEqualTo(id));
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.saveEmployee(tenant,null,manual,"admin")).hasMessageContaining("不要重复新增");
+        var firstSync = employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(salesperson("source-first","先同步员工","13800000778","测试市")),"sync",codes);
+        assertThat(firstSync.created()).isEqualTo(1);
+        var secondManual = new com.rigour.hr.api.v1.model.HrEmployeeCommand("先同步员工",city.id(),"SALES","ACTIVE","13800000778",null,null,null,null,0,null,null);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.saveEmployee(tenant,null,secondManual,"admin")).hasMessageContaining("不要重复新增");
+        var noPhone = employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(salesperson("no-phone","无手机号",null,"测试市")),"sync",codes);
+        assertThat(noPhone.failed()).isEqualTo(1); assertThat(noPhone.created()).isZero();
+        var concurrent = new com.rigour.hr.api.v1.model.HrEmployeeCommand("并发员工",city.id(),"SALES","ACTIVE","13800000779",null,null,null,null,0,null,null);
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            var start = new java.util.concurrent.CountDownLatch(1);
+            java.util.concurrent.Callable<Boolean> create = () -> { start.await(); try { organizations.saveEmployee(tenant,null,concurrent,"admin"); return true; } catch (com.rigour.shared.core.exception.BusinessException ex) { assertThat(ex.getMessage()).contains("不要重复新增"); return false; } };
+            var a = pool.submit(create); var b = pool.submit(create); start.countDown();
+            assertThat(java.util.List.of(a.get(),b.get())).containsExactlyInAnyOrder(true,false);
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee WHERE tenant_id=? AND mobile='13800000779'",Integer.class,tenant)).isEqualTo(1);
     }
 
     @Autowired private com.rigour.hr.application.port.out.HrDhbBindingReviewStore reviews;
@@ -792,7 +839,8 @@ class HrApplicationTests {
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "删除测试部", 0, "ACTIVE", 0, null, null, null), "admin");
         long id = organizations.saveEmployee(tenant, null, employee("删除测试员工", dept.id(), "ACTIVE", 0), "admin");
         var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();
-        var source = salesperson("delete-source", "删除测试员工", null, "删除测试部");
+        jdbcTemplate.update("UPDATE hr_employee SET mobile='13800000888' WHERE tenant_id=? AND id=?", tenant, id);
+        var source = salesperson("delete-source", "删除测试员工", "13800000888", "删除测试部");
         assertThat(employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(source), "sync", codes).failed()).isZero();
         var before = employeeStore.employee(tenant, id).orElseThrow();
         long accessVersion = organizations.identity(tenant, before.employeeCode()).orElseThrow().accessVersion();

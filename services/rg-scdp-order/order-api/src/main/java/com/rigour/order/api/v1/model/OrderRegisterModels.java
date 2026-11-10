@@ -147,6 +147,43 @@ public final class OrderRegisterModels {
 
     /** 收款列表行；一行是一笔关联订单的收款记录，订单金额只做关联参考。 */
     public record OrderRegisterPaymentView(
+        @com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) Long id,
+            String paymentNo,
+            String sourceRecordId,
+            Long orderId,
+            String orderNo,
+            /** 订货宝关联单号（订单级）。 */
+            String dhbOrderNo,
+            Long customerId,
+            String customerCode,
+            String customerName,
+            String regionCode,
+            String regionName,
+            String ownerEmployeeCode,
+            String ownerEmployeeName,
+            Long departmentId,
+            String departmentName,
+            Instant orderDate,
+            BigDecimal orderAmount,
+            BigDecimal paidAmount,
+            String paymentStatusCode,
+            Instant paymentTime,
+            String transactionNo,
+            List<String> attachments,
+            List<FundDocumentAttachmentView> attachmentViews,
+            String createdBy,
+            Instant createdTime,
+            String updatedBy,
+            Instant updatedTime,
+            String syncedBy,
+            Instant syncedAt,
+            String checkedBy,
+            Instant checkedAt,
+            Integer revision,
+            BigDecimal allocatedPaymentAmount,
+            List<PaymentProductAllocation> productAllocations,
+            List<String> voucherTransactionNos, PaymentOwner paymentOwner) {
+            public OrderRegisterPaymentView(
             @com.fasterxml.jackson.annotation.JsonFormat(shape = com.fasterxml.jackson.annotation.JsonFormat.Shape.STRING) Long id,
             String paymentNo,
             String sourceRecordId,
@@ -183,6 +220,8 @@ public final class OrderRegisterModels {
             BigDecimal allocatedPaymentAmount,
             List<PaymentProductAllocation> productAllocations,
             List<String> voucherTransactionNos) {
+            this(id, paymentNo, sourceRecordId, orderId, orderNo, dhbOrderNo, customerId, customerCode, customerName, regionCode, regionName, ownerEmployeeCode, ownerEmployeeName, departmentId, departmentName, orderDate, orderAmount, paidAmount, paymentStatusCode, paymentTime, transactionNo, attachments, attachmentViews, createdBy, createdTime, updatedBy, updatedTime, syncedBy, syncedAt, checkedBy, checkedAt, revision, allocatedPaymentAmount, productAllocations, voucherTransactionNos, null);
+        }
         @com.fasterxml.jackson.annotation.JsonProperty
         public String receiptStatusCode() {
             return "CHECKED".equals(paymentStatusCode) ? "RECEIVED" : paymentStatusCode;
@@ -232,7 +271,7 @@ public final class OrderRegisterModels {
             this(id, paymentNo, sourceRecordId, orderId, orderNo, dhbOrderNo, customerId, customerCode, customerName, regionCode, regionName, ownerEmployeeCode, ownerEmployeeName, departmentId, departmentName, orderDate, orderAmount, paidAmount, paymentStatusCode, paymentTime, transactionNo, attachments, attachmentViews, createdBy, createdTime, updatedBy, updatedTime, syncedBy, syncedAt, checkedBy, checkedAt, revision, allocatedPaymentAmount, productAllocations, List.of());
         }
         public OrderRegisterPaymentView withVoucherTransactionNos(List<String> numbers) {
-            return new OrderRegisterPaymentView(id, paymentNo, sourceRecordId, orderId, orderNo, dhbOrderNo, customerId, customerCode, customerName, regionCode, regionName, ownerEmployeeCode, ownerEmployeeName, departmentId, departmentName, orderDate, orderAmount, paidAmount, paymentStatusCode, paymentTime, transactionNo, attachments, attachmentViews, createdBy, createdTime, updatedBy, updatedTime, syncedBy, syncedAt, checkedBy, checkedAt, revision, allocatedPaymentAmount, productAllocations, numbers);
+            return new OrderRegisterPaymentView(id, paymentNo, sourceRecordId, orderId, orderNo, dhbOrderNo, customerId, customerCode, customerName, regionCode, regionName, ownerEmployeeCode, ownerEmployeeName, departmentId, departmentName, orderDate, orderAmount, paidAmount, paymentStatusCode, paymentTime, transactionNo, attachments, attachmentViews, createdBy, createdTime, updatedBy, updatedTime, syncedBy, syncedAt, checkedBy, checkedAt, revision, allocatedPaymentAmount, productAllocations, numbers, paymentOwner);
         }
 
         public OrderRegisterPaymentView(
@@ -281,7 +320,10 @@ public final class OrderRegisterModels {
                     ownerEmployeeName, departmentId, departmentName, orderDate, orderAmount, paidAmount,
                     paymentStatusCode, paymentTime, transactionNo, attachments, attachmentViews, createdBy,
                     createdTime, updatedBy, updatedTime, syncedBy, syncedAt, checkedBy, checkedAt, revision,
-                    amount, lines);
+                    amount, lines, voucherTransactionNos, paymentOwner);
+        }
+        public OrderRegisterPaymentView withPaymentOwner(PaymentOwner value) {
+            return new OrderRegisterPaymentView(id, paymentNo, sourceRecordId, orderId, orderNo, dhbOrderNo, customerId, customerCode, customerName, regionCode, regionName, ownerEmployeeCode, ownerEmployeeName, departmentId, departmentName, orderDate, orderAmount, paidAmount, paymentStatusCode, paymentTime, transactionNo, attachments, attachmentViews, createdBy, createdTime, updatedBy, updatedTime, syncedBy, syncedAt, checkedBy, checkedAt, revision, allocatedPaymentAmount, productAllocations, voucherTransactionNos, value);
         }
         public OrderRegisterPaymentView {
             voucherTransactionNos = voucherTransactionNos == null ? List.of() : List.copyOf(voucherTransactionNos);
@@ -289,6 +331,12 @@ public final class OrderRegisterModels {
             attachments = attachments == null ? List.of() : List.copyOf(attachments);
             attachmentViews = attachmentViews == null ? List.of() : List.copyOf(attachmentViews);
         }
+    }
+
+    public record PaymentOwner(String employeeCode, String employeeName, String evidence,
+            String departmentName, String regionCode) {
+        @com.fasterxml.jackson.annotation.JsonProperty
+        public String status() { return employeeCode == null || evidence == null ? "PENDING" : "CONFIRMED"; }
     }
 
     /** 分析分摊，不代表来源付款单指定了具体商品。 */

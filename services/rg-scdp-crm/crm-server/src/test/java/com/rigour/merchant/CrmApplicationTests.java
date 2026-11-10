@@ -1740,6 +1740,25 @@ SELECT COUNT(*) FROM crm_contact c
         return jdbcTemplate.queryForObject("SELECT revision FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER' AND source_object_id=?",Long.class,tenant.toString(),sourceId);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {0, 1})
+    void sameCityCustomerWithUnresolvedBindingDoesNotAbortSync(int deleted) {
+        UUID tenant=UUID.randomUUID(),connector=UUID.randomUUID(),actor=UUID.randomUUID();
+        var type=CrmMasterDataObjectType.CUSTOMER; var run=start(tenant,connector,actor,type);
+        var original=customerRecord("已有待核对来源的门店");
+        assertThat(store.importRecord(tenant,connector,run,type,original).created()).isEqualTo(1);
+        jdbcTemplate.update("UPDATE crm_source_binding SET binding_status='UNRESOLVED',deleted=?"
+                + " WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER'", deleted,tenant.toString());
+        var fields=new LinkedHashMap<String,Object>(original.sourceFields());
+        fields.put("clientGUID","SECOND"); fields.put("clientNO","SECOND"); fields.put("clientAccount","another-login");
+        var second=new SourceRecord("SECOND","SECOND",original.sourceName(),"T",original.sourceCreatedAt(),original.sourceUpdatedAt(),fields);
+        assertThat(store.importRecord(tenant,connector,run,type,second).unmapped()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer WHERE tenant_id=?",Integer.class,tenant.toString())).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT resolution_error_code FROM crm_source_binding"
+                + " WHERE tenant_id=UUID_TO_BIN(?) AND source_object_id='SECOND'",String.class,tenant.toString()))
+                .isEqualTo("CUSTOMER_IDENTITY_REVIEW_REQUIRED");
+    }
+
     @Test
     void sourceDuplicateAccountIsPendingWithoutCreatingAnotherCustomer() {
         UUID tenant=UUID.randomUUID(),connector=UUID.randomUUID(),actor=UUID.randomUUID();

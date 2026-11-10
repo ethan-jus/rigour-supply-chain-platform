@@ -583,6 +583,16 @@ public final class DhbClientAdapter implements DhbClient {
     }
 
     @Override
+    public boolean orderMissing(Connector connector, String orderNumber) {
+        try { getOrderContent(connector, orderNumber); return false; }
+        catch (DhbClientException e) {
+            if ("DHB_PROVIDER_ERROR".equals(e.code()) && "未查询到订单信息".equals(e.getMessage())
+                    && !e.retryable()) return true;
+            throw e;
+        }
+    }
+
+    @Override
     public OrderDetail getOrderContent(Connector connector, String orderNumber) {
         if (orderNumber == null || orderNumber.isBlank()) {
             throw new IllegalArgumentException("orderNumber is required");

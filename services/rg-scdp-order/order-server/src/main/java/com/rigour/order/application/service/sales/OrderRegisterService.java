@@ -279,7 +279,7 @@ public class OrderRegisterService {
                         paymentTimeFrom,
                         paymentTimeTo,
                         text(sortBy, 32, "sortBy"),
-                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId));
+                        text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds, Set.of(), Map.of());
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         var page = withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
         var numbers = store.voucherTransactionNos(actor.tenantId().toString(), page.items().stream().map(OrderRegisterPaymentView::id).toList());
@@ -558,7 +558,7 @@ public class OrderRegisterService {
                             v.attachments(), v.attachmentViews(), v.createdBy(), v.createdTime(),
                             v.updatedBy(),
                             v.updatedTime(), v.syncedBy(), v.syncedAt(), v.checkedBy(),
-                            v.checkedAt(), v.revision(), v.allocatedPaymentAmount(), v.productAllocations());
+                            v.checkedAt(), v.revision(), v.allocatedPaymentAmount(), v.productAllocations()).withPaymentOwner(v.paymentOwner());
         }
         if (item instanceof ReceivablesView v) {
             return (T)
@@ -663,7 +663,7 @@ public class OrderRegisterService {
                             v.paidAmount(), v.paymentStatusCode(), v.paymentTime(), v.transactionNo(),
                             v.attachments(), v.attachmentViews(), v.createdBy(), v.createdTime(),
                             v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.checkedBy(),
-                            v.checkedAt(), v.revision(), v.allocatedPaymentAmount(), v.productAllocations());
+                            v.checkedAt(), v.revision(), v.allocatedPaymentAmount(), v.productAllocations()).withPaymentOwner(v.paymentOwner());
         }
         return item;
     }
@@ -821,7 +821,7 @@ public class OrderRegisterService {
                 item.paidAmount(), item.paymentStatusCode(), item.paymentTime(), item.transactionNo(),
                 item.attachments(), views, item.createdBy(), item.createdTime(), item.updatedBy(),
                 item.updatedTime(), item.syncedBy(), item.syncedAt(), item.checkedBy(),
-                item.checkedAt(), item.revision(), item.allocatedPaymentAmount(), item.productAllocations());
+                item.checkedAt(), item.revision(), item.allocatedPaymentAmount(), item.productAllocations()).withPaymentOwner(item.paymentOwner());
     }
 
     private String temporaryFundAttachmentUrl(String tenantId, String objectKey) {

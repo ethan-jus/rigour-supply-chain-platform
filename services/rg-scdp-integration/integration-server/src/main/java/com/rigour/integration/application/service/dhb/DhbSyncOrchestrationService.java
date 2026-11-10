@@ -811,14 +811,17 @@ public final class DhbSyncOrchestrationService {
             if (from.isBefore(bootstrap)) from = bootstrap;
             if (!from.isBefore(end)) {
                 steps.add(skipped("ORDER", type, "该对象游标已覆盖增量窗口，无需再次拉取"));
-                if("PAYMENT".equals(type) && orderSyncService.voucherBackfillEnabled()) {
-                    try { steps.add(orderSyncService.backfillVouchers(protectedCaller,bucket.orderTarget.taskId(),20,progress)); }
-                    catch(RuntimeException error) { steps.add(failed("ORDER","VOUCHER_BACKFILL",error)); }
-                }
                 continue;
             }
             steps.add(runIncrementalOrderScope(protectedCaller, bucket, type, from, end, pages, progress, background));
         }
+        try { steps.add(orderSyncService.reconcileDeletedOrders(protectedCaller, bucket.orderTarget.taskId(), pages, progress)); }
+        catch (RuntimeException error) { steps.add(failed("ORDER", "SOURCE_PRESENCE", error)); }
+        if (orderSyncService.voucherBackfillEnabled()) {
+            try { steps.add(orderSyncService.backfillVouchers(protectedCaller, bucket.orderTarget.taskId(), 20, progress)); }
+            catch (RuntimeException error) { steps.add(failed("ORDER", "VOUCHER_BACKFILL", error)); }
+        }
+
     }
 
     /**

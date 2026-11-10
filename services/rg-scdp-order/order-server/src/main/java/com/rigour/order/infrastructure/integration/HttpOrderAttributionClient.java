@@ -109,6 +109,21 @@ public final class HttpOrderAttributionClient implements OrderAttributionClient 
         return response.data();
     }
 
+    @Override
+    public Map<Long,CustomerPaymentOwnerView> paymentOwners(CallerIdentity actor,List<Long> ids,java.time.Instant at) {
+        var result=new LinkedHashMap<Long,CustomerPaymentOwnerView>();
+        var service=new CallerIdentity("SERVICE",UUID.nameUUIDFromBytes("order-receipt-owner".getBytes(java.nio.charset.StandardCharsets.UTF_8)),actor.tenantId(),null,null,UUID.randomUUID(),0,0,0,Set.of(),Set.of("crm:customer:attribution-read"));
+        for (int begin=0;begin<ids.size();begin+=200) {
+            var part=ids.subList(begin,Math.min(begin+200,ids.size()));
+            URI uri=org.springframework.web.util.UriComponentsBuilder.fromUri(base).path("/internal/v1/crm/customers/payment-owners")
+                .queryParam("ids",part.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(","))).queryParam("at",at.toString()).build().encode().toUri();
+            ApiResponse<Map<Long,CustomerPaymentOwnerView>> response=client.get().uri(uri).headers(h->headers(service,uri).forEach(h::set)).retrieve().body(new ParameterizedTypeReference<>(){});
+            if(response==null || !"OK".equals(response.code()) || response.data()==null) throw new IllegalStateException("客户历史归属不可用");
+            result.putAll(response.data());
+        }
+        return result;
+    }
+
     private Map<String, String> headers(CallerIdentity c, URI uri) {
         Map<String, String> h = new LinkedHashMap<>();
         put(h, RequestHeaders.PRINCIPAL_SCOPE, c.principalScope());

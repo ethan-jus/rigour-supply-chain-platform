@@ -12,7 +12,11 @@ public interface CustomerResponsibilityApi {
 
     record Employee(String code, String name, String departmentName) {}
 
-    record Change(String employeeCode, String regionCode, long revision, String reason) {}
+    record Change(String employeeCode, String regionCode, long revision, String reason, Instant effectiveAt) {
+        public Change(String employeeCode, String regionCode, long revision, String reason) {
+            this(employeeCode, regionCode, revision, reason, null);
+        }
+    }
 
     record Resolution(String decision, long customerRevision, String reason) {}
 
@@ -26,7 +30,7 @@ public interface CustomerResponsibilityApi {
             String newRegion,
             String reason,
             String actor,
-            Instant occurredAt) {}
+            Instant occurredAt, Instant recordedAt, String effectiveKind, String source, String departmentName) {}
 
     record Conflict(
             long id,

@@ -41,6 +41,8 @@ class VoucherRecognitionMySqlTest {
         assertThat(jdbc.queryForObject("SELECT voucher_amount FROM order_payment_voucher_transaction WHERE payment_id=2",java.math.BigDecimal.class)).isEqualByComparingTo("78");
         assertThat(jdbc.queryForList("SELECT * FROM order_payment_record")).isEqualTo(money);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_voucher_transaction WHERE tenant_id='b'",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT transaction_no FROM order_payment_voucher_transaction WHERE payment_id=2",String.class)).isEqualTo("1234567890");
+        assertThat(jdbc.queryForObject("SELECT created_by FROM order_payment_voucher_transaction WHERE payment_id=2",String.class)).isEqualTo("HUMAN");
         var evidence=jdbc.queryForList("SELECT * FROM order_payment_voucher_transaction");
         queue.complete(job,JsonMapper.builder().build().readTree(result.replace("156.00","999.00")),result);
         assertThat(jdbc.queryForList("SELECT * FROM order_payment_voucher_transaction")).isEqualTo(evidence);
@@ -57,6 +59,19 @@ class VoucherRecognitionMySqlTest {
         assertThat(jdbc.queryForObject("SELECT status FROM order_voucher_recognition_job WHERE voucher_key='a/new1'",String.class)).isEqualTo("PENDING");
         assertThat(jdbc.queryForObject("SELECT attempts FROM order_voucher_recognition_job WHERE voucher_key='a/new1'",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_voucher_transaction WHERE payment_id=4",Integer.class)).isEqualTo(2);
+        // 历史证据已有金额/单号，仅缺时间：自动入队补缺，不覆盖人工确认值，也不无限重试模糊结果。
+        jdbc.update("INSERT INTO order_payment_record VALUES('a',5,0,'[\"a/history\"]',10,'2026-10-26','CHECKED')");
+        jdbc.update("INSERT INTO order_payment_voucher_transaction(tenant_id,payment_id,voucher_key,voucher_amount,transaction_no,created_by)"
+                + " VALUES('a',5,'a/history',10,'HUMAN-NUMBER','HUMAN')");
+        assertThat(queue.discoverUnrecognized(100)).isEqualTo(1);
+        jdbc.update("UPDATE order_voucher_recognition_job SET status='SUCCEEDED' WHERE voucher_key<>'a/history'");
+        var historyJob=queue.claim();
+        queue.complete(historyJob,JsonMapper.builder().build().readTree(result),result);
+        var history=jdbc.queryForMap("SELECT * FROM order_payment_voucher_transaction WHERE payment_id=5");
+        assertThat(history).containsEntry("transaction_no","HUMAN-NUMBER").containsEntry("created_by","HUMAN");
+        assertThat((java.math.BigDecimal)history.get("voucher_amount")).isEqualByComparingTo("10");
+        assertThat(history.get("voucher_paid_time")).isNotNull();
+        assertThat(queue.discoverUnrecognized(100)).isZero();
         assertThat(jdbc.queryForObject("SELECT created_by FROM order_payment_voucher_transaction WHERE payment_id=2",String.class)).isEqualTo("HUMAN");
     }
 }
