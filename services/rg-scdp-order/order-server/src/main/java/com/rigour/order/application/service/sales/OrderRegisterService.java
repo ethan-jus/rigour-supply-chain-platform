@@ -98,7 +98,7 @@ public class OrderRegisterService {
             String invoiceStatusCode,
             Boolean dhbLinked,
             String dhbOrderNo,
-            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo) {
+            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
         CallerIdentity actor = actor(READ_PERMISSION);
         requireRange(paymentTimeFrom, paymentTimeTo, "paymentTimeFrom不能晚于paymentTimeTo");
         var criteria =
@@ -116,7 +116,7 @@ public class OrderRegisterService {
                         text(paymentStatusCode, 64, "paymentStatusCode"),
                         hasUnpaid,
                         invoiceStatusCode(invoiceStatusCode),
-                        dhbLinked, text(dhbOrderNo, 80, "dhbOrderNo"), hasDiscount, sortBy, sortDirection, text(createdBy, 200, "createdBy"), paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId));
+                        dhbLinked, text(dhbOrderNo, 80, "dhbOrderNo"), hasDiscount, sortBy, sortDirection, text(createdBy, 200, "createdBy"), paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId), text(paymentOwnerEmployeeCode, 50, "paymentOwnerEmployeeCode"));
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var result = store.orders(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withInvoiceStatuses(
@@ -205,7 +205,7 @@ public class OrderRegisterService {
             Long productVariantId,
             List<Long> productVariantIds,
             Instant paymentTimeFrom,
-            Instant paymentTimeTo) {
+            Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
         CallerIdentity actor = actor(READ_PERMISSION);
         productVariantIds = filterVariantIds(productIds, productVariantId, productVariantIds);
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
@@ -225,7 +225,7 @@ public class OrderRegisterService {
                         text(productKeyword, 200, "productKeyword"),
                         text(productCode, 128, "productCode"),
                         filterProductIds(productIds),
-                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, null, productVariantIds, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId));
+                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, null, productVariantIds, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId), text(paymentOwnerEmployeeCode, 50, "paymentOwnerEmployeeCode"));
         var result = store.lines(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withDepartmentNames(actor, withRegionNames(actor, result));
     }
@@ -530,7 +530,7 @@ public class OrderRegisterService {
                             v.invoiceStatusCode(), v.invoiceStatusName(), v.originalAmount(),
                             v.payableAmount(), v.paidAmount(), v.unpaidAmount(), v.checkedAmount(),
                             v.orderDate(), v.shipmentTime(), v.createdBy(), v.createdTime(),
-                            v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime());
+                            v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime(), v.paymentOwnerNames());
         }
         if (item instanceof OrderRegisterLineView v) {
             return (T)
@@ -545,7 +545,7 @@ public class OrderRegisterService {
                             v.ownerEmployeeName(), v.departmentId(), v.departmentName(),
                             v.orderStatusCode(), v.paymentStatusCode(), v.orderDate(), v.revision(),
                             v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
-                            v.syncedBy(), v.syncedAt(), v.paymentTime());
+                            v.syncedBy(), v.syncedAt(), v.paymentTime(), v.paymentOwnerNames());
         }
         if (item instanceof OrderRegisterPaymentView v) {
             return (T)
@@ -636,7 +636,7 @@ public class OrderRegisterService {
                             v.originalAmount(), v.payableAmount(), v.paidAmount(),
                             v.unpaidAmount(), v.checkedAmount(), v.orderDate(), v.shipmentTime(),
                             v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
-                            v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime());
+                            v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime(), v.paymentOwnerNames());
         }
         if (item instanceof OrderRegisterLineView v) {
             return (T)
@@ -651,7 +651,7 @@ public class OrderRegisterService {
                             v.ownerEmployeeName(), city != null ? city.id() : v.departmentId(), department, v.orderStatusCode(),
                             v.paymentStatusCode(), v.orderDate(), v.revision(),
                             v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
-                            v.syncedBy(), v.syncedAt(), v.paymentTime());
+                            v.syncedBy(), v.syncedAt(), v.paymentTime(), v.paymentOwnerNames());
         }
         if (item instanceof OrderRegisterPaymentView v) {
             return (T)
@@ -707,7 +707,7 @@ public class OrderRegisterService {
                         OrderInvoiceStatus.displayNameOf(status), v.originalAmount(),
                         v.payableAmount(), v.paidAmount(), v.unpaidAmount(), v.checkedAmount(),
                         v.orderDate(), v.shipmentTime(), v.createdBy(), v.createdTime(),
-                        v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime());
+                        v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime(), v.paymentOwnerNames());
     }
 
     private static String employeeCodeOf(Object item) {

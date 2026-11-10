@@ -82,7 +82,9 @@ public final class OrderRegisterModels {
             String syncedBy,
             Instant syncedAt,
             Integer revision,
-            Instant paymentTime) {
+            Instant paymentTime,
+            /** 有效回款的归属快照姓名；多人去重，未知归属显示待补齐。 */
+            List<String> paymentOwnerNames) {
         @com.fasterxml.jackson.annotation.JsonProperty("discountAmount")
         public BigDecimal discountAmount() {
             return originalAmount == null || payableAmount == null ? null : originalAmount.subtract(payableAmount);
@@ -142,7 +144,9 @@ public final class OrderRegisterModels {
             String syncedBy,
             Instant syncedAt,
             /** 最近一次有效收款时间，未收款或无有效记录时为空。 */
-            Instant paymentTime) {
+            Instant paymentTime,
+            /** 有效回款的归属快照姓名；多人去重，未知归属显示待补齐。 */
+            List<String> paymentOwnerNames) {
     }
 
     /** 收款列表行；一行是一笔关联订单的收款记录，订单金额只做关联参考。 */

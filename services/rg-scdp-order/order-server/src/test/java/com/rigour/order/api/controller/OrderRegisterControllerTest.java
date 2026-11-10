@@ -43,10 +43,11 @@ class OrderRegisterControllerTest {
     void orderExportUsesTenantLifecycleDictionary() {
         var row = mock(com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterOrderView.class);
         when(row.orderStatusCode()).thenReturn("SUBMITTED");
-        when(service.orders(eq(0),eq(200),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any()))
+        when(row.paymentOwnerNames()).thenReturn(List.of("李四", "王五"));
+        when(service.orders(eq(0),eq(200),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(), any()))
                 .thenReturn(new com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage<>(1,0,200,List.of(row),java.util.Map.of(),null));
-        var response = controller.exportOrders(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null);
-        assertThat(new String(response.getBody(),StandardCharsets.UTF_8)).contains("租户履约中").doesNotContain("SUBMITTED");
+        var response = controller.exportOrders(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null, null);
+        assertThat(new String(response.getBody(),StandardCharsets.UTF_8)).contains("租户履约中").contains("回款人").contains("李四、王五").doesNotContain("SUBMITTED");
     }
 
     @Test
@@ -72,16 +73,17 @@ class OrderRegisterControllerTest {
     void lineExportIncludesLatestReceiptDateAndForwardsTheSameFilters() {
         var row = mock(com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView.class);
         when(row.paymentStatusCode()).thenReturn("PARTIAL_PAID");
+        when(row.paymentOwnerNames()).thenReturn(List.of("李四", "王五"));
         when(row.paymentTime()).thenReturn(java.time.Instant.parse("2026-09-01T16:00:00Z"));
         var from = java.time.Instant.parse("2026-09-01T16:00:00Z");
         var to = java.time.Instant.parse("2026-09-02T16:00:00Z");
         when(service.lines(eq(0),eq(200),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),any(),
-                eq(List.of(101L,102L)),eq("PARTIAL_PAID"),any(),any(),any(),any(),eq(List.of(1001L,1003L)),eq(from),eq(to)))
+                eq(List.of(101L,102L)),eq("PARTIAL_PAID"),any(),any(),any(),any(),eq(List.of(1001L,1003L)),eq(from),eq(to), eq("LI")))
                 .thenReturn(new com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage<>(1,0,200,List.of(row),java.util.Map.of(),null));
         var response = controller.exportLines(null,null,null,null,null,null,null,null,null,null,null,null,null,
-                List.of(101L,102L),"PARTIAL_PAID",null,null,null,null,List.of(1001L,1003L),from,to);
+                List.of(101L,102L),"PARTIAL_PAID",null,null,null,null,List.of(1001L,1003L),from,to, "LI");
         String csv = new String(response.getBody(), StandardCharsets.UTF_8);
-        assertThat(csv).contains("收款状态,收款日期,下单时间");
+        assertThat(csv).contains("收款状态,收款日期,下单时间").contains("回款人").contains("李四、王五");
         assertThat(csv).contains("部分收款,2026-09-02,");
     }
 

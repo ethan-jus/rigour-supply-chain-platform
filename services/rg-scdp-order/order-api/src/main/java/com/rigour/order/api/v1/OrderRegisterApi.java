@@ -52,7 +52,8 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) String sortDirection,
             @RequestParam(required = false) String createdBy,
             @RequestParam(required = false) Instant paymentTimeFrom,
-            @RequestParam(required = false) Instant paymentTimeTo);
+            @RequestParam(required = false) Instant paymentTimeTo,
+            @RequestParam(required = false) String paymentOwnerEmployeeCode);
 
     @GetMapping(BASE_PATH + "/lines")
     ApiResponse<OrderRegisterPage<OrderRegisterLineView>> lines(
@@ -79,7 +80,8 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) Long productVariantId,
             @RequestParam(required = false) List<Long> productVariantIds,
             @RequestParam(required = false) Instant paymentTimeFrom,
-            @RequestParam(required = false) Instant paymentTimeTo);
+            @RequestParam(required = false) Instant paymentTimeTo,
+            @RequestParam(required = false) String paymentOwnerEmployeeCode);
 
     @GetMapping(BASE_PATH + "/payments")
     ApiResponse<OrderRegisterPage<OrderRegisterPaymentView>> payments(
@@ -183,7 +185,8 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) String sortDirection,
             @RequestParam(required = false) String createdBy,
             @RequestParam(required = false) Instant paymentTimeFrom,
-            @RequestParam(required = false) Instant paymentTimeTo);
+            @RequestParam(required = false) Instant paymentTimeTo,
+            @RequestParam(required = false) String paymentOwnerEmployeeCode);
 
     @GetMapping(value = BASE_PATH + "/lines/export", produces = "text/csv;charset=UTF-8")
     ResponseEntity<byte[]> exportLines(
@@ -208,7 +211,8 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) Long productVariantId,
             @RequestParam(required = false) List<Long> productVariantIds,
             @RequestParam(required = false) Instant paymentTimeFrom,
-            @RequestParam(required = false) Instant paymentTimeTo);
+            @RequestParam(required = false) Instant paymentTimeTo,
+            @RequestParam(required = false) String paymentOwnerEmployeeCode);
 
     @GetMapping(value = BASE_PATH + "/payments/export", produces = "text/csv;charset=UTF-8")
     ResponseEntity<byte[]> exportPayments(
