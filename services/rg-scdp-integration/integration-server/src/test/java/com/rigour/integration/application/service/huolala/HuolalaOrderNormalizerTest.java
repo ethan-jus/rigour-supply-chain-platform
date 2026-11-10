@@ -42,10 +42,10 @@ class HuolalaOrderNormalizerTest {
         return (ObjectNode)
                 json.readTree(
                         """
-                        {"order_detail_item":{"order_item":{"ep_id":1001,"order_display_id":"3624071813921329726","order_status":2,"order_time":"2026-11-08 14:36:58","price_fen":43913,"paid_amount":43913,"unpaid_amount":0,"refund_amount":0,
-                        "addr_info_arr":[{"name":"发货点","addr":"发货地址","contact_name":"甲"},{"name":"收货点一","addr":"地址一"},{"name":"收货点二","addr":"地址二"}],
-                        "order_price_arr":[{"type":203,"bill_name":"专享价","price_fen":27518},{"type":23,"bill_name":"搬运费","price_fen":15500},{"type":205,"bill_name":"税费","price_fen":1395},{"type":3,"bill_name":"优惠券","price_fen":-500}]}}}
-                        """);
+{"order_detail_item":{"order_item":{"ep_id":1001,"order_display_id":"3624071813921329726","order_status":2,"order_time":"2026-11-08 14:36:58","price_fen":43913,"paid_amount":43913,"unpaid_amount":0,"refund_amount":0,
+"addr_info_arr":[{"name":"发货点","addr":"发货地址","contact_name":"甲"},{"name":"收货点一","addr":"地址一"},{"name":"收货点二","addr":"地址二"}],
+"order_price_arr":[{"type":203,"bill_name":"专享价","price_fen":27518},{"type":23,"bill_name":"搬运费","price_fen":15500},{"type":205,"bill_name":"税费","price_fen":1395},{"type":3,"bill_name":"优惠券","price_fen":-500}]}}}
+""");
     }
 
     @Test
@@ -132,5 +132,33 @@ class HuolalaOrderNormalizerTest {
                         HuolalaOrderNormalizer.fingerprint(
                                 HuolalaOrderNormalizer.normalize(c, list(), d, "new", null, null),
                                 json));
+    }
+
+    @Test
+    void vouchersKeepFeeRowsSeparateAndNeverExposeSourceUrlsOrAlterCostFingerprint() {
+        var d = detail();
+        var item = (ObjectNode) d.at("/order_detail_item/order_item");
+        item.put("price_fen", 13764).put("paid_amount", 13764);
+        var fee = (ObjectNode) item.path("order_price_arr").get(1);
+        fee.putArray("img_urls").add("https://luna-cdn.huolala.cn/a.png?signature=secret");
+        item.putArray("receipt_url").add("https://luna-cdn.huolala.cn/receipt.jpg");
+        item.putArray("img_urls").add("https://luna-cdn.huolala.cn/bill.png");
+        d.putObject("driver_info")
+                .put("name", "王师傅")
+                .put("phone_no", "隐私号码")
+                .put("license_plate", "鄂A**123");
+        var order = HuolalaOrderNormalizer.normalize(c, list(), d, "raw", null, null);
+        assertThat(order.facts().billAmount()).isEqualByComparingTo("137.64");
+        assertThat(order.facts().fees()).hasSize(4);
+        assertThat(order.facts().receipts()).hasSize(1);
+        assertThat(order.facts().billVouchers()).hasSize(1);
+        assertThat(order.raw().get("司机")).isEqualTo("王师傅");
+        assertThat(json.writeValueAsString(order)).doesNotContain("https://", "secret");
+        var before = HuolalaOrderNormalizer.fingerprint(order, json);
+        fee.putArray("img_urls").add("https://luna-cdn.huolala.cn/a.png?signature=rotated");
+        var renewed = HuolalaOrderNormalizer.normalize(c, list(), d, "raw2", null, null);
+        assertThat(renewed.facts().fees().get(1).vouchers().getFirst().id())
+                .isEqualTo(order.facts().fees().get(1).vouchers().getFirst().id());
+        assertThat(HuolalaOrderNormalizer.fingerprint(renewed, json)).isEqualTo(before);
     }
 }

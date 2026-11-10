@@ -11,20 +11,23 @@ import com.qcloud.cos.model.ObjectMetadata;
 import com.qcloud.cos.model.PutObjectRequest;
 import com.qcloud.cos.region.Region;
 import com.rigour.integration.infrastructure.config.ProductMediaProperties;
-import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.util.List;
-import java.util.Objects;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Objects;
+
 /** 订货宝商品图片 COS 私桶适配器；不提供公开 URL，也不把密钥写入日志。 */
 @Component
-public final class CosProductMediaStorage implements com.rigour.integration.application.port.out.ProductMediaStorage {
+public final class CosProductMediaStorage
+        implements com.rigour.integration.application.port.out.ProductMediaStorage {
     private static final Logger log = LoggerFactory.getLogger(CosProductMediaStorage.class);
     private static final int MAX_UPLOAD_ATTEMPTS = 3;
     private static final long UPLOAD_RETRY_BACKOFF_MILLIS = 250L;
@@ -48,10 +51,12 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
         this.maxBytes = properties.getMaxBytes();
         this.serverSideEncryption = cos.isServerSideEncryption();
         this.objectPrefix = normalizePrefix(cos.getObjectPrefix());
-        this.allowedObjectPrefixes = List.of(
-                this.objectPrefix,
-                normalizePrefix(properties.getFundAttachmentPrefix()),
-                normalizePrefix(properties.getFeishuAttachmentPrefix()));
+        this.allowedObjectPrefixes =
+                List.of(
+                        this.objectPrefix,
+                        normalizePrefix(properties.getFundAttachmentPrefix()),
+                        normalizePrefix(properties.getFeishuAttachmentPrefix()),
+                        normalizePrefix(properties.getHuolalaAttachmentPrefix()));
     }
 
     private static ProductMediaProperties.Cos validatedCos(ProductMediaProperties properties) {
@@ -61,7 +66,8 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
         requireText(cos.getBucket(), "rigour.integration.product-media.cos.bucket");
         requireText(cos.getSecretId(), "rigour.integration.product-media.cos.secret-id");
         requireText(cos.getSecretKey(), "rigour.integration.product-media.cos.secret-key");
-        if (properties.getMaxBytes() <= 0 || cos.getConnectionTimeoutMs() <= 0
+        if (properties.getMaxBytes() <= 0
+                || cos.getConnectionTimeoutMs() <= 0
                 || cos.getSocketTimeoutMs() <= 0) {
             throw new IllegalStateException("商品图片 COS 参数必须大于0");
         }
@@ -73,9 +79,10 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
         String secretId = normalizedCredential(cos.getSecretId());
         String secretKey = normalizedCredential(cos.getSecretKey());
         String sessionToken = normalizedCredential(cos.getSessionToken());
-        COSCredentials credentials = StringUtils.hasText(sessionToken)
-                ? new BasicSessionCredentials(secretId, secretKey, sessionToken)
-                : new BasicCOSCredentials(secretId, secretKey);
+        COSCredentials credentials =
+                StringUtils.hasText(sessionToken)
+                        ? new BasicSessionCredentials(secretId, secretKey, sessionToken)
+                        : new BasicCOSCredentials(secretId, secretKey);
         return new COSClient(credentials, createClientConfig(cos));
     }
 
@@ -99,8 +106,12 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
     }
 
     @Override
-    public void put(String tenantId, String objectKey, String originalName,
-                    String contentType, byte[] content) {
+    public void put(
+            String tenantId,
+            String objectKey,
+            String originalName,
+            String contentType,
+            byte[] content) {
         validateKey(tenantId, objectKey, allowedObjectPrefixes);
         if (content == null || content.length == 0 || content.length > maxBytes) {
             throw new IllegalArgumentException("商品图片大小无效");
@@ -108,15 +119,23 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
         for (int attempt = 1; attempt <= MAX_UPLOAD_ATTEMPTS; attempt++) {
             try {
                 uploadOnce(objectKey, contentType, content);
-                log.debug("订货宝商品图片已上传私有COS tenantId={} objectKey={} bytes={} contentType={}",
-                        tenantId, objectKey, content.length, contentType);
+                log.debug(
+                        "订货宝商品图片已上传私有COS tenantId={} objectKey={} bytes={} contentType={}",
+                        tenantId,
+                        objectKey,
+                        content.length,
+                        contentType);
                 return;
             } catch (CosClientException exception) {
                 if (attempt == MAX_UPLOAD_ATTEMPTS || !isRetryable(exception)) {
                     throw exception;
                 }
-                log.warn("订货宝商品图片 COS 上传准备重试 tenantId={} objectKey={} attempt={} errorType={}",
-                        tenantId, objectKey, attempt, exception.getClass().getSimpleName());
+                log.warn(
+                        "订货宝商品图片 COS 上传准备重试 tenantId={} objectKey={} attempt={} errorType={}",
+                        tenantId,
+                        objectKey,
+                        attempt,
+                        exception.getClass().getSimpleName());
                 backoff(attempt);
             }
         }
@@ -128,8 +147,18 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
         try {
             temporaryFile = Files.createTempFile("rigour-product-image-", ".bin");
             Files.write(temporaryFile, content);
-            PutObjectRequest request = new PutObjectRequest(bucket, objectKey, temporaryFile.toFile());
-            request.setMetadata(metadata(content.length, contentType));
+            PutObjectRequest request =
+                    new PutObjectRequest(bucket, objectKey, temporaryFile.toFile());
+            var metadata = metadata(content.length, contentType);
+            if (objectKey.contains("/integration-huolala-vouchers/")) {
+                metadata.addUserMetadata("source-service", "integration");
+                metadata.addUserMetadata("source-system", "HUOLALA");
+                metadata.addUserMetadata("business-domain", "ORDER");
+                metadata.addUserMetadata("business-type", "logistics-platform-voucher");
+                String[] segments=objectKey.split("/");
+                if(segments.length>=5) metadata.addUserMetadata("source-order-no",segments[3]);
+            }
+            request.setMetadata(metadata);
             client.putObject(request);
         } catch (IOException exception) {
             throw new CosClientException("商品图片 COS 请求体准备失败", exception);
@@ -138,8 +167,10 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
                 try {
                     Files.deleteIfExists(temporaryFile);
                 } catch (IOException exception) {
-                    log.warn("商品图片 COS 临时文件清理失败 objectKey={} errorType={}",
-                            objectKey, exception.getClass().getSimpleName());
+                    log.warn(
+                            "商品图片 COS 临时文件清理失败 objectKey={} errorType={}",
+                            objectKey,
+                            exception.getClass().getSimpleName());
                 }
             }
         }
@@ -176,16 +207,21 @@ public final class CosProductMediaStorage implements com.rigour.integration.appl
     }
 
     @jakarta.annotation.PreDestroy
-    void shutdown() { client.shutdown(); }
+    void shutdown() {
+        client.shutdown();
+    }
 
     private static void validateKey(String tenantId, String objectKey, String objectPrefix) {
         validateKey(tenantId, objectKey, List.of(objectPrefix));
     }
 
-    private static void validateKey(String tenantId, String objectKey, List<String> objectPrefixes) {
-        if (!StringUtils.hasText(tenantId) || !StringUtils.hasText(objectKey)
-                || objectKey.contains("..") || objectPrefixes.stream().noneMatch(prefix ->
-                objectKey.startsWith(tenantId + "/" + prefix + "/"))) {
+    private static void validateKey(
+            String tenantId, String objectKey, List<String> objectPrefixes) {
+        if (!StringUtils.hasText(tenantId)
+                || !StringUtils.hasText(objectKey)
+                || objectKey.contains("..")
+                || objectPrefixes.stream()
+                        .noneMatch(prefix -> objectKey.startsWith(tenantId + "/" + prefix + "/"))) {
             throw new IllegalArgumentException("商品图片对象 key 无效");
         }
     }

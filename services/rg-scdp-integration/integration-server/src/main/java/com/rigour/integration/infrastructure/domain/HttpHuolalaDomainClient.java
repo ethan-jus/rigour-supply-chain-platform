@@ -115,6 +115,29 @@ public final class HttpHuolalaDomainClient implements HuolalaDomainClient {
         return SignedDomainRequest.required(response, "物流来源写入");
     }
 
+    @Override
+    public void voucher(CallerIdentity caller, VoucherUpdate update) {
+        URI uri = order.resolve("/api/v1/orders/logistics-costs/imports/api-vouchers");
+        ApiResponse<Void> response =
+                http.post()
+                        .uri(uri)
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .headers(
+                                h ->
+                                        SignedDomainRequest.signedHeaders(
+                                                        signer, "POST", uri, caller)
+                                                .forEach(h::set))
+                        .body(update)
+                        .exchange(
+                                (request, r) ->
+                                        SignedDomainRequest.readResponse(
+                                                r,
+                                                new TypeReference<ApiResponse<Void>>() {},
+                                                "平台凭证保存"));
+        if (response == null || !"OK".equals(response.code()))
+            throw new IllegalStateException("平台凭证保存未完成");
+    }
+
     private static EmployeeCandidate candidate(HrEmployeeView e) {
         return new EmployeeCandidate(
                 e.id(),

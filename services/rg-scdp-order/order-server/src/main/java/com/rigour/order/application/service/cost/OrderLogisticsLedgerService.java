@@ -251,14 +251,11 @@ public final class OrderLogisticsLedgerService {
                                 .findFirst()
                                 .orElseThrow(() -> bad("来源单据不存在、状态不可引用或无权限：" + link.orderCode()));
                 normalizedLink = normalizedLink.attributed(source);
-                if ("COST".equals(link.linkRoleCode()) && source.referenceIssue() != null)
-                    throw bad(source.referenceIssue());
+                if (confirm
+                        && "COST".equals(link.linkRoleCode())
+                        && source.referenceIssue() != null) throw bad(source.referenceIssue());
                 if ("DELIVERY".equals(ledger.transportPurposeCode())
                         && "COST".equals(link.linkRoleCode())) {
-                    if (!"WAREHOUSE".equals(sender.partyTypeCode())
-                            || source.warehouseId() != null
-                                    && !Objects.equals(sender.partyCode(), source.senderCode()))
-                        throw bad("发货仓库必须与所关联销售单一致，不同仓库请分开登记");
                     if (source.receiverCode() == null
                             || source.contactName() == null
                             || source.contactName().isBlank()

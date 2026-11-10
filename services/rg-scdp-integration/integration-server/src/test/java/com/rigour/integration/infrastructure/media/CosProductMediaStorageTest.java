@@ -8,14 +8,16 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import com.qcloud.cos.ClientConfig;
 import com.qcloud.cos.COSClient;
+import com.qcloud.cos.ClientConfig;
 import com.qcloud.cos.exception.CosClientException;
 import com.qcloud.cos.model.PutObjectRequest;
 import com.qcloud.cos.model.PutObjectResult;
 import com.rigour.integration.infrastructure.config.ProductMediaProperties;
-import java.net.SocketException;
+
 import org.junit.jupiter.api.Test;
+
+import java.net.SocketException;
 
 class CosProductMediaStorageTest {
     private static final String TENANT_ID = "019fbaf9-cfb5-740d-b347-739d29765d8e";
@@ -40,24 +42,26 @@ class CosProductMediaStorageTest {
     void retriesTransientCosUploadWithFreshRequestBody() {
         COSClient client = mock(COSClient.class);
         when(client.putObject(any(PutObjectRequest.class)))
-                .thenAnswer(invocation -> {
-                    PutObjectRequest request = invocation.getArgument(0);
-                    assertThat(request.getFile()).isFile();
-                    assertThat(request.getFile().length()).isEqualTo(3);
-                    assertThat(request.getMetadata().getUserMetadata()).isEmpty();
-                    throw new CosClientException(new SocketException("broken pipe"));
-                })
-                .thenAnswer(invocation -> {
-                    PutObjectRequest request = invocation.getArgument(0);
-                    assertThat(request.getFile()).isFile();
-                    assertThat(request.getFile().length()).isEqualTo(3);
-                    assertThat(request.getMetadata().getUserMetadata()).isEmpty();
-                    return new PutObjectResult();
-                });
+                .thenAnswer(
+                        invocation -> {
+                            PutObjectRequest request = invocation.getArgument(0);
+                            assertThat(request.getFile()).isFile();
+                            assertThat(request.getFile().length()).isEqualTo(3);
+                            assertThat(request.getMetadata().getUserMetadata()).isEmpty();
+                            throw new CosClientException(new SocketException("broken pipe"));
+                        })
+                .thenAnswer(
+                        invocation -> {
+                            PutObjectRequest request = invocation.getArgument(0);
+                            assertThat(request.getFile()).isFile();
+                            assertThat(request.getFile().length()).isEqualTo(3);
+                            assertThat(request.getMetadata().getUserMetadata()).isEmpty();
+                            return new PutObjectResult();
+                        });
 
         CosProductMediaStorage storage = new CosProductMediaStorage(properties(), client);
 
-        storage.put(TENANT_ID, OBJECT_KEY, "主图-2.png", "image/png", new byte[]{1, 2, 3});
+        storage.put(TENANT_ID, OBJECT_KEY, "主图-2.png", "image/png", new byte[] {1, 2, 3});
 
         verify(client, times(2)).putObject(any(PutObjectRequest.class));
         verify(client, never()).doesObjectExist("bucket", OBJECT_KEY);
@@ -70,7 +74,7 @@ class CosProductMediaStorageTest {
 
         CosProductMediaStorage storage = new CosProductMediaStorage(properties(), client);
 
-        storage.put(TENANT_ID, OBJECT_KEY, "main.png", "image/png", new byte[]{1, 2, 3});
+        storage.put(TENANT_ID, OBJECT_KEY, "main.png", "image/png", new byte[] {1, 2, 3});
 
         verify(client).putObject(any(PutObjectRequest.class));
         verify(client, never()).doesObjectExist("bucket", OBJECT_KEY);
@@ -117,5 +121,22 @@ class CosProductMediaStorageTest {
         cos.setSecretId("secret-id");
         cos.setSecretKey("secret-key");
         return properties;
+    }
+
+    @Test
+    void huolalaVouchersUseIntegrationPrefixAndTraceableObjectMetadata() {
+        COSClient client = mock(COSClient.class);
+        var storage = new CosProductMediaStorage(properties(), client);
+        storage.put(
+                TENANT_ID,
+                TENANT_ID + "/integration-huolala-vouchers/C/O/V.png",
+                "路桥费凭证.png",
+                "image/png",
+                new byte[] {1, 2, 3});
+        var captor = org.mockito.ArgumentCaptor.forClass(PutObjectRequest.class);
+        verify(client).putObject(captor.capture());
+        assertThat(captor.getValue().getMetadata().getUserMetadata())
+                .containsEntry("source-service", "integration")
+                .containsEntry("source-system", "HUOLALA");
     }
 }

@@ -9,16 +9,27 @@ const money = (n) =>
           });
 const now = "2026-11-09 17:20:00";
 const billSyncTime = "2026-11-10 10:40:00";
-const billKey = (row) => JSON.stringify({
-    total: row.total, refund: row.refund, bonus: row.bonus,
-    fees: row.fees.map((fee) => [fee.id, fee.name, fee.type, fee.amount]),
-});
+const billKey = (row) =>
+    JSON.stringify({
+        total: row.total,
+        refund: row.refund,
+        bonus: row.bonus,
+        fees: row.fees.map((fee) => [fee.id, fee.name, fee.type, fee.amount]),
+    });
 const billSnapshot = (row) => ({
-    version: row.billVersion, updated: row.billUpdatedAt,
-    total: row.total, paid: row.paid, unpaid: row.unpaid, refund: row.refund,
-    fees: row.fees.map((fee) => ({ ...fee, vouchers: [...(fee.vouchers || [])] })),
+    version: row.billVersion,
+    updated: row.billUpdatedAt,
+    total: row.total,
+    paid: row.paid,
+    unpaid: row.unpaid,
+    refund: row.refund,
+    fees: row.fees.map((fee) => ({
+        ...fee,
+        vouchers: [...(fee.vouchers || [])],
+    })),
 });
-const billSnapshotKey = (row) => JSON.stringify([billKey(row), row.paid, row.unpaid]);
+const billSnapshotKey = (row) =>
+    JSON.stringify([billKey(row), row.paid, row.unpaid]);
 const savePlatformBill = (row, patch) => {
     const next = { ...row, ...patch, synced: billSyncTime };
     if (billSnapshotKey(next) === billSnapshotKey(row)) return next;
@@ -28,16 +39,47 @@ const savePlatformBill = (row, patch) => {
     return next;
 };
 const syncBillExample = (row) => {
-    if (row.no === "3624120071116903105" && !row.fees.some((fee) => fee.id === "parking-added")) {
+    if (
+        row.no === "3624120071116903105" &&
+        !row.fees.some((fee) => fee.id === "parking-added")
+    ) {
         return savePlatformBill(row, {
-            total: 142.64, unpaid: 5,
-            fees: [...row.fees, { id: "parking-added", type: "22", name: "停车费", amount: 5, vouchers: [] }],
+            total: 142.64,
+            unpaid: 5,
+            fees: [
+                ...row.fees,
+                {
+                    id: "parking-added",
+                    type: "22",
+                    name: "停车费",
+                    amount: 5,
+                    vouchers: [],
+                },
+            ],
         });
     }
     if (row.no === "3624120071116903107" && row.total === 60) {
         return savePlatformBill(row, {
-            status: "已完成", completed: "2026-11-09 16:10:00", total: 65, unpaid: 65,
-            fees: [{ id: "base", type: "206", name: "基础运费", amount: 60, vouchers: [] }, { id: "parking", type: "22", name: "停车费", amount: 5, vouchers: [] }],
+            status: "已完成",
+            completed: "2026-11-09 16:10:00",
+            total: 65,
+            unpaid: 65,
+            fees: [
+                {
+                    id: "base",
+                    type: "206",
+                    name: "基础运费",
+                    amount: 60,
+                    vouchers: [],
+                },
+                {
+                    id: "parking",
+                    type: "22",
+                    name: "停车费",
+                    amount: 5,
+                    vouchers: [],
+                },
+            ],
         });
     }
     return { ...row, synced: billSyncTime };
@@ -227,11 +269,49 @@ const initialOrders = [
         route,
         detail: true,
         fees: [
-            { id: "exclusive", type: "203", name: "专享价", amount: 108.85, vouchers: [] },
-            { id: "highway", type: "21", name: "高速路桥费", amount: 20, vouchers: [{ id: "highway-proof", name: "高速路桥费凭证（示例）.txt", url: "/vouchers/highway-voucher-demo.txt", state: "已留存", savedAt: now }] },
-            { id: "moving", type: "23", name: "搬运费（司机添加）", amount: 11, vouchers: [] },
-            { id: "tax", type: "205", name: "税费", amount: 2.79, vouchers: [] },
-            { id: "coupon", type: "3", name: "货运券抵扣", amount: -5, vouchers: [] },
+            {
+                id: "exclusive",
+                type: "203",
+                name: "专享价",
+                amount: 108.85,
+                vouchers: [],
+            },
+            {
+                id: "highway",
+                type: "21",
+                name: "高速路桥费",
+                amount: 20,
+                vouchers: [
+                    {
+                        id: "highway-proof",
+                        name: "高速路桥费凭证（示例）.txt",
+                        url: "/vouchers/highway-voucher-demo.txt",
+                        state: "已留存",
+                        savedAt: now,
+                    },
+                ],
+            },
+            {
+                id: "moving",
+                type: "23",
+                name: "搬运费（司机添加）",
+                amount: 11,
+                vouchers: [],
+            },
+            {
+                id: "tax",
+                type: "205",
+                name: "税费",
+                amount: 2.79,
+                vouchers: [],
+            },
+            {
+                id: "coupon",
+                type: "3",
+                name: "货运券抵扣",
+                amount: -5,
+                vouchers: [],
+            },
         ],
         driver: "周师傅",
         driverPhone: "139****0006",
@@ -265,8 +345,26 @@ const initialOrders = [
         ],
         detail: true,
         fees: [
-            { id: "base", type: "206", name: "基础运费", amount: 80, vouchers: [] },
-            { id: "parking", type: "22", name: "停车费", amount: 5, vouchers: [{ id: "parking-pending", name: "停车费凭证", state: "待补同步" }] },
+            {
+                id: "base",
+                type: "206",
+                name: "基础运费",
+                amount: 80,
+                vouchers: [],
+            },
+            {
+                id: "parking",
+                type: "22",
+                name: "停车费",
+                amount: 5,
+                vouchers: [
+                    {
+                        id: "parking-pending",
+                        name: "停车费凭证",
+                        state: "待获取",
+                    },
+                ],
+            },
         ],
         driver: "刘师傅",
         driverPhone: "139****0007",
@@ -290,7 +388,15 @@ const initialOrders = [
         vehicle: "中面包车",
         route: [route[0], route[1]],
         detail: true,
-        fees: [{ id: "base", type: "206", name: "基础运费", amount: 60, vouchers: [] }],
+        fees: [
+            {
+                id: "base",
+                type: "206",
+                name: "基础运费",
+                amount: 60,
+                vouchers: [],
+            },
+        ],
         driver: "赵师傅",
         driverPhone: "139****0008",
         plate: "鄂A**456",
@@ -328,7 +434,15 @@ const initialOrders = [
             },
         ],
         detail: true,
-        fees: [{ id: "cancellation", type: "24", name: "取消费用", amount: 0, vouchers: [] }],
+        fees: [
+            {
+                id: "cancellation",
+                type: "24",
+                name: "取消费用",
+                amount: 0,
+                vouchers: [],
+            },
+        ],
         driver: "",
         driverPhone: "",
         plate: "",
@@ -495,10 +609,12 @@ function Modal({
     footer,
     wide = false,
     record = false,
+    inactive = false,
 }) {
     return (
         <div
             className="overlay"
+            inert={inactive}
             onMouseDown={(e) => e.target === e.currentTarget && close()}
         >
             <section
@@ -625,40 +741,196 @@ function ShippingStops({ points, warehouseName }) {
 }
 
 function PlatformBill({ row, onVoucher, onRevoke }) {
-    const vouchers = row.fees.flatMap((fee) => (fee.vouchers || []).map((file) => ({ ...file, feeName: fee.name, amount: fee.amount })));
-    const changed = row.docState === "已确认" && row.confirmedBillKey && row.confirmedBillKey !== billKey(row);
+    const vouchers = row.fees.flatMap((fee) =>
+        (fee.vouchers || []).map((file) => ({
+            ...file,
+            feeName: fee.name,
+            amount: fee.amount,
+        })),
+    );
+    const changed =
+        row.docState === "已确认" &&
+        row.confirmedBillKey &&
+        row.confirmedBillKey !== billKey(row);
     return (
         <div className="platform-bill">
-            <div className="bill-heading"><h4>平台账单</h4><Tag>只读</Tag></div>
-            {changed && <div className="notice warning bill-change-alert">
-                <span>平台账单已更新，已确认成本仍为 ¥{money(row.confirmedCost)}，请核对后处理。</span>
-                <button className="link" onClick={onRevoke}>撤销确认</button>
-            </div>}
+            <div className="bill-heading">
+                <h4>平台账单</h4>
+                <Tag>只读</Tag>
+            </div>
+            {changed && (
+                <div className="notice warning bill-change-alert">
+                    <span>
+                        平台账单已更新，已确认成本仍为 ¥
+                        {money(row.confirmedCost)}，请核对后处理。
+                    </span>
+                    <button className="link" onClick={onRevoke}>
+                        撤销确认
+                    </button>
+                </div>
+            )}
             <h4>账单汇总</h4>
             <div className="bill-summary-grid">
-                {[["账单总计（元）", row.total], ["已支付（元）", row.paid], ["未支付（元）", row.unpaid], ["退款（元）", row.refund]].map(([label, amount], index) => (
-                    <div className={`bill-summary-item ${index === 0 ? "primary-amount" : ""}`} key={label}><span>{label}</span><strong>{money(amount)}</strong></div>
+                {[
+                    ["账单总计（元）", row.total],
+                    ["已支付（元）", row.paid],
+                    ["未支付（元）", row.unpaid],
+                    ["退款（元）", row.refund],
+                ].map(([label, amount], index) => (
+                    <div
+                        className={`bill-summary-item ${index === 0 ? "primary-amount" : ""}`}
+                        key={label}
+                    >
+                        <span>{label}</span>
+                        <strong>{money(amount)}</strong>
+                    </div>
                 ))}
             </div>
-            <dl className="info-grid bill-meta"><Info label="赠金抵扣（元）">{money(row.bonus)}</Info><Info label="账单更新时间">{row.billUpdatedAt || "-"}</Info><Info label="最近同步时间">{row.synced || "-"}</Info></dl>
+            <dl className="info-grid bill-meta">
+                <Info label="赠金抵扣（元）">{money(row.bonus)}</Info>
+                <Info label="账单更新时间">{row.billUpdatedAt || "-"}</Info>
+                <Info label="最近同步时间">{row.synced || "-"}</Info>
+            </dl>
             <h4>费用明细</h4>
-            <div className="table-scroll"><table className="bill-fee-table">
-                <thead><tr><th>费用项目</th><th className="numeric">金额（元）</th><th>凭证</th></tr></thead>
-                <tbody>{row.fees.map((fee) => <tr key={fee.id}>
-                    <td>{fee.name}</td><td className={`numeric ${fee.amount < 0 ? "discount-amount" : ""}`}>{money(fee.amount)}</td>
-                    <td>{fee.vouchers?.some((file) => file.state === "已留存") ? <button className="link" onClick={() => onVoucher({ ...fee.vouchers.find((file) => file.state === "已留存"), feeName: fee.name, amount: fee.amount })}>查看凭证</button> : fee.vouchers?.length ? "待补同步" : "-"}</td>
-                </tr>)}</tbody>
-            </table></div>
-            {!row.fees.length && <div className="empty compact">暂无平台费用明细</div>}
+            <div className="table-scroll">
+                <table className="bill-fee-table">
+                    <thead>
+                        <tr>
+                            <th>费用项目</th>
+                            <th className="numeric">金额（元）</th>
+                            <th>凭证</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {row.fees.map((fee) => (
+                            <tr key={fee.id}>
+                                <td>{fee.name}</td>
+                                <td
+                                    className={`numeric ${fee.amount < 0 ? "discount-amount" : ""}`}
+                                >
+                                    {money(fee.amount)}
+                                </td>
+                                <td>
+                                    {fee.vouchers?.some(
+                                        (file) => file.state === "已留存",
+                                    ) ? (
+                                        <button
+                                            className="link"
+                                            onClick={() =>
+                                                onVoucher({
+                                                    ...fee.vouchers.find(
+                                                        (file) =>
+                                                            file.state ===
+                                                            "已留存",
+                                                    ),
+                                                    feeName: fee.name,
+                                                    amount: fee.amount,
+                                                })
+                                            }
+                                        >
+                                            查看凭证
+                                        </button>
+                                    ) : fee.vouchers?.length ? (
+                                        "待获取"
+                                    ) : (
+                                        "-"
+                                    )}
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+            {!row.fees.length && (
+                <div className="empty compact">暂无平台费用明细</div>
+            )}
             <h4>凭证</h4>
-            {vouchers.length ? <div className="table-scroll"><table>
-                <thead><tr><th>所属费用</th><th>文件</th><th>留存状态</th><th>取得时间</th><th>操作</th></tr></thead>
-                <tbody>{vouchers.map((file) => <tr key={file.id}><td>{file.feeName}</td><td>{file.name}</td><td><Tag tone={file.state === "已留存" ? "green" : "amber"}>{file.state}</Tag></td><td>{file.savedAt || "-"}</td><td>{file.state === "已留存" ? <button className="link" onClick={() => onVoucher(file)}>查看</button> : "-"}</td></tr>)}</tbody>
-            </table></div> : <div className="empty compact">暂无平台凭证</div>}
-            {row.billHistory?.length > 1 && <details className="bill-history"><summary>账单变更记录</summary><div className="table-scroll"><table>
-                <thead><tr><th>账单更新时间</th><th className="numeric">账单总计（元）</th><th className="numeric">已支付（元）</th><th className="numeric">未支付（元）</th><th className="numeric">退款（元）</th></tr></thead>
-                <tbody>{row.billHistory.map((item) => <tr key={item.version}><td>{item.updated}</td><td className="numeric">{money(item.total)}</td><td className="numeric">{money(item.paid)}</td><td className="numeric">{money(item.unpaid)}</td><td className="numeric">{money(item.refund)}</td></tr>)}</tbody>
-            </table></div></details>}
+            {vouchers.length ? (
+                <div className="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>所属费用</th>
+                                <th>文件</th>
+                                <th>凭证状态</th>
+                                <th>取得时间</th>
+                                <th>操作</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {vouchers.map((file) => (
+                                <tr key={file.id}>
+                                    <td>{file.feeName}</td>
+                                    <td>{file.name}</td>
+                                    <td>
+                                        <Tag
+                                            tone={
+                                                file.state === "已留存"
+                                                    ? "green"
+                                                    : "amber"
+                                            }
+                                        >
+                                            {file.state}
+                                        </Tag>
+                                    </td>
+                                    <td>{file.savedAt || "-"}</td>
+                                    <td>
+                                        {file.state === "已留存" ? (
+                                            <button
+                                                className="link"
+                                                onClick={() => onVoucher(file)}
+                                            >
+                                                查看
+                                            </button>
+                                        ) : (
+                                            "-"
+                                        )}
+                                    </td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            ) : (
+                <div className="empty compact">暂无平台凭证</div>
+            )}
+            {row.billHistory?.length > 1 && (
+                <details className="bill-history">
+                    <summary>账单变更记录</summary>
+                    <div className="table-scroll">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>账单更新时间</th>
+                                    <th className="numeric">账单总计（元）</th>
+                                    <th className="numeric">已支付（元）</th>
+                                    <th className="numeric">未支付（元）</th>
+                                    <th className="numeric">退款（元）</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {row.billHistory.map((item) => (
+                                    <tr key={item.version}>
+                                        <td>{item.updated}</td>
+                                        <td className="numeric">
+                                            {money(item.total)}
+                                        </td>
+                                        <td className="numeric">
+                                            {money(item.paid)}
+                                        </td>
+                                        <td className="numeric">
+                                            {money(item.unpaid)}
+                                        </td>
+                                        <td className="numeric">
+                                            {money(item.refund)}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </details>
+            )}
         </div>
     );
 }
@@ -945,11 +1217,32 @@ export function App() {
             setModal("needConnection");
             return;
         }
-        setOrders((old) => old.map((row) => row.no !== no ? row : savePlatformBill(row, {
-            detail: true, route: [route[0], route[1]], total: 45, paid: 45, unpaid: 0, refund: 0, bonus: 0,
-            fees: [{ id: "base", type: "206", name: "基础运费", amount: 45, vouchers: [] }],
-            staffId: "HLL002", completed: "2026-11-08 10:10:00",
-        })));
+        setOrders((old) =>
+            old.map((row) =>
+                row.no !== no
+                    ? row
+                    : savePlatformBill(row, {
+                          detail: true,
+                          route: [route[0], route[1]],
+                          total: 45,
+                          paid: 45,
+                          unpaid: 0,
+                          refund: 0,
+                          bonus: 0,
+                          fees: [
+                              {
+                                  id: "base",
+                                  type: "206",
+                                  name: "基础运费",
+                                  amount: 45,
+                                  vouchers: [],
+                              },
+                          ],
+                          staffId: "HLL002",
+                          completed: "2026-11-08 10:10:00",
+                      }),
+            ),
+        );
         notify("示例：本单详情已补同步，原有关联保留");
     };
     const syncSingleBill = (row) => {
@@ -961,7 +1254,11 @@ export function App() {
             retryDetail(row.no);
             return;
         }
-        setOrders((old) => old.map((item) => item.no === row.no ? syncBillExample(item) : item));
+        setOrders((old) =>
+            old.map((item) =>
+                item.no === row.no ? syncBillExample(item) : item,
+            ),
+        );
         notify("示例同步完成，平台账单已保存，已确认成本保留");
     };
     const sync = () => {
@@ -977,7 +1274,15 @@ export function App() {
             setError("请选择有效的用车日期范围");
             return;
         }
-        setOrders((old) => old.map((row) => row.source === "货拉拉同步" && row.time.slice(0, 10) >= syncRange.start && row.time.slice(0, 10) <= syncRange.end ? syncBillExample(row) : row));
+        setOrders((old) =>
+            old.map((row) =>
+                row.source === "货拉拉同步" &&
+                row.time.slice(0, 10) >= syncRange.start &&
+                row.time.slice(0, 10) <= syncRange.end
+                    ? syncBillExample(row)
+                    : row,
+            ),
+        );
         const found = orders.filter(
             (x) =>
                 x.source === "货拉拉同步" &&
@@ -1219,7 +1524,17 @@ export function App() {
                     address: x.address,
                 })),
             ],
-            fees: manual.amount === "" ? [] : [{ id: "freight", name: "运费", amount: Number(manual.amount), vouchers: [] }],
+            fees:
+                manual.amount === ""
+                    ? []
+                    : [
+                          {
+                              id: "freight",
+                              name: "运费",
+                              amount: Number(manual.amount),
+                              vouchers: [],
+                          },
+                      ],
             detail: true,
             synced: "-",
         };
@@ -1244,7 +1559,12 @@ export function App() {
         notify("运输记录已保存为待确认");
     };
     const stateAction = (row, action) => {
-        const allowedState = { 确认: "待确认", 撤销: "已确认", 作废: "待确认", 删除: "已作废" }[action];
+        const allowedState = {
+            确认: "待确认",
+            撤销: "已确认",
+            作废: "待确认",
+            删除: "已作废",
+        }[action];
         if (row.docState !== allowedState) {
             notify("当前单据状态不支持此操作");
             return;
@@ -1265,8 +1585,14 @@ export function App() {
                         ? {
                               ...x,
                               confirmedCost: action === "确认" ? x.total : null,
-                              confirmedBillKey: action === "确认" && x.source === "货拉拉同步" ? billKey(x) : null,
-                              confirmedBillSnapshot: action === "确认" && x.source === "货拉拉同步" ? billSnapshot(x) : null,
+                              confirmedBillKey:
+                                  action === "确认" && x.source === "货拉拉同步"
+                                      ? billKey(x)
+                                      : null,
+                              confirmedBillSnapshot:
+                                  action === "确认" && x.source === "货拉拉同步"
+                                      ? billSnapshot(x)
+                                      : null,
                               docState:
                                   action === "确认"
                                       ? "已确认"
@@ -1278,7 +1604,21 @@ export function App() {
                 ),
             );
         }
-        setAudits((old) => [{ no: row.no, time: billSyncTime, action, by: "管理员", content: action === "确认" ? "确认运输费用 ¥" + money(row.total) : action === "撤销" ? "撤销费用确认，回到待确认" : "运输记录" + action }, ...old]);
+        setAudits((old) => [
+            {
+                no: row.no,
+                time: billSyncTime,
+                action,
+                by: "管理员",
+                content:
+                    action === "确认"
+                        ? "确认运输费用 ¥" + money(row.total)
+                        : action === "撤销"
+                          ? "撤销费用确认，回到待确认"
+                          : "运输记录" + action,
+            },
+            ...old,
+        ]);
         setRowMenu(null);
         notify("示例：" + action + "操作已完成");
     };
@@ -1438,7 +1778,7 @@ export function App() {
     return (
         <>
             <div className="review-strip">
-                <strong>V2.4 方案预览</strong>
+                <strong>V2.5 方案预览</strong>
                 <span>示例数据 · 操作仅在本页演示，刷新后恢复</span>
                 <a href="/prd.html" target="_blank" rel="noreferrer">
                     查看产品需求文档 ↗
@@ -2314,6 +2654,7 @@ export function App() {
             {detail && (
                 <Modal
                     title="物流运输记录详情"
+                    inactive={!!(modal || voucher)}
                     close={() => setDetailNo(null)}
                     wide
                     record
@@ -2344,17 +2685,7 @@ export function App() {
                                 </button>
                             )}
                             {detail.source === "货拉拉同步" && (
-                                <button
-                                    onClick={() =>
-                                        !connected
-                                            ? setModal("needConnection")
-                                            : detail.detail
-                                              ? notify(
-                                                    "示例：本单平台资料已更新，原有关联保留",
-                                                )
-                                              : retryDetail(detail.no)
-                                    }
-                                >
+                                <button onClick={() => syncSingleBill(detail)}>
                                     同步此单
                                 </button>
                             )}
@@ -2439,38 +2770,18 @@ export function App() {
                             <Info label="费用负责人">
                                 {detail.owner || "-"}
                             </Info>
+                            <Info label="已确认运输成本（元）">
+                                {detail.docState === "已确认"
+                                    ? money(detail.confirmedCost)
+                                    : "-"}
+                            </Info>
                         </dl>
                         {detail.source === "货拉拉同步" && (
-                            <>
-                                <dl className="info-grid platform-payment">
-                                    <Info label="已支付（元）">
-                                        {money(detail.paid)}
-                                    </Info>
-                                    <Info label="未支付（元）">
-                                        {money(detail.unpaid)}
-                                    </Info>
-                                    <Info label="退款（元）">
-                                        {money(detail.refund)}
-                                    </Info>
-                                    <Info label="赠金抵扣（元）">
-                                        {money(detail.bonus)}
-                                    </Info>
-                                </dl>
-                                <div className="fee-lines">
-                                    {detail.fees.length ? (
-                                        detail.fees.map(([name, value]) => (
-                                            <div key={name}>
-                                                <span>{name}</span>
-                                                <strong>{money(value)}</strong>
-                                            </div>
-                                        ))
-                                    ) : (
-                                        <p className="muted">
-                                            费用明细尚未取得
-                                        </p>
-                                    )}
-                                </div>
-                            </>
+                            <PlatformBill
+                                row={detail}
+                                onVoucher={setVoucher}
+                                onRevoke={() => stateAction(detail, "撤销")}
+                            />
                         )}
                     </Section>
                     <Section title="备注">
@@ -2560,7 +2871,7 @@ export function App() {
                                     </Info>
                                 </dl>
                             </Section>
-                            <Section title="回单及凭证">
+                            <Section title="运输回单">
                                 <div className="empty compact">
                                     暂无平台回单
                                 </div>
@@ -2614,6 +2925,39 @@ export function App() {
                             ? "最近同步：" + detail.synced
                             : "创建时间：" + detail.created}
                     </p>
+                </Modal>
+            )}
+            {voucher && (
+                <Modal
+                    title="费用凭证"
+                    close={() => setVoucher(null)}
+                    footer={
+                        <>
+                            <button onClick={() => setVoucher(null)}>
+                                关闭预览
+                            </button>
+                            <a
+                                className="button primary"
+                                href={voucher.url}
+                                download={voucher.name}
+                            >
+                                下载凭证
+                            </a>
+                        </>
+                    }
+                >
+                    <dl className="info-grid">
+                        <Info label="所属费用">{voucher.feeName}</Info>
+                        <Info label="费用金额（元）">
+                            {money(voucher.amount)}
+                        </Info>
+                        <Info label="文件">{voucher.name}</Info>
+                    </dl>
+                    <iframe
+                        title="凭证文件预览"
+                        className="voucher-preview"
+                        src={voucher.url}
+                    />
                 </Modal>
             )}
             {modal === "manual" && (

@@ -38,6 +38,12 @@ public final class LogisticsImportController {
         return ApiResponse.success(service.receive(source));
     }
 
+    @PostMapping("/api-vouchers")
+    public ApiResponse<Void> voucher(@RequestBody VoucherUpdate update) {
+        service.voucher(update);
+        return ApiResponse.success(null);
+    }
+
     @PostMapping("/{id}/accept-source")
     public ApiResponse<Row> accept(@PathVariable String id, @RequestBody AcceptSource command) {
         return ApiResponse.success(service.accept(id, command));

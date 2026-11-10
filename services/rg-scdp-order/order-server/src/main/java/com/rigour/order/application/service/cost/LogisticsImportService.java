@@ -18,6 +18,9 @@ public class LogisticsImportService {
     private final LogisticsImportStore store;
     private final OrderLogisticsCostService costs;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.order.application.port.out.PlatformTransportStore platform;
+
     public LogisticsImportService(LogisticsImportStore store, OrderLogisticsCostService costs) {
         this.store = store;
         this.costs = costs;
@@ -154,7 +157,19 @@ public class LogisticsImportService {
         var bill = o.facts().billAmount();
         if (bill != null && (bill.signum() < 0 || bill.scale() > 2 || bill.precision() > 18))
             throw bad("平台账单金额无效");
-        return store.receive(caller.tenantId().toString(), caller.principalId().toString(), source);
+        String t = caller.tenantId().toString(), a = caller.principalId().toString();
+        if (platform != null) platform.lockTenant(t);
+        var received = store.receive(t, a, source);
+        return platform == null ? received : platform.materialize(t, a, received);
+    }
+
+    @Transactional
+    public void voucher(VoucherUpdate update) {
+        var caller = AuthorizationContext.requireCurrent();
+        if (!"SERVICE".equals(caller.principalScope()) || caller.tenantId() == null)
+            throw new com.rigour.shared.context.AuthorizationDeniedException("integration-service");
+        AuthorizationContext.requirePermission("integration:huolala:sync");
+        platform.voucher(caller.tenantId().toString(), update);
     }
 
     @Transactional
@@ -172,6 +187,7 @@ public class LogisticsImportService {
                 || command.reason().isBlank()
                 || command.reason().length() > 500) throw bad("请填写非负净费用（两位小数）和账单核对依据");
         var row = store.lockManaged(t, actor(), true, id);
+        if ("API".equals(row.sourceChannel())) throw bad("平台账单只读，不能手动修改平台金额");
         if (row.revision() != command.revision()) throw bad("来源已变化，请刷新后核对");
         if (row.costId() != null
                 && !"DRAFT".equals(costs.entry("logistics", row.costId()).statusCode()))

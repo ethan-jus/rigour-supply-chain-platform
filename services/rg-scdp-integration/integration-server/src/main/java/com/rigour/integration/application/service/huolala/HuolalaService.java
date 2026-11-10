@@ -24,6 +24,10 @@ import java.util.*;
 public class HuolalaService {
     private static final UUID SERVICE_ID = UUID.fromString("691faa79-2d5d-45c3-9868-34d079500001");
     private final HuolalaStore store;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.integration.application.port.out.HuolalaVouchers vouchers;
+
     private final HuolalaGateway gateway;
     private final HuolalaDomainClient domains;
     private final ObjectMapper json;
@@ -349,10 +353,15 @@ public class HuolalaService {
             HuolalaGateway.Token token,
             long[] count) {
         var staff = store.employees(tenant);
-        Map<String, String> names = new HashMap<>(), mappings = new HashMap<>();
+        Map<String, String> names = new HashMap<>(),
+                mappings = new HashMap<>(),
+                phones = new HashMap<>(),
+                staffIds = new HashMap<>();
         for (var e : staff)
             if (!e.userId().isBlank()) {
                 names.put(e.userId(), e.name());
+                phones.put(e.userId(), e.phone());
+                staffIds.put(e.userId(), e.staffId());
                 if (e.employeeCode() != null) mappings.put(e.userId(), e.employeeCode());
             }
         for (int page = 1; page <= 500; page++) {
@@ -381,33 +390,74 @@ public class HuolalaService {
                 token = renew(tenant, c, token);
                 String rawId = null, no = source.path("order_display_id").asText("");
                 try {
-                    JsonNode detail;
-                    try {
-                        detail =
-                                gateway.read(
-                                        c,
-                                        token,
-                                        "e-order-detail",
-                                        Map.of("order_display_id", Long.parseLong(no)));
-                    } catch (RuntimeException e) {
-                        detail = json.createObjectNode();
-                    }
-                    var payload = json.createObjectNode();
-                    payload.set("list", source);
-                    payload.set("detail", detail);
-                    rawId = store.raw(tenant, UUID.fromString(c.id()), run, "ORDER", no, payload);
                     String user = source.path("user_id").asText("");
-                    var normalized =
+                    var listPayload = json.createObjectNode();
+                    listPayload.set("list", source);
+                    rawId =
+                            store.raw(
+                                    tenant,
+                                    UUID.fromString(c.id()),
+                                    run,
+                                    "ORDER_LIST",
+                                    no,
+                                    listPayload);
+                    var summary =
                             HuolalaOrderNormalizer.normalize(
-                                    c, source, detail, rawId, mappings.get(user), names.get(user));
+                                    c,
+                                    source,
+                                    json.createObjectNode(),
+                                    rawId,
+                                    mappings.get(user),
+                                    names.get(user),
+                                    staffIds.get(user),
+                                    phones.get(user));
                     var row =
                             domains.receive(
                                     service(tenant),
                                     new ApiSource(
                                             c.id(),
-                                            HuolalaOrderNormalizer.fingerprint(normalized, json),
-                                            normalized));
-                    store.delivery(tenant, run, rawId, no, null);
+                                            HuolalaOrderNormalizer.fingerprint(summary, json),
+                                            summary));
+                    boolean detailComplete = false;
+                    try {
+                        var detail =
+                                gateway.read(
+                                        c,
+                                        token,
+                                        "e-order-detail",
+                                        Map.of("order_display_id", Long.parseLong(no)));
+                        var payload = json.createObjectNode();
+                        payload.set("list", source);
+                        payload.set("detail", detail);
+                        rawId =
+                                store.raw(
+                                        tenant, UUID.fromString(c.id()), run, "ORDER", no, payload);
+                        var normalized =
+                                HuolalaOrderNormalizer.normalize(
+                                        c,
+                                        source,
+                                        detail,
+                                        rawId,
+                                        mappings.get(user),
+                                        names.get(user),
+                                        staffIds.get(user),
+                                        phones.get(user));
+                        if (vouchers != null) vouchers.enqueue(tenant, c.id(), normalized, detail);
+                        var detailedRow =
+                                domains.receive(
+                                        service(tenant),
+                                        new ApiSource(
+                                                c.id(),
+                                                HuolalaOrderNormalizer.fingerprint(
+                                                        normalized, json),
+                                                normalized));
+                        if (!"CREATED".equals(row.syncOutcome())) row = detailedRow;
+                        detailComplete = true;
+                    } catch (RuntimeException detailFailure) {
+                        count[3]++;
+                        store.delivery(tenant, run, rawId, no, "订单列表已保存，详情暂未同步，请重试");
+                    }
+                    if (detailComplete) store.delivery(tenant, run, rawId, no, null);
                     if ("UNCHANGED".equals(row.syncOutcome())) count[2]++;
                     else count[1]++;
                 } catch (RuntimeException e) {

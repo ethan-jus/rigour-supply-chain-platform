@@ -18,6 +18,7 @@ import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.stereotype.Service;
 
+import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
@@ -117,6 +118,13 @@ public final class OrderLogisticsCostService {
         text(q.sourceDocumentNo(), 100, "来源单号");
         text(q.sourceEmployeeName(), 100, "业务员");
         text(q.sourceDepartmentName(), 100, "归属部门");
+        text(q.platformEmployeeName(), 100, "货拉拉员工");
+        text(q.contactPhone(), 50, "联系电话");
+        text(q.platformOrderNo(), 80, "货拉拉订单号");
+        text(q.mappedEmployeeCode(), 64, "本系统员工");
+        for (String state : Arrays.asList(q.relationState(), q.employeeRelationState()))
+            if (state != null && !state.isBlank() && !Set.of("LINKED", "UNLINKED").contains(state))
+                throw bad("关联状态无效");
         if (q.dateFrom() != null && q.dateTo() != null && q.dateTo().isBefore(q.dateFrom()))
             throw bad("截止日期不能早于开始日期");
         var page =
@@ -150,7 +158,13 @@ public final class OrderLogisticsCostService {
                                 q.orderTypeCode(),
                                 q.carrierCode(),
                                 q.sourceEmployeeName(),
-                                q.sourceDepartmentName()),
+                                q.sourceDepartmentName(),
+                                q.relationState(),
+                                q.platformOrderNo(),
+                                q.platformEmployeeName(),
+                                q.employeeRelationState(),
+                                q.contactPhone(),
+                                q.mappedEmployeeCode()),
                         p);
         return page.items().stream().noneMatch(row -> row.data().ledger() != null)
                 ? page
@@ -199,6 +213,29 @@ public final class OrderLogisticsCostService {
     public LogisticsCostDetailView save(String value, String id, LogisticsCostCommand command) {
         return operation(
                 id == null ? "CREATE" : "UPDATE", id, () -> saveValidated(value, id, command));
+    }
+
+    /** 平台确认在同一事务内固化只读账单和分摊，权限仍是确认，审计只记最终确认。 */
+    public LogisticsCostDetailView preparePlatformConfirmation(
+            String id, LogisticsCostCommand command) {
+        String permission = "order:logistics-cost:confirm";
+        var caller = actor(permission);
+        var old = store.entry(caller.tenantId().toString(), "LOGISTICS", id, permission);
+        if (!"DRAFT".equals(old.statusCode())
+                || command.revision() == null
+                || old.revision() != command.revision()) throw bad("记录已变化或不是待确认，请刷新");
+        dictionary.city(command.cityCode(), permission);
+        var checked = ledgers.normalize(command, permission, true);
+        return store.save(
+                caller.tenantId().toString(),
+                "LOGISTICS",
+                id,
+                checked,
+                List.of(),
+                null,
+                responsibleEmployee(checked, permission),
+                caller.principalId().toString(),
+                permission);
     }
 
     private LogisticsCostDetailView saveValidated(String value, String id, LogisticsCostCommand c) {

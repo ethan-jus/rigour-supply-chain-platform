@@ -12,4 +12,10 @@ public interface HuolalaDomainClient {
     EmployeeCandidate employee(CallerIdentity caller, Long id);
 
     Row receive(CallerIdentity caller, ApiSource source);
+
+    default void voucher(
+            com.rigour.shared.context.CallerIdentity caller,
+            com.rigour.order.api.v1.model.LogisticsImportModels.VoucherUpdate update) {
+        throw new UnsupportedOperationException("凭证推送尚未接通");
+    }
 }

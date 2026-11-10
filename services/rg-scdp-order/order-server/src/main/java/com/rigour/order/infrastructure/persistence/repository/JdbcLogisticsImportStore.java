@@ -158,7 +158,7 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
         return jdbc
                 .query(
                         "SELECT * FROM order_logistics_import_order WHERE tenant_id=? AND id=? FOR"
-                            + " UPDATE",
+                                + " UPDATE",
                         mapper(),
                         tenant,
                         id)
@@ -196,7 +196,7 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
         var current =
                 jdbc.query(
                                 "SELECT * FROM order_logistics_import_order WHERE tenant_id=? AND"
-                                    + " carrier_order_no=? FOR UPDATE",
+                                        + " carrier_order_no=? FOR UPDATE",
                                 mapper(),
                                 tenant,
                                 order.orderNo())
@@ -208,19 +208,121 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
         String accepted =
                 jdbc.queryForObject(
                         "SELECT source_hash FROM order_logistics_import_order WHERE tenant_id=? AND"
-                            + " id=?",
+                                + " id=?",
                         String.class,
                         tenant,
                         current.id());
         String previous =
                 jdbc.queryForObject(
                         "SELECT latest_source_hash FROM order_logistics_import_order WHERE"
-                            + " tenant_id=? AND id=?",
+                                + " tenant_id=? AND id=?",
                         String.class,
                         tenant,
                         current.id());
-        boolean difference = current.costId() != null && !source.payloadHash().equals(accepted);
-        boolean changed = !source.payloadHash().equals(previous);
+        boolean partial = "LIST".equals(order.raw().get("详情状态"));
+        var last = current.latestOrder() == null ? current.order() : current.latestOrder();
+        if (partial && "DETAIL".equals(last.raw().get("详情状态"))) {
+            order =
+                    new CarrierOrder(
+                            last.enterpriseId(),
+                            last.orderNo(),
+                            order.status(),
+                            order.useTime(),
+                            order.paidAmount() == null ? last.paidAmount() : order.paidAmount(),
+                            last.raw(),
+                            last.salesOrderNos(),
+                            last.line(),
+                            last.facts());
+            encoded = json.writeValueAsString(order);
+        }
+        if (!partial && last.facts() != null && order.facts() != null) {
+            var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
+            var prior = json.valueToTree(last);
+            for (var field :
+                    Map.of("fees", "费用明细已提供", "receipts", "回单已提供", "billVouchers", "账单凭证已提供")
+                            .entrySet())
+                if ("false".equals(order.raw().get(field.getValue())))
+                    ((tools.jackson.databind.node.ObjectNode) tree.path("facts"))
+                            .set(field.getKey(), prior.path("facts").path(field.getKey()));
+            for (String field : List.of("司机", "司机联系电话", "车牌号", "下单员工手机号"))
+                if (tree.path("raw").path(field).asText("").isBlank()
+                        && !prior.path("raw").path(field).asText("").isBlank())
+                    ((tools.jackson.databind.node.ObjectNode) tree.path("raw"))
+                            .put(field, prior.path("raw").path(field).asText());
+            order = json.treeToValue(tree, CarrierOrder.class);
+            encoded = json.writeValueAsString(order);
+        }
+        // 凭证由独立下载队列补齐；后续账单同步不能把已保存的自有COS引用退回待获取。
+        if (!partial && last.facts() != null && order.facts() != null) {
+            var ready = new HashMap<String, Voucher>();
+            for (var fee : last.facts().fees())
+                for (var v : fee.vouchers() == null ? List.<Voucher>of() : fee.vouchers())
+                    if ("READY".equals(v.state())) ready.put(v.id(), v);
+            for (var list : Arrays.asList(last.facts().receipts(), last.facts().billVouchers()))
+                if (list != null)
+                    for (var v : list) if ("READY".equals(v.state())) ready.put(v.id(), v);
+            if (!ready.isEmpty()) {
+                var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
+                for (var fee : tree.path("facts").path("fees"))
+                    for (var v : fee.path("vouchers"))
+                        if (ready.containsKey(v.path("id").asText()))
+                            ((tools.jackson.databind.node.ObjectNode) v)
+                                    .setAll(
+                                            (tools.jackson.databind.node.ObjectNode)
+                                                    json.valueToTree(
+                                                            ready.get(v.path("id").asText())));
+                for (String field : List.of("receipts", "billVouchers"))
+                    for (var v : tree.path("facts").path(field))
+                        if (ready.containsKey(v.path("id").asText()))
+                            ((tools.jackson.databind.node.ObjectNode) v)
+                                    .setAll(
+                                            (tools.jackson.databind.node.ObjectNode)
+                                                    json.valueToTree(
+                                                            ready.get(v.path("id").asText())));
+                for (var next : tree.path("facts").path("fees"))
+                    for (var oldFee : json.valueToTree(last).path("facts").path("fees")) {
+                        if (!next.path("lineId").asText().equals(oldFee.path("lineId").asText())
+                                || !next.path("name").asText().equals(oldFee.path("name").asText())
+                                || !next.path("amount")
+                                        .asText()
+                                        .equals(oldFee.path("amount").asText())) continue;
+                        var node = (tools.jackson.databind.node.ObjectNode) next;
+                        var list = node.withArray("vouchers");
+                        var ids = new HashSet<String>();
+                        for (var v : list) ids.add(v.path("id").asText());
+                        for (var v : oldFee.path("vouchers"))
+                            if ("READY".equals(v.path("state").asText())
+                                    && ids.add(v.path("id").asText())) list.add(v);
+                    }
+                order = json.treeToValue(tree, CarrierOrder.class);
+                encoded = json.writeValueAsString(order);
+            }
+        }
+        String incoming =
+                partial && "DETAIL".equals(last.raw().get("详情状态"))
+                        ? previous
+                        : source.payloadHash();
+        boolean difference = current.costId() != null && !Objects.equals(incoming, accepted);
+        boolean changed = !Objects.equals(incoming, previous);
+        if (changed && current.costId() != null && last.facts() != null) {
+            var history =
+                    jdbc.queryForObject(
+                            "SELECT bill_history_json FROM order_logistics_import_order WHERE"
+                                    + " tenant_id=? AND id=?",
+                            String.class,
+                            tenant,
+                            current.id());
+            var values = new ArrayList<CarrierOrder>();
+            values.add(last);
+            if (history != null)
+                values.addAll(Arrays.asList(json.readValue(history, CarrierOrder[].class)));
+            jdbc.update(
+                    "UPDATE order_logistics_import_order SET bill_history_json=? WHERE tenant_id=?"
+                            + " AND id=?",
+                    json.writeValueAsString(values),
+                    tenant,
+                    current.id());
+        }
         jdbc.update(
                 "UPDATE order_logistics_import_order SET"
                     + " enterprise_id=?,source_channel='API',latest_source_json=?,latest_source_hash=?,source_difference=?,source_json=CASE"
@@ -232,10 +334,10 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
                     + " WHERE tenant_id=? AND id=?",
                 order.enterpriseId(),
                 encoded,
-                source.payloadHash(),
+                incoming,
                 difference,
                 encoded,
-                source.payloadHash(),
+                incoming,
                 changed ? 1 : 0,
                 changed,
                 tenant,
@@ -303,11 +405,24 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
     }
 
     @Override
+    public List<Row> byCosts(String tenant, List<String> costIds) {
+        if (costIds.isEmpty()) return List.of();
+        var args = new ArrayList<Object>();
+        args.add(tenant);
+        args.addAll(costIds);
+        return jdbc.query(
+                "SELECT * FROM order_logistics_import_order WHERE tenant_id=? AND cost_id IN ("
+                        + String.join(",", Collections.nCopies(costIds.size(), "?"))
+                        + ")",
+                mapper(),
+                args.toArray());
+    }
+
     public Optional<Row> byCost(String tenant, String costId) {
         return jdbc
                 .query(
                         "SELECT * FROM order_logistics_import_order WHERE tenant_id=? AND"
-                            + " cost_id=?",
+                                + " cost_id=?",
                         mapper(),
                         tenant,
                         costId)

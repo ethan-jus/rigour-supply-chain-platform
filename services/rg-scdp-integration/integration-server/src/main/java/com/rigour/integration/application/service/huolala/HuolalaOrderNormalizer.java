@@ -21,6 +21,18 @@ public final class HuolalaOrderNormalizer {
             String rawId,
             String employeeCode,
             String employeeName) {
+        return normalize(c, list, detail, rawId, employeeCode, employeeName, null, null);
+    }
+
+    public static CarrierOrder normalize(
+            Connection c,
+            JsonNode list,
+            JsonNode detail,
+            String rawId,
+            String employeeCode,
+            String employeeName,
+            String staffId,
+            String employeePhone) {
         JsonNode item = detail.path("order_detail_item").path("order_item");
         boolean detailed = !item.isMissingNode() && !item.isNull();
         if (!detailed) item = list;
@@ -46,12 +58,31 @@ public final class HuolalaOrderNormalizer {
                             s.path("contact_phone_no")
                                     .asText(s.path("contacts_phone_no").asText(""))));
         List<Fee> fees = new ArrayList<>();
-        for (var f : item.path("order_price_arr"))
+        int feeIndex = 0;
+        for (var f : item.path("order_price_arr")) {
+            String lineId = "fee-" + (feeIndex++), name = f.path("bill_name").asText("");
+            List<Voucher> vouchers = new ArrayList<>();
+            int imageIndex = 0;
+            for (var image : f.path("img_urls")) {
+                String url = image.asText("");
+                if (!url.isBlank())
+                    vouchers.add(
+                            new Voucher(
+                                    voucherId(c.id(), no, lineId, url),
+                                    name + "凭证" + (++imageIndex),
+                                    null,
+                                    null,
+                                    "PENDING",
+                                    null));
+            }
             fees.add(
                     new Fee(
                             f.path("type").asText(""),
-                            f.path("bill_name").asText(""),
-                            cents(f, "price_fen")));
+                            name,
+                            cents(f, "price_fen"),
+                            lineId,
+                            List.copyOf(vouchers)));
+        }
         String issue = null;
         if (!detailed) issue = "未取得订单详情，请核对原始账单";
         else if (status != 2) issue = "平台账单尚未最终完成，或订单已取消、存在申诉";
@@ -75,9 +106,18 @@ public final class HuolalaOrderNormalizer {
                         .map(s -> join(s.name(), s.contactName(), s.address()))
                         .collect(java.util.stream.Collectors.joining("；")));
         raw.put("下单人(员工)", Objects.toString(employeeName, ""));
+        raw.put("下单员工手机号", Objects.toString(employeePhone, ""));
         raw.put("车型", item.path("vehicle_type_name").asText(""));
         raw.put("用车原由", item.path("order_reason").asText(""));
         raw.put("订单备注", item.path("remark").asText(""));
+        raw.put("详情状态", detailed ? "DETAIL" : "LIST");
+        raw.put("费用明细已提供", String.valueOf(item.has("order_price_arr")));
+        raw.put("回单已提供", String.valueOf(item.has("receipt_url")));
+        raw.put("账单凭证已提供", String.valueOf(item.has("img_urls")));
+        raw.put("下单时间", item.path("create_time").asText(list.path("create_time").asText("")));
+        raw.put("司机", detail.path("driver_info").path("name").asText(""));
+        raw.put("司机联系电话", detail.path("driver_info").path("phone_no").asText(""));
+        raw.put("车牌号", detail.path("driver_info").path("license_plate").asText(""));
         String label =
                 switch (status) {
                     case 2 -> "已完成";
@@ -93,7 +133,7 @@ public final class HuolalaOrderNormalizer {
                         c.id(),
                         rawId,
                         sourceUser,
-                        null,
+                        staffId,
                         employeeName,
                         employeeCode,
                         price,
@@ -108,8 +148,27 @@ public final class HuolalaOrderNormalizer {
                         issue == null ? "FINAL" : "REVIEW",
                         issue,
                         List.copyOf(stops),
-                        List.copyOf(fees));
+                        List.copyOf(fees),
+                        voucherList(c.id(), no, "receipts", item.path("receipt_url"), "运输回单"),
+                        voucherList(c.id(), no, "billVouchers", item.path("img_urls"), "账单凭证"));
         return new CarrierOrder(enterprise, no, label, useTime, paid, raw, List.of(), 0, facts);
+    }
+
+    static List<Voucher> voucherList(
+            String connector, String no, String line, JsonNode urls, String name) {
+        var values = new ArrayList<Voucher>();
+        int index = 0;
+        for (var value : urls)
+            if (!value.asText("").isBlank())
+                values.add(
+                        new Voucher(
+                                voucherId(connector, no, line, value.asText()),
+                                name + (++index),
+                                null,
+                                null,
+                                "PENDING",
+                                null));
+        return List.copyOf(values);
     }
 
     /** 付款进度及同步时间变化不作成本差异；账单、退款、费用构成变化必须重新核对。 */
@@ -122,7 +181,7 @@ public final class HuolalaOrderNormalizer {
         values.put("bonus", f.bonusAmount());
         values.put("bill", f.billAmount());
         values.put("refund", f.refundAmount());
-        values.put("billState", f.billState());
+
         values.put(
                 "fees",
                 f.fees().stream()
@@ -130,6 +189,7 @@ public final class HuolalaOrderNormalizer {
                                 Comparator.comparing(Fee::code)
                                         .thenComparing(Fee::name)
                                         .thenComparing(x -> Objects.toString(x.amount(), "")))
+                        .map(x -> Arrays.asList(x.code(), x.name(), x.amount()))
                         .toList());
         try {
             return HexFormat.of()
@@ -138,6 +198,30 @@ public final class HuolalaOrderNormalizer {
                                     .digest(json.writeValueAsBytes(values)));
         } catch (Exception e) {
             throw new IllegalStateException("账单摘要计算失败");
+        }
+    }
+
+    public static String voucherId(String connector, String order, String line, String url) {
+        try {
+            var uri = java.net.URI.create(url);
+            String identity =
+                    connector
+                            + "|"
+                            + order
+                            + "|"
+                            + line
+                            + "|"
+                            + uri.getHost()
+                            + "|"
+                            + uri.getPath();
+            return HexFormat.of()
+                    .formatHex(
+                            MessageDigest.getInstance("SHA-256")
+                                    .digest(
+                                            identity.getBytes(
+                                                    java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            throw new IllegalArgumentException("平台凭证地址无效");
         }
     }
 

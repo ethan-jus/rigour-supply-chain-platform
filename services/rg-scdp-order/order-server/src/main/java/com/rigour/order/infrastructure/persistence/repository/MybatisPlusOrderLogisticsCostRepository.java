@@ -36,6 +36,9 @@ import java.util.UUID;
 
 @Repository
 public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCostStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.order.application.port.out.PlatformTransportStore platformRecords;
+
     private final OrderLogisticsCostMapper mapper;
     private final OrderLogisticsCostAuditMapper audits;
     private final ObjectMapper json;
@@ -176,7 +179,51 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         case "SALES_ORDER" -> "DELIVERY";
                         default -> filter.orderTypeCode();
                     });
-        q.eq(text(filter.sourceSystem()), "source_system", filter.sourceSystem());
+        if ("MANUAL_ENTRY".equals(filter.sourceSystem())) q.ne("source_system", "HUOLALA");
+        else q.eq(text(filter.sourceSystem()), "source_system", filter.sourceSystem());
+        if ("LINKED".equals(filter.relationState()) || "UNLINKED".equals(filter.relationState())) {
+            String condition =
+                    "(EXISTS(SELECT 1 FROM order_logistics_import_order i JOIN"
+                        + " order_logistics_transport_link l ON l.tenant_id=i.tenant_id AND"
+                        + " l.source_id=i.id WHERE i.tenant_id=order_logistics_cost.tenant_id AND"
+                        + " i.cost_id=order_logistics_cost.id) OR JSON_LENGTH(sources_json)>0)";
+            q.apply(("UNLINKED".equals(filter.relationState()) ? "NOT " : "") + condition);
+        }
+        String sourceExists =
+                "EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
+                    + " i.tenant_id=order_logistics_cost.tenant_id AND"
+                    + " i.cost_id=order_logistics_cost.id AND i.source_channel='API' AND ";
+        if (text(filter.platformOrderNo()))
+            q.apply(
+                    sourceExists + "LOCATE({0},i.carrier_order_no)>0)",
+                    filter.platformOrderNo().strip());
+        if (text(filter.platformEmployeeName()))
+            q.apply(
+                    sourceExists
+                            + "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(COALESCE(i.latest_source_json,i.source_json),'$.facts.sourceEmployeeName')),''))>0)",
+                    filter.platformEmployeeName().strip());
+        if (text(filter.mappedEmployeeCode()))
+            q.apply(
+                    sourceExists
+                            + "JSON_UNQUOTE(JSON_EXTRACT(COALESCE(i.latest_source_json,i.source_json),'$.facts.mappedEmployeeCode'))={0})",
+                    filter.mappedEmployeeCode());
+        if (text(filter.employeeRelationState()))
+            q.apply(
+                    sourceExists
+                            + "(COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(COALESCE(i.latest_source_json,i.source_json),'$.facts.mappedEmployeeCode')),'null'),'')"
+                            + ("LINKED".equals(filter.employeeRelationState()) ? "<>''" : "=''")
+                            + ")");
+        if (text(filter.contactPhone()))
+            q.apply(
+                    "("
+                            + sourceExists
+                            + "JSON_SEARCH(COALESCE(i.latest_source_json,i.source_json),'one',{0},NULL,'$.facts.stops[*].contactPhone')"
+                            + " IS NOT NULL) OR"
+                            + " JSON_SEARCH(data_json,'one',{0},NULL,'$.ledger.sender.phone','$.ledger.receivingPoints[*].phone')"
+                            + " IS NOT NULL)",
+                    "%"
+                            + filter.contactPhone().trim().replace("%", "\\%").replace("_", "\\_")
+                            + "%");
         if (Boolean.TRUE.equals(filter.missingAmount()))
             q.isNull("amount").ne("status_code", "VOID");
         q.eq(text(filter.payerCode()), "payer_code", filter.payerCode());
@@ -363,6 +410,11 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             String actor,
             String action) {
         lock(tenant);
+        if (platformRecords != null) platformRecords.assertReadOnly(tenant, id, c);
+        boolean platformSource =
+                id != null
+                        && platformRecords != null
+                        && platformRecords.byCosts(tenant, List.of(id)).containsKey(id);
         boolean ledger = c.ledger() != null;
         Long warehouse;
         Long source;
@@ -392,7 +444,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         String sourceBody = json.writeValueAsString(ledger ? c.ledger().sources() : sources);
         var values =
                 new UpdateWrapper<OrderLogisticsCostEntity>()
-                        .set("source_system", sourceSystem(c, sources))
+                        .set("source_system", platformSource ? "HUOLALA" : sourceSystem(c, sources))
                         .set("title", c.title())
                         .set(
                                 "type_code",
@@ -517,9 +569,11 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                 .set("status_code", "DRAFT")
                                 .setSql("revision=revision+1"))
                 != 1) throw conflict("费用已被修改，请刷新后重试");
-        audit(tenant, old, "BEFORE_UPDATE", actor, c.reason());
+        if (!"order:logistics-cost:confirm".equals(action))
+            audit(tenant, old, "BEFORE_UPDATE", actor, c.reason());
         var saved = entry(tenant, category, id, action);
-        audit(tenant, saved, "UPDATE", actor, c.reason());
+        if (!"order:logistics-cost:confirm".equals(action))
+            audit(tenant, saved, "UPDATE", actor, c.reason());
         return saved;
     }
 
@@ -557,10 +611,34 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                             verification == null
                                     ? carrier.facts().billAmount()
                                     : verification.amount();
-                    if (verification == null && !"FINAL".equals(carrier.facts().billState())
+                    if (verification == null
+                                    && !"FINAL".equals(carrier.facts().billState())
+                                    && (c.reason() == null || c.reason().isBlank())
                             || amount == null
                             || old.data().amount() == null
-                            || amount.compareTo(old.data().amount()) != 0
+                            || amount.compareTo(
+                                            carrier.facts() != null
+                                                            && verification == null
+                                                            && old.data().ledger() != null
+                                                            && old.data().ledger().feeItems()
+                                                                    != null
+                                                            && !old.data()
+                                                                    .ledger()
+                                                                    .feeItems()
+                                                                    .isEmpty()
+                                                    ? old.data().ledger().feeItems().stream()
+                                                            .map(
+                                                                    f ->
+                                                                            f.feeAmount() == null
+                                                                                    ? java.math
+                                                                                            .BigDecimal
+                                                                                            .ZERO
+                                                                                    : f.feeAmount())
+                                                            .reduce(
+                                                                    java.math.BigDecimal.ZERO,
+                                                                    java.math.BigDecimal::add)
+                                                    : old.data().amount())
+                                    != 0
                             || old.data().ledger() == null
                             || !carrier.orderNo().equals(old.data().ledger().trackingNo())
                             || !"HLL".equals(old.data().ledger().carrierCode()))

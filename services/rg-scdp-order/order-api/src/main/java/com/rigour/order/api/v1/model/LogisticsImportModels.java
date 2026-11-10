@@ -5,7 +5,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 
-/** 货拉拉原始报表独立暂存；只有明确关联销售单后才生成待确认费用。 */
+/** 平台来源与人工归属分开保存；同步只生成待确认运输记录。 */
 public final class LogisticsImportModels {
     private LogisticsImportModels() {}
 
@@ -60,11 +60,75 @@ public final class LogisticsImportModels {
             String billState,
             String issue,
             List<Stop> stops,
-            List<Fee> fees) {}
+            List<Fee> fees,
+            List<Voucher> receipts,
+            List<Voucher> billVouchers) {
+        public SourceFacts(
+                String connectorId,
+                String rawLandingId,
+                String sourceUserId,
+                String sourceStaffId,
+                String sourceEmployeeName,
+                String mappedEmployeeCode,
+                BigDecimal orderAmount,
+                BigDecimal billAmount,
+                BigDecimal unpaidAmount,
+                BigDecimal refundAmount,
+                BigDecimal couponAmount,
+                BigDecimal bonusAmount,
+                String completeTime,
+                String billUpdatedTime,
+                String billState,
+                String issue,
+                List<Stop> stops,
+                List<Fee> fees) {
+            this(
+                    connectorId,
+                    rawLandingId,
+                    sourceUserId,
+                    sourceStaffId,
+                    sourceEmployeeName,
+                    mappedEmployeeCode,
+                    orderAmount,
+                    billAmount,
+                    unpaidAmount,
+                    refundAmount,
+                    couponAmount,
+                    bonusAmount,
+                    completeTime,
+                    billUpdatedTime,
+                    billState,
+                    issue,
+                    stops,
+                    fees,
+                    List.of(),
+                    List.of());
+        }
+    }
 
     public record Stop(String name, String address, String contactName, String contactPhone) {}
 
-    public record Fee(String code, String name, BigDecimal amount) {}
+    public record Fee(
+            String code, String name, BigDecimal amount, String lineId, List<Voucher> vouchers) {
+        public Fee(String code, String name, BigDecimal amount) {
+            this(code, name, amount, null, List.of());
+        }
+    }
+
+    public record Voucher(
+            String id,
+            String name,
+            String fileKey,
+            String contentType,
+            String state,
+            Instant savedAt) {}
+
+    public record VoucherUpdate(
+            String connectorId,
+            String enterpriseId,
+            String orderNo,
+            String lineId,
+            Voucher voucher) {}
 
     public record ApiSource(String connectorId, String payloadHash, CarrierOrder order) {}
 

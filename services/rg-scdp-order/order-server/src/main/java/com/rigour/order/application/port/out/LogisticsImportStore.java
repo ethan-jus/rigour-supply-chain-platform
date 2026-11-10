@@ -35,6 +35,10 @@ public interface LogisticsImportStore {
         throw new UnsupportedOperationException("账单核对尚未接通");
     }
 
+    default List<Row> byCosts(String tenant, List<String> costIds) {
+        return costIds.stream().flatMap(id -> byCost(tenant, id).stream()).toList();
+    }
+
     default java.util.Optional<Row> byCost(String tenant, String costId) {
         return java.util.Optional.empty();
     }

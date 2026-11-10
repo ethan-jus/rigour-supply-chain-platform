@@ -28,7 +28,7 @@ class LogisticsImportPersistenceTest {
                                 "sa",
                                 ""));
         jdbc.execute(
-"""
+                """
 CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id VARCHAR(36),enterprise_id VARCHAR(80),carrier_order_no VARCHAR(80),file_name VARCHAR(200),file_hash VARCHAR(64),source_json CLOB,state VARCHAR(20),cost_id VARCHAR(36),revision INT,created_by VARCHAR(50),created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,UNIQUE(tenant_id,carrier_order_no))
 """);
         for (var column :
@@ -39,7 +39,8 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                         "latest_source_hash VARCHAR(64)",
                         "source_difference INT DEFAULT 0",
                         "last_synced_time TIMESTAMP",
-                        "bill_verification_json CLOB"))
+                        "bill_verification_json CLOB",
+                        "bill_history_json CLOB"))
             jdbc.execute("ALTER TABLE order_logistics_import_order ADD " + column);
         jdbc.execute(
                 "CREATE TABLE order_logistics_cost(tenant_id VARCHAR(36),carrier_code"
@@ -165,5 +166,56 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                         new BigDecimal("40.50"), "核对账单", "U1", java.time.Instant.now()));
         assertThat(store.receive("T1", "SYSTEM", api("40.50", "a")).verification()).isNotNull();
         assertThat(store.receive("T1", "SYSTEM", api("45.00", "b")).verification()).isNull();
+    }
+
+    @Test
+    void partialListNeverErasesDetailAndResyncKeepsOwnCosVoucher() {
+        var tree =
+                (tools.jackson.databind.node.ObjectNode)
+                        JsonMapper.builder().build().valueToTree(api("137.64", "a").order());
+        tree.withObject("raw").put("详情状态", "DETAIL");
+        var fees = tree.withObject("facts").putArray("fees");
+        fees.addObject()
+                .put("code", "23")
+                .put("name", "路桥费")
+                .put("amount", 20)
+                .put("lineId", "fee-0")
+                .putArray("vouchers")
+                .addObject()
+                .put("id", "V1")
+                .put("name", "凭证")
+                .put("state", "READY")
+                .put("fileKey", "T1/integration-huolala-vouchers/C/O/V1.png");
+        var json = JsonMapper.builder().build();
+        var full = json.treeToValue(tree, CarrierOrder.class);
+        var first = store.receive("T1", "SYSTEM", new ApiSource("connector", "a".repeat(64), full));
+        store.generated("T1", first.id(), first.revision(), "C1");
+        var summary =
+                (tools.jackson.databind.node.ObjectNode) json.valueToTree(api("0", "b").order());
+        summary.withObject("raw").put("详情状态", "LIST");
+        store.receive(
+                "T1",
+                "SYSTEM",
+                new ApiSource(
+                        "connector",
+                        "b".repeat(64),
+                        json.treeToValue(summary, CarrierOrder.class)));
+        var kept = store.byCost("T1", "C1").orElseThrow();
+        assertThat(kept.latestOrder().facts().billAmount()).isEqualByComparingTo("137.64");
+        assertThat(kept.sourceDifference()).isFalse();
+        ((tools.jackson.databind.node.ObjectNode) tree.at("/facts/fees/0/vouchers/0"))
+                .put("state", "PENDING")
+                .putNull("fileKey");
+        var updated =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "a".repeat(64),
+                                json.treeToValue(tree, CarrierOrder.class)));
+        assertThat(updated.latestOrder().facts().fees().getFirst().vouchers().getFirst().fileKey())
+                .contains("integration-huolala-vouchers");
+        assertThat(updated.syncOutcome()).isEqualTo("UNCHANGED");
     }
 }
