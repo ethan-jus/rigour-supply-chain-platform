@@ -1841,6 +1841,21 @@ SELECT COUNT(*) FROM crm_contact c
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer_responsibility_history WHERE tenant_id=? AND customer_id=? AND new_employee_code='NEW-EMP'",Long.class,tenant.toString(),id)).isEqualTo(1);
     }
 
+    @Test
+    void unresolvedPrimaryCustomerCannotProvideStaleOwner() {
+        UUID tenant=UUID.randomUUID(),connector=UUID.randomUUID(),actor=UUID.randomUUID();
+        var type=CrmMasterDataObjectType.CUSTOMER;var run=start(tenant,connector,actor,type);
+        store.importRecord(tenant,connector,run,type,customerRecord("来源归属待核对门店"));
+        long id=jdbcTemplate.queryForObject("SELECT id FROM crm_customer WHERE tenant_id=?",Long.class,tenant.toString());
+        jdbcTemplate.update("UPDATE crm_source_binding SET binding_status='UNRESOLVED' WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER'",tenant.toString());
+        var hr=org.mockito.Mockito.mock(com.rigour.merchant.application.port.out.CrmEmployeeClient.class);
+        var attribution=new com.rigour.merchant.infrastructure.persistence.repository.JdbcCustomerOrderAttributionStore(jdbcTemplate,hr);
+        assertThatThrownBy(()->attribution.read(tenant.toString(),id)).isInstanceOf(BusinessException.class).hasMessageContaining("客户来源归属尚未核对");
+        org.mockito.Mockito.verifyNoInteractions(hr);
+        jdbcTemplate.update("UPDATE crm_source_binding SET binding_status='RESOLVED' WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER'",tenant.toString());
+        assertThat(attribution.read(tenant.toString(),id).customerId()).isEqualTo(id);
+    }
+
     private UUID start(
             UUID tenantId, UUID connectorId, UUID actorId, CrmMasterDataObjectType type) {
         if (type == CrmMasterDataObjectType.CUSTOMER && jdbcTemplate.queryForObject(

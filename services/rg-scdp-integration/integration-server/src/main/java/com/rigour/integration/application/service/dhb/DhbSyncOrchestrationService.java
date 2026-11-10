@@ -336,8 +336,8 @@ public final class DhbSyncOrchestrationService {
                 : crmClient.syncLatestCustomers(caller, bucket.key.connectorId(), bucket.crmTarget.taskId(), pages, actorId);
         for (var item : result.objects()) steps.add(crmStep(item, result.status()));
         boolean ready = dependencyCompleted(result.status()) && !result.objects().isEmpty()
-                && result.objects().stream().allMatch(item -> "SUCCEEDED".equals(item.status())
-                        && item.rejected() == 0 && item.unmapped() == 0);
+                && result.objects().stream().allMatch(item -> dependencyCompleted(item.status())
+                        && item.rejected() == 0);
         if (!ready) steps.add(skipped("ORDER", "RECEIPT", "客户同步未完整成功，暂停回款同步"));
         return ready;
     }
@@ -630,8 +630,8 @@ public final class DhbSyncOrchestrationService {
                     bucket.crmTarget.taskId(), maxPages, syncWindow.from(), syncWindow.to());
             for (SyncObjectResult object : result.objects()) steps.add(crmStep(object));
             return !dependencyCompleted(result.status()) || result.objects().isEmpty()
-                    || result.objects().stream().anyMatch(item -> !"SUCCEEDED".equals(item.status())
-                            || item.rejected() > 0 || item.unmapped() > 0);
+                    || result.objects().stream().anyMatch(item -> !dependencyCompleted(item.status())
+                            || item.rejected() > 0);
         } catch (RuntimeException error) {
             steps.add(failed("CRM", "CRM_MASTER_DATA", error));
             return true;

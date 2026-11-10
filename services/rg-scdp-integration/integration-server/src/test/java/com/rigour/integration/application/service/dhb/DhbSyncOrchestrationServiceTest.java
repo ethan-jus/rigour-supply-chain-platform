@@ -675,6 +675,17 @@ class DhbSyncOrchestrationServiceTest {
     }
 
     @Test
+    void completedCustomerBatchWithUnrelatedPendingMappingsDoesNotBlockAllReceipts() {
+        var warning=new com.rigour.merchant.api.v1.model.SyncObjectResult(UUID.randomUUID(),"CUSTOMER","SUCCEEDED_WITH_WARNINGS",50,3,1,0,0,0,0,1,Instant.now(),46,Map.of());
+        when(crmClient.syncLatestCustomers(any(),any(),any(),anyInt(),any()))
+                .thenReturn(new SyncResult(UUID.randomUUID(),"SUCCEEDED_WITH_WARNINGS",List.of(warning)));
+        when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10))).thenReturn(orderResult());
+        var result=service.runPage(manualCaller(),new DhbPageSyncCommand(DhbPageSyncCommand.Scope.RECEIPT,CONNECTOR_ID,Instant.parse("2026-08-01T00:00:00Z"),Instant.parse("2026-08-02T00:00:00Z"),10));
+        verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10));
+        assertThat(result.tenants().getFirst().steps()).noneMatch(step -> "SKIPPED".equals(step.status()));
+    }
+
+    @Test
     void receiptPageRefreshesCustomersBeforeReceipt() {
         var from=Instant.parse("2026-08-01T00:00:00Z");var to=Instant.parse("2026-08-20T00:00:00Z");
         when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),argThat(c->"RECEIPT".equals(c.syncScope())&&from.equals(c.from())&&to.equals(c.to())),eq(10))).thenReturn(orderResult());

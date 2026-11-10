@@ -34,6 +34,15 @@ public class JdbcCustomerOrderAttributionStore implements CustomerOrderAttributi
                         tenant,
                         id);
         if (rows.size() != 1) throw new BusinessException(ErrorCode.NOT_FOUND, "客户不存在", List.of());
+        // 批次可以包含其他待核对客户；只阻止当前主来源未完成同步的客户使用旧归属。
+        Long unresolved = jdbc.queryForObject("""
+                SELECT COUNT(*) FROM crm_source_binding b JOIN crm_customer c ON c.party_id=b.target_id
+                 WHERE c.tenant_id=? AND c.id=? AND c.deleted=0 AND b.tenant_id=UUID_TO_BIN(?)
+                   AND b.source_system=? AND b.source_object_type='CUSTOMER' AND b.deleted=0
+                   AND b.primary_customer_source_id IS NULL AND b.binding_status<>'RESOLVED'
+                """, Long.class, tenant, id, tenant, com.rigour.shared.core.sync.ExternalSourceCodes.DOMAIN_DINGHUOBAO);
+        if (unresolved != null && unresolved > 0)
+            throw new BusinessException(ErrorCode.CONFLICT, "客户来源归属尚未核对，不能使用旧业务员", List.of());
         var row = rows.getFirst();
         String employee = (String) row.get("owner_employee_code"),
                 region = (String) row.get("region_code");
