@@ -28,7 +28,9 @@ public final class TransportRecordModels {
             String reason,
             String zeroReason,
             List<String> orderCodes,
-            String requestId) {
+            String requestId,
+            String paymentStatusCode,
+            List<LogisticsCostLedger.ManualBillItem> manualBillItems) {
         public Draft {
             trackingNo = trackingNo == null || trackingNo.isBlank() ? null : trackingNo.strip();
             platformOrderNo =

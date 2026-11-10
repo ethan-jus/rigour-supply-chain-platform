@@ -120,7 +120,7 @@ public final class OrderLogisticsCostService {
         text(q.sourceDepartmentName(), 100, "归属部门");
         text(q.platformEmployeeName(), 100, "货拉拉员工");
         text(q.contactPhone(), 50, "联系电话");
-        text(q.platformOrderNo(), 80, "货拉拉订单号");
+        text(q.platformOrderNo(), 80, "第三方订单号");
         text(q.mappedEmployeeCode(), 64, "本系统员工");
         for (String state : Arrays.asList(q.relationState(), q.employeeRelationState()))
             if (state != null && !state.isBlank() && !Set.of("LINKED", "UNLINKED").contains(state))

@@ -7,6 +7,13 @@ const money = (n) =>
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
           });
+const platformPayment = (row) => {
+    if ([row.total, row.paid, row.unpaid].some((v) => v == null || !Number.isFinite(Number(v)) || Number(v) < 0)) return "待核对";
+    const cents = (n) => Math.round(Number(n) * 100);
+    if (Number(row.refund) > 0 || cents(row.paid) + cents(row.unpaid) !== cents(row.total)) return "待核对";
+    if (cents(row.total) === 0) return "无需付款";
+    return cents(row.unpaid) === 0 ? "已付款" : cents(row.paid) > 0 ? "部分付款" : "未付款";
+};
 const now = "2026-11-09 17:20:00";
 const billSyncTime = "2026-11-10 10:40:00";
 const billKey = (row) =>
@@ -492,7 +499,10 @@ initialOrders.push({
     status: "-",
     staffId: null,
     total: 35,
-    paid: 35,
+    payment: "未付款",
+    manualPlatformNo: "SF-ORDER-202611090001",
+    manualBillItems: [{name:"运费",amount:35},{name:"保价费",amount:2},{name:"优惠",amount:-2}],
+    paid: null,
     unpaid: 0,
     refund: 0,
     bonus: 0,
@@ -541,16 +551,17 @@ const emptyFilters = {
 };
 const allColumns = [
     ["recordNo", "费用单号"],
-    ["source", "数据来源"],
+    ["carrier", "物流公司"],
     ["type", "运输类型"],
     ["date", "运输日期"],
     ["destination", "收货方"],
-    ["no", "货拉拉订单号"],
+    ["no", "第三方订单号"],
+    ["waybill", "运单号"],
     ["total", "运输费用（元）"],
     ["doc", "单据状态"],
     ["creator", "创建人"],
-    ["carrier", "物流公司"],
-    ["waybill", "运单号"],
+    ["source", "数据来源"],
+    ["payment", "付款状态"],
     ["status", "货拉拉订单状态"],
     ["staff", "货拉拉下单员工"],
     ["employee", "本系统关联员工"],
@@ -570,7 +581,7 @@ const allColumns = [
     ["phone", "平台员工手机号"],
     ["synced", "最近同步时间"],
 ];
-const defaultColumns = allColumns.slice(0, 9).map(([key]) => key);
+const defaultColumns = allColumns.slice(0, 10).map(([key]) => key);
 
 function Tag({ children, tone = "" }) {
     return <span className={`tag ${tone}`}>{children}</span>;
@@ -787,6 +798,7 @@ function PlatformBill({ row, onVoucher, onRevoke }) {
                 ))}
             </div>
             <dl className="info-grid bill-meta">
+                <Info label="付款状态">{platformPayment(row)}</Info>
                 <Info label="赠金抵扣（元）">{money(row.bonus)}</Info>
                 <Info label="账单更新时间">{row.billUpdatedAt || "-"}</Info>
                 <Info label="最近同步时间">{row.synced || "-"}</Info>
@@ -945,6 +957,8 @@ export function App() {
         carrier: "",
         waybill: "",
         platformNo: "",
+        payment: "未知",
+        billItems: [],
         amount: "",
         owner: "",
         remark: "",
@@ -954,6 +968,8 @@ export function App() {
     const [orders, setOrders] = useState(initialOrders);
     const editingRow = orders.find((row) => row.no === editNo);
     const editingPlatform = editingRow?.source === "货拉拉同步";
+    const updateBillItems = (items) => setManual((current) => ({...current, billItems: items,
+        amount: items.length ? (items.some((item) => item.amount === "") ? "" : String(items.reduce((sum, item) => sum + Math.round(Number(item.amount) * 100), 0) / 100)) : current.amount }));
     const [links, setLinks] = useState(initialLinks);
     const [staffLinks, setStaffLinks] = useState({ HLL001: "EMP001" });
     const [audits, setAudits] = useState([
@@ -1330,6 +1346,8 @@ export function App() {
                           row.source === "货拉拉同步"
                               ? row.no
                               : row.manualPlatformNo || "",
+                      payment: row.payment || "未知",
+                      billItems: row.manualBillItems?.map((item) => ({...item})) || [],
                       amount: row.total == null ? "" : String(row.total),
                       owner: row.owner || "",
                       remark:
@@ -1346,7 +1364,9 @@ export function App() {
                       carrier: "",
                       waybill: "",
                       platformNo: "",
-                      amount: "",
+                      payment: "未知",
+        billItems: [],
+        amount: "",
                       owner: "",
                       remark: "",
                       changeReason: "",
@@ -1460,20 +1480,20 @@ export function App() {
             return;
         }
         if (
-            manual.carrier === "货拉拉" &&
             manual.platformNo &&
             orders.some(
                 (x) =>
-                    x.no !== editNo &&
+                    x.no !== editNo && carrierFor(x) === manual.carrier &&
                     (x.no === manual.platformNo ||
                         x.manualPlatformNo === manual.platformNo),
             )
         ) {
             setError(
-                "此货拉拉订单已存在，请在已有记录中查看或关联，不能重复登记",
+                "该物流公司的第三方订单已存在，请在已有记录中查看或关联，不能重复登记",
             );
             return;
         }
+        if (manual.billItems.some((item) => !item.name.trim() || item.amount === "" || !Number.isFinite(Number(item.amount)))) { setError("请填写每项费用名称和金额"); return; }
         const id = editNo || "MANUAL" + Date.now();
         const refs = businessOrders.filter((x) => manual.nos.includes(x.no));
         const row = {
@@ -1494,6 +1514,8 @@ export function App() {
             status: "-",
             staffId: null,
             total: manual.amount === "" ? null : Number(manual.amount),
+            payment: manual.payment,
+            manualBillItems: manual.billItems.map((item) => ({...item})),
             owner: manual.owner,
             remark: manual.remark,
             originWarehouseCode: manual.warehouseCode,
@@ -1649,6 +1671,7 @@ export function App() {
         const texts = {
             recordNo: row.recordNo,
             source: row.source,
+            payment: row.source === "货拉拉同步" ? "-" : row.payment || "未知",
             type: links[row.no]?.type || "-",
             date: row.time.slice(0, 10),
             doc: row.docState,
@@ -1778,7 +1801,7 @@ export function App() {
     return (
         <>
             <div className="review-strip">
-                <strong>V2.5 方案预览</strong>
+                <strong>V2.6 方案预览</strong>
                 <span>示例数据 · 操作仅在本页演示，刷新后恢复</span>
                 <a href="/prd.html" target="_blank" rel="noreferrer">
                     查看产品需求文档 ↗
@@ -1924,7 +1947,7 @@ export function App() {
                                             </Field>
                                             {more && (
                                                 <>
-                                                    <Field label="货拉拉订单号">
+                                                    <Field label="第三方订单号">
                                                         <input
                                                             value={filters.no}
                                                             onChange={(e) =>
@@ -1966,6 +1989,7 @@ export function App() {
                                                             options={[
                                                                 "货拉拉",
                                                                 "顺丰",
+                                            "极兔",
                                                                 "自营",
                                                                 "中通",
                                                             ]}
@@ -2712,7 +2736,7 @@ export function App() {
                             <Info label="运单号">{detail.waybill || "-"}</Info>
                             {(detail.source === "货拉拉同步" ||
                                 detail.manualPlatformNo) && (
-                                <Info label="货拉拉订单号">
+                                <Info label="第三方订单号">
                                     {detail.source === "货拉拉同步"
                                         ? detail.no
                                         : detail.manualPlatformNo}
@@ -2763,10 +2787,11 @@ export function App() {
                         />
                     </Section>
                     <Section title="费用信息">
-                        <dl className="info-grid">
+                        <dl className={`info-grid ${detail.source !== "货拉拉同步" ? "manual-bill-summary" : ""}`}>
                             <Info label="运输费用（元）">
                                 {money(detail.total)}
                             </Info>
+                            {detail.source !== "货拉拉同步" && <Info label="付款状态">{detail.payment || "未知"}</Info>}
                             <Info label="费用负责人">
                                 {detail.owner || "-"}
                             </Info>
@@ -2776,6 +2801,7 @@ export function App() {
                                     : "-"}
                             </Info>
                         </dl>
+                        {detail.source !== "货拉拉同步" && detail.manualBillItems?.length > 0 && <><h4>账单明细</h4><table><thead><tr><th>费用项目</th><th>金额（元）</th></tr></thead><tbody>{detail.manualBillItems.map((item,index)=><tr key={index}><td>{item.name}</td><td className="numeric">{money(item.amount)}</td></tr>)}</tbody></table></>}
                         {detail.source === "货拉拉同步" && (
                             <PlatformBill
                                 row={detail}
@@ -3026,15 +3052,12 @@ export function App() {
                                             setManual({
                                                 ...manual,
                                                 carrier: value,
-                                                platformNo:
-                                                    value === "货拉拉"
-                                                        ? manual.platformNo
-                                                        : "",
                                             })
                                         }
                                         options={[
                                             "货拉拉",
                                             "顺丰",
+                                            "极兔",
                                             "自营",
                                             "中通",
                                         ]}
@@ -3061,14 +3084,13 @@ export function App() {
                                     />
                                 </Field>
                             )}
-                            {manual.carrier === "货拉拉" &&
-                                (editingPlatform ? (
+                            {editingPlatform ? (
                                     <ReadonlyField
-                                        label="货拉拉订单号"
+                                        label="第三方订单号"
                                         value={manual.platformNo}
                                     />
                                 ) : (
-                                    <Field label="货拉拉订单号">
+                                    <Field label="第三方订单号">
                                         <input
                                             value={manual.platformNo}
                                             onChange={(event) =>
@@ -3078,10 +3100,10 @@ export function App() {
                                                         event.target.value,
                                                 })
                                             }
-                                            placeholder="填写已有的货拉拉订单号"
+                                            placeholder="填写物流公司提供的订单号"
                                         />
                                     </Field>
-                                ))}
+                                )}
                         </div>
                     </Section>
                     <Section title="关联业务订单">
@@ -3274,7 +3296,7 @@ export function App() {
                         />
                     </Section>
                     <Section title="费用信息">
-                        <div className="filter-grid">
+                        <div className={`filter-grid ${!editingPlatform ? "manual-bill-summary" : ""}`}>
                             {editingPlatform ? (
                                 <ReadonlyField
                                     label="运输费用（元）"
@@ -3287,6 +3309,7 @@ export function App() {
                                         min="0"
                                         step="0.01"
                                         placeholder="填写运输费用"
+                                        readOnly={manual.billItems.length > 0}
                                         value={manual.amount}
                                         onChange={(event) =>
                                             setManual({
@@ -3307,7 +3330,12 @@ export function App() {
                                     placeholder="请选择费用负责人"
                                 />
                             </Field>
+                            {!editingPlatform && <Field label="付款状态"><Select value={manual.payment} onChange={(value) => setManual({...manual,payment:value})} options={["未知","未付款","已付款"]} /></Field>}
                         </div>
+                        {!editingPlatform && <div className="manual-bill">
+                          <div className="section-heading"><h4>账单明细（选填）</h4><button className="link" onClick={() => updateBillItems([...manual.billItems,{name:"",amount:""}])}>添加费用项目</button></div>
+                          {manual.billItems.length > 0 && <table><thead><tr><th>费用项目</th><th>金额（元，优惠填负数）</th><th>操作</th></tr></thead><tbody>{manual.billItems.map((item,index)=><tr key={index}><td><input value={item.name} placeholder="填写费用项目" onChange={(event)=>updateBillItems(manual.billItems.map((row,i)=>i===index?{...row,name:event.target.value}:row))}/></td><td><input type="number" step="0.01" value={item.amount} onChange={(event)=>updateBillItems(manual.billItems.map((row,i)=>i===index?{...row,amount:event.target.value}:row))}/></td><td><button className="link danger" onClick={()=>updateBillItems(manual.billItems.filter((_,i)=>i!==index))}>移除</button></td></tr>)}</tbody></table>}
+                        </div>}
                     </Section>
                     <Section title="备注">
                         <Field label="备注">
@@ -3397,7 +3425,7 @@ export function App() {
                     }
                 >
                     <div className="source-summary">
-                        <Info label="货拉拉订单号">{target.no}</Info>
+                        <Info label="第三方订单号">{target.no}</Info>
                         <Info label="用车时间">{target.time}</Info>
                         <Info label="订单费用（元）">
                             {money(target.total)}
@@ -3859,7 +3887,7 @@ export function App() {
                     }
                 >
                     <div className="checkbox-grid">
-                        {allColumns.map(([key, label]) => (
+                        {allColumns.filter(([key]) => defaultColumns.includes(key)).map(([key, label]) => (
                             <label key={key}>
                                 <input
                                     type="checkbox"

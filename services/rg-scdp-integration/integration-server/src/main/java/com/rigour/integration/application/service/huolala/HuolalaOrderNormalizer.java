@@ -111,6 +111,7 @@ public final class HuolalaOrderNormalizer {
         raw.put("用车原由", item.path("order_reason").asText(""));
         raw.put("订单备注", item.path("remark").asText(""));
         raw.put("详情状态", detailed ? "DETAIL" : "LIST");
+        raw.put("平台订单状态码", String.valueOf(status));
         raw.put("路线已提供", String.valueOf(item.path("addr_info_arr").isArray()));
         raw.put("费用明细已提供", String.valueOf(item.path("order_price_arr").isArray()));
         raw.put("回单已提供", String.valueOf(item.path("receipt_url").isArray()));
@@ -121,13 +122,23 @@ public final class HuolalaOrderNormalizer {
         raw.put("车牌号", detail.path("driver_info").path("license_plate").asText(""));
         String label =
                 switch (status) {
+                    case 0 -> "匹配中";
+                    case 1, 15 -> "待装货";
                     case 2 -> "已完成";
-                    case 3, 5, 8, 9, 17, 18 -> "已取消";
+                    case 3 -> "已取消";
+                    case 4 -> "司机拒绝";
+                    case 5 -> "超时取消";
+                    case 6 -> "订单未支付";
+                    case 7, 16 -> "运送中";
+                    case 8 -> "五天未装货取消";
+                    case 9 -> "十天未装货取消";
                     case 10 -> "司机完成";
                     case 13 -> detailed ? "司机发送账单" : "账单确认";
                     case 14 -> "申诉中";
                     case 11 -> "异常完成";
-                    default -> "进行中";
+                    case 17 -> "支付失败取消";
+                    case 18 -> "支付超时取消";
+                    default -> "未知状态（" + status + "）";
                 };
         var facts =
                 new SourceFacts(

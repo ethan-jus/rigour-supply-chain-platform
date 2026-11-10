@@ -319,32 +319,34 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
 
     public void assertReadOnly(String tenant, String id, LogisticsCostCommand c) {
         if (c.ledger() != null
-                && "HLL".equals(c.ledger().carrierCode())
                 && c.ledger().platformOrderNo() != null
                 && !c.ledger().platformOrderNo().isBlank()) {
             String no = c.ledger().platformOrderNo();
             Long duplicate =
                     jdbc.queryForObject(
                             "SELECT COUNT(*) FROM order_logistics_cost WHERE tenant_id=? AND (? IS"
-                                + " NULL OR id<>?) AND carrier_code='HLL' AND"
+                                + " NULL OR id<>?) AND carrier_code=? AND"
                                 + " JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo'))=?",
                             Long.class,
                             tenant,
                             id,
                             id,
+                            c.ledger().carrierCode(),
                             no);
             Long imported =
-                    jdbc.queryForObject(
-                            "SELECT COUNT(*) FROM order_logistics_import_order WHERE tenant_id=?"
-                                + " AND carrier_order_no=? AND cost_id IS NOT NULL AND (? IS NULL"
-                                + " OR cost_id<>?)",
-                            Long.class,
-                            tenant,
-                            no,
-                            id,
-                            id);
+                    "HLL".equals(c.ledger().carrierCode())
+                            ? jdbc.queryForObject(
+                                    "SELECT COUNT(*) FROM order_logistics_import_order WHERE"
+                                        + " tenant_id=? AND carrier_order_no=? AND cost_id IS NOT"
+                                        + " NULL AND (? IS NULL OR cost_id<>?)",
+                                    Long.class,
+                                    tenant,
+                                    no,
+                                    id,
+                                    id)
+                            : 0L;
             if ((duplicate != null && duplicate > 0) || (imported != null && imported > 0))
-                throw bad("该货拉拉订单已有运输记录，请查看已有记录，避免重复登记");
+                throw bad("该物流公司的第三方订单已有运输记录，请查看已有记录，避免重复登记");
         }
         if (id == null) return;
         var r = imports.byCost(tenant, id).orElse(null);
@@ -352,6 +354,8 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
         var source = r.latestOrder() == null ? r.order() : r.latestOrder();
         BigDecimal bill = source.facts() == null ? null : source.facts().billAmount();
         var p = c.ledger();
+        if (p != null && p.manualBillItems() != null && !p.manualBillItems().isEmpty())
+            throw bad("平台账单明细只读");
         if (p == null
                 || !"HLL".equals(p.carrierCode())
                 || !Objects.equals(p.platformOrderNo(), source.orderNo())

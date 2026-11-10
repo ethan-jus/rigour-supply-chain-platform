@@ -112,6 +112,12 @@ public class TransportRecordService {
             var source = old.platform().source();
             var order = source.latestOrder() == null ? source.order() : source.latestOrder();
             var f = order.facts();
+            if (d.manualBillItems() != null && !d.manualBillItems().isEmpty())
+                throw bad("平台账单明细只读");
+            if (d.paymentStatusCode() != null
+                    && !Objects.equals(
+                            d.paymentStatusCode(), old.record().data().paymentStatusCode()))
+                throw bad("平台付款信息只读");
             if (!"HLL".equals(d.carrierCode())
                     || !Objects.equals(d.platformOrderNo(), order.orderNo())
                     || !Objects.equals(
@@ -178,7 +184,9 @@ public class TransportRecordService {
                             action.reason(),
                             draft.zeroReason(),
                             draft.orderCodes(),
-                            draft.requestId());
+                            draft.requestId(),
+                            null,
+                            List.of());
             var existing = d.record().data().ledger();
             boolean custom =
                     existing != null
@@ -280,6 +288,15 @@ public class TransportRecordService {
             Draft d,
             List<LogisticsCostSourceView> rows,
             String action) {
+        var billItems =
+                d.manualBillItems() == null && old != null && old.data().ledger() != null
+                        ? old.data().ledger().manualBillItems()
+                        : d.manualBillItems();
+        BigDecimal amount =
+                billItems == null || billItems.isEmpty()
+                        ? d.amount()
+                        : com.rigour.order.domain.cost.LogisticsLedgerRules.manualBillTotal(
+                                billItems);
         if (rows.isEmpty()) throw bad("请先关联业务订单");
         String city = first(d.cityCode(), rows.getFirst().cityCode());
         if (city == null) throw bad("请维护业务单据的归属城市后再确认");
@@ -319,10 +336,10 @@ public class TransportRecordService {
         var points = new ArrayList<Party>();
         var sources = new ArrayList<Source>();
         var allocations =
-                d.amount() == null
+                amount == null
                         ? Collections.nCopies(rows.size(), BigDecimal.ZERO)
                         : MoneyAllocation.split(
-                                d.amount(), Collections.nCopies(rows.size(), BigDecimal.ONE));
+                                amount, Collections.nCopies(rows.size(), BigDecimal.ONE));
         for (int i = 0; i < rows.size(); i++) {
             var row = rows.get(i);
             String point = "TO" + i;
@@ -390,9 +407,9 @@ public class TransportRecordService {
                                         new Fee(
                                                 "freight",
                                                 "FREIGHT",
-                                                d.amount(),
+                                                amount,
                                                 "COMPANY",
-                                                d.amount(),
+                                                amount,
                                                 "EQUAL",
                                                 d.zeroReason(),
                                                 null)),
@@ -404,8 +421,8 @@ public class TransportRecordService {
                                 null,
                                 List.of(),
                                 List.of())
-                        .withPlatformOrderNo(
-                                "HLL".equals(d.carrierCode()) ? d.platformOrderNo() : null);
+                        .withPlatformOrderNo(d.platformOrderNo())
+                        .withManualBillItems(billItems);
         return new LogisticsCostCommand(
                 old == null ? d.requestId() : old.data().requestId(),
                 old == null ? null : old.revision(),
@@ -416,8 +433,10 @@ public class TransportRecordService {
                 department,
                 d.ownerEmployeeCode(),
                 d.date(),
-                d.amount(),
-                old == null ? "UNKNOWN" : old.data().paymentStatusCode(),
+                amount,
+                first(
+                        d.paymentStatusCode(),
+                        old == null ? "UNKNOWN" : old.data().paymentStatusCode()),
                 null,
                 d.remark(),
                 d.reason(),
@@ -431,17 +450,23 @@ public class TransportRecordService {
                 || d.reason() != null && d.reason().length() > 500) throw bad("运输日期、备注或原因无效");
         for (String value :
                 Arrays.asList(
-                        d.carrierCode(), d.warehouseCode(), d.cityCode(), d.ownerEmployeeCode()))
+                        d.carrierCode(),
+                        d.warehouseCode(),
+                        d.cityCode(),
+                        d.ownerEmployeeCode(),
+                        d.paymentStatusCode()))
             if (value != null && value.length() > 64) throw bad("档案编码过长");
-        for (String value :
-                Arrays.asList(
-                        d.trackingNo(), d.platformOrderNo(), d.senderName(), d.senderContact()))
+        if (d.platformOrderNo() != null && d.platformOrderNo().length() > 80) throw bad("第三方订单号过长");
+        for (String value : Arrays.asList(d.trackingNo(), d.senderName(), d.senderContact()))
             if (value != null && value.length() > 100) throw bad("单号或名称过长");
         if (d.senderPhone() != null && d.senderPhone().length() > 50
                 || d.senderAddress() != null && d.senderAddress().length() > 500)
             throw bad("发货联系方式或地址过长");
         try {
-            com.rigour.order.domain.cost.LogisticsCostRules.money(d.amount(), false);
+            if (d.manualBillItems() != null && !d.manualBillItems().isEmpty())
+                com.rigour.order.domain.cost.LogisticsLedgerRules.manualBillTotal(
+                        d.manualBillItems());
+            else com.rigour.order.domain.cost.LogisticsCostRules.money(d.amount(), false);
         } catch (IllegalArgumentException e) {
             throw bad(e.getMessage());
         }

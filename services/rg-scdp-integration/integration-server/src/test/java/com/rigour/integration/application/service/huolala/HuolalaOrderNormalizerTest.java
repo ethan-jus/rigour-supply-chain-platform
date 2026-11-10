@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.*;
 import com.rigour.integration.api.v1.model.HuolalaModels.Connection;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -41,7 +43,7 @@ class HuolalaOrderNormalizerTest {
     ObjectNode detail() {
         return (ObjectNode)
                 json.readTree(
-                        """
+"""
 {"order_detail_item":{"order_item":{"ep_id":1001,"order_display_id":"3624071813921329726","order_status":2,"order_time":"2026-11-08 14:36:58","price_fen":43913,"paid_amount":43913,"unpaid_amount":0,"refund_amount":0,
 "addr_info_arr":[{"name":"发货点","addr":"发货地址","contact_name":"甲"},{"name":"收货点一","addr":"地址一"},{"name":"收货点二","addr":"地址二"}],
 "order_price_arr":[{"type":203,"bill_name":"专享价","price_fen":27518},{"type":23,"bill_name":"搬运费","price_fen":15500},{"type":205,"bill_name":"税费","price_fen":1395},{"type":3,"bill_name":"优惠券","price_fen":-500}]}}}
@@ -71,6 +73,17 @@ class HuolalaOrderNormalizerTest {
         assertThat(order.paidAmount()).isZero();
         assertThat(order.facts().billAmount()).isEqualByComparingTo("439.13");
         assertThat(order.facts().billState()).isEqualTo("FINAL");
+    }
+
+    @ParameterizedTest
+    @CsvSource({"0,匹配中", "6,订单未支付", "7,运送中", "17,支付失败取消", "18,支付超时取消", "99,未知状态（99）"})
+    void keepsPlatformOrderStatusDistinctFromPaymentProgress(int code, String label) {
+        var d = detail();
+        ((ObjectNode) d.at("/order_detail_item/order_item")).put("order_status", code);
+        var order = HuolalaOrderNormalizer.normalize(c, list(), d, "raw", null, null);
+        assertThat(order.status()).isEqualTo(label);
+        assertThat(order.raw()).containsEntry("平台订单状态码", String.valueOf(code));
+        assertThat(order.paidAmount()).isEqualByComparingTo("439.13");
     }
 
     @Test

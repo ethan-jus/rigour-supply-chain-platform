@@ -111,7 +111,9 @@ class TransportRecordServiceTest {
                 "",
                 "",
                 codes,
-                UUID.randomUUID().toString());
+                UUID.randomUUID().toString(),
+                null,
+                null);
     }
 
     @Test
@@ -137,6 +139,14 @@ class TransportRecordServiceTest {
     void confirmOnlyPermissionUsesLatestBillAndExactCentAllocationWithoutCallingEdit() {
         actor("order:logistics-cost:read", "order:logistics-cost:confirm");
         var p = source("142.64");
+        var previous = (tools.jackson.databind.node.ObjectNode) json.valueToTree(record);
+        previous.withObject("data")
+                .set(
+                        "ledger",
+                        json.readTree(
+                                "{\"schemaVersion\":2,\"feeItems\":[{\"bearerCode\":\"COMPANY\",\"allocationMethodCode\":\"EQUAL\"}],\"manualBillItems\":[{\"name\":\"原人工运费\",\"amount\":137.64}]}"));
+        record = json.treeToValue(previous, LogisticsCostDetailView.class);
+        when(costs.entry("logistics", "C1")).thenReturn(record);
         var d = draft("137.64", List.of("SO002", "SO001", "SO003"));
         when(platform.detail(any(), any()))
                 .thenReturn(new PlatformRecord(p.source(), d, List.of()));
@@ -157,6 +167,7 @@ class TransportRecordServiceTest {
         verify(costs).preparePlatformConfirmation(eq("C1"), captured.capture());
         var command = captured.getValue();
         assertThat(command.amount()).isEqualByComparingTo("142.64");
+        assertThat(command.ledger().manualBillItems()).isEmpty();
         assertThat(command.ledger().sender().address()).isEqualTo("武汉市仓储路18号");
         assertThat(
                         command.ledger().sources().stream()
@@ -176,11 +187,19 @@ class TransportRecordServiceTest {
         verifyNoInteractions(files);
     }
 
-    @Test
-    void manualWaybillAndPlatformOrderNumberArePersistedIndependentlyAndCopiesRetainBoth() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"HLL", "SF", "JT_NEW"})
+    void manualWaybillAndThirdPartyOrderNumberArePersistedIndependently(String carrier) {
         var input = draft("100.01", List.of("SO1", "SO2", "SO3"));
         var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(input);
+        node.put("carrierCode", carrier);
         node.put("trackingNo", "WAYBILL-001");
+        node.put("paymentStatusCode", "PAID");
+        node.set(
+                "manualBillItems",
+                json.readTree(
+                        "[{\"name\":\"运费\",\"amount\":100},{\"name\":\"保价费\",\"amount\":5.01},{\"name\":\"优惠\",\"amount\":-5}]"));
+        node.put("amount", 999);
         var d = json.treeToValue(node, Draft.class);
         when(ledgers.sources(any(), any()))
                 .thenAnswer(
@@ -206,7 +225,11 @@ class TransportRecordServiceTest {
                         .withSources(command.ledger().sources())
                         .withSourceSync(null)
                         .withTransportType("DELIVERY");
+        assertThat(command.paymentStatusCode()).isEqualTo("PAID");
+        assertThat(command.amount()).isEqualByComparingTo("100.01");
+        assertThat(ledger.manualBillItems()).hasSize(3);
         assertThat(ledger.trackingNo()).isEqualTo("WAYBILL-001");
+        assertThat(ledger.carrierCode()).isEqualTo(carrier);
         assertThat(ledger.platformOrderNo()).isEqualTo("3624071813921329726");
         assertThat(ledger.sources())
                 .allSatisfy(
@@ -231,6 +254,22 @@ class TransportRecordServiceTest {
         tree.put("trackingNo", "invented-waybill");
         assertThatThrownBy(() -> service.save("C1", json.treeToValue(tree, Draft.class)))
                 .hasMessageContaining("只读");
+        verify(platform, never()).saveDraft(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void platformBillAndPaymentCannotBeChangedThroughManualDraft() {
+        when(platform.detail(any(), any())).thenReturn(source("137.64"));
+        var node =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(draft("137.64", List.of()));
+        node.put("paymentStatusCode", "PAID");
+        assertThatThrownBy(() -> service.save("C1", json.treeToValue(node, Draft.class)))
+                .hasMessageContaining("付款信息只读");
+        node.remove("paymentStatusCode");
+        node.set("manualBillItems", json.readTree("[{\"name\":\"手改运费\",\"amount\":137.64}]"));
+        assertThatThrownBy(() -> service.save("C1", json.treeToValue(node, Draft.class)))
+                .hasMessageContaining("账单明细只读");
         verify(platform, never()).saveDraft(any(), any(), any(), any(), any());
     }
 }

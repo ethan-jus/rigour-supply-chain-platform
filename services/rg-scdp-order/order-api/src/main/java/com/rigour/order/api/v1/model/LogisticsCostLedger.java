@@ -3,7 +3,7 @@ package com.rigour.order.api.v1.model;
 import java.math.BigDecimal;
 import java.util.List;
 
-/** 新版整单费用协议。业务引用使用编码，sources独立持久化至sources_json。 */
+/** 新版整单费用协议。业务引用使用编码，sources独立持久化至sources_json。platformOrderNo 为承运商的第三方订单号，保留既有协议字段名以兼容存量数据。 */
 public record LogisticsCostLedger(
         int schemaVersion,
         String transportPurposeCode,
@@ -24,7 +24,57 @@ public record LogisticsCostLedger(
         SourceSync sourceSync,
         String driverName,
         String vehicleNo,
-        String platformOrderNo) {
+        String platformOrderNo,
+        List<ManualBillItem> manualBillItems) {
+
+    public LogisticsCostLedger(
+            int schemaVersion,
+            String transportPurposeCode,
+            String deliveryModeCode,
+            String carrierCode,
+            String costMonth,
+            String trackingNo,
+            String transportMethodCode,
+            Party sender,
+            List<Party> receivingPoints,
+            List<Fee> feeItems,
+            List<Source> sources,
+            String nonSalesPurposeCode,
+            String noTrackingReason,
+            String noSourceReason,
+            List<Long> scopeWarehouseIds,
+            List<String> scopeCityCodes,
+            SourceSync sourceSync,
+            String driverName,
+            String vehicleNo,
+            String platformOrderNo) {
+        this(
+                schemaVersion,
+                transportPurposeCode,
+                deliveryModeCode,
+                carrierCode,
+                costMonth,
+                trackingNo,
+                transportMethodCode,
+                sender,
+                receivingPoints,
+                feeItems,
+                sources,
+                nonSalesPurposeCode,
+                noTrackingReason,
+                noSourceReason,
+                scopeWarehouseIds,
+                scopeCityCodes,
+                sourceSync,
+                driverName,
+                vehicleNo,
+                platformOrderNo,
+                null);
+    }
+
+    /** 人工账单分项仅解释整单净额，不作为另一笔费用参加成本汇总。 */
+    public record ManualBillItem(String name, BigDecimal amount) {}
+
     public LogisticsCostLedger(
             int schemaVersion,
             String transportPurposeCode,
@@ -321,7 +371,8 @@ public record LogisticsCostLedger(
                 sync,
                 driverName,
                 vehicleNo,
-                platformOrderNo);
+                platformOrderNo,
+                manualBillItems);
     }
 
     public LogisticsCostLedger withSources(List<Source> value) {
@@ -345,7 +396,8 @@ public record LogisticsCostLedger(
                 sourceSync,
                 driverName,
                 vehicleNo,
-                platformOrderNo);
+                platformOrderNo,
+                manualBillItems);
     }
 
     public LogisticsCostLedger withTransportType(String value) {
@@ -369,7 +421,8 @@ public record LogisticsCostLedger(
                 sourceSync,
                 driverName,
                 vehicleNo,
-                platformOrderNo);
+                platformOrderNo,
+                manualBillItems);
     }
 
     public LogisticsCostLedger resolved(Party from, List<Party> points, List<Long> warehouses) {
@@ -393,7 +446,8 @@ public record LogisticsCostLedger(
                 sourceSync,
                 driverName,
                 vehicleNo,
-                platformOrderNo);
+                platformOrderNo,
+                manualBillItems);
     }
 
     public LogisticsCostLedger withScopeCities(List<String> cities) {
@@ -417,7 +471,8 @@ public record LogisticsCostLedger(
                 sourceSync,
                 driverName,
                 vehicleNo,
-                platformOrderNo);
+                platformOrderNo,
+                manualBillItems);
     }
 
     public LogisticsCostLedger withPlatformOrderNo(String value) {
@@ -441,6 +496,32 @@ public record LogisticsCostLedger(
                 sourceSync,
                 driverName,
                 vehicleNo,
+                value,
+                manualBillItems);
+    }
+
+    public LogisticsCostLedger withManualBillItems(List<ManualBillItem> value) {
+        return new LogisticsCostLedger(
+                schemaVersion,
+                transportPurposeCode,
+                deliveryModeCode,
+                carrierCode,
+                costMonth,
+                trackingNo,
+                transportMethodCode,
+                sender,
+                receivingPoints,
+                feeItems,
+                sources,
+                nonSalesPurposeCode,
+                noTrackingReason,
+                noSourceReason,
+                scopeWarehouseIds,
+                scopeCityCodes,
+                sourceSync,
+                driverName,
+                vehicleNo,
+                platformOrderNo,
                 value);
     }
 }

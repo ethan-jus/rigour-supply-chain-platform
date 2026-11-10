@@ -93,7 +93,7 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                         + ".jsonUnquote'");
         jdbc.update(
                 "INSERT INTO order_logistics_cost(tenant_id,id,carrier_code,tracking_no,data_json)"
-                    + " VALUES('T1','C1','HLL','WB-001',?)",
+                        + " VALUES('T1','C1','HLL','WB-001',?)",
                 "{\"ledger\":{\"platformOrderNo\":\"3616894445226123730\"}}");
         assertThat(store.trackingExists("T1", "3616894445226123730")).isTrue();
         assertThat(store.trackingExists("T1", "WB-001")).isFalse();
@@ -109,6 +109,20 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                 .hasMessageContaining("已有运输记录");
         assertThatCode(() -> guarded.assertReadOnly("T2", null, command))
                 .doesNotThrowAnyException();
+        var sf =
+                JsonMapper.builder()
+                        .build()
+                        .readValue(
+                                "{\"ledger\":{\"schemaVersion\":2,\"carrierCode\":\"SF\",\"trackingNo\":\"WB-NEW\",\"platformOrderNo\":\"3616894445226123730\"}}",
+                                com.rigour.order.api.v1.model.LogisticsCostCommand.class);
+        assertThatCode(() -> guarded.assertReadOnly("T1", null, sf)).doesNotThrowAnyException();
+        jdbc.update(
+                "INSERT INTO order_logistics_cost(tenant_id,id,carrier_code,tracking_no,data_json)"
+                        + " VALUES('T1','SF1','SF','WB-OTHER',?)",
+                "{\"ledger\":{\"platformOrderNo\":\"3616894445226123730\"}}");
+        assertThatThrownBy(() -> guarded.assertReadOnly("T1", null, sf))
+                .hasMessageContaining("已有运输记录");
+        assertThatCode(() -> guarded.assertReadOnly("T1", "SF1", sf)).doesNotThrowAnyException();
     }
 
     @Test

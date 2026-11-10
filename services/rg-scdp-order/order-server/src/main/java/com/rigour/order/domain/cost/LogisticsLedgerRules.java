@@ -10,6 +10,20 @@ import java.util.*;
 public final class LogisticsLedgerRules {
     private LogisticsLedgerRules() {}
 
+    public static BigDecimal manualBillTotal(List<LogisticsCostLedger.ManualBillItem> items) {
+        if (items == null || items.isEmpty()) return null;
+        if (items.size() > 100) throw bad("账单明细最多100项");
+        BigDecimal total = BigDecimal.ZERO;
+        for (var item : items) {
+            if (item == null) throw bad("账单明细无效");
+            required(item.name(), 100, "费用项目名称");
+            LogisticsCostRules.money(item.amount() == null ? null : item.amount().abs(), true);
+            total = total.add(item.amount());
+        }
+        LogisticsCostRules.money(total, true);
+        return total;
+    }
+
     public static BigDecimal validate(LogisticsCostLedger p, boolean confirm) {
         if (p == null || p.schemaVersion() != 2) throw bad("物流费用结构版本无效");
         if ("PURCHASE".equals(p.transportPurposeCode())) throw bad("采购运费已归入采购成本，请在采购成本记录中维护");
@@ -28,9 +42,7 @@ public final class LogisticsLedgerRules {
         if (p.driverName() != null && p.driverName().length() > 100
                 || p.vehicleNo() != null && p.vehicleNo().length() > 50) throw bad("司机或车牌信息过长");
         if (p.trackingNo() != null && p.trackingNo().length() > 100) throw bad("运单号过长");
-        if (p.platformOrderNo() != null
-                && (!"HLL".equals(p.carrierCode()) || p.platformOrderNo().length() > 80))
-            throw bad("货拉拉订单号与物流公司不匹配或过长");
+        if (p.platformOrderNo() != null && p.platformOrderNo().length() > 80) throw bad("第三方订单号过长");
         if ("OTHER".equals(p.transportPurposeCode()))
             required(p.nonSalesPurposeCode(), 200, "其他费用用途说明");
         party(p.sender(), false, confirm);
@@ -77,6 +89,15 @@ public final class LogisticsLedgerRules {
                 total = total.add(f.ourAmount());
                 if (f.ourAmount().signum() == 0) required(f.zeroCostReason(), 500, "零元原因");
             }
+        }
+        if (p.manualBillItems() != null && !p.manualBillItems().isEmpty()) {
+            BigDecimal bill = manualBillTotal(p.manualBillItems());
+            BigDecimal gross = BigDecimal.ZERO;
+            for (var fee : p.feeItems()) {
+                if (fee.feeAmount() == null) throw bad("填写账单明细后须有运输费用合计");
+                gross = gross.add(fee.feeAmount());
+            }
+            if (bill.compareTo(gross) != 0) throw bad("账单明细合计须等于运输费用");
         }
         if (p.sources() == null || p.sources().isEmpty() || p.sources().size() > 100)
             throw bad("请选择关联单据或登记无单据原因和费用归属");
