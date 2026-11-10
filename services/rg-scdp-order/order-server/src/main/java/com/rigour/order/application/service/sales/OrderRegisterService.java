@@ -254,7 +254,7 @@ public class OrderRegisterService {
             List<Long> productIds,
             Long productVariantId,
             List<Long> productVariantIds) {
-        CallerIdentity actor = actor(READ_PERMISSION);
+        CallerIdentity actor = actor(PaymentReadPermission.current());
         productVariantIds = filterVariantIds(productIds, productVariantId, productVariantIds);
         if (productIds != null && (productIds.size() > 10000 || productIds.stream().anyMatch(id -> id == null || id < 0))) {
             throw badRequest("productIds无效或超过10000个");

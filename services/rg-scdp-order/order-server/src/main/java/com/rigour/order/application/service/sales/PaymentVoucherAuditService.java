@@ -24,11 +24,11 @@ public class PaymentVoucherAuditService {
         AuthorizationContext.requirePermission(permission); return c.tenantId().toString();
     }
     @Transactional(readOnly=true) public Scan scan() {
-        String t=tenant("order:read");
-        return PaymentVoucherAuditEngine.scan(store.payments(t,"order:read"),store.reviews(t));
+        String t=tenant(PaymentReadPermission.current());
+        return PaymentVoucherAuditEngine.scan(store.payments(t,PaymentReadPermission.current()),store.reviews(t));
     }
     @Transactional(readOnly=true) public Map<String,PaymentAuditState> paymentStates(List<String> ids) {
-        tenant("order:read");
+        tenant(PaymentReadPermission.current());
         if (ids == null || ids.size() > 200) throw new BusinessException(ErrorCode.BAD_REQUEST, "最多查询200笔回款", List.of());
         if (ids.isEmpty()) return Map.of();
         var requested=new HashSet<>(ids);
@@ -50,7 +50,7 @@ public class PaymentVoucherAuditService {
         return results;
     }
     @Transactional public Review review(ReviewRequest request) {
-        String t=tenant("order:payment:check"); tenant("order:read");
+        String t=tenant("order:payment:check"); tenant(PaymentReadPermission.current());
         if(request==null || request.groupKey()==null || request.fingerprint()==null || request.conclusion()==null ||
                 !Set.of("NORMAL","ABNORMAL","PENDING_REVIEW","NORMAL_COMBINED","CONFIRMED_DUPLICATE","NEED_EVIDENCE").contains(request.conclusion()) ||
                 request.note()==null || request.note().isBlank() || request.note().length()>1000)
@@ -60,7 +60,7 @@ public class PaymentVoucherAuditService {
         if (!reasons.containsAll(request.reasonCodes())
                 || (Set.of("ABNORMAL", "PENDING_REVIEW").contains(request.conclusion()) && request.reasonCodes().isEmpty()))
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请选择有效的核查原因", List.of());
-        var group=PaymentVoucherAuditEngine.scan(store.payments(t,"order:read"),Map.of()).groups().stream()
+        var group=PaymentVoucherAuditEngine.scan(store.payments(t,PaymentReadPermission.current()),Map.of()).groups().stream()
             .filter(g->g.key().equals(request.groupKey())).findFirst()
             .orElseThrow(()->new BusinessException(ErrorCode.BAD_REQUEST,"核查组不存在或无权查看，请重新扫描",List.of()));
         var writable=new HashSet<>(store.payments(t,"order:payment:check").stream().map(Payment::id).toList());

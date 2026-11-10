@@ -161,7 +161,12 @@ class BusinessDictionaryServiceTest {
         "hr:payroll:read,COMMISSION_RECIPIENT_ROLE",
         "hr:payroll-rule:read,PRODUCT_UNIT",
         "hr:attendance:read,ATTENDANCE_LEAVE_TYPE",
-        "hr:attendance:read,ATTENDANCE_STATUS"
+        "hr:attendance:read,ATTENDANCE_STATUS",
+        "order:payment:read,ORDER_COLLECTION_STATUS",
+        "order:payment:read,PAYMENT_RECEIPT_STATUS",
+        "order:payment:read,PAYMENT_CONFIRMATION_STATUS",
+        "order:payment:read,PAYMENT_VOUCHER_AUDIT_STATUS",
+        "order:payment:read,PAYMENT_VOUCHER_AUDIT_REASON"
     })
     void businessReaderCanLoadOwnOptionsWithoutDictionaryManagement(String permission, String code) {
         setBusinessReader(permission);
@@ -189,7 +194,9 @@ class BusinessDictionaryServiceTest {
         "analytics:cost-dashboard:read,ATTENDANCE_STATUS",
         "hr:expense:read,ATTENDANCE_LEAVE_TYPE",
         "hr:attendance:read,PRIVATE_CUSTOM_DICTIONARY",
-        "unrelated:read,COST_STATUS"
+        "unrelated:read,COST_STATUS",
+        "order:payment:read,PRIVATE_CUSTOM_DICTIONARY",
+        "order:payment:read,SALES_ORDER_STATUS"
     })
     void businessReaderCannotEnumerateUnrelatedDictionaries(String permission, String code) {
         setBusinessReader(permission);
@@ -198,7 +205,7 @@ class BusinessDictionaryServiceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"analytics:cost-dashboard:read", "crm:pool:public-read", "crm:store:library-read", "crm:store:status-write", "crm:lead:create", "crm:lead:review"})
+    @ValueSource(strings = {"order:payment:read", "analytics:cost-dashboard:read", "crm:pool:public-read", "crm:store:library-read", "crm:store:status-write", "crm:lead:create", "crm:lead:review"})
     void businessOptionsAccessDoesNotGrantManagementListItemsOrWrites(String permission) {
         setBusinessReader(permission);
         assertThatThrownBy(() -> service.list(null, null)).isInstanceOf(AuthorizationDeniedException.class);

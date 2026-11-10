@@ -1201,7 +1201,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         if (c.productIds() != null) {
             where.and("EXISTS (SELECT 1 FROM order_sales_order_line l WHERE l.tenant_id=o.tenant_id AND l.order_id=o.id AND l.deleted=0 AND " + paymentProductPredicate(c) + ")");
         }
-        var scope = scopes.predicate("order:read", "o.", null);
+        var scope = scopes.predicate(com.rigour.order.application.service.sales.PaymentReadPermission.current(), "o.", null);
         where.and("(" + scope.sql() + ")", scope.args().toArray());
         return where;
     }
