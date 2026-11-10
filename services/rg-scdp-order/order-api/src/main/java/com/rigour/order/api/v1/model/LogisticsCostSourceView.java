@@ -27,7 +27,69 @@ public record LogisticsCostSourceView(
         String contactPhone,
         String senderCityCode,
         String referenceIssue,
-        Integer linkedLogisticsCount) {
+        Integer linkedLogisticsCount,
+        java.math.BigDecimal documentAmount,
+        java.time.Instant linkedAt) {
+    public LogisticsCostSourceView(
+            Long id,
+            String documentNo,
+            String sourceType,
+            String cityCode,
+            Long warehouseId,
+            Long targetWarehouseId,
+            String senderCode,
+            String senderName,
+            String receiverCode,
+            String receiverName,
+            String statusCode,
+            String sourceSystem,
+            String originalNo,
+            java.time.LocalDate documentDate,
+            String originAddress,
+            String destinationAddress,
+            String warehouseTypeCode,
+            String targetWarehouseTypeCode,
+            String employeeCode,
+            String employeeName,
+            Long departmentId,
+            String departmentName,
+            String contactName,
+            String contactPhone,
+            String senderCityCode,
+            String referenceIssue,
+            Integer linkedLogisticsCount) {
+        this(
+                id,
+                documentNo,
+                sourceType,
+                cityCode,
+                warehouseId,
+                targetWarehouseId,
+                senderCode,
+                senderName,
+                receiverCode,
+                receiverName,
+                statusCode,
+                sourceSystem,
+                originalNo,
+                documentDate,
+                originAddress,
+                destinationAddress,
+                warehouseTypeCode,
+                targetWarehouseTypeCode,
+                employeeCode,
+                employeeName,
+                departmentId,
+                departmentName,
+                contactName,
+                contactPhone,
+                senderCityCode,
+                referenceIssue,
+                linkedLogisticsCount,
+                null,
+                null);
+    }
+
     public LogisticsCostSourceView(
             Long id,
             String documentNo,
@@ -113,7 +175,9 @@ public record LogisticsCostSourceView(
                 contactPhone,
                 senderCityCode,
                 referenceIssue,
-                count);
+                count,
+                documentAmount,
+                linkedAt);
     }
 
     public LogisticsCostSourceView(
@@ -195,5 +259,39 @@ public record LogisticsCostSourceView(
                 null,
                 null,
                 null);
+    }
+
+    public LogisticsCostSourceView withBusinessSnapshot(
+            java.math.BigDecimal amount, java.time.Instant time) {
+        return new LogisticsCostSourceView(
+                id,
+                documentNo,
+                sourceType,
+                cityCode,
+                warehouseId,
+                targetWarehouseId,
+                senderCode,
+                senderName,
+                receiverCode,
+                receiverName,
+                statusCode,
+                sourceSystem,
+                originalNo,
+                documentDate,
+                originAddress,
+                destinationAddress,
+                warehouseTypeCode,
+                targetWarehouseTypeCode,
+                employeeCode,
+                employeeName,
+                departmentId,
+                departmentName,
+                contactName,
+                contactPhone,
+                senderCityCode,
+                referenceIssue,
+                linkedLogisticsCount,
+                amount,
+                time);
     }
 }

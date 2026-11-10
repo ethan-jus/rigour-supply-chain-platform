@@ -28,7 +28,15 @@ public final class TransportRecordModels {
             String reason,
             String zeroReason,
             List<String> orderCodes,
-            String requestId) {}
+            String requestId) {
+        public Draft {
+            trackingNo = trackingNo == null || trackingNo.isBlank() ? null : trackingNo.strip();
+            platformOrderNo =
+                    platformOrderNo == null || platformOrderNo.isBlank()
+                            ? null
+                            : platformOrderNo.strip();
+        }
+    }
 
     public record PlatformRecord(Row source, Draft draft, List<CarrierOrder> billHistory) {}
 

@@ -97,7 +97,7 @@ class TransportRecordServiceTest {
                 "DELIVERY",
                 LocalDate.of(2026, 11, 10),
                 "HLL",
-                "3624071813921329726",
+                null,
                 "3624071813921329726",
                 null,
                 null,
@@ -174,5 +174,63 @@ class TransportRecordServiceTest {
         when(platform.detail(any(), any())).thenReturn(p);
         assertThatThrownBy(() -> service.voucher("C1", "unknown")).hasMessageContaining("稍后重试");
         verifyNoInteractions(files);
+    }
+
+    @Test
+    void manualWaybillAndPlatformOrderNumberArePersistedIndependentlyAndCopiesRetainBoth() {
+        var input = draft("100.01", List.of("SO1", "SO2", "SO3"));
+        var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(input);
+        node.put("trackingNo", "WAYBILL-001");
+        var d = json.treeToValue(node, Draft.class);
+        when(ledgers.sources(any(), any()))
+                .thenAnswer(
+                        i -> {
+                            var q = (LogisticsLedgerSourceQuery) i.getArgument(0);
+                            return List.of(
+                                    json.readValue(
+                                            "{\"documentNo\":\""
+                                                    + q.documentNo()
+                                                    + "\",\"sourceType\":\"SALES_ORDER\",\"cityCode\":\"WH\",\"receiverName\":\"星河门店\",\"documentAmount\":800.50,\"documentDate\":\"2026-11-09\"}",
+                                            LogisticsCostSourceView.class));
+                        });
+        when(costs.save(eq("logistics"), isNull(), any())).thenReturn(record);
+        service.save(null, d);
+        var capture = org.mockito.ArgumentCaptor.forClass(LogisticsCostCommand.class);
+        verify(costs).save(eq("logistics"), isNull(), capture.capture());
+        var command =
+                json.readValue(
+                        json.writeValueAsString(capture.getValue()), LogisticsCostCommand.class);
+        var ledger =
+                command.ledger()
+                        .withScopeCities(List.of("WH"))
+                        .withSources(command.ledger().sources())
+                        .withSourceSync(null)
+                        .withTransportType("DELIVERY");
+        assertThat(ledger.trackingNo()).isEqualTo("WAYBILL-001");
+        assertThat(ledger.platformOrderNo()).isEqualTo("3624071813921329726");
+        assertThat(ledger.sources())
+                .allSatisfy(
+                        source -> {
+                            assertThat(source.documentAmount()).isEqualByComparingTo("800.50");
+                            assertThat(source.documentDate()).isEqualTo(LocalDate.of(2026, 11, 9));
+                        });
+        assertThat(
+                        ledger.sources().stream()
+                                .flatMap(source -> source.allocations().stream())
+                                .map(a -> a.amount())
+                                .reduce(BigDecimal.ZERO, BigDecimal::add))
+                .isEqualByComparingTo("100.01");
+    }
+
+    @Test
+    void suppliedWaybillCannotMasqueradeAsThePlatformOrderWhenEditingApiData() {
+        when(platform.detail(any(), any())).thenReturn(source("137.64"));
+        var tree =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(draft("137.64", List.of()));
+        tree.put("trackingNo", "invented-waybill");
+        assertThatThrownBy(() -> service.save("C1", json.treeToValue(tree, Draft.class)))
+                .hasMessageContaining("只读");
+        verify(platform, never()).saveDraft(any(), any(), any(), any(), any());
     }
 }

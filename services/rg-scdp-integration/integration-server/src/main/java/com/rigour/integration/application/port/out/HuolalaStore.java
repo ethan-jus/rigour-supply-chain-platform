@@ -53,6 +53,8 @@ public interface HuolalaStore {
             java.time.LocalDate to,
             int page);
 
+    default void stages(UUID tenant, UUID run, StageCounts stages) {}
+
     List<Run> runs(UUID tenant);
 
     List<SyncIssue> issues(UUID tenant, UUID run);

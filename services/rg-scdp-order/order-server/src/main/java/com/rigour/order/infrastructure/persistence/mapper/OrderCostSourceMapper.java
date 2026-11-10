@@ -18,7 +18,7 @@ import java.util.List;
 @Mapper
 public interface OrderCostSourceMapper extends BaseMapper<InternalSalesOrderEntity> {
     @Select(
-            """
+"""
 SELECT CONCAT('PAYMENT:',p.id) sourceId,o.order_no orderNo,COALESCE(a.region_code,o.region_code) cityCode,
  DATE(CONVERT_TZ(p.payment_time,'+00:00','+08:00')) `date`,p.paid_amount amount,
  CASE WHEN a.order_id IS NOT NULL THEN o.data_quality_status_code
@@ -41,7 +41,7 @@ ORDER BY `date`,sourceId LIMIT 20001
             @Param("until") LocalDateTime until);
 
     @Select(
-            """
+"""
 SELECT CAST(p.id AS CHAR) sourceId,o.order_no orderNo,DATE(CONVERT_TZ(p.payment_time,'+00:00','+08:00')) `date`,p.paid_amount amount,'PAYMENT' kind
 FROM order_payment_record p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
 WHERE p.tenant_id=#{tenant} AND o.owner_employee_code=#{employee} AND p.deleted=0 AND o.deleted=0
@@ -60,13 +60,13 @@ ORDER BY `date`,sourceId
             @Param("until") LocalDateTime until);
 
     @Select(
-            """
+"""
 SELECT o.id,o.order_no documentNo,o.region_code cityCode,o.selected_warehouse_id warehouseId,
 o.customer_code_snapshot customerCode,o.customer_name_snapshot customerName,o.order_status_code statusCode,
 COALESCE(NULLIF(o.source_system_code,''),'SYSTEM') sourceSystem,o.source_order_no originalNo,DATE(CONVERT_TZ(o.order_date,'+00:00','+08:00')) documentDate,
 NULL destinationAddress,COALESCE(snap.employee_code,o.owner_employee_code) employeeCode,
 COALESCE(snap.employee_name,o.owner_employee_name_snapshot) employeeName,snap.department_id departmentId,snap.department_name departmentName,
-o.contact_name_snapshot contactName,o.contact_phone_snapshot contactPhone
+o.contact_name_snapshot contactName,o.contact_phone_snapshot contactPhone,o.payable_amount documentAmount
 FROM order_sales_order o
 LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'
 ${ew.customSqlSegment}
@@ -74,7 +74,7 @@ ${ew.customSqlSegment}
     List<OrderDeliveryCostSourceView> deliveries(@Param(Constants.WRAPPER) Wrapper<?> query);
 
     @Select(
-            """
+"""
  <script>
 SELECT CAST(l.id AS CHAR) lineId,o.order_no orderNo,o.owner_employee_code employeeCode,o.region_code cityCode,l.product_id productId,l.product_variant_id productVariantId,
   l.product_name_snapshot productName,l.unit_code unitCode,DATE(CONVERT_TZ(o.order_date,'+00:00','+08:00')) orderDate,l.quantity,l.line_amount lineAmount,
@@ -96,7 +96,7 @@ WHERE o.tenant_id=#{tenant} AND <choose><when test="employee != null and employe
             @Param("until") LocalDateTime until);
 
     @Select(
-            """
+"""
 <script>
 WITH scoped AS (
  SELECT o.* FROM order_sales_order o

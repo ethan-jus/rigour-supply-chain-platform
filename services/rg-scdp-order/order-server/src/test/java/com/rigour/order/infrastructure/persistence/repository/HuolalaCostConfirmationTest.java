@@ -41,7 +41,7 @@ class HuolalaCostConfirmationTest {
                                 mapper, audits, json, null, mock(OrderLogisticsReferences.class)));
         var data =
                 json.readValue(
-                        "{\"amount\":40.50,\"ledger\":{\"schemaVersion\":2,\"carrierCode\":\"HLL\",\"trackingNo\":\"3624071813921329726\"}}",
+                        "{\"amount\":40.50,\"ledger\":{\"schemaVersion\":2,\"carrierCode\":\"HLL\",\"trackingNo\":\"WB-001\",\"platformOrderNo\":\"3624071813921329726\"}}",
                         LogisticsCostCommand.class);
         var old =
                 new LogisticsCostDetailView(
@@ -69,6 +69,50 @@ class HuolalaCostConfirmationTest {
                 "bill_verification_json",
                 verification == null ? null : json.writeValueAsString(verification));
         when(mapper.lockCarrierSource("T1", "C1")).thenReturn(List.of(row));
+    }
+
+    @Test
+    void linkTimesAreServerGeneratedPreservedOnRetryAndUnknownHistoryIsNotInvented() {
+        var request =
+                json.readValue(
+                        "{\"ledger\":{\"schemaVersion\":2,\"sources\":[{\"orderCode\":\"SO1\",\"orderTypeCode\":\"SALES_ORDER\",\"documentAmount\":222.30,\"linkedAt\":\"2000-01-01T00:00:00Z\"}]}}",
+                        LogisticsCostCommand.class);
+        var before = Instant.now();
+        var first = MybatisPlusOrderLogisticsCostRepository.withSavedLinkTimes(request, null);
+        var stamp = first.ledger().sources().getFirst().linkedAt();
+        assertThat(stamp).isBetween(before, Instant.now());
+        var saved =
+                new LogisticsCostDetailView(
+                        "C",
+                        "LC",
+                        "LOGISTICS",
+                        "DRAFT",
+                        1,
+                        first,
+                        List.of(),
+                        null,
+                        null,
+                        before,
+                        before);
+        var retried = MybatisPlusOrderLogisticsCostRepository.withSavedLinkTimes(request, saved);
+        assertThat(retried.ledger().sources().getFirst().linkedAt()).isEqualTo(stamp);
+        assertThat(retried.ledger().sources().getFirst().documentAmount())
+                .isEqualByComparingTo("222.30");
+        var historicSource =
+                first.ledger().sources().getFirst().withBusinessSnapshot(null, null, null);
+        var historic =
+                saved.withData(
+                        first.withLedger(
+                                first.ledger().withSources(List.of(historicSource)),
+                                first.amount()));
+        assertThat(
+                        MybatisPlusOrderLogisticsCostRepository.withSavedLinkTimes(
+                                        request, historic)
+                                .ledger()
+                                .sources()
+                                .getFirst()
+                                .linkedAt())
+                .isNull();
     }
 
     @Test

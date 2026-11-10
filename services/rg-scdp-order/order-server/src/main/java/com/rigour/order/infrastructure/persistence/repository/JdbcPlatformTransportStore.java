@@ -65,8 +65,9 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
         var manual =
                 jdbc.queryForList(
                         "SELECT id FROM order_logistics_cost WHERE tenant_id=? AND"
-                            + " carrier_code='HLL' AND tracking_no=? AND source_system<>'HUOLALA'"
-                            + " ORDER BY created_time LIMIT 2",
+                            + " carrier_code='HLL' AND"
+                            + " JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo'))=?"
+                            + " AND source_system<>'HUOLALA' ORDER BY created_time LIMIT 2",
                         tenant,
                         row.order().orderNo());
         if (manual.size() > 1) throw bad("该货拉拉单号已重复登记，请先处理已有运输记录");
@@ -97,7 +98,7 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                         List.of(),
                         List.of(),
                         "货拉拉",
-                        order.orderNo(),
+                        order.raw() == null ? null : order.raw().get("运单号"),
                         null,
                         "COMPANY",
                         "MANUAL",
@@ -143,7 +144,7 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                 json.writeValueAsString(command),
                 actor,
                 actor,
-                order.orderNo(),
+                order.raw() == null ? null : order.raw().get("运单号"),
                 "HUOLALA:" + order.enterpriseId() + ":" + order.orderNo());
         jdbc.update(
                 "UPDATE order_logistics_import_order SET cost_id=?,state='GENERATED' WHERE"
@@ -247,6 +248,32 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                         || !Objects.equals(old.transportType(), draft.transportType()))
                 && (draft.reason() == null || draft.reason().isBlank()))
             throw bad("更改或解除已有订单关联请填写原因");
+        // 同一关联保留首次建立时间；负责人、备注更新不能重写关联历史。
+        var priorSources =
+                jdbc.queryForObject(
+                        "SELECT sources_json FROM order_logistics_cost WHERE tenant_id=? AND id=?",
+                        String.class,
+                        tenant,
+                        costId);
+        var snapshots =
+                priorSources == null
+                        ? List.<LogisticsCostSourceView>of()
+                        : Arrays.asList(
+                                json.readValue(priorSources, LogisticsCostSourceView[].class));
+        var linkedSources =
+                sources.stream()
+                        .map(
+                                s -> {
+                                    for (var prior : snapshots)
+                                        if (Objects.equals(prior.documentNo(), s.documentNo())
+                                                && Objects.equals(
+                                                        prior.sourceType(), s.sourceType()))
+                                            return s.withBusinessSnapshot(
+                                                    s.documentAmount(), prior.linkedAt());
+                                    return s.withBusinessSnapshot(
+                                            s.documentAmount(), java.time.Instant.now());
+                                })
+                        .toList();
         jdbc.update(
                 "UPDATE order_logistics_import_order SET business_json=? WHERE tenant_id=? AND"
                         + " cost_id=?",
@@ -271,7 +298,7 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                 "UPDATE order_logistics_cost SET"
                     + " sources_json=?,revision=revision+1,title=COALESCE(?,title),type_code=?,transport_purpose_code=?,owner_employee_code=?,updated_by=?,updated_time=CURRENT_TIMESTAMP(6)"
                     + " WHERE tenant_id=? AND id=?",
-                json.writeValueAsString(sources),
+                json.writeValueAsString(linkedSources),
                 draft.transportType() == null ? null : "运输记录",
                 draft.transportType(),
                 draft.transportType(),
@@ -291,21 +318,35 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
     }
 
     public void assertReadOnly(String tenant, String id, LogisticsCostCommand c) {
-        if (id == null) {
-            if (c.ledger() != null
-                    && "HLL".equals(c.ledger().carrierCode())
-                    && c.ledger().trackingNo() != null) {
-                Long count =
-                        jdbc.queryForObject(
-                                "SELECT COUNT(*) FROM order_logistics_import_order WHERE"
-                                        + " tenant_id=? AND carrier_order_no=?",
-                                Long.class,
-                                tenant,
-                                c.ledger().trackingNo());
-                if (count != null && count > 0) throw bad("该货拉拉订单已有运输记录，请查看已有记录，避免重复登记");
-            }
-            return;
+        if (c.ledger() != null
+                && "HLL".equals(c.ledger().carrierCode())
+                && c.ledger().platformOrderNo() != null
+                && !c.ledger().platformOrderNo().isBlank()) {
+            String no = c.ledger().platformOrderNo();
+            Long duplicate =
+                    jdbc.queryForObject(
+                            "SELECT COUNT(*) FROM order_logistics_cost WHERE tenant_id=? AND (? IS"
+                                + " NULL OR id<>?) AND carrier_code='HLL' AND"
+                                + " JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo'))=?",
+                            Long.class,
+                            tenant,
+                            id,
+                            id,
+                            no);
+            Long imported =
+                    jdbc.queryForObject(
+                            "SELECT COUNT(*) FROM order_logistics_import_order WHERE tenant_id=?"
+                                + " AND carrier_order_no=? AND cost_id IS NOT NULL AND (? IS NULL"
+                                + " OR cost_id<>?)",
+                            Long.class,
+                            tenant,
+                            no,
+                            id,
+                            id);
+            if ((duplicate != null && duplicate > 0) || (imported != null && imported > 0))
+                throw bad("该货拉拉订单已有运输记录，请查看已有记录，避免重复登记");
         }
+        if (id == null) return;
         var r = imports.byCost(tenant, id).orElse(null);
         if (r == null || !"API".equals(r.sourceChannel())) return;
         var source = r.latestOrder() == null ? r.order() : r.latestOrder();
@@ -313,7 +354,7 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
         var p = c.ledger();
         if (p == null
                 || !"HLL".equals(p.carrierCode())
-                || !Objects.equals(p.trackingNo(), source.orderNo())
+                || !Objects.equals(p.platformOrderNo(), source.orderNo())
                 || !Objects.equals(c.costDate(), LocalDate.parse(source.useTime().substring(0, 10)))
                 || bill == null
                 || p.feeItems() == null

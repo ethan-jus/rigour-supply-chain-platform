@@ -59,6 +59,22 @@ public class JdbcHuolalaStoreTest {
         }
     }
 
+    @Test
+    void packagedVersionedMigrationsHaveUniqueVersions() throws Exception {
+        var resources =
+                new org.springframework.core.io.support.PathMatchingResourcePatternResolver()
+                        .getResources("classpath*:db/migration/V*__*.sql");
+        var scripts = new LinkedHashMap<String, List<String>>();
+        for (var resource : resources) {
+            var filename = resource.getFilename();
+            var version = filename.substring(1, filename.indexOf("__")).replace('_', '.');
+            scripts.computeIfAbsent(version, key -> new ArrayList<>()).add(filename);
+        }
+        assertThat(scripts).isNotEmpty();
+        scripts.forEach(
+                (version, files) -> assertThat(files).as("Flyway version %s", version).hasSize(1));
+    }
+
     @BeforeEach
     void setup() throws Exception {
         context = new AnnotationConfigApplicationContext(Config.class);
@@ -87,6 +103,7 @@ public class JdbcHuolalaStoreTest {
                 "CREATE UNIQUE INDEX raw_revision ON"
                     + " integration_raw_landing(tenant_id,source_system,source_object_type,source_id,payload_checksum)");
         create("V2__integration_sync_runtime.sql", "integration_sync_run");
+        jdbc.execute("ALTER TABLE integration_sync_run ADD hll_stages_json LONGTEXT");
         create("V2__integration_sync_runtime.sql", "integration_dead_letter");
         create("V2__integration_sync_runtime.sql", "integration_outbox_event");
         create(
@@ -316,5 +333,26 @@ public class JdbcHuolalaStoreTest {
                         jdbc.queryForObject(
                                 "SELECT COUNT(*) FROM integration_manual_resolution", Long.class))
                 .isZero();
+    }
+
+    @Test
+    void stageCountsBelongToTheRunEvenWhenRawPayloadIsDeduplicatedAcrossRuns() {
+        var first = store.startRun(tenant, actor, "ORDERS", "MANUAL", Instant.now());
+        var second = store.startRun(tenant, actor, "ORDERS", "MANUAL", Instant.now());
+        store.stages(tenant, first, new StageCounts(2, 1, 1, 0));
+        store.stages(tenant, second, new StageCounts(2, 2, 0, 0));
+        assertThat(store.runs(tenant))
+                .filteredOn(r -> r.id().equals(first.toString()))
+                .singleElement()
+                .satisfies(r -> assertThat(r.stages()).isEqualTo(new StageCounts(2, 1, 1, 0)));
+        assertThat(store.runs(tenant))
+                .filteredOn(r -> r.id().equals(second.toString()))
+                .singleElement()
+                .satisfies(r -> assertThat(r.stages()).isEqualTo(new StageCounts(2, 2, 0, 0)));
+        store.stages(UUID.randomUUID(), first, new StageCounts(99, 99, 0, 0));
+        assertThat(store.runs(tenant))
+                .filteredOn(r -> r.id().equals(first.toString()))
+                .singleElement()
+                .satisfies(r -> assertThat(r.stages().listSaved()).isEqualTo(2));
     }
 }

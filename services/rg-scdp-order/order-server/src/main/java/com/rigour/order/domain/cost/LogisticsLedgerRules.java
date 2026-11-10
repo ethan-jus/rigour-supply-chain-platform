@@ -28,6 +28,9 @@ public final class LogisticsLedgerRules {
         if (p.driverName() != null && p.driverName().length() > 100
                 || p.vehicleNo() != null && p.vehicleNo().length() > 50) throw bad("司机或车牌信息过长");
         if (p.trackingNo() != null && p.trackingNo().length() > 100) throw bad("运单号过长");
+        if (p.platformOrderNo() != null
+                && (!"HLL".equals(p.carrierCode()) || p.platformOrderNo().length() > 80))
+            throw bad("货拉拉订单号与物流公司不匹配或过长");
         if ("OTHER".equals(p.transportPurposeCode()))
             required(p.nonSalesPurposeCode(), 200, "其他费用用途说明");
         party(p.sender(), false, confirm);

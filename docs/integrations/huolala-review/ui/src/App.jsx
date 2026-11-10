@@ -2481,9 +2481,9 @@ export function App() {
                                                     {[
                                                         "货拉拉员工姓名",
                                                         "手机号",
-                                                        "平台部门",
+                                                        "货拉拉员工编号",
                                                         "本系统员工",
-                                                        "本系统部门",
+                                                        "本系统所属部门",
                                                         "关联状态",
                                                         "操作",
                                                     ].map((x) => (
@@ -2513,7 +2513,7 @@ export function App() {
                                                         <tr key={s.id}>
                                                             <td>{s.name}</td>
                                                             <td>{s.phone}</td>
-                                                            <td>{s.dept}</td>
+                                                            <td>{s.id}</td>
                                                             <td>
                                                                 {internal(s.id)
                                                                     ?.name ||
@@ -2852,9 +2852,6 @@ export function App() {
                                     </Info>
                                     <Info label="平台员工手机号">
                                         {platform(detail.staffId)?.phone || "-"}
-                                    </Info>
-                                    <Info label="平台部门">
-                                        {platform(detail.staffId)?.dept || "-"}
                                     </Info>
                                     <Info label="本系统员工">
                                         {internal(detail.staffId)?.name || "-"}
@@ -3630,8 +3627,8 @@ export function App() {
                         <Info label="手机号">
                             {platform(staffTarget)?.phone}
                         </Info>
-                        <Info label="平台部门">
-                            {platform(staffTarget)?.dept}
+                        <Info label="本系统所属部门">
+                            {hr.find((x) => x.id === employee)?.dept || "-"}
                         </Info>
                     </div>
                     <Field label="本系统员工" required>

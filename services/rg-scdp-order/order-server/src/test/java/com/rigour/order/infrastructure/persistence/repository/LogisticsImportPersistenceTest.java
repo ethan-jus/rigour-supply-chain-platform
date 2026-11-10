@@ -13,7 +13,7 @@ import tools.jackson.databind.json.JsonMapper;
 import java.math.BigDecimal;
 import java.util.*;
 
-class LogisticsImportPersistenceTest {
+public class LogisticsImportPersistenceTest {
     JdbcTemplate jdbc;
     JdbcLogisticsImportStore store;
 
@@ -28,7 +28,7 @@ class LogisticsImportPersistenceTest {
                                 "sa",
                                 ""));
         jdbc.execute(
-                """
+"""
 CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id VARCHAR(36),enterprise_id VARCHAR(80),carrier_order_no VARCHAR(80),file_name VARCHAR(200),file_hash VARCHAR(64),source_json CLOB,state VARCHAR(20),cost_id VARCHAR(36),revision INT,created_by VARCHAR(50),created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,UNIQUE(tenant_id,carrier_order_no))
 """);
         for (var column :
@@ -66,6 +66,49 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                                 Map.of("收货人信息", "星河门店"),
                                 List.of(),
                                 4)));
+    }
+
+    public static String jsonExtract(String body, String path) {
+        if (body == null) return null;
+        var node = new tools.jackson.databind.ObjectMapper().readTree(body);
+        for (String key : path.substring(2).split("\\.")) node = node.path(key);
+        return node.isMissingNode() || node.isNull() ? null : node.asText();
+    }
+
+    public static String jsonUnquote(String text) {
+        return text;
+    }
+
+    @Test
+    void platformNumberGuardDoesNotCompareWithWaybillOrAnotherTenantsNumber() {
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD id VARCHAR(36)");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD data_json CLOB");
+        jdbc.execute(
+                "CREATE ALIAS JSON_EXTRACT FOR '"
+                        + LogisticsImportPersistenceTest.class.getName()
+                        + ".jsonExtract'");
+        jdbc.execute(
+                "CREATE ALIAS JSON_UNQUOTE FOR '"
+                        + LogisticsImportPersistenceTest.class.getName()
+                        + ".jsonUnquote'");
+        jdbc.update(
+                "INSERT INTO order_logistics_cost(tenant_id,id,carrier_code,tracking_no,data_json)"
+                    + " VALUES('T1','C1','HLL','WB-001',?)",
+                "{\"ledger\":{\"platformOrderNo\":\"3616894445226123730\"}}");
+        assertThat(store.trackingExists("T1", "3616894445226123730")).isTrue();
+        assertThat(store.trackingExists("T1", "WB-001")).isFalse();
+        assertThat(store.trackingExists("T2", "3616894445226123730")).isFalse();
+        var guarded = new JdbcPlatformTransportStore(jdbc, JsonMapper.builder().build(), store);
+        var command =
+                JsonMapper.builder()
+                        .build()
+                        .readValue(
+                                "{\"ledger\":{\"schemaVersion\":2,\"carrierCode\":\"HLL\",\"trackingNo\":\"WB-NEW\",\"platformOrderNo\":\"3616894445226123730\"}}",
+                                com.rigour.order.api.v1.model.LogisticsCostCommand.class);
+        assertThatThrownBy(() -> guarded.assertReadOnly("T1", null, command))
+                .hasMessageContaining("已有运输记录");
+        assertThatCode(() -> guarded.assertReadOnly("T2", null, command))
+                .doesNotThrowAnyException();
     }
 
     @Test

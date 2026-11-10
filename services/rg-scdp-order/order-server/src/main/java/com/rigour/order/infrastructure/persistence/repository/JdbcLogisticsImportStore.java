@@ -108,7 +108,8 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
     public boolean trackingExists(String tenant, String tracking) {
         return jdbc.queryForObject(
                         "SELECT COUNT(*) FROM order_logistics_cost WHERE tenant_id=? AND"
-                                + " carrier_code='HLL' AND tracking_no=?",
+                            + " carrier_code='HLL' AND"
+                            + " JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo'))=?",
                         Long.class,
                         tenant,
                         tracking)
@@ -265,7 +266,8 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
                             .set(field, prior.path("facts").path(field));
             if (tree.path("paidAmount").isNull()) tree.set("paidAmount", prior.path("paidAmount"));
             if (sameEmployee(order, last))
-                for (String field : List.of("sourceEmployeeName", "sourceStaffId"))
+                for (String field :
+                        List.of("sourceEmployeeName", "sourceStaffId", "sourceDepartmentName"))
                     if (tree.path("facts").path(field).asText("").isBlank())
                         ((tools.jackson.databind.node.ObjectNode) tree.path("facts"))
                                 .set(field, prior.path("facts").path(field));

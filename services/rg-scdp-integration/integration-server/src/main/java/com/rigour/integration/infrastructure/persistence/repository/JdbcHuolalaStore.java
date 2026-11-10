@@ -327,6 +327,15 @@ public class JdbcHuolalaStore implements HuolalaStore {
     }
 
     @Override
+    public void stages(UUID tenant, UUID run, StageCounts stages) {
+        jdbc.update(
+                "UPDATE integration_sync_run SET hll_stages_json=? WHERE tenant_id=? AND id=?",
+                json.writeValueAsString(stages),
+                bytes(tenant),
+                bytes(run));
+    }
+
+    @Override
     public List<Run> runs(UUID tenant) {
         var c = connection(tenant);
         if (c.isEmpty()) return List.of();
@@ -344,7 +353,11 @@ public class JdbcHuolalaStore implements HuolalaStore {
                                 r.getLong("rejected_count"),
                                 instant(r, "started_at"),
                                 instant(r, "finished_at"),
-                                r.getString("error_message")),
+                                r.getString("error_message"),
+                                r.getString("hll_stages_json") == null
+                                        ? null
+                                        : json.readValue(
+                                                r.getString("hll_stages_json"), StageCounts.class)),
                 bytes(tenant),
                 bytes(task(UUID.fromString(c.get().id()))));
     }
@@ -445,7 +458,10 @@ public class JdbcHuolalaStore implements HuolalaStore {
                         String.class,
                         bytes(tenant),
                         bytes(UUID.fromString(rawId)));
-        String objectType = type.startsWith("EMPLOYEE") ? "EMPLOYEE" : "ORDER";
+        String objectType =
+                type.startsWith("EMPLOYEE_DETAIL")
+                        ? "EMPLOYEE_DETAIL"
+                        : type.startsWith("EMPLOYEE") ? "EMPLOYEE" : "ORDER";
         if (error == null)
             jdbc.update(
                     "UPDATE integration_dead_letter SET"
@@ -529,7 +545,8 @@ public class JdbcHuolalaStore implements HuolalaStore {
                             active ? "LINKED" : "UNMATCHED",
                             mapping.containsKey("revision")
                                     ? ((Number) mapping.get("revision")).longValue()
-                                    : 0));
+                                    : 0,
+                            node.path("depart_name").asText(null)));
         }
         return List.copyOf(rows.values());
     }

@@ -308,6 +308,7 @@ class HuolalaServiceTest {
                         eq("员工目录暂未获取，订单继续同步；请检查员工查询权限后重试"));
         verify(store)
                 .finishRun(eq(tenant), eq(run), eq(1L), eq(1L), eq(0L), eq(1L), isNull(), any());
+        verify(store, atLeastOnce()).stages(tenant, run, new StageCounts(1, 1, 0, 0));
         var receipts =
                 org.mockito.ArgumentCaptor.forClass(
                         com.rigour.order.api.v1.model.LogisticsImportModels.ApiSource.class);
@@ -349,6 +350,71 @@ class HuolalaServiceTest {
         service.sync(new SyncCommand("ALL", LocalDate.now(), LocalDate.now(), null));
         verify(store).expired(tenant);
         verify(gateway, never()).read(any(), any(), any(), any());
+    }
+
+    @Test
+    void directoryEmployeesRemainUsableWhenSupplementalDetailIsUnavailable() {
+        var token = new HuolalaGateway.Token("access", "refresh", Instant.now().plusSeconds(3600));
+        when(gateway.load(any(), any())).thenReturn(token);
+        var tree = json.createObjectNode();
+        var department =
+                tree.putArray("list")
+                        .addObject()
+                        .put("code", "10")
+                        .put("name", "平台运营部")
+                        .put("flag", 1);
+        department
+                .putArray("children")
+                .addObject()
+                .put("code", "11")
+                .put("name", "李经理")
+                .put("phone_no", "13800000000")
+                .put("flag", 2);
+        when(gateway.read(any(), any(), eq("e-staff-construct"), any())).thenReturn(tree);
+        when(gateway.read(any(), any(), eq("e-staff-detail"), any()))
+                .thenThrow(new IllegalStateException("not granted"));
+        when(store.raw(any(), any(), any(), any(), any(), any()))
+                .thenReturn(UUID.randomUUID().toString());
+        service.sync(new SyncCommand("EMPLOYEES", LocalDate.now(), LocalDate.now(), null));
+        verify(store)
+                .raw(
+                        eq(tenant),
+                        eq(connector),
+                        eq(run),
+                        eq("EMPLOYEE"),
+                        eq("11"),
+                        argThat(
+                                node ->
+                                        node.path("staff_name").asText().equals("李经理")
+                                                && node.path("depart_name").asText().equals("平台运营部")
+                                                && !node.has("user_id")));
+        verify(gateway, never()).read(any(), any(), eq("e-depart-detail"), any());
+        verify(store)
+                .finishRun(eq(tenant), eq(run), eq(1L), eq(1L), eq(0L), eq(1L), isNull(), any());
+    }
+
+    @Test
+    void employeeBindingTakesDepartmentFromSelectedHrEmployeeRatherThanPlatformDepartment() {
+        var external =
+                new Employee(
+                        "11",
+                        "22",
+                        "李经理",
+                        "13800000000",
+                        "S11",
+                        "10",
+                        null,
+                        null,
+                        null,
+                        "UNMATCHED",
+                        0,
+                        "平台运营部");
+        var internal = new EmployeeCandidate(91L, "EMP91", "李经理", "13800000000", "武汉销售部", "ACTIVE");
+        when(store.employee(tenant, "11")).thenReturn(Optional.of(external));
+        when(domains.employee(any(), eq(91L))).thenReturn(internal);
+        service.bind(new BindEmployee("11", 91L, 0, "首次关联"));
+        verify(store).bind(tenant, actor, external, internal, 0, "首次关联");
+        verifyNoInteractions(gateway);
     }
 
     @Test

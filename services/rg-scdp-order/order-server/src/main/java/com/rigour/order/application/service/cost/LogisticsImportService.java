@@ -282,7 +282,7 @@ public class LogisticsImportService {
                 || !expectedTypes.containsKey(p.transportPurposeCode())
                 || !"THIRD_PARTY".equals(p.deliveryModeCode())
                 || !"HLL".equals(p.carrierCode())
-                || !bill.orderNo().equals(p.trackingNo())
+                || !bill.orderNo().equals(p.platformOrderNo())
                 || !LocalDate.parse(bill.useTime().substring(0, 10)).equals(c.costDate()))
             throw bad("运输类型、物流公司、货拉拉单号及日期须与导入报表一致");
         if (p.sources() == null

@@ -63,7 +63,55 @@ public final class LogisticsImportModels {
             List<Fee> fees,
             List<Voucher> receipts,
             List<Voucher> billVouchers,
-            Long employeeMappingRevision) {
+            Long employeeMappingRevision,
+            String sourceDepartmentName) {
+        public SourceFacts(
+                String connectorId,
+                String rawLandingId,
+                String sourceUserId,
+                String sourceStaffId,
+                String sourceEmployeeName,
+                String mappedEmployeeCode,
+                BigDecimal orderAmount,
+                BigDecimal billAmount,
+                BigDecimal unpaidAmount,
+                BigDecimal refundAmount,
+                BigDecimal couponAmount,
+                BigDecimal bonusAmount,
+                String completeTime,
+                String billUpdatedTime,
+                String billState,
+                String issue,
+                List<Stop> stops,
+                List<Fee> fees,
+                List<Voucher> receipts,
+                List<Voucher> billVouchers,
+                Long employeeMappingRevision) {
+            this(
+                    connectorId,
+                    rawLandingId,
+                    sourceUserId,
+                    sourceStaffId,
+                    sourceEmployeeName,
+                    mappedEmployeeCode,
+                    orderAmount,
+                    billAmount,
+                    unpaidAmount,
+                    refundAmount,
+                    couponAmount,
+                    bonusAmount,
+                    completeTime,
+                    billUpdatedTime,
+                    billState,
+                    issue,
+                    stops,
+                    fees,
+                    receipts,
+                    billVouchers,
+                    employeeMappingRevision,
+                    null);
+        }
+
         public SourceFacts {
             employeeMappingRevision =
                     employeeMappingRevision == null ? 0L : employeeMappingRevision;

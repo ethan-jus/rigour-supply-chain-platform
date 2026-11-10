@@ -23,7 +23,51 @@ public record LogisticsCostLedger(
         List<String> scopeCityCodes,
         SourceSync sourceSync,
         String driverName,
-        String vehicleNo) {
+        String vehicleNo,
+        String platformOrderNo) {
+    public LogisticsCostLedger(
+            int schemaVersion,
+            String transportPurposeCode,
+            String deliveryModeCode,
+            String carrierCode,
+            String costMonth,
+            String trackingNo,
+            String transportMethodCode,
+            Party sender,
+            List<Party> receivingPoints,
+            List<Fee> feeItems,
+            List<Source> sources,
+            String nonSalesPurposeCode,
+            String noTrackingReason,
+            String noSourceReason,
+            List<Long> scopeWarehouseIds,
+            List<String> scopeCityCodes,
+            SourceSync sourceSync,
+            String driverName,
+            String vehicleNo) {
+        this(
+                schemaVersion,
+                transportPurposeCode,
+                deliveryModeCode,
+                carrierCode,
+                costMonth,
+                trackingNo,
+                transportMethodCode,
+                sender,
+                receivingPoints,
+                feeItems,
+                sources,
+                nonSalesPurposeCode,
+                noTrackingReason,
+                noSourceReason,
+                scopeWarehouseIds,
+                scopeCityCodes,
+                sourceSync,
+                driverName,
+                vehicleNo,
+                null);
+    }
+
     public LogisticsCostLedger(
             int schemaVersion,
             String transportPurposeCode,
@@ -170,7 +214,55 @@ public record LogisticsCostLedger(
             String employeeName,
             Long departmentId,
             String departmentName,
-            String sourceWarehouseCode) {
+            String sourceWarehouseCode,
+            java.math.BigDecimal documentAmount,
+            java.time.LocalDate documentDate,
+            java.time.Instant linkedAt) {
+        public Source(
+                String orderTypeCode,
+                String orderCode,
+                String linkRoleCode,
+                List<Allocation> allocations,
+                String noSourceReason,
+                String employeeCode,
+                String employeeName,
+                Long departmentId,
+                String departmentName,
+                String sourceWarehouseCode) {
+            this(
+                    orderTypeCode,
+                    orderCode,
+                    linkRoleCode,
+                    allocations,
+                    noSourceReason,
+                    employeeCode,
+                    employeeName,
+                    departmentId,
+                    departmentName,
+                    sourceWarehouseCode,
+                    null,
+                    null,
+                    null);
+        }
+
+        public Source withBusinessSnapshot(
+                java.math.BigDecimal amount, java.time.LocalDate date, java.time.Instant time) {
+            return new Source(
+                    orderTypeCode,
+                    orderCode,
+                    linkRoleCode,
+                    allocations,
+                    noSourceReason,
+                    employeeCode,
+                    employeeName,
+                    departmentId,
+                    departmentName,
+                    sourceWarehouseCode,
+                    amount,
+                    date,
+                    time);
+        }
+
         public Source(
                 String orderTypeCode,
                 String orderCode,
@@ -201,7 +293,10 @@ public record LogisticsCostLedger(
                     source.employeeName(),
                     source.departmentId(),
                     source.departmentName(),
-                    source.senderCode());
+                    source.senderCode(),
+                    source.documentAmount(),
+                    source.documentDate(),
+                    source.linkedAt());
         }
     }
 
@@ -225,7 +320,8 @@ public record LogisticsCostLedger(
                 scopeCityCodes,
                 sync,
                 driverName,
-                vehicleNo);
+                vehicleNo,
+                platformOrderNo);
     }
 
     public LogisticsCostLedger withSources(List<Source> value) {
@@ -248,7 +344,8 @@ public record LogisticsCostLedger(
                 scopeCityCodes,
                 sourceSync,
                 driverName,
-                vehicleNo);
+                vehicleNo,
+                platformOrderNo);
     }
 
     public LogisticsCostLedger withTransportType(String value) {
@@ -271,7 +368,8 @@ public record LogisticsCostLedger(
                 scopeCityCodes,
                 sourceSync,
                 driverName,
-                vehicleNo);
+                vehicleNo,
+                platformOrderNo);
     }
 
     public LogisticsCostLedger resolved(Party from, List<Party> points, List<Long> warehouses) {
@@ -294,7 +392,8 @@ public record LogisticsCostLedger(
                 scopeCityCodes,
                 sourceSync,
                 driverName,
-                vehicleNo);
+                vehicleNo,
+                platformOrderNo);
     }
 
     public LogisticsCostLedger withScopeCities(List<String> cities) {
@@ -317,6 +416,31 @@ public record LogisticsCostLedger(
                 cities,
                 sourceSync,
                 driverName,
-                vehicleNo);
+                vehicleNo,
+                platformOrderNo);
+    }
+
+    public LogisticsCostLedger withPlatformOrderNo(String value) {
+        return new LogisticsCostLedger(
+                schemaVersion,
+                transportPurposeCode,
+                deliveryModeCode,
+                carrierCode,
+                costMonth,
+                trackingNo,
+                transportMethodCode,
+                sender,
+                receivingPoints,
+                feeItems,
+                sources,
+                nonSalesPurposeCode,
+                noTrackingReason,
+                noSourceReason,
+                scopeWarehouseIds,
+                scopeCityCodes,
+                sourceSync,
+                driverName,
+                vehicleNo,
+                value);
     }
 }

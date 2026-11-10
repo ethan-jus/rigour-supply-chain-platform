@@ -69,8 +69,8 @@ class LogisticsImportServiceTest {
 
     LogisticsCostCommand command() {
         return json.readValue(
-                """
-{"costDate":"2026-11-06","ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","deliveryModeCode":"THIRD_PARTY","carrierCode":"HLL","trackingNo":"3616894445226123730",
+"""
+{"costDate":"2026-11-06","ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","deliveryModeCode":"THIRD_PARTY","carrierCode":"HLL","trackingNo":"WB-001","platformOrderNo":"3616894445226123730",
 "sources":[{"orderTypeCode":"SALES_ORDER","orderCode":"SO001","linkRoleCode":"COST","allocations":[]}],
 "feeItems":[{"feeKey":"F1","feeAmount":40.5,"ourAmount":40.5,"bearerCode":"COMPANY"}]}}
 """,

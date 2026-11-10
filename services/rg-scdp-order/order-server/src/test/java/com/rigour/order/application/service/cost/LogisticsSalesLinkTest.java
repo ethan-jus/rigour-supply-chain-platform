@@ -100,7 +100,7 @@ class LogisticsSalesLinkTest {
 
     LogisticsCostCommand command() {
         return json.readValue(
-                """
+"""
 {"cityCode":"WH","costDate":"2026-11-06","paymentStatusCode":"UNPAID","ownerEmployeeCode":"FEE_OWNER","departmentId":999,
 "ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","deliveryModeCode":"SELF","costMonth":"2026-11",
 "sender":{"pointCode":"S1","partyTypeCode":"WAREHOUSE","partyCode":"WH1","cityCode":"WH","address":"仓库地址"},
@@ -125,13 +125,14 @@ class LogisticsSalesLinkTest {
     }
 
     @Test
-    void mismatchedWarehouseOrCustomerCannotBeSaved() {
+    void explicitAuthorizedSenderIsAllowedButMismatchedCustomerCannotBeSaved() {
         var wrongWarehouse =
                 json.readValue(
                         json.writeValueAsString(command()).replace("WH1", "WH2"),
                         LogisticsCostCommand.class);
-        assertThatThrownBy(() -> service.normalize(wrongWarehouse, action, false))
-                .hasMessageContaining("发货仓库必须");
+        // 实际发货信息允许不同于销售单的原仓库，仍需经当前仓库权限校验。
+        assertThat(service.normalize(wrongWarehouse, action, false).ledger().sender().partyCode())
+                .isEqualTo("WH2");
         var wrongCustomer =
                 json.readValue(
                         json.writeValueAsString(command()).replace("CUS1", "CUS2"),

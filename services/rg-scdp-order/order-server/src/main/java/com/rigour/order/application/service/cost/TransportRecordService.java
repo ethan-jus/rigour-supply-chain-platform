@@ -114,6 +114,9 @@ public class TransportRecordService {
             var f = order.facts();
             if (!"HLL".equals(d.carrierCode())
                     || !Objects.equals(d.platformOrderNo(), order.orderNo())
+                    || !Objects.equals(
+                            blankToNull(d.trackingNo()),
+                            blankToNull(order.raw() == null ? null : order.raw().get("运单号")))
                     || !Objects.equals(d.date().toString(), order.useTime().substring(0, 10))
                     || f != null && !same(d.amount(), f.billAmount()))
                 throw bad("平台物流公司、订单号、日期和金额只读");
@@ -161,7 +164,7 @@ public class TransportRecordService {
                             draft.transportType(),
                             draft.date(),
                             "HLL",
-                            order.orderNo(),
+                            order.raw() == null ? null : order.raw().get("运单号"),
                             order.orderNo(),
                             draft.warehouseCode(),
                             first(draft.senderName(), from == null ? null : from.name()),
@@ -374,31 +377,35 @@ public class TransportRecordService {
                             .departmentId();
         var ledger =
                 new LogisticsCostLedger(
-                        2,
-                        d.transportType(),
-                        "SELF".equals(d.carrierCode()) ? "SELF" : "THIRD_PARTY",
-                        d.carrierCode(),
-                        d.date().toString().substring(0, 7),
-                        first(d.platformOrderNo(), d.trackingNo()),
-                        null,
-                        sender,
-                        points,
-                        List.of(
-                                new Fee(
-                                        "freight",
-                                        "FREIGHT",
-                                        d.amount(),
-                                        "COMPANY",
-                                        d.amount(),
-                                        "EQUAL",
-                                        d.zeroReason(),
-                                        null)),
-                        sources,
-                        "OTHER".equals(d.transportType()) ? first(d.remark(), "其他订单运输") : null,
-                        "实际无运单号",
-                        null,
-                        List.of(),
-                        List.of());
+                                2,
+                                d.transportType(),
+                                "SELF".equals(d.carrierCode()) ? "SELF" : "THIRD_PARTY",
+                                d.carrierCode(),
+                                d.date().toString().substring(0, 7),
+                                d.trackingNo(),
+                                null,
+                                sender,
+                                points,
+                                List.of(
+                                        new Fee(
+                                                "freight",
+                                                "FREIGHT",
+                                                d.amount(),
+                                                "COMPANY",
+                                                d.amount(),
+                                                "EQUAL",
+                                                d.zeroReason(),
+                                                null)),
+                                sources,
+                                "OTHER".equals(d.transportType())
+                                        ? first(d.remark(), "其他订单运输")
+                                        : null,
+                                "实际无运单号",
+                                null,
+                                List.of(),
+                                List.of())
+                        .withPlatformOrderNo(
+                                "HLL".equals(d.carrierCode()) ? d.platformOrderNo() : null);
         return new LogisticsCostCommand(
                 old == null ? d.requestId() : old.data().requestId(),
                 old == null ? null : old.revision(),
@@ -450,5 +457,9 @@ public class TransportRecordService {
 
     private static BusinessException bad(String message) {
         return new BusinessException(ErrorCode.BAD_REQUEST, message, List.of());
+    }
+
+    private static String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.strip();
     }
 }

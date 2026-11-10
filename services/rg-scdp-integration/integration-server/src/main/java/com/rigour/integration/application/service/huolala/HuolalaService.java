@@ -309,7 +309,7 @@ public class HuolalaService {
     }
 
     private void execute(UUID tenant, Connection c, UUID run, SyncCommand q) {
-        long[] count = new long[4];
+        long[] count = new long[8];
         String error = null;
         try {
             var token = gateway.load(tenant.toString(), c.id());
@@ -351,6 +351,8 @@ public class HuolalaService {
         } catch (RuntimeException e) {
             error = safeError(e);
         } finally {
+            if (!"EMPLOYEES".equals(q.scope()))
+                store.stages(tenant, run, new StageCounts(count[4], count[5], count[6], count[7]));
             store.finishRun(
                     tenant, run, count[0], count[1], count[2], count[3], error, Instant.now());
             store.finish(
@@ -367,6 +369,10 @@ public class HuolalaService {
         List<JsonNode> staff = new ArrayList<>();
         collect(tree, staff, 0);
         if (staff.size() > 5000) throw new IllegalStateException("员工目录超过单次处理上限，请联系管理员");
+        store.raw(tenant, UUID.fromString(c.id()), run, "EMPLOYEE_DIRECTORY", "DIRECTORY", tree);
+        Map<String, Employee> previous = new HashMap<>();
+        for (var employee : store.employees(tenant)) previous.put(employee.staffId(), employee);
+        boolean detailAvailable = true;
         for (var node : staff) {
             store.heartbeat(tenant, run.toString(), Instant.now());
             count[0]++;
@@ -374,12 +380,62 @@ public class HuolalaService {
             String rawId = null, id = node.path("code").asText();
             try {
                 if (!id.matches("[0-9]{1,10}")) throw new IllegalArgumentException("平台员工编号无效");
-                var employee =
-                        gateway.read(
-                                c, token, "e-staff-detail", Map.of("staff_id", Long.parseLong(id)));
-                if (employee.path("staff_id").asText("").isBlank()
-                        || !c.enterpriseId().equals(employee.path("ep_id").asText()))
-                    throw new IllegalArgumentException("员工所属企业不一致");
+                var employee = json.createObjectNode();
+                employee.put("ep_id", c.enterpriseId())
+                        .put("staff_id", id)
+                        .put("staff_name", node.path("name").asText(""))
+                        .put("phone_no", node.path("phone_no").asText(""))
+                        .put("depart_id", node.path("directoryDepartmentId").asText(""))
+                        .put("depart_name", node.path("directoryDepartmentName").asText(""));
+                var prior = previous.get(id);
+                if (prior != null)
+                    employee.put("user_id", prior.userId()).put("staff_no", prior.staffNo());
+                if (detailAvailable)
+                    try {
+                        var extra =
+                                gateway.read(
+                                        c,
+                                        token,
+                                        "e-staff-detail",
+                                        Map.of("staff_id", Long.parseLong(id)));
+                        if (!id.equals(extra.path("staff_id").asText())
+                                || !c.enterpriseId().equals(extra.path("ep_id").asText()))
+                            throw new IllegalArgumentException("员工所属企业或编号不一致");
+                        String extraRaw =
+                                store.raw(
+                                        tenant,
+                                        UUID.fromString(c.id()),
+                                        run,
+                                        "EMPLOYEE_DETAIL",
+                                        id,
+                                        extra);
+                        store.delivery(tenant, run, extraRaw, id, null);
+                        for (String field :
+                                List.of(
+                                        "user_id",
+                                        "staff_no",
+                                        "staff_name",
+                                        "phone_no",
+                                        "depart_id"))
+                            if (!extra.path(field).isMissingNode() && !extra.path(field).isNull())
+                                employee.set(field, extra.path(field));
+                        if (!Objects.equals(
+                                employee.path("depart_id").asText(),
+                                node.path("directoryDepartmentId").asText()))
+                            employee.putNull("depart_name");
+                    } catch (RuntimeException unavailable) {
+                        detailAvailable = false;
+                        count[3]++;
+                        var failed =
+                                store.raw(
+                                        tenant,
+                                        UUID.fromString(c.id()),
+                                        run,
+                                        "EMPLOYEE_DETAIL_FAILED",
+                                        id,
+                                        node);
+                        store.delivery(tenant, run, failed, id, "员工目录已保存，补充资料暂未取得；不影响订单同步");
+                    }
                 rawId = store.raw(tenant, UUID.fromString(c.id()), run, "EMPLOYEE", id, employee);
                 store.delivery(tenant, run, rawId, id, null);
                 count[1]++;
@@ -412,13 +468,15 @@ public class HuolalaService {
         Map<String, String> names = new HashMap<>(),
                 mappings = new HashMap<>(),
                 phones = new HashMap<>(),
-                staffIds = new HashMap<>();
+                staffIds = new HashMap<>(),
+                departments = new HashMap<>();
         for (var e : staff)
             if (!e.userId().isBlank()) {
                 mappingRevisions.put(e.userId(), e.revision());
                 names.put(e.userId(), e.name());
                 phones.put(e.userId(), e.phone());
                 staffIds.put(e.userId(), e.staffId());
+                departments.put(e.userId(), e.externalDepartmentName());
                 if (e.employeeCode() != null) mappings.put(e.userId(), e.employeeCode());
             }
         for (int page = 1; page <= 500; page++) {
@@ -468,7 +526,11 @@ public class HuolalaService {
                                     names.get(user),
                                     staffIds.get(user),
                                     phones.get(user));
-                    summary = withMappingRevision(summary, mappingRevisions.getOrDefault(user, 0L));
+                    summary =
+                            withMappingRevision(
+                                    summary,
+                                    mappingRevisions.getOrDefault(user, 0L),
+                                    departments.get(user));
                     var row =
                             domains.receive(
                                     service(tenant),
@@ -476,7 +538,10 @@ public class HuolalaService {
                                             c.id(),
                                             HuolalaOrderNormalizer.fingerprint(summary, json),
                                             summary));
+                    count[4]++;
+                    store.delivery(tenant, run, rawId, no, null);
                     boolean detailComplete = false;
+                    String detailRawId = null;
                     try {
                         var detail =
                                 gateway.read(
@@ -487,9 +552,10 @@ public class HuolalaService {
                         var payload = json.createObjectNode();
                         payload.set("list", source);
                         payload.set("detail", detail);
-                        rawId =
+                        detailRawId =
                                 store.raw(
                                         tenant, UUID.fromString(c.id()), run, "ORDER", no, payload);
+                        rawId = detailRawId;
                         var normalized =
                                 HuolalaOrderNormalizer.normalize(
                                         c,
@@ -502,7 +568,9 @@ public class HuolalaService {
                                         phones.get(user));
                         normalized =
                                 withMappingRevision(
-                                        normalized, mappingRevisions.getOrDefault(user, 0L));
+                                        normalized,
+                                        mappingRevisions.getOrDefault(user, 0L),
+                                        departments.get(user));
                         if (vouchers != null) vouchers.enqueue(tenant, c.id(), normalized, detail);
                         var detailedRow =
                                 domains.receive(
@@ -514,15 +582,27 @@ public class HuolalaService {
                                                 normalized));
                         if (!"CREATED".equals(row.syncOutcome())) row = detailedRow;
                         detailComplete = true;
+                        count[5]++;
                     } catch (RuntimeException detailFailure) {
                         count[3]++;
-                        store.delivery(tenant, run, rawId, no, "订单列表已保存，详情暂未同步，请重试");
+                        count[6]++;
+                        if (detailRawId == null)
+                            detailRawId =
+                                    store.raw(
+                                            tenant,
+                                            UUID.fromString(c.id()),
+                                            run,
+                                            "ORDER_DETAIL_PENDING",
+                                            no,
+                                            source);
+                        store.delivery(tenant, run, detailRawId, no, "订单列表已保存，详情暂未同步，请重试");
                     }
                     if (detailComplete) store.delivery(tenant, run, rawId, no, null);
                     if ("UNCHANGED".equals(row.syncOutcome())) count[2]++;
                     else count[1]++;
                 } catch (RuntimeException e) {
                     count[3]++;
+                    count[7]++;
                     if (rawId == null)
                         rawId =
                                 store.raw(
@@ -535,6 +615,7 @@ public class HuolalaService {
                     store.delivery(tenant, run, rawId, no, safeError(e));
                 }
             }
+            store.stages(tenant, run, new StageCounts(count[4], count[5], count[6], count[7]));
             store.progress(
                     tenant, run, count[0], count[1], count[2], count[3], q.from(), q.to(), page);
             if (orders.size() < 20 || page * 20L >= data.path("total").asLong(Long.MAX_VALUE))
@@ -544,10 +625,15 @@ public class HuolalaService {
     }
 
     private com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder withMappingRevision(
-            com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder order, long revision) {
+            com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder order,
+            long revision,
+            String department) {
         var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
         ((tools.jackson.databind.node.ObjectNode) node.path("facts"))
                 .put("employeeMappingRevision", revision);
+        if (department != null && !department.isBlank())
+            ((tools.jackson.databind.node.ObjectNode) node.path("facts"))
+                    .put("sourceDepartmentName", department);
         return json.treeToValue(
                 node, com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder.class);
     }
@@ -566,14 +652,33 @@ public class HuolalaService {
     }
 
     private static void collect(JsonNode node, List<JsonNode> result, int depth) {
+        collect(node, result, depth, null, null);
+    }
+
+    private static void collect(
+            JsonNode node,
+            List<JsonNode> result,
+            int depth,
+            String departmentId,
+            String departmentName) {
         if (depth > 40) throw new IllegalStateException("员工目录层级异常");
-        if (node.isArray()) {
-            for (var child : node) collect(child, result, depth + 1);
-        } else if (node.isObject()) {
-            if (node.path("flag").asInt() == 2) result.add(node);
-            else {
-                if (node.has("list")) collect(node.path("list"), result, depth + 1);
-                if (node.has("children")) collect(node.path("children"), result, depth + 1);
+        if (node.isArray())
+            for (var child : node) collect(child, result, depth + 1, departmentId, departmentName);
+        else if (node.isObject()) {
+            if (node.path("flag").asInt() == 2) {
+                var employee = (tools.jackson.databind.node.ObjectNode) node.deepCopy();
+                employee.put("directoryDepartmentId", departmentId)
+                        .put("directoryDepartmentName", departmentName);
+                result.add(employee);
+            } else {
+                if (node.path("flag").asInt() == 1) {
+                    departmentId = node.path("code").asText(null);
+                    departmentName = node.path("name").asText(null);
+                }
+                if (node.has("list"))
+                    collect(node.path("list"), result, depth + 1, departmentId, departmentName);
+                if (node.has("children"))
+                    collect(node.path("children"), result, depth + 1, departmentId, departmentName);
             }
         }
     }

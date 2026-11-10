@@ -57,7 +57,36 @@ public final class HuolalaModels {
             long rejected,
             Instant startedAt,
             Instant finishedAt,
-            String message) {}
+            String message,
+            StageCounts stages) {
+        public Run(
+                String id,
+                String scope,
+                String status,
+                long fetched,
+                long accepted,
+                long unchanged,
+                long rejected,
+                Instant startedAt,
+                Instant finishedAt,
+                String message) {
+            this(
+                    id,
+                    scope,
+                    status,
+                    fetched,
+                    accepted,
+                    unchanged,
+                    rejected,
+                    startedAt,
+                    finishedAt,
+                    message,
+                    null);
+        }
+    }
+
+    public record StageCounts(
+            long listSaved, long detailSaved, long detailPending, long orderFailed) {}
 
     public record SyncIssue(
             String sourceType, String sourceId, String message, Instant occurredAt) {}
@@ -73,7 +102,35 @@ public final class HuolalaModels {
             String employeeName,
             String departmentName,
             String state,
-            long revision) {}
+            long revision,
+            String externalDepartmentName) {
+        public Employee(
+                String staffId,
+                String userId,
+                String name,
+                String phone,
+                String staffNo,
+                String externalDepartmentId,
+                String employeeCode,
+                String employeeName,
+                String departmentName,
+                String state,
+                long revision) {
+            this(
+                    staffId,
+                    userId,
+                    name,
+                    phone,
+                    staffNo,
+                    externalDepartmentId,
+                    employeeCode,
+                    employeeName,
+                    departmentName,
+                    state,
+                    revision,
+                    null);
+        }
+    }
 
     public record EmployeeCandidate(
             Long id,

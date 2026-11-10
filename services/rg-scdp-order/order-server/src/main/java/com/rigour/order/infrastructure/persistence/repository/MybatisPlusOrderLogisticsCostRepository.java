@@ -6,6 +6,7 @@ import com.rigour.order.api.v1.model.LogisticsCostActionCommand;
 import com.rigour.order.api.v1.model.LogisticsCostAuditView;
 import com.rigour.order.api.v1.model.LogisticsCostCommand;
 import com.rigour.order.api.v1.model.LogisticsCostDetailView;
+import com.rigour.order.api.v1.model.LogisticsCostLedger;
 import com.rigour.order.api.v1.model.LogisticsCostPageView;
 import com.rigour.order.api.v1.model.LogisticsCostQuery;
 import com.rigour.order.api.v1.model.LogisticsCostSourceView;
@@ -32,6 +33,7 @@ import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
 @Repository
@@ -191,11 +193,14 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         }
         String sourceExists =
                 "EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
-                    + " i.tenant_id=order_logistics_cost.tenant_id AND"
-                    + " i.cost_id=order_logistics_cost.id AND i.source_channel='API' AND ";
+                        + " i.tenant_id=order_logistics_cost.tenant_id AND"
+                        + " i.cost_id=order_logistics_cost.id AND i.source_channel='API' AND ";
         if (text(filter.platformOrderNo()))
             q.apply(
-                    sourceExists + "LOCATE({0},i.carrier_order_no)>0)",
+                    "("
+                            + sourceExists
+                            + "LOCATE({0},i.carrier_order_no)>0) OR"
+                            + " LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo')),''))>0)",
                     filter.platformOrderNo().strip());
         if (text(filter.platformEmployeeName()))
             q.apply(
@@ -410,7 +415,22 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             String actor,
             String action) {
         lock(tenant);
-        if (platformRecords != null) platformRecords.assertReadOnly(tenant, id, c);
+        var previous =
+                id == null
+                        ? mapper.selectOne(
+                                new QueryWrapper<OrderLogisticsCostEntity>()
+                                        .eq("tenant_id", tenant)
+                                        .eq("request_id", c.requestId()))
+                        : null;
+        var old =
+                id != null
+                        ? entry(tenant, category, id, action)
+                        : previous == null
+                                ? null
+                                : entry(tenant, category, previous.getId(), action);
+        if (platformRecords != null)
+            platformRecords.assertReadOnly(
+                    tenant, id != null ? id : previous == null ? null : previous.getId(), c);
         boolean platformSource =
                 id != null
                         && platformRecords != null
@@ -440,6 +460,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             if (!sources.isEmpty() && (warehouse == null || source == null)) throw bad("来源缺少有效仓库");
             if (warehouse != null && source != null) scope.requirePair(source, warehouse, action);
         }
+        c = withSavedLinkTimes(c, old);
         String body = body(c);
         String sourceBody = json.writeValueAsString(ledger ? c.ledger().sources() : sources);
         var values =
@@ -488,13 +509,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         .set("updated_by", actor)
                         .set("updated_time", LocalDateTime.now(ZoneOffset.UTC));
         if (id == null) {
-            var previous =
-                    mapper.selectOne(
-                            new QueryWrapper<OrderLogisticsCostEntity>()
-                                    .eq("tenant_id", tenant)
-                                    .eq("request_id", c.requestId()));
             if (previous != null) {
-                var old = entry(tenant, category, previous.getId(), action);
                 if (!body(old.data()).equals(body)
                         || ledger
                                 && !json.writeValueAsString(old.data().ledger().sources())
@@ -535,7 +550,6 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             audit(tenant, saved, "CREATE", actor, c.reason());
             return saved;
         }
-        var old = entry(tenant, category, id, action);
         if (old.data().ledger() != null && !ledger) throw bad("新版费用不能通过旧版协议覆盖");
         var oldDocuments =
                 old.data().logistics() == null ? null : old.data().logistics().externalDocuments();
@@ -640,7 +654,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                                     : old.data().amount())
                                     != 0
                             || old.data().ledger() == null
-                            || !carrier.orderNo().equals(old.data().ledger().trackingNo())
+                            || !carrier.orderNo().equals(old.data().ledger().platformOrderNo())
                             || !"HLL".equals(old.data().ledger().carrierCode()))
                         throw conflict("运输费用、货拉拉单号及已核对净账单不一致，请重新编辑后确认");
                 }
@@ -781,6 +795,43 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                             : null);
                         })
                 .toList();
+    }
+
+    /** 关联时间由保存端产生；重试和普通编辑不刷新，历史缺失不猜测。 */
+    static LogisticsCostCommand withSavedLinkTimes(
+            LogisticsCostCommand command, LogisticsCostDetailView old) {
+        if (command.ledger() == null) return command;
+        var originals =
+                old == null || old.data().ledger() == null
+                        ? List.<LogisticsCostLedger.Source>of()
+                        : old.data().ledger().sources();
+        var now = java.time.Instant.now();
+        var stamped =
+                command.ledger().sources().stream()
+                        .map(
+                                source -> {
+                                    var prior =
+                                            originals.stream()
+                                                    .filter(
+                                                            candidate ->
+                                                                    Objects.equals(
+                                                                                    candidate
+                                                                                            .orderTypeCode(),
+                                                                                    source
+                                                                                            .orderTypeCode())
+                                                                            && Objects.equals(
+                                                                                    candidate
+                                                                                            .orderCode(),
+                                                                                    source
+                                                                                            .orderCode()))
+                                                    .findFirst();
+                                    return source.withBusinessSnapshot(
+                                            source.documentAmount(),
+                                            source.documentDate(),
+                                            prior.isPresent() ? prior.get().linkedAt() : now);
+                                })
+                        .toList();
+        return command.withLedger(command.ledger().withSources(stamped), command.amount());
     }
 
     private String body(LogisticsCostCommand c) {
