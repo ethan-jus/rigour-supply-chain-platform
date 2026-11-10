@@ -218,6 +218,10 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                                     .eq("source_tenant_key", sourceTenantKey)
                                     .in("source_employee_id", ids)
                                     .eq("deleted", 0));
+            if ("DINGHUOBAO".equals(sourceSystem)
+                    && bindings.stream().anyMatch(b -> Boolean.TRUE.equals(b.reviewRequired))) {
+                return List.of();
+            }
             Set<String> employeeCodes =
                     bindings.stream()
                             .map(binding -> clean(binding.employeeCode, 50))
@@ -247,6 +251,31 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                         key,
                         resolved(
                                 sourceSystem, sourceTenantKey, binding.sourceEmployeeId, employee));
+            }
+        }
+        // 已有调用方会在来源标识候选中传 StaffMobile；手机号不能当作 staff_id。
+        // 只接受同来源范围内唯一且无待审核冲突的绑定，历史离职人员同样保留归属。
+        if (byKey.isEmpty() && "DINGHUOBAO".equals(sourceSystem)) {
+            List<String> mobiles = ids.stream().filter(id -> id.matches("1[3-9][0-9]{9}")).toList();
+            if (!mobiles.isEmpty()) {
+                List<HrEmployeeSourceBindingEntity> matches = bindingMapper.selectList(
+                        new QueryWrapper<HrEmployeeSourceBindingEntity>()
+                                .eq("tenant_id", tenantId)
+                                .eq("source_system", sourceSystem)
+                                .eq("source_tenant_key", sourceTenantKey)
+                                .in("source_mobile", mobiles)
+                                .eq("deleted", 0));
+                Set<String> codes = matches.stream().map(b -> b.employeeCode).collect(Collectors.toSet());
+                if (codes.size() != 1 || matches.stream().anyMatch(b -> Boolean.TRUE.equals(b.reviewRequired))) {
+                    return List.of();
+                }
+                HrEmployeeEntity employee = employeeByCode(tenantId, codes.iterator().next());
+                if (employee == null || (!names.isEmpty() && !names.contains(employee.employeeName)
+                        && matches.stream().noneMatch(b -> names.contains(b.sourceEmployeeName)))) {
+                    return List.of();
+                }
+                return List.of(resolved(sourceSystem, sourceTenantKey,
+                        matches.getFirst().sourceEmployeeId, employee));
             }
         }
         for (String name : names) {
@@ -439,31 +468,24 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             throw new IllegalArgumentException("原关联已删除或失效，请人工核对，不自动改绑");
         }
         if (employee == null) {
-            // 同名或同手机号的候选包含已删除员工，防止删除后被重新建档。
             String mobile = clean(row.mobile(), 32);
+            if (mobile == null || !mobile.matches("1[3-9][0-9]{9}")) {
+                throw new IllegalArgumentException("订货宝员工缺少有效手机号，请先补齐，不自动新增");
+            }
             List<HrEmployeeEntity> candidates = getBaseMapper().selectList(
-                    new QueryWrapper<HrEmployeeEntity>().eq("tenant_id", tenant)
-                            .and(q -> {
-                                q.eq("employee_name", row.employeeName());
-                                if (mobile != null) q.or().eq("mobile", mobile);
-                            }));
+                    new QueryWrapper<HrEmployeeEntity>().eq("tenant_id", tenant).eq("mobile", mobile));
             if (!candidates.isEmpty()) {
                 List<HrEmployeeEntity> matches = candidates.stream()
-                        .filter(e -> row.employeeName().equals(e.employeeName))
-                        .filter(e -> mobile == null || clean(e.mobile, 32) == null || mobile.equals(e.mobile))
-                        .toList();
-                // 精确姓名+手机号消除同名歧义；唯一手机号候选允许带风险关联，多个候选仍需人工核对。
-                if (mobile != null && matches.size() > 1) {
-                    matches = matches.stream().filter(e -> mobile.equals(e.mobile)).toList();
-                }
-                boolean phoneConflict = mobile != null && candidates.stream()
-                        .anyMatch(e -> mobile.equals(e.mobile) && !row.employeeName().equals(e.employeeName));
-                if (phoneConflict && candidates.size() == 1
-                        && !Integer.valueOf(1).equals(candidates.getFirst().deleted)) {
+                        .filter(e -> !Integer.valueOf(1).equals(e.deleted))
+                        .filter(e -> row.employeeName().equals(e.employeeName)).toList();
+                boolean conflict = candidates.stream().anyMatch(e -> !Integer.valueOf(1).equals(e.deleted)
+                        && !row.employeeName().equals(e.employeeName));
+                if (conflict && candidates.size() == 1 && !Integer.valueOf(1).equals(candidates.getFirst().deleted)) {
+                    // 沿用来源关联待核对流程；只登记冲突，不新增员工、不覆盖HR资料。
                     employee = candidates.getFirst();
                 } else {
-                    if (matches.size() != 1 || phoneConflict || Integer.valueOf(1).equals(matches.getFirst().deleted)) {
-                        throw new IllegalArgumentException("姓名/手机号冲突或员工已删除，请人工确认关联");
+                    if (matches.size() != 1 || conflict) {
+                        throw new IllegalArgumentException("手机号对应多个员工或员工已删除，请人工确认关联");
                     }
                     employee = matches.getFirst();
                 }
