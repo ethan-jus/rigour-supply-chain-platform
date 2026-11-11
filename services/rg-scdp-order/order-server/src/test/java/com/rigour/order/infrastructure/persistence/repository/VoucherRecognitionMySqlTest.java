@@ -64,13 +64,21 @@ class VoucherRecognitionMySqlTest {
         jdbc.update("INSERT INTO order_payment_voucher_transaction(tenant_id,payment_id,voucher_key,voucher_amount,transaction_no,created_by)"
                 + " VALUES('a',5,'a/history',10,'HUMAN-NUMBER','HUMAN')");
         assertThat(queue.discoverUnrecognized(100)).isEqualTo(1);
-        jdbc.update("UPDATE order_voucher_recognition_job SET status='SUCCEEDED' WHERE voucher_key<>'a/history'");
+        jdbc.update("UPDATE order_voucher_recognition_job SET status='SUCCEEDED',result_json=JSON_OBJECT('ruleScriptSha256',?) WHERE voucher_key<>'a/history'",JdbcVoucherRecognitionStore.SCRIPT_FINGERPRINT);
         var historyJob=queue.claim();
         queue.complete(historyJob,JsonMapper.builder().build().readTree(result),result);
         var history=jdbc.queryForMap("SELECT * FROM order_payment_voucher_transaction WHERE payment_id=5");
         assertThat(history).containsEntry("transaction_no","HUMAN-NUMBER").containsEntry("created_by","HUMAN");
         assertThat((java.math.BigDecimal)history.get("voucher_amount")).isEqualByComparingTo("10");
         assertThat(history.get("voucher_paid_time")).isNotNull();
+        // An old successful result missing fields is retried once per script, not forever.
+        jdbc.update("UPDATE order_voucher_recognition_job SET result_json=JSON_OBJECT('engine','rules-1') WHERE voucher_key='a/new1'");
+        assertThat(queue.discoverUnrecognized(100)).isEqualTo(1);
+        var upgraded=queue.claim();
+        String ambiguous="{\"recognitionStatus\":\"REVIEW\",\"ruleScriptSha256\":\""+JdbcVoucherRecognitionStore.SCRIPT_FINGERPRINT+"\"}";
+        queue.complete(upgraded,JsonMapper.builder().build().readTree(ambiguous),ambiguous);
+        assertThat(queue.discoverUnrecognized(100)).isZero();
+        assertThat(jdbc.queryForList("SELECT * FROM order_payment_record WHERE id<=2")).isEqualTo(money.subList(0,2));
         assertThat(queue.discoverUnrecognized(100)).isZero();
         assertThat(jdbc.queryForObject("SELECT created_by FROM order_payment_voucher_transaction WHERE payment_id=2",String.class)).isEqualTo("HUMAN");
     }

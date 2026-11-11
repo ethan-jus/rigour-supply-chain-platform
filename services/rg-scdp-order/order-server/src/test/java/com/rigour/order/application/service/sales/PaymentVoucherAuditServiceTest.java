@@ -43,6 +43,23 @@ class PaymentVoucherAuditServiceTest {
         assertThat(service.paymentStates(List.of())).isEmpty();
     }
 
+    @Test void lowConfidenceVoucherTimeIsVisibleWithoutBecomingFinanceConfirmation() {
+        var store = mock(PaymentVoucherAuditStore.class);
+        var service = new PaymentVoucherAuditService(store, mock(com.rigour.order.application.port.out.OrderStatusDictionary.class));
+        caller("order:read");
+        var paidTime = java.time.Instant.parse("2026-11-06T09:53:41Z");
+        var paymentTime = java.time.Instant.parse("2026-11-07T00:00:00Z");
+        var evidence = new Evidence("a",new BigDecimal("156"),"T","付款时间置信度偏低",paidTime,"SECOND","REVIEW","测试公司","SUCCESS");
+        var payment = new Payment("1","P1","1","SO1","C","S",new BigDecimal("156"),paymentTime,"RECEIVED",false,"T",List.of("a"),List.of(evidence));
+        when(store.payments(tenant.toString(),"order:read")).thenReturn(List.of(payment));
+        when(store.reviews(tenant.toString())).thenReturn(Map.of());
+        var state = service.paymentStates(List.of("1")).get("1");
+        assertThat(state.voucherTimes()).containsExactly(new VoucherTime(paidTime,"SECOND"));
+        assertThat(state.statusCode()).isEqualTo("PENDING_REVIEW");
+        assertThat(payment.time()).isEqualTo(paymentTime);
+        verify(store,never()).appendReview(any(),any(),any(),any(),any(),any(),any(),any());
+    }
+
     @Test void reviewValidatesActiveTenantReasonsAndRequiresReasonForAbnormal() {
         var store = mock(PaymentVoucherAuditStore.class);
         var dict = mock(com.rigour.order.application.port.out.OrderStatusDictionary.class);
