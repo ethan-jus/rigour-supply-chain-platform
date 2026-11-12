@@ -56,7 +56,9 @@ public class TransportRecordController {
 
     @GetMapping("/{id}/vouchers/{voucherId}")
     public ApiResponse<Map<String, String>> voucher(
-            @PathVariable String id, @PathVariable String voucherId) {
-        return ApiResponse.success(Map.of("url", service.voucher(id, voucherId)));
+            @PathVariable String id,
+            @PathVariable String voucherId,
+            @RequestParam(defaultValue = "false") boolean download) {
+        return ApiResponse.success(Map.of("url", service.voucher(id, voucherId, download)));
     }
 }

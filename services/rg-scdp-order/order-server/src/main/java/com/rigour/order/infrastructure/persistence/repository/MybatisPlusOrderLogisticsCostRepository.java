@@ -365,7 +365,17 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                 mapper
                         .selectList(
                                 query(tenant, category, filter, action)
-                                        .orderByDesc("cost_date", "id")
+                                        // 自动记录复用来源主键，用主键查询平台下单时间，避免逐行扫描来源表。
+                                        // 缺少实际下单时间的记录排在后面，再按录入时间及 ID 稳定排序。
+                                        .orderByDesc(
+                                                "COALESCE((SELECT JSON_UNQUOTE(JSON_EXTRACT("
+                                                    + "COALESCE(i.latest_source_json,i.source_json),'$.raw.\"下单时间\"'))"
+                                                    + " FROM order_logistics_import_order i WHERE"
+                                                    + " i.id=order_logistics_cost.id AND"
+                                                    + " i.cost_id=order_logistics_cost.id AND"
+                                                    + " i.tenant_id=order_logistics_cost.tenant_id LIMIT 1),"
+                                                    + " '')")
+                                        .orderByDesc("created_time", "id")
                                         .last(
                                                 "LIMIT "
                                                         + filter.step()

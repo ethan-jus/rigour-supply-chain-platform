@@ -36,13 +36,11 @@ public final class HuolalaModels {
             LocalDate startDate,
             long revision) {}
 
-    public record AuthorizationStart(String url, String state, Instant expiresAt) {}
+    /** 页面只维护同步偏好，应用及企业绑定由服务端配置提供。 */
+    public record SyncSettings(boolean enabled, int intervalMinutes, LocalDate startDate, long revision) {}
 
-    public record AuthorizationFinish(String credential, String state) {
-        @Override
-        public String toString() {
-            return "AuthorizationFinish[REDACTED]";
-        }
+    public record AuthorizationStart(java.util.UUID id, String url, Instant expiresAt) {
+        @Override public String toString() { return "AuthorizationStart[id="+id+"]"; }
     }
 
     public record SyncCommand(String scope, LocalDate from, LocalDate to, String orderNo) {}

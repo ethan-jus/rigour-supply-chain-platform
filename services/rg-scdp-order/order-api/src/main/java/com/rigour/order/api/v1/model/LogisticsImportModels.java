@@ -64,7 +64,59 @@ public final class LogisticsImportModels {
             List<Voucher> receipts,
             List<Voucher> billVouchers,
             Long employeeMappingRevision,
-            String sourceDepartmentName) {
+            String sourceDepartmentName,
+            ReceiptInfo receiptInfo,
+            List<StopPhotos> stopPhotos) {
+        public SourceFacts(
+                String connectorId,
+                String rawLandingId,
+                String sourceUserId,
+                String sourceStaffId,
+                String sourceEmployeeName,
+                String mappedEmployeeCode,
+                BigDecimal orderAmount,
+                BigDecimal billAmount,
+                BigDecimal unpaidAmount,
+                BigDecimal refundAmount,
+                BigDecimal couponAmount,
+                BigDecimal bonusAmount,
+                String completeTime,
+                String billUpdatedTime,
+                String billState,
+                String issue,
+                List<Stop> stops,
+                List<Fee> fees,
+                List<Voucher> receipts,
+                List<Voucher> billVouchers,
+                Long employeeMappingRevision,
+                String sourceDepartmentName) {
+            this(
+                    connectorId,
+                    rawLandingId,
+                    sourceUserId,
+                    sourceStaffId,
+                    sourceEmployeeName,
+                    mappedEmployeeCode,
+                    orderAmount,
+                    billAmount,
+                    unpaidAmount,
+                    refundAmount,
+                    couponAmount,
+                    bonusAmount,
+                    completeTime,
+                    billUpdatedTime,
+                    billState,
+                    issue,
+                    stops,
+                    fees,
+                    receipts,
+                    billVouchers,
+                    employeeMappingRevision,
+                    sourceDepartmentName,
+                    null,
+                    List.of());
+        }
+
         public SourceFacts(
                 String connectorId,
                 String rawLandingId,
@@ -113,6 +165,11 @@ public final class LogisticsImportModels {
         }
 
         public SourceFacts {
+            stops = stops == null ? List.of() : List.copyOf(stops);
+            fees = fees == null ? List.of() : List.copyOf(fees);
+            receipts = receipts == null ? List.of() : List.copyOf(receipts);
+            billVouchers = billVouchers == null ? List.of() : List.copyOf(billVouchers);
+            stopPhotos = stopPhotos == null ? List.of() : List.copyOf(stopPhotos);
             employeeMappingRevision =
                     employeeMappingRevision == null ? 0L : employeeMappingRevision;
         }
@@ -213,6 +270,18 @@ public final class LogisticsImportModels {
             this(code, name, amount, null, List.of());
         }
     }
+
+    /** 货拉拉回单业务信息；寄回快递单号不等同于本次运输的运单号。 */
+    public record ReceiptInfo(
+            Integer type,
+            Integer status,
+            Integer backType,
+            String expressNo,
+            String remark,
+            Integer unableToReturn,
+            String unableReason) {}
+
+    public record StopPhotos(int stopIndex, String name, String phase, List<Voucher> vouchers) {}
 
     public record Voucher(
             String id,

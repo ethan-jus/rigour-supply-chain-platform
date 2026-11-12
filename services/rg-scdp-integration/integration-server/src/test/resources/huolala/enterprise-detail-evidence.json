@@ -1,0 +1,35 @@
+{
+  "order_detail_item": {
+    "order_item": {
+      "ep_id": 1001,
+      "order_display_id": "3624071813921329726",
+      "order_status": 2,
+      "order_time": "2026-11-08 14:36:58",
+      "price_fen": 13764,
+      "paid_amount": 13764,
+      "unpaid_amount": 0,
+      "refund_amount": 0,
+      "update_bill_time": "2026-11-08 16:00:00",
+      "addr_info_arr": [
+        {"name":"武汉仓","addr":"仓储路1号","goods_imgs":["https://luna-cdn.huolala.cn/loading.jpg?signature=old","https://luna-cdn.huolala.cn/loading.jpg?signature=new"]},
+        {"name":"星河门店","addr":"沿江路18号","goods_imgs":["https://luna-cdn.huolala.cn/stop.jpg"]},
+        {"name":"长江门店","addr":"江汉路20号","goods_imgs":["https://luna-cdn.huolala.cn/unloading.jpg"]}
+      ],
+      "order_price_arr": [
+        {"type":203,"bill_name":"专享价","price_fen":10885},
+        {"type":21,"bill_name":"高速路桥费","price_fen":2000,"img_urls":["https://luna-cdn.huolala.cn/toll.png"]},
+        {"type":23,"bill_name":"搬运费","price_fen":1100,"img_urls":["https://luna-cdn.huolala.cn/handling.pdf"]},
+        {"type":205,"bill_name":"税费","price_fen":279},
+        {"type":3,"bill_name":"货运券抵扣","price_fen":-500}
+      ]
+    },
+    "complete_time":"2026-11-08 15:58:00",
+    "receipt_url":["https://luna-cdn.huolala.cn/receipt.jpg"],
+    "receipt_info":{
+      "receipt_type":3,"receipt_status":3,"receipt_back_type":2,
+      "express_no":"SF987654321000","receipt_remark":"纸质回单已寄回",
+      "none_receipt":0,"none_receipt_reason":""
+    }
+  },
+  "driver_info":{"name":"王师傅","phone_no":"隐私号码","license_plate":"鄂A**123"}
+}

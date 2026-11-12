@@ -28,7 +28,7 @@ public class LogisticsImportPersistenceTest {
                                 "sa",
                                 ""));
         jdbc.execute(
-"""
+                """
 CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id VARCHAR(36),enterprise_id VARCHAR(80),carrier_order_no VARCHAR(80),file_name VARCHAR(200),file_hash VARCHAR(64),source_json CLOB,state VARCHAR(20),cost_id VARCHAR(36),revision INT,created_by VARCHAR(50),created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,UNIQUE(tenant_id,carrier_order_no))
 """);
         for (var column :
@@ -187,6 +187,85 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                         List.of(),
                         0,
                         f));
+    }
+
+    @Test
+    void changedSourceUpdatesPendingAmountAndDateButNeverConfirmedVoidOrDeletedCosts() {
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD id VARCHAR(36)");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD amount DECIMAL(18,2)");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD cost_date DATE");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD data_json CLOB");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD status_code VARCHAR(20)");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD revision INT DEFAULT 1");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD deleted INT DEFAULT 0");
+        jdbc.execute(
+                "CREATE TABLE order_logistics_cost_guard(tenant_id VARCHAR(36) PRIMARY KEY,version"
+                    + " BIGINT)");
+        jdbc.execute("CREATE ALIAS JSON_SET FOR '" + getClass().getName() + ".costJsonSet'");
+        jdbc.update(
+                "INSERT INTO"
+                    + " order_logistics_cost(tenant_id,id,amount,cost_date,data_json,status_code)"
+                    + " VALUES('T1','C1',40.50,'2026-11-06',?, 'DRAFT')",
+                "{\"amount\":40.50,\"costDate\":\"2026-11-06\",\"remark\":\"人工归属保持\"}");
+        jdbc.update("INSERT INTO order_logistics_cost_guard VALUES('T1',0)");
+        var first = store.receive("T1", "SYSTEM", api("40.50", "a"));
+        store.generated("T1", first.id(), first.revision(), "C1");
+        var next = JsonMapper.builder().build().valueToTree(api("45.00", "b").order());
+        ((tools.jackson.databind.node.ObjectNode) next).put("useTime", "2026-11-08 12:30:00");
+        var changed =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "b".repeat(64),
+                                JsonMapper.builder()
+                                        .build()
+                                        .treeToValue(next, CarrierOrder.class)));
+        // H2 不解析 MySQL 的 <=>，只转换等价的空值安全比较语法。
+        var dialect =
+                new JdbcTemplate(jdbc.getDataSource()) {
+                    @Override
+                    public int update(String sql, Object... args) {
+                        return super.update(
+                                sql.replace("amount <=> ?", "amount IS NOT DISTINCT FROM ?")
+                                        .replace(
+                                                "cost_date <=> ?",
+                                                "cost_date IS NOT DISTINCT FROM ?"),
+                                args);
+                    }
+                };
+        var platform = new JdbcPlatformTransportStore(dialect, JsonMapper.builder().build(), store);
+        platform.materialize("T1", "SYSTEM", changed);
+        var after = jdbc.queryForMap("SELECT * FROM order_logistics_cost WHERE id='C1'");
+        assertThat(after.get("AMOUNT").toString()).isEqualTo("45.00");
+        assertThat(after.get("COST_DATE").toString()).isEqualTo("2026-11-08");
+        assertThat(after.get("DATA_JSON").toString()).contains("人工归属保持", "2026-11-08");
+        platform.materialize("T1", "SYSTEM", changed);
+        assertThat(jdbc.queryForMap("SELECT * FROM order_logistics_cost WHERE id='C1'"))
+                .isEqualTo(after);
+        for (String state : List.of("CONFIRMED", "VOID", "DRAFT")) {
+            jdbc.update(
+                    "UPDATE order_logistics_cost SET status_code=?,deleted=? WHERE id='C1'",
+                    state,
+                    state.equals("DRAFT") ? 1 : 0);
+            var frozen = jdbc.queryForMap("SELECT * FROM order_logistics_cost WHERE id='C1'");
+            var later = store.receive("T1", "SYSTEM", api("49.00", "c"));
+            platform.materialize("T1", "SYSTEM", later);
+            assertThat(jdbc.queryForMap("SELECT * FROM order_logistics_cost WHERE id='C1'"))
+                    .isEqualTo(frozen);
+        }
+    }
+
+    public static String costJsonSet(
+            String body, String amountPath, String amount, String datePath, String date) {
+        var json = JsonMapper.builder().build();
+        var tree = (tools.jackson.databind.node.ObjectNode) json.readTree(body);
+        var value = json.readTree(amount);
+        if (value.isTextual()) value = json.readTree(value.asText());
+        tree.set("amount", value);
+        tree.put("costDate", date);
+        return json.writeValueAsString(tree);
     }
 
     @Test
@@ -462,5 +541,142 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
         assertThat(repeated.latestOrder().facts().fees().getFirst().vouchers()).hasSize(1);
         assertThat(repeated.latestOrder().facts().fees().getFirst().vouchers().getFirst().state())
                 .isEqualTo("PENDING");
+    }
+
+    @Test
+    void receiptAndStopPhotosSurviveRepeatedSyncFailuresAndOmissionsWithoutChangingConfirmedCost() {
+        var json = JsonMapper.builder().build();
+        var tree =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(api("137.64", "a").order());
+        tree.withObject("raw").put("详情状态", "DETAIL");
+        tree.withObject("facts")
+                .set(
+                        "receiptInfo",
+                        json.readTree(
+                                "{\"type\":3,\"status\":3,\"expressNo\":\"SF987654321000\"}"));
+        tree.withObject("facts")
+                .set(
+                        "receipts",
+                        json.readTree(
+                                "[{\"id\":\"R1\",\"name\":\"回单.jpg\",\"state\":\"PENDING\"}]"));
+        tree.withObject("facts")
+                .set(
+                        "stopPhotos",
+                        json.readTree(
+                                "[{\"stopIndex\":0,\"name\":\"武汉仓\",\"phase\":\"装货照片\",\"vouchers\":[{\"id\":\"P1\",\"name\":\"装货.jpg\",\"state\":\"PENDING\"}]}]"));
+        var first =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "a".repeat(64),
+                                json.treeToValue(tree, CarrierOrder.class)));
+        store.generated("T1", first.id(), first.revision(), "C1");
+        jdbc.execute(
+                "CREATE TABLE order_logistics_cost_guard(tenant_id VARCHAR(36) PRIMARY KEY, version"
+                        + " BIGINT)");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD amount DECIMAL(18,2)");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD status_code VARCHAR(20)");
+        jdbc.update(
+                "INSERT INTO order_logistics_cost(tenant_id,amount,status_code)"
+                        + " VALUES('T1',137.64,'CONFIRMED')");
+        var beforeCost = jdbc.queryForMap("SELECT * FROM order_logistics_cost");
+        var platform = new JdbcPlatformTransportStore(jdbc, json, store);
+        platform.voucher(
+                "T1",
+                new VoucherUpdate(
+                        "connector",
+                        "AC1",
+                        first.order().orderNo(),
+                        "goods-0",
+                        new Voucher(
+                                "P1",
+                                "装货.jpg",
+                                "T1/integration-huolala-vouchers/connector/O/P1.jpg",
+                                "image/jpeg",
+                                "READY",
+                                java.time.Instant.now())));
+        platform.voucher(
+                "T1",
+                new VoucherUpdate(
+                        "connector",
+                        "AC1",
+                        first.order().orderNo(),
+                        "receipts",
+                        new Voucher("R1", "回单.jpg", null, null, "FAILED", null)));
+        var repeated =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "b".repeat(64),
+                                json.treeToValue(tree, CarrierOrder.class)));
+        assertThat(repeated.syncOutcome()).isEqualTo("UNCHANGED");
+        assertThat(repeated.sourceDifference()).isFalse();
+        assertThat(
+                        repeated.latestOrder()
+                                .facts()
+                                .stopPhotos()
+                                .getFirst()
+                                .vouchers()
+                                .getFirst()
+                                .state())
+                .isEqualTo("READY");
+        assertThat(repeated.latestOrder().facts().receipts().getFirst().state())
+                .isEqualTo("FAILED");
+        tree.withObject("facts").putNull("receiptInfo").putArray("receipts");
+        tree.withObject("facts").putArray("stopPhotos");
+        var omitted =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource(
+                                "connector",
+                                "c".repeat(64),
+                                json.treeToValue(tree, CarrierOrder.class)));
+        assertThat(omitted.latestOrder().facts().receiptInfo().expressNo())
+                .isEqualTo("SF987654321000");
+        assertThat(omitted.latestOrder().facts().stopPhotos()).hasSize(1);
+        assertThat(omitted.latestOrder().facts().receipts()).hasSize(1);
+        platform.voucher(
+                "T1",
+                new VoucherUpdate(
+                        "connector",
+                        "AC1",
+                        first.order().orderNo(),
+                        "goods-0",
+                        new Voucher("P1", "装货.jpg", null, null, "FAILED", null)));
+        assertThat(
+                        store.byCost("T1", "C1")
+                                .orElseThrow()
+                                .latestOrder()
+                                .facts()
+                                .stopPhotos()
+                                .getFirst()
+                                .vouchers()
+                                .getFirst()
+                                .state())
+                .isEqualTo("READY");
+        assertThat(jdbc.queryForMap("SELECT * FROM order_logistics_cost")).isEqualTo(beforeCost);
+        assertThat(
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM order_logistics_import_order", Integer.class))
+                .isEqualTo(1);
+        assertThatThrownBy(
+                        () ->
+                                platform.voucher(
+                                        "T2",
+                                        new VoucherUpdate(
+                                                "connector",
+                                                "AC1",
+                                                first.order().orderNo(),
+                                                "receipts",
+                                                new Voucher(
+                                                        "R1", "回单.jpg", null, null, "FAILED",
+                                                        null))))
+                .hasMessageContaining("不存在");
     }
 }

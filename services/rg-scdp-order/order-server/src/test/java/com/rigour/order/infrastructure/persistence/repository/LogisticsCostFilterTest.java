@@ -64,6 +64,9 @@ public class LogisticsCostFilterTest {
         }
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN source_system VARCHAR(20)");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN tracking_no VARCHAR(100)");
+        jdbc.execute(
+                "CREATE TABLE order_logistics_import_order(id VARCHAR(50) PRIMARY KEY,"
+                        + " tenant_id VARCHAR(50),cost_id VARCHAR(50),source_json LONGTEXT,latest_source_json LONGTEXT)");
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(OrderLogisticsCostMapper.class);
@@ -89,6 +92,65 @@ public class LogisticsCostFilterTest {
         insert("other", "T2", "DOC-A", 7L);
         insert("hidden", "T1", "DOC-H", 8L);
         jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");
+    }
+
+    @Test
+    void platformOrderPlacementTimeOverridesTransportDateAndReverseIngestionOrder() {
+        insert("early", "T1", "EARLY", 7L);
+        insert("late", "T1", "LATE", 7L);
+        insert("manual", "T1", "MANUAL", 7L);
+        jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");
+        jdbc.update("UPDATE order_logistics_cost SET created_time='2026-11-12 12:00:00'");
+        jdbc.update(
+                "UPDATE order_logistics_cost SET created_time='2026-11-12 13:00:00' WHERE id='early'");
+        jdbc.update(
+                "INSERT INTO order_logistics_import_order VALUES('early','T1','early',?,NULL)",
+                "{\"raw\":{\"下单时间\":\"2026-10-01 10:00:00\"},\"useTime\":\"2026-11-20 10:00:00\"}");
+        jdbc.update(
+                "INSERT INTO order_logistics_import_order VALUES('late','T1','late',?,?)",
+                "{\"raw\":{\"下单时间\":\"2026-10-01 09:00:00\"}}",
+                "{\"raw\":{\"下单时间\":\"2026-10-02 17:00:00\"},\"useTime\":\"2026-09-01 17:00:00\"}");
+        // 相同费用 ID 的其他租户来源不得影响本租户排序。
+        jdbc.update(
+                "INSERT INTO order_logistics_import_order VALUES('manual','T2','manual',?,NULL)",
+                "{\"raw\":{\"下单时间\":\"2026-10-01 23:00:00\"}}");
+        var first = JSON.readValue("{\"begin\":0,\"step\":1}", LogisticsCostQuery.class);
+        var second = JSON.readValue("{\"begin\":1,\"step\":1}", LogisticsCostQuery.class);
+        assertThat(store.entries("T1", "LOGISTICS", first, "cost:read").items())
+                .extracting(r -> r.id())
+                .containsExactly("late");
+        assertThat(store.entries("T1", "LOGISTICS", second, "cost:read").items())
+                .extracting(r -> r.id())
+                .containsExactly("early");
+        var all = JSON.readValue("{\"begin\":0,\"step\":20}", LogisticsCostQuery.class);
+        assertThat(store.entries("T1", "LOGISTICS", all, "cost:read").items())
+                .extracting(r -> r.id())
+                .containsExactly("late", "early", "manual", "good");
+    }
+
+    @Test
+    void recordsMissingPlatformOrderTimeUseCreatedTimeThenIdAcrossPages() {
+        insert("aaa-new", "T1", "NEW-ARRIVAL", 7L);
+        insert("zzz-old", "T1", "OLDER-ARRIVAL", 7L);
+        insert("zzz-backfill", "T1", "HISTORICAL-BACKFILL", 7L);
+        jdbc.update("UPDATE order_logistics_cost SET created_time='2026-11-11 10:00:00'");
+        jdbc.update(
+                "UPDATE order_logistics_cost SET created_time='2026-11-12 09:49:00' WHERE id='aaa-new'");
+        jdbc.update(
+                "UPDATE order_logistics_cost SET cost_date='2026-09-30',created_time='2026-11-12 10:00:00' WHERE id='zzz-backfill'");
+        jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");
+        var first = JSON.readValue("{\"begin\":0,\"step\":1}", LogisticsCostQuery.class);
+        var second = JSON.readValue("{\"begin\":1,\"step\":1}", LogisticsCostQuery.class);
+        assertThat(store.entries("T1", "LOGISTICS", first, "cost:read").items())
+                .extracting(r -> r.id())
+                .containsExactly("zzz-backfill");
+        assertThat(store.entries("T1", "LOGISTICS", second, "cost:read").items())
+                .extracting(r -> r.id())
+                .containsExactly("aaa-new");
+        var all = JSON.readValue("{\"begin\":0,\"step\":20}", LogisticsCostQuery.class);
+        assertThat(store.entries("T1", "LOGISTICS", all, "cost:read").items())
+                .extracting(r -> r.id())
+                .containsExactly("zzz-backfill", "aaa-new", "zzz-old", "good");
     }
 
     @Test
@@ -254,7 +316,7 @@ public class LogisticsCostFilterTest {
         Object value = JSON.readValue(text, Object.class);
         for (String key : path.substring(2).split("\\.")) {
             if (!(value instanceof Map<?, ?> map)) return null;
-            value = map.get(key);
+            value = map.get(key.startsWith("\"") ? JSON.readValue(key, String.class) : key);
         }
         return value == null ? null : JSON.writeValueAsString(value);
     }

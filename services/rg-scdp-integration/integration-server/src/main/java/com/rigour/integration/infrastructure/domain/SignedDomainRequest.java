@@ -20,14 +20,14 @@ import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 
 /** Integration 到领域服务内部接口的可信上下文签名工具。 */
-final class SignedDomainRequest {
+public final class SignedDomainRequest {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final int BODY_PREVIEW_LIMIT = 1_000;
 
     private SignedDomainRequest() {
     }
 
-    static URI baseUri(String value, String serviceName) {
+    public static URI baseUri(String value, String serviceName) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException(serviceName + "地址不能为空");
         URI uri = URI.create(value.strip().replaceAll("/+$", "") + "/");
         if (!"http".equalsIgnoreCase(uri.getScheme()) && !"https".equalsIgnoreCase(uri.getScheme())) {
@@ -36,7 +36,7 @@ final class SignedDomainRequest {
         return uri;
     }
 
-    static Map<String, String> signedHeaders(TrustedContextSigner signer, String method,
+    public static Map<String, String> signedHeaders(TrustedContextSigner signer, String method,
                                              URI uri, CallerIdentity caller) {
         Map<String, String> headers = new LinkedHashMap<>();
         put(headers, RequestHeaders.PRINCIPAL_SCOPE, caller.principalScope());
@@ -58,7 +58,7 @@ final class SignedDomainRequest {
         return headers;
     }
 
-    static <T> T required(ApiResponse<T> response, String serviceName) {
+    public static <T> T required(ApiResponse<T> response, String serviceName) {
         if (response == null || !"OK".equals(response.code()) || response.data() == null) {
             throw new IllegalStateException(serviceName + "同步返回异常响应 code="
                     + (response == null ? null : response.code())
@@ -67,7 +67,7 @@ final class SignedDomainRequest {
         return response.data();
     }
 
-    static <T> ApiResponse<T> readResponse(
+    public static <T> ApiResponse<T> readResponse(
             ClientHttpResponse response, TypeReference<ApiResponse<T>> responseType,
             String operation) throws IOException {
         byte[] body = response.getBody().readAllBytes();
@@ -87,7 +87,7 @@ final class SignedDomainRequest {
         }
     }
 
-    static String requestId() {
+    public static String requestId() {
         String value = RequestContext.getRequestId();
         return value == null || value.isBlank() ? UUID.randomUUID().toString() : value;
     }

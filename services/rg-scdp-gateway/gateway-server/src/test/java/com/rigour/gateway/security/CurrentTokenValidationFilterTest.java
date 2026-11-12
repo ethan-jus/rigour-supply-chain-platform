@@ -36,6 +36,19 @@ class CurrentTokenValidationFilterTest {
     void clear() { SecurityContextHolder.clearContext(); }
 
     @Test
+    void oauthBootstrapOnlySkipsExactGetPaths() {
+        var properties=new GatewaySecurityProperties();properties.setCurrentTokenValidationEnabled(true);
+        var filter=new CurrentTokenValidationFilter(RestClient.builder().build(),properties,failureWriter());
+        for(String path:List.of(CurrentTokenValidationFilter.PUBLIC_HUOLALA_START_PATH,CurrentTokenValidationFilter.PUBLIC_HUOLALA_CALLBACK_PATH)) {
+            assertThat(filter.shouldNotFilter(new MockHttpServletRequest("GET",path))).isTrue();
+            assertThat(filter.shouldNotFilter(new MockHttpServletRequest("POST",path))).isFalse();
+            assertThat(filter.shouldNotFilter(new MockHttpServletRequest("GET",path+"/extra"))).isFalse();
+        }
+        assertThat(filter.shouldNotFilter(new MockHttpServletRequest("GET","/api/v1/integration/thirdparty/HUOLALA/authorizations/id"))).isFalse();
+        assertThat(filter.shouldNotFilter(new MockHttpServletRequest("POST","/api/v1/integration/huolala/sync"))).isFalse();
+    }
+
+    @Test
     void obtainsCurrentRolesAndPermissionsFromIamBeforeForwarding() throws Exception {
         RestClient.Builder builder = RestClient.builder();
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();

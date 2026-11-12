@@ -146,6 +146,7 @@ public class LogisticsImportService {
                 || source.payloadHash() == null
                 || !source.payloadHash().matches("[a-f0-9]{64}")) throw bad("平台来源凭据不完整");
         var o = source.order();
+        if (!"已完成".equals(o.status())) throw bad("仅接收货拉拉已完成订单");
         if (o.enterpriseId() == null
                 || !o.enterpriseId().matches("[A-Za-z0-9_-]{1,80}")
                 || o.orderNo() == null

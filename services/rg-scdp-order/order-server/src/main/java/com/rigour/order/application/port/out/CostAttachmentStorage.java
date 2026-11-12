@@ -5,5 +5,7 @@ public interface CostAttachmentStorage {
 
     String url(String key);
 
+    String downloadUrl(String key, String name);
+
     void discard(String key);
 }

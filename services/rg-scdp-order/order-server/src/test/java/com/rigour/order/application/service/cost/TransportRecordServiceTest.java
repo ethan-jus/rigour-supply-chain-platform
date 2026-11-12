@@ -272,4 +272,34 @@ class TransportRecordServiceTest {
                 .hasMessageContaining("账单明细只读");
         verify(platform, never()).saveDraft(any(), any(), any(), any(), any());
     }
+
+    @Test
+    void receiptAndLoadingPhotosUseOnlyAuthorizedOwnCosReferencesForPreviewAndDownload() {
+        var p = source("137.64");
+        var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(p);
+        tree.withObject("source").putNull("latestOrder");
+        tree.withObject("source")
+                .withObject("order")
+                .withObject("facts")
+                .set(
+                        "stopPhotos",
+                        json.readTree(
+                                "[{\"stopIndex\":0,\"name\":\"武汉仓\",\"phase\":\"装货照片\",\"vouchers\":[{\"id\":\"P1\",\"name\":\"装货照片.jpg\",\"state\":\"READY\",\"fileKey\":\""
+                                        + tenant
+                                        + "/integration-huolala-vouchers/C/O/P1.jpg\"}]}]"));
+        when(platform.detail(any(), any()))
+                .thenReturn(json.treeToValue(tree, PlatformRecord.class));
+        when(files.url(anyString())).thenReturn("https://own-cos/preview");
+        when(files.downloadUrl(anyString(), anyString())).thenReturn("https://own-cos/download");
+        assertThat(service.voucher("C1", "P1")).isEqualTo("https://own-cos/preview");
+        assertThat(service.voucher("C1", "P1", true)).isEqualTo("https://own-cos/download");
+        verify(files).downloadUrl(tenant + "/integration-huolala-vouchers/C/O/P1.jpg", "装货照片.jpg");
+        ((tools.jackson.databind.node.ObjectNode)
+                        tree.at("/source/order/facts/stopPhotos/0/vouchers/0"))
+                .put("fileKey", UUID.randomUUID() + "/integration-huolala-vouchers/C/O/P1.jpg");
+        when(platform.detail(any(), any()))
+                .thenReturn(json.treeToValue(tree, PlatformRecord.class));
+        assertThatThrownBy(() -> service.voucher("C1", "P1", true)).hasMessageContaining("稍后重试");
+        verify(costs, never()).save(any(), any(), any());
+    }
 }

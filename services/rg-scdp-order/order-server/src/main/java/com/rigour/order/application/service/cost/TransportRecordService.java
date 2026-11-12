@@ -63,22 +63,31 @@ public class TransportRecordService {
     }
 
     public String voucher(String id, String voucherId) {
+        return voucher(id, voucherId, false);
+    }
+
+    public String voucher(String id, String voucherId, boolean download) {
         var d = detail(id);
         if (d.platform() == null) throw bad("平台凭证不存在");
         var source = d.platform().source();
         var order = source.latestOrder() == null ? source.order() : source.latestOrder();
-        if (order.facts() == null || order.facts().fees() == null) throw bad("平台凭证尚未取得");
+        if (order.facts() == null) throw bad("平台凭证尚未取得");
         var vouchers = new ArrayList<com.rigour.order.api.v1.model.LogisticsImportModels.Voucher>();
         for (var fee : order.facts().fees())
             if (fee.vouchers() != null) vouchers.addAll(fee.vouchers());
         if (order.facts().receipts() != null) vouchers.addAll(order.facts().receipts());
         if (order.facts().billVouchers() != null) vouchers.addAll(order.facts().billVouchers());
+        for (var point : order.facts().stopPhotos())
+            if (point.vouchers() != null) vouchers.addAll(point.vouchers());
         for (var v : vouchers)
             if (voucherId.equals(v.id())
                     && "READY".equals(v.state())
                     && v.fileKey() != null
                     && v.fileKey().startsWith(tenant() + "/integration-huolala-vouchers/")
-                    && !v.fileKey().contains("..")) return attachments.url(v.fileKey());
+                    && !v.fileKey().contains(".."))
+                return download
+                        ? attachments.downloadUrl(v.fileKey(), v.name())
+                        : attachments.url(v.fileKey());
         throw bad("凭证正在获取，请稍后重试");
     }
 

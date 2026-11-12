@@ -11,7 +11,9 @@ import org.apache.ibatis.annotations.Update;
 
 @Mapper
 public interface OrderLogisticsCostMapper extends BaseMapper<OrderLogisticsCostEntity> {
-    @Insert("INSERT IGNORE INTO order_logistics_cost_guard(tenant_id,version) VALUES(#{tenant},0)")
+    @Insert(
+            "INSERT INTO order_logistics_cost_guard(tenant_id,version) VALUES(#{tenant},0)"
+                    + " ON DUPLICATE KEY UPDATE version=version")
     void ensureGuard(@Param("tenant") String tenant);
 
     @Select("SELECT version FROM order_logistics_cost_guard WHERE tenant_id=#{tenant} FOR UPDATE")

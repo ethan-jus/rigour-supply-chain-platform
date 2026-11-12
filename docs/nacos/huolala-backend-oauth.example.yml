@@ -1,0 +1,15 @@
+# 合并到 Integration 当前命名空间的 rigour-integration-migration-service.yml。
+# Group: DEFAULT_GROUP。此文件只有占位值，真实凭据只填写在有访问控制的Nacos中，不提交Git。
+# 用户2026-11-11明确指定货拉拉应用凭据从Nacos读取；环境变量仅作为兼容回退。
+rigour:
+  thirdparty:
+    huolala:
+      app-key: "填写货拉拉正式应用的APP_KEY"
+      app-secret: "填写同一正式应用的APP_SECRET"
+      # 企业用车账号的企业标识，不是开放平台应用编号和名称。
+      enterprise-id: "填写货拉拉企业编号"
+      enterprise-name: "填写货拉拉企业名称"
+      # 本地/DEV允许本机私网IP的HTTP，生产仅HTTPS；两处登记的完整地址必须一致。
+      redirect-uri: "http://192.168.9.90:26882/api/v1/integration/huolala/oauth/callback"
+      # false = 货拉拉正式接口。此选项不决定本系统数据库环境。
+      sandbox: false

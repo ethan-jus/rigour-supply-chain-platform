@@ -31,8 +31,10 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
     }
 
     public void lockTenant(String tenant) {
+        // 重复键直接取得排他锁，避免 INSERT IGNORE 的共享锁在并发升级时相互死锁。
         jdbc.update(
-                "INSERT IGNORE INTO order_logistics_cost_guard(tenant_id,version) VALUES(?,0)",
+                "INSERT INTO order_logistics_cost_guard(tenant_id,version) VALUES(?,0)"
+                        + " ON DUPLICATE KEY UPDATE version=version",
                 tenant);
         jdbc.queryForObject(
                 "SELECT version FROM order_logistics_cost_guard WHERE tenant_id=? FOR UPDATE",
@@ -44,18 +46,22 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
         if (row.costId() != null) {
             var order = row.latestOrder() == null ? row.order() : row.latestOrder();
             BigDecimal amount = order.facts() == null ? null : order.facts().billAmount();
+            LocalDate costDate = LocalDate.parse(order.useTime().substring(0, 10));
             // 同步只能刷新待确认候选金额；已确认成本、软删除和人工关联始终不变。
             int changed =
                     jdbc.update(
                             "UPDATE order_logistics_cost SET"
-                                    + " amount=?,data_json=JSON_SET(data_json,'$.amount',CAST(? AS"
-                                    + " JSON)),revision=revision+1 WHERE tenant_id=? AND id=? AND"
-                                    + " deleted=0 AND status_code='DRAFT' AND NOT(amount <=> ?)",
+                                    + " amount=?,cost_date=?,data_json=JSON_SET(data_json,'$.amount',CAST(? AS"
+                                    + " JSON),'$.costDate',?),revision=revision+1 WHERE tenant_id=? AND id=? AND"
+                                    + " deleted=0 AND status_code='DRAFT' AND (NOT(amount <=> ?) OR NOT(cost_date <=> ?))",
                             amount,
+                            costDate,
                             amount == null ? "null" : amount.toPlainString(),
+                            costDate.toString(),
                             tenant,
                             row.costId(),
-                            amount);
+                            amount,
+                            costDate);
             if (changed > 0)
                 jdbc.update(
                         "UPDATE order_logistics_cost_guard SET version=version+1 WHERE tenant_id=?",
@@ -380,10 +386,17 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
     public void voucher(String tenant, VoucherUpdate u) {
         lockTenant(tenant);
         if (u == null
+                || u.connectorId() == null
                 || u.voucher() == null
-                || u.voucher().fileKey() == null
-                || !u.voucher().fileKey().startsWith(tenant + "/integration-huolala-vouchers/")
-                || u.voucher().fileKey().contains("..")) throw bad("平台凭证标识无效");
+                || u.voucher().id() == null
+                || u.voucher().state() == null
+                || !Set.of("READY", "FAILED", "PENDING").contains(u.voucher().state())
+                || "READY".equals(u.voucher().state())
+                        && (u.voucher().fileKey() == null
+                                || !u.voucher()
+                                        .fileKey()
+                                        .startsWith(tenant + "/integration-huolala-vouchers/")
+                                || u.voucher().fileKey().contains(".."))) throw bad("平台凭证标识无效");
         var found =
                 jdbc.queryForList(
                         "SELECT id,source_json,latest_source_json FROM order_logistics_import_order"
@@ -398,29 +411,16 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
         for (String column : List.of("source_json", "latest_source_json")) {
             if (row.get(column) == null) continue;
             var tree = json.readTree(row.get(column).toString());
-            if (!u.connectorId().equals(tree.path("facts").path("connectorId").asText()))
-                throw bad("凭证来源不一致");
+            String connector = tree.path("facts").path("connectorId").asText("");
+            if (connector.isBlank()) continue; // 原Excel快照没有平台凭证，后续API快照单独处理。
+            if (!u.connectorId().equals(connector)) throw bad("凭证来源不一致");
             boolean matched = false;
             for (var fee : tree.path("facts").path("fees"))
-                if (u.lineId().equals(fee.path("lineId").asText())) {
-                    for (var v : fee.path("vouchers"))
-                        if (u.voucher().id().equals(v.path("id").asText())) {
-                            ((tools.jackson.databind.node.ObjectNode) v)
-                                    .setAll(
-                                            (tools.jackson.databind.node.ObjectNode)
-                                                    json.valueToTree(u.voucher()));
-                            matched = true;
-                        }
-                }
-            if (Set.of("receipts", "billVouchers").contains(u.lineId()))
-                for (var v : tree.path("facts").path(u.lineId()))
-                    if (u.voucher().id().equals(v.path("id").asText())) {
-                        ((tools.jackson.databind.node.ObjectNode) v)
-                                .setAll(
-                                        (tools.jackson.databind.node.ObjectNode)
-                                                json.valueToTree(u.voucher()));
-                        matched = true;
-                    }
+                matched |= updateFiles(fee.path("vouchers"), u.voucher());
+            for (String field : List.of("receipts", "billVouchers"))
+                matched |= updateFiles(tree.path("facts").path(field), u.voucher());
+            for (var point : tree.path("facts").path("stopPhotos"))
+                matched |= updateFiles(point.path("vouchers"), u.voucher());
             anyMatched |= matched;
             if (matched)
                 jdbc.update(
@@ -432,6 +432,22 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                         row.get("id"));
         }
         if (!anyMatched) throw bad("平台凭证明细尚未保存，请稍后重试");
+    }
+
+    private boolean updateFiles(tools.jackson.databind.JsonNode files, Voucher incoming) {
+        boolean matched = false;
+        for (var file : files)
+            if (incoming.id().equals(file.path("id").asText())) {
+                // 超时的旧失败通知不能撤掉已成功归档的文件。
+                if (!"READY".equals(file.path("state").asText())
+                        || "READY".equals(incoming.state()))
+                    ((tools.jackson.databind.node.ObjectNode) file)
+                            .setAll(
+                                    (tools.jackson.databind.node.ObjectNode)
+                                            json.valueToTree(incoming));
+                matched = true;
+            }
+        return matched;
     }
 
     private static BusinessException bad(String message) {

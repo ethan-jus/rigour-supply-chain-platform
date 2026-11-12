@@ -69,7 +69,7 @@ class LogisticsImportServiceTest {
 
     LogisticsCostCommand command() {
         return json.readValue(
-"""
+                """
 {"costDate":"2026-11-06","ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","deliveryModeCode":"THIRD_PARTY","carrierCode":"HLL","trackingNo":"WB-001","platformOrderNo":"3616894445226123730",
 "sources":[{"orderTypeCode":"SALES_ORDER","orderCode":"SO001","linkRoleCode":"COST","allocations":[]}],
 "feeItems":[{"feeKey":"F1","feeAmount":40.5,"ourAmount":40.5,"bearerCode":"COMPANY"}]}}
@@ -215,6 +215,38 @@ class LogisticsImportServiceTest {
         assertThatThrownBy(() -> service.rows(0)).isInstanceOf(AuthorizationDeniedException.class);
         assertThatThrownBy(() -> service.generate("R1", new Generated(1, command())))
                 .isInstanceOf(AuthorizationDeniedException.class);
+        verifyNoInteractions(store, costs);
+    }
+
+    @Test
+    void apiOnlyReceivesFinalCompletedOrdersBeforeAnyCostWrite() {
+        TestAuthorizationContext.set(
+                new CallerIdentity(
+                        "SERVICE",
+                        user,
+                        tenant,
+                        null,
+                        null,
+                        UUID.randomUUID(),
+                        0,
+                        0,
+                        0,
+                        Set.of(),
+                        Set.of("integration:huolala:sync")));
+        for (String state : List.of("司机完成", "已取消", "账单确认", "申诉中", "未知状态（-1）")) {
+            var source =
+                    json.readValue(
+                            "{\"connectorId\":\"connector\",\"payloadHash\":\""
+                                    + "a".repeat(64)
+                                    + "\",\"order\":{\"enterpriseId\":\"12345\",\"orderNo\":\"3624071813921329726\","
+                                    + "\"status\":\""
+                                    + state
+                                    + "\",\"useTime\":\"2026-11-08"
+                                    + " 10:00:00\",\"raw\":{},\"line\":0,"
+                                    + "\"facts\":{\"connectorId\":\"connector\"}}}",
+                            ApiSource.class);
+            assertThatThrownBy(() -> service.receive(source)).hasMessageContaining("仅接收货拉拉已完成订单");
+        }
         verifyNoInteractions(store, costs);
     }
 

@@ -23,6 +23,8 @@ import java.util.concurrent.TimeUnit;
 public final class CurrentTokenValidationFilter extends OncePerRequestFilter {
     public static final String PUBLIC_FEISHU_JSAPI_SIGN_PATH = "/api/v1/platform/feishu/jsapi-sign";
     public static final String PUBLIC_FEISHU_AUTH_EXCHANGE_PATH = "/api/v1/auth/feishu/exchange";
+    public static final String PUBLIC_HUOLALA_START_PATH = "/api/v1/integration/huolala/oauth/start";
+    public static final String PUBLIC_HUOLALA_CALLBACK_PATH = "/api/v1/integration/huolala/oauth/callback";
     private static final Logger log = LoggerFactory.getLogger(CurrentTokenValidationFilter.class);
     private final RestClient restClient;
     private final GatewaySecurityProperties properties;
@@ -39,6 +41,7 @@ public final class CurrentTokenValidationFilter extends OncePerRequestFilter {
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
+        if ("GET".equalsIgnoreCase(request.getMethod()) && (PUBLIC_HUOLALA_START_PATH.equals(request.getRequestURI()) || PUBLIC_HUOLALA_CALLBACK_PATH.equals(request.getRequestURI()))) return true;
         if (isPublicFeishuBootstrap(request)) {
             log.info("飞书初始化请求通过 Gateway 公共入口 requestId={} method={} path={}",
                     RequestContext.getRequestId(), request.getMethod(), request.getRequestURI());

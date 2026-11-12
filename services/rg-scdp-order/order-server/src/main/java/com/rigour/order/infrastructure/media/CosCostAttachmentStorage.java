@@ -29,13 +29,15 @@ import java.util.UUID;
  */
 @Component
 public final class CosCostAttachmentStorage implements CostAttachmentStorage {
-    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(CosCostAttachmentStorage.class);
+    private static final org.slf4j.Logger LOG =
+            org.slf4j.LoggerFactory.getLogger(CosCostAttachmentStorage.class);
     static final String OBJECT_PREFIX = "order-cost-attachments";
 
     private final COSClient client;
     private final String bucket;
     private final String unavailableReason;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public CosCostAttachmentStorage(FundAttachmentAccessProperties properties) {
         FundAttachmentAccessProperties.Cos cos = properties.getCos();
         if (!cos.isEnabled()) {
@@ -67,6 +69,12 @@ public final class CosCostAttachmentStorage implements CostAttachmentStorage {
         this.unavailableReason = null;
     }
 
+    CosCostAttachmentStorage(COSClient client, String bucket) {
+        this.client = client;
+        this.bucket = bucket;
+        this.unavailableReason = null;
+    }
+
     @Override
     public String upload(String tenantId, String orderNo, String contentType, byte[] content) {
         if (client == null) {
@@ -80,8 +88,11 @@ public final class CosCostAttachmentStorage implements CostAttachmentStorage {
             client.putObject(
                     new PutObjectRequest(bucket, key, new ByteArrayInputStream(content), metadata));
         } catch (RuntimeException exception) {
-            LOG.warn("费用附件上传失败 sourceSystem=ORDER errorType={}", exception.getClass().getSimpleName());
-            throw new BusinessException(ErrorCode.COST_ATTACHMENT_UPLOAD_FAILED, "费用附件上传失败，请稍后重试", List.of());
+            LOG.warn(
+                    "费用附件上传失败 sourceSystem=ORDER errorType={}",
+                    exception.getClass().getSimpleName());
+            throw new BusinessException(
+                    ErrorCode.COST_ATTACHMENT_UPLOAD_FAILED, "费用附件上传失败，请稍后重试", List.of());
         }
         return key;
     }
@@ -127,6 +138,23 @@ public final class CosCostAttachmentStorage implements CostAttachmentStorage {
         return client.generatePresignedUrl(
                         bucket, key, new java.util.Date(System.currentTimeMillis() + 600_000))
                 .toString();
+    }
+
+    public String downloadUrl(String key, String name) {
+        if (client == null)
+            throw new BusinessException(ErrorCode.INTERNAL_ERROR, "费用附件存储未配置", List.of());
+        String encoded =
+                java.net.URLEncoder.encode(
+                                name == null ? "voucher" : name,
+                                java.nio.charset.StandardCharsets.UTF_8)
+                        .replace("+", "%20");
+        var request = new com.qcloud.cos.model.GeneratePresignedUrlRequest(bucket, key);
+        request.setExpiration(new java.util.Date(System.currentTimeMillis() + 600_000));
+        request.setResponseHeaders(
+                new com.qcloud.cos.model.ResponseHeaderOverrides()
+                        .withContentDisposition(
+                                "attachment; filename=\"voucher\"; filename*=UTF-8''" + encoded));
+        return client.generatePresignedUrl(request).toString();
     }
 
     public void discard(String key) {

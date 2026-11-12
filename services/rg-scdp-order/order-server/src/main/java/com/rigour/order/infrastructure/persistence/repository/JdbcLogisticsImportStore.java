@@ -293,60 +293,12 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
                             last.facts().employeeMappingRevision());
             encoded = json.writeValueAsString(order);
         }
-        // 凭证由独立下载队列补齐；后续账单同步不能把已保存的自有COS引用退回待获取。
+        // 附件是独立事实：平台后续缺项、空数组和签名更新不能删除已留存资料。
         if (!partial && last.facts() != null && order.facts() != null) {
-            var known = new HashMap<String, Voucher>();
-            for (var fee : last.facts().fees())
-                for (var v : fee.vouchers() == null ? List.<Voucher>of() : fee.vouchers())
-                    if ("READY".equals(v.state()) || "PENDING".equals(v.state()))
-                        known.put(v.id(), v);
-            for (var list : Arrays.asList(last.facts().receipts(), last.facts().billVouchers()))
-                if (list != null)
-                    for (var v : list)
-                        if ("READY".equals(v.state()) || "PENDING".equals(v.state()))
-                            known.put(v.id(), v);
-            if (!known.isEmpty()) {
-                var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
-                for (var fee : tree.path("facts").path("fees"))
-                    for (var v : fee.path("vouchers"))
-                        if (known.containsKey(v.path("id").asText())
-                                && "READY".equals(known.get(v.path("id").asText()).state()))
-                            ((tools.jackson.databind.node.ObjectNode) v)
-                                    .setAll(
-                                            (tools.jackson.databind.node.ObjectNode)
-                                                    json.valueToTree(
-                                                            known.get(v.path("id").asText())));
-                for (String field : List.of("receipts", "billVouchers"))
-                    for (var v : tree.path("facts").path(field))
-                        if (known.containsKey(v.path("id").asText())
-                                && "READY".equals(known.get(v.path("id").asText()).state()))
-                            ((tools.jackson.databind.node.ObjectNode) v)
-                                    .setAll(
-                                            (tools.jackson.databind.node.ObjectNode)
-                                                    json.valueToTree(
-                                                            known.get(v.path("id").asText())));
-                for (var next : tree.path("facts").path("fees"))
-                    for (var oldFee : json.valueToTree(last).path("facts").path("fees")) {
-                        if (!next.path("lineId").asText().equals(oldFee.path("lineId").asText())
-                                || !next.path("name").asText().equals(oldFee.path("name").asText())
-                                || !sameMoney(
-                                        next.path("amount").isNumber()
-                                                ? next.path("amount").decimalValue()
-                                                : null,
-                                        oldFee.path("amount").isNumber()
-                                                ? oldFee.path("amount").decimalValue()
-                                                : null)) continue;
-                        var node = (tools.jackson.databind.node.ObjectNode) next;
-                        var list = node.withArray("vouchers");
-                        var ids = new HashSet<String>();
-                        for (var v : list) ids.add(v.path("id").asText());
-                        for (var v : oldFee.path("vouchers"))
-                            if (Set.of("READY", "PENDING").contains(v.path("state").asText())
-                                    && ids.add(v.path("id").asText())) list.add(v);
-                    }
-                order = json.treeToValue(tree, CarrierOrder.class);
-                encoded = json.writeValueAsString(order);
-            }
+            var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
+            mergeEvidence(tree, json.valueToTree(last));
+            order = json.treeToValue(tree, CarrierOrder.class);
+            encoded = json.writeValueAsString(order);
         }
         String incoming =
                 (partial && "DETAIL".equals(last.raw().get("详情状态"))) || sameBill(order, last)
@@ -394,6 +346,88 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
                 current.id());
         return lockManaged(tenant, actor, true, current.id())
                 .withSyncOutcome(inserted ? "CREATED" : changed ? "UPDATED" : "UNCHANGED");
+    }
+
+    private void mergeEvidence(
+            tools.jackson.databind.node.ObjectNode next, tools.jackson.databind.JsonNode prior) {
+        var facts = (tools.jackson.databind.node.ObjectNode) next.path("facts");
+        var old = prior.path("facts");
+        for (String field : List.of("receipts", "billVouchers"))
+            facts.set(field, mergeFiles(facts.path(field), old.path(field)));
+        var receipt = facts.path("receiptInfo");
+        if (!old.path("receiptInfo").isMissingNode() && !old.path("receiptInfo").isNull()) {
+            if (!receipt.isObject()) facts.set("receiptInfo", old.path("receiptInfo"));
+            else
+                old.path("receiptInfo")
+                        .properties()
+                        .forEach(
+                                e -> {
+                                    if (receipt.path(e.getKey()).isNull()
+                                            || receipt.path(e.getKey()).isMissingNode())
+                                        ((tools.jackson.databind.node.ObjectNode) receipt)
+                                                .set(e.getKey(), e.getValue());
+                                });
+        }
+        for (var fee : old.path("fees")) {
+            tools.jackson.databind.JsonNode match = null;
+            var candidates = new ArrayList<tools.jackson.databind.JsonNode>();
+            for (var candidate : facts.path("fees"))
+                if (candidate.path("code").equals(fee.path("code"))
+                        && candidate.path("name").equals(fee.path("name"))
+                        && sameMoney(
+                                candidate.path("amount").isNumber()
+                                        ? candidate.path("amount").decimalValue()
+                                        : null,
+                                fee.path("amount").isNumber()
+                                        ? fee.path("amount").decimalValue()
+                                        : null)) {
+                    candidates.add(candidate);
+                    if (candidate.path("lineId").equals(fee.path("lineId"))) match = candidate;
+                }
+            // 旧的费用行号只有顺序；存在同名同额多行时只保留在账单凭证，不猜归属。
+            if (match == null && candidates.size() == 1) match = candidates.getFirst();
+            if (match != null)
+                ((tools.jackson.databind.node.ObjectNode) match)
+                        .set("vouchers", mergeFiles(match.path("vouchers"), fee.path("vouchers")));
+            else
+                facts.set(
+                        "billVouchers",
+                        mergeFiles(facts.path("billVouchers"), fee.path("vouchers")));
+        }
+        var photos = json.createArrayNode();
+        for (var node : facts.path("stopPhotos")) photos.add(node.deepCopy());
+        for (var oldPoint : old.path("stopPhotos")) {
+            tools.jackson.databind.JsonNode match = null;
+            for (var point : photos)
+                if (point.path("stopIndex").equals(oldPoint.path("stopIndex"))
+                        && point.path("name").equals(oldPoint.path("name"))) {
+                    match = point;
+                    break;
+                }
+            if (match == null) photos.add(oldPoint);
+            else
+                ((tools.jackson.databind.node.ObjectNode) match)
+                        .set(
+                                "vouchers",
+                                mergeFiles(match.path("vouchers"), oldPoint.path("vouchers")));
+        }
+        facts.set("stopPhotos", photos);
+    }
+
+    private tools.jackson.databind.node.ArrayNode mergeFiles(
+            tools.jackson.databind.JsonNode current, tools.jackson.databind.JsonNode prior) {
+        var files = new LinkedHashMap<String, tools.jackson.databind.JsonNode>();
+        for (var file : current) files.put(file.path("id").asText(), file);
+        for (var file : prior) {
+            String id = file.path("id").asText();
+            var candidate = files.get(id);
+            if (candidate == null
+                    || "READY".equals(file.path("state").asText())
+                    || !"READY".equals(candidate.path("state").asText())) files.put(id, file);
+        }
+        var result = json.createArrayNode();
+        files.values().forEach(result::add);
+        return result;
     }
 
     @Override
