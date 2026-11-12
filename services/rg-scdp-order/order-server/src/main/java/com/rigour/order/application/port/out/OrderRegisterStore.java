@@ -80,7 +80,7 @@ public interface OrderRegisterStore {
             Boolean hasDiscount,
             String sortBy,
             String sortDirection,
-            String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes, Map<String, Long> departmentRegionIds) {
+            String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes, Map<String, Long> departmentRegionIds, String paymentOwnerEmployeeCode) {
         public OrderCriteria(
             String orderNo,
             Long customerId,
@@ -101,7 +101,7 @@ public interface OrderRegisterStore {
             String sortBy,
             String sortDirection,
             String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes) {
-            this(orderNo, customerId, customerName, customerCode, regionCode, ownerEmployeeCode, departmentIds, orderDateFrom, orderDateTo, orderStatusCode, paymentStatusCode, hasUnpaid, invoiceStatusCode, dhbLinked, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes, Map.of());
+            this(orderNo, customerId, customerName, customerCode, regionCode, ownerEmployeeCode, departmentIds, orderDateFrom, orderDateTo, orderStatusCode, paymentStatusCode, hasUnpaid, invoiceStatusCode, dhbLinked, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes, Map.of(), null);
         }
     }
 
@@ -124,7 +124,7 @@ public interface OrderRegisterStore {
             String paymentStatusCode,
             Boolean hasDiscount,
             String sortBy,
-            String sortDirection, Long productVariantId, List<Long> productVariantIds, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes, Map<String, Long> departmentRegionIds) {
+            String sortDirection, Long productVariantId, List<Long> productVariantIds, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes, Map<String, Long> departmentRegionIds, String paymentOwnerEmployeeCode) {
         public LineCriteria(
             String orderNo,
             Long customerId,
@@ -143,7 +143,7 @@ public interface OrderRegisterStore {
             Boolean hasDiscount,
             String sortBy,
             String sortDirection, Long productVariantId, List<Long> productVariantIds, Instant paymentTimeFrom, Instant paymentTimeTo, Set<String> departmentEmployeeCodes) {
-            this(orderNo, customerId, customerName, customerCode, regionCode, ownerEmployeeCode, departmentIds, orderDateFrom, orderDateTo, orderStatusCode, productKeyword, productCode, productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId, productVariantIds, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes, Map.of());
+            this(orderNo, customerId, customerName, customerCode, regionCode, ownerEmployeeCode, departmentIds, orderDateFrom, orderDateTo, orderStatusCode, productKeyword, productCode, productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId, productVariantIds, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes, Map.of(), null);
         }
     }
 

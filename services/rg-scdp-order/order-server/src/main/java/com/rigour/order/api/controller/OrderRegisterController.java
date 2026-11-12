@@ -68,7 +68,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String invoiceStatusCode,
             Boolean dhbLinked,
             String dhbOrderNo,
-            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo) {
+            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
         return ApiResponse.success(
                 service.orders(
                         begin,
@@ -87,7 +87,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         paymentStatusCode,
                         hasUnpaid,
                         invoiceStatusCode,
-                        dhbLinked, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy, paymentTimeFrom, paymentTimeTo));
+                        dhbLinked, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy, paymentTimeFrom, paymentTimeTo, paymentOwnerEmployeeCode));
     }
 
     @Override
@@ -115,7 +115,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             Long productVariantId,
             List<Long> productVariantIds,
             Instant paymentTimeFrom,
-            Instant paymentTimeTo) {
+            Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
         return ApiResponse.success(
                 service.lines(
                         begin,
@@ -133,7 +133,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                         orderStatusCode,
                         productKeyword,
                         productCode,
-                        productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId, productVariantIds, paymentTimeFrom, paymentTimeTo));
+                        productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId, productVariantIds, paymentTimeFrom, paymentTimeTo, paymentOwnerEmployeeCode));
     }
 
     @Override
@@ -297,7 +297,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             Boolean hasUnpaid,
             String invoiceStatusCode,
             String dhbOrderNo,
-            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo) {
+            Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
         List<OrderRegisterOrderView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -318,7 +318,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             paymentStatusCode,
                             hasUnpaid,
                             invoiceStatusCode,
-                            null, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy, paymentTimeFrom, paymentTimeTo);
+                            null, dhbOrderNo, hasDiscount, sortBy, sortDirection, createdBy, paymentTimeFrom, paymentTimeTo, paymentOwnerEmployeeCode);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
@@ -328,7 +328,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                 "orders.csv",
                 new String[] {
                     "订单号", "旧内部订单号", "来源系统", "来源单号", "客户编码", "客户名称",
-                    "归属地区", "所属业务员", "部门", "订单状态", "收款状态", "订货金额",
+                    "归属地区", "所属业务员", "回款人", "部门", "订单状态", "收款状态", "订货金额",
                     "订单金额", "优惠额", "优惠率", "收款金额", "收款日期", "待收金额", "已确认金额", "下单时间", "创建人",
                     "创建时间", "修改人", "修改时间", "同步人", "同步时间"
                 },
@@ -346,6 +346,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                                                 str(r.ownerEmployeeName() == null
                                                         ? r.ownerEmployeeCode()
                                                         : r.ownerEmployeeName()),
+                                                String.join("、", r.paymentOwnerNames()),
                                                 str(r.departmentName()),
                                                 orderLabels.getOrDefault(str(r.orderStatusCode()), str(r.orderStatusCode())),
                                                 collectionLabels.getOrDefault(str(r.paymentStatusCode()), str(r.paymentStatusCode())),
@@ -390,7 +391,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             Long productVariantId,
             List<Long> productVariantIds,
             Instant paymentTimeFrom,
-            Instant paymentTimeTo) {
+            Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
         List<OrderRegisterLineView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -410,7 +411,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                             orderStatusCode,
                             productKeyword,
                             productCode,
-                            productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId, productVariantIds, paymentTimeFrom, paymentTimeTo);
+                            productIds, paymentStatusCode, hasDiscount, sortBy, sortDirection, productVariantId, productVariantIds, paymentTimeFrom, paymentTimeTo, paymentOwnerEmployeeCode);
             rows.addAll(page.items());
             if (offset + EXPORT_PAGE_STEP >= page.total()) break;
         }
@@ -418,7 +419,7 @@ public class OrderRegisterController implements OrderRegisterApi {
         return csv(
                 "lines.csv",
                 new String[] {
-                    "订单号", "来源明细号", "客户名称", "归属地区", "所属业务员", "商品编码", "商品名称",
+                    "订单号", "来源明细号", "客户名称", "归属地区", "所属业务员", "回款人", "商品编码", "商品名称",
                     "规格", "单位", "数量", "单价", "订货金额", "订单金额（分摊后）", "优惠额（分摊后）", "优惠率", "收款状态", "收款日期", "下单时间"
                 },
                 rows.stream()
@@ -432,6 +433,7 @@ public class OrderRegisterController implements OrderRegisterApi {
                                                 str(r.ownerEmployeeName() == null
                                                         ? r.ownerEmployeeCode()
                                                         : r.ownerEmployeeName()),
+                                                String.join("、", r.paymentOwnerNames()),
                                                 str(r.productCode()),
                                                 str(r.productName()),
                                                 str(r.specification()),

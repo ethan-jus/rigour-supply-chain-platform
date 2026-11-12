@@ -16,6 +16,7 @@ import tools.jackson.databind.JsonNode;
 /** Durable OCR jobs contain only tenant-owned keys; known evidence is preserved while missing fields are enriched. */
 @Repository
 public class JdbcVoucherRecognitionStore {
+    public static final String SCRIPT_FINGERPRINT = scriptFingerprint();
     private final JdbcTemplate jdbc;
     public JdbcVoucherRecognitionStore(JdbcTemplate jdbc) { this.jdbc = jdbc; }
     public static void enqueue(JdbcTemplate jdbc, String tenant, long paymentId, String key) {
@@ -42,8 +43,9 @@ public class JdbcVoucherRecognitionStore {
                 + " AND e.payment_id=p.id AND e.voucher_key COLLATE utf8mb4_general_ci=j.voucher_key COLLATE utf8mb4_general_ci"
                 + " AND (NULLIF(e.transaction_no,'') IS NOT NULL AND e.voucher_paid_time IS NOT NULL"
                 + " OR EXISTS(SELECT 1 FROM order_voucher_recognition_job v WHERE v.tenant_id=e.tenant_id"
-                + " AND v.voucher_key=e.voucher_key)))"
-                + " ORDER BY p.id LIMIT ?", Math.max(1,Math.min(100,limit)));
+                + " AND v.voucher_key=e.voucher_key AND (v.status<>'SUCCEEDED'"
+                + " OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(v.result_json,'$.ruleScriptSha256')),'')=?))))"
+                + " ORDER BY p.id LIMIT ?", SCRIPT_FINGERPRINT, Math.max(1,Math.min(100,limit)));
         for (var row : rows) enqueue(jdbc,(String)row.get("tenant_id"),((Number)row.get("id")).longValue(),(String)row.get("voucher_key"));
         return rows.size();
     }
@@ -62,7 +64,7 @@ public class JdbcVoucherRecognitionStore {
     }
     @Transactional
     public void complete(Map<String,Object> job, JsonNode result, String json) {
-        var locked=jdbc.queryForList("SELECT id FROM order_voucher_recognition_job WHERE id=? AND lease_token=? AND status='RUNNING' FOR UPDATE",job.get("id"),job.get("lease_token"));
+        var locked=jdbc.queryForList("SELECT id,JSON_UNQUOTE(JSON_EXTRACT(result_json,'$.note')) AS old_note FROM order_voucher_recognition_job WHERE id=? AND lease_token=? AND status='RUNNING' FOR UPDATE",job.get("id"),job.get("lease_token"));
         if(locked.isEmpty()) return;
         String tenant=(String)job.get("tenant_id"),key=(String)job.get("voucher_key");
         // Re-check the current attachment set after OCR: a cancelled/removed image cannot reappear.
@@ -71,12 +73,12 @@ public class JdbcVoucherRecognitionStore {
                 + " e.voucher_paid_time_precision=IF(e.voucher_paid_time IS NULL,?,e.voucher_paid_time_precision),"
                 + " e.voucher_paid_time=COALESCE(e.voucher_paid_time,?),e.recognition_status=?,"
                 + " e.payee=COALESCE(NULLIF(e.payee,''),?),e.payment_result=COALESCE(NULLIF(e.payment_result,''),?),"
-                + " e.evidence_note=COALESCE(NULLIF(e.evidence_note,''),?)"
+                + " e.evidence_note=IF(e.evidence_note=? OR e.evidence_note='自动识别暂未完成，请核对原图或稍后重试',?,COALESCE(NULLIF(e.evidence_note,''),?))"
                 + " WHERE e.tenant_id=? AND e.voucher_key=? AND p.deleted=0"
                 + " AND JSON_CONTAINS(p.voucher_keys_json,JSON_QUOTE(e.voucher_key))",
                 tenant,value(result,"amount"),value(result,"transactionNo"),value(result,"paidTimePrecision"),
                 value(result,"paidTime")==null?null:LocalDateTime.ofInstant(Instant.parse(value(result,"paidTime")),ZoneOffset.UTC),value(result,"recognitionStatus"),value(result,"payee"),value(result,"paymentResult"),
-                value(result,"note"),tenant,key);
+                locked.getFirst().get("old_note"),value(result,"note"),value(result,"note"),tenant,key);
         jdbc.update("UPDATE order_voucher_recognition_job SET status='SUCCEEDED',result_json=?,error_code=NULL,lease_token=NULL,lease_until=NULL,updated_time=UTC_TIMESTAMP(6) WHERE id=?",json,job.get("id"));
     }
     @Transactional
@@ -88,4 +90,12 @@ public class JdbcVoucherRecognitionStore {
                 + " WHERE tenant_id=? AND voucher_key=? AND created_by='VOUCHER_OCR' AND voucher_amount IS NULL",job.get("tenant_id"),job.get("voucher_key"));
     }
     private static String value(JsonNode r,String key) { var n=r.get(key);return n==null||n.isNull()?null:n.asText(); }
+    private static String scriptFingerprint() {
+        try (var script=JdbcVoucherRecognitionStore.class.getResourceAsStream("/ocr/recognize_voucher.py")) {
+            if (script==null) throw new IllegalStateException("OCR_SCRIPT_MISSING");
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(script.readAllBytes()));
+        } catch (java.io.IOException | java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("OCR_SCRIPT_UNAVAILABLE",e);
+        }
+    }
 }

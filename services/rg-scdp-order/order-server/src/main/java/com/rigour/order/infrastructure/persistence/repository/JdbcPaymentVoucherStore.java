@@ -16,7 +16,7 @@ public class JdbcPaymentVoucherStore implements PaymentVoucherStore {
     private final OrderDataScope scopes;
     public JdbcPaymentVoucherStore(JdbcTemplate jdbc, OrderDataScope scopes) { this.jdbc = jdbc; this.scopes = scopes; }
     @Override public List<String> attachmentKeys(String tenantId, long paymentId) {
-        var scope = scopes.predicate("order:read", "o.", null);
+        var scope = scopes.predicate(com.rigour.order.application.service.sales.PaymentReadPermission.current(), "o.", null);
         var args = new ArrayList<Object>(List.of(tenantId, paymentId)); args.addAll(scope.args());
         return jdbc.query("SELECT p.voucher_keys_json FROM order_payment_record p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id WHERE p.tenant_id=? AND p.id=? AND p.deleted=0 AND (" + scope.sql() + ")",
             rs -> {
@@ -41,7 +41,7 @@ public class JdbcPaymentVoucherStore implements PaymentVoucherStore {
         return count;
     }
     @Override public List<VoucherTransaction> vouchers(String tenantId, long paymentId) {
-        var scope = scopes.predicate("order:read", "o.", null);
+        var scope = scopes.predicate(com.rigour.order.application.service.sales.PaymentReadPermission.current(), "o.", null);
         var args = new ArrayList<Object>(List.of(tenantId, tenantId, paymentId)); args.addAll(scope.args());
         return jdbc.query("""
                 SELECT e.voucher_key,e.voucher_amount,e.transaction_no,e.evidence_note,e.voucher_paid_time,e.voucher_paid_time_precision,e.recognition_status,e.payee,e.payment_result
@@ -56,7 +56,7 @@ public class JdbcPaymentVoucherStore implements PaymentVoucherStore {
     @Override public List<TransactionMatch> transactionMatches(String tenantId, String transactionNo) {
         // 同时查主单历史单号和逐图单号；历史删除记录也展示，避免误判“从未使用”。
         // 每张凭证保留关联行，主单与其凭证的同一个单号不重复计数。
-        var scope = scopes.predicate("order:read", "o.", null);
+        var scope = scopes.predicate(com.rigour.order.application.service.sales.PaymentReadPermission.current(), "o.", null);
         var args = new ArrayList<Object>(List.of(tenantId, transactionNo, tenantId, transactionNo)); args.addAll(scope.args());
         return jdbc.query("""
                 SELECT p.id,p.payment_no,o.order_no,p.customer_name_snapshot,

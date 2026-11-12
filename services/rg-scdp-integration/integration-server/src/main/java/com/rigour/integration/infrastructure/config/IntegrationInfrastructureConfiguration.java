@@ -436,7 +436,7 @@ public final class IntegrationInfrastructureConfiguration {
     @Bean
     DhbIntegrationService dhbIntegrationService(
             DhbIntegrationStore store, DhbClient client,
-            DhbOrderSyncService orderSyncService, ProductMediaStorage productMediaStorage,
+            DhbSyncOrchestrationService orderSyncService, ProductMediaStorage productMediaStorage,
             ProductImageObjectKeyFactory productImageObjectKeyFactory,
             ProductMediaSyncStore productMediaSyncStore) {
         return new DhbIntegrationService(store, client, orderSyncService, productMediaStorage,

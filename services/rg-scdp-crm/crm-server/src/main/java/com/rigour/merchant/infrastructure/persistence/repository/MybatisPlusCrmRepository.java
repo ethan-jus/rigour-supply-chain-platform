@@ -1014,11 +1014,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                                 existing.getRegionCode(), resolvedRegionCode)));
         StaffRef primary = staffRefs(f).primary();
         EmployeeRef proposed = employee(f, primary.sourceId(), primary.name());
-        if (("LOCAL".equals(existing.getOwnerManagementMode())
-                        && !Objects.equals(
-                                existing.getOwnerEmployeeCode(), proposed.employeeCode()))
-                || ("LOCAL".equals(existing.getRegionManagementMode())
-                        && !Objects.equals(existing.getRegionCode(), regionCode)))
+        if ("LOCAL".equals(existing.getRegionManagementMode())
+                        && !Objects.equals(existing.getRegionCode(), regionCode))
             responsibilities.sourceConflict(
                     tenant,
                     existing.getId(),
@@ -1026,9 +1023,12 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                     proposed.employeeCode(),
                     regionCode,
                     String.valueOf(record.sourceUpdatedAt()));
-        boolean repairOwner = syncOwned && !internalCustomerOwnerComplete(existing, record);
+        boolean repairOwner = !internalCustomerOwnerComplete(existing, record);
         if (!sourceChanged && !repairCode && !repairParty && !repairClassification && !repairOwner) return;
-        if (!syncOwned && !repairParty) return;
+        if (!syncOwned && !repairParty) {
+            if (repairOwner) updateSourceOwner(tenant, existing, proposed);
+            return;
+        }
         String oldOwner = existing.getOwnerEmployeeCode(),
                 oldName = existing.getOwnerEmployeeNameSnapshot(),
                 oldRegion = existing.getRegionCode();
@@ -1067,6 +1067,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                         .eq(InternalCustomerEntity::getTenantId, tenant)
                         .eq(InternalCustomerEntity::getId, existing.getId())
                         .eq(InternalCustomerEntity::getRevision, existing.getRevision());
+        if (clean(proposed.employeeCode()) != null)
+            update.set(InternalCustomerEntity::getOwnerManagementMode, "EXTERNAL");
         if (matched != null) {
             update.set(InternalCustomerEntity::getOwnerManagementMode, "EXTERNAL")
                     .set(InternalCustomerEntity::getRegionManagementMode, "EXTERNAL");
@@ -1093,6 +1095,27 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 false);
     }
 
+    /** 已绑定的历史/人工客户也同步订货宝主责，只更新归属字段并保存变更历史。 */
+    private void updateSourceOwner(String tenant, InternalCustomerEntity existing, EmployeeRef owner) {
+        if (clean(owner.employeeCode()) == null) return;
+        if (internalCustomerMapper.update(null, Wrappers.<InternalCustomerEntity>lambdaUpdate()
+                .eq(InternalCustomerEntity::getTenantId, tenant)
+                .eq(InternalCustomerEntity::getId, existing.getId())
+                .eq(InternalCustomerEntity::getRevision, existing.getRevision())
+                .set(InternalCustomerEntity::getOwnerEmployeeCode, owner.employeeCode())
+                .set(InternalCustomerEntity::getOwnerEmployeeNameSnapshot, owner.employeeName())
+                .set(InternalCustomerEntity::getOwnerSalesUserId, null)
+                .set(InternalCustomerEntity::getOwnerSalesName, owner.employeeName())
+                .set(InternalCustomerEntity::getOwnerManagementMode, "EXTERNAL")
+                .set(InternalCustomerEntity::getUpdatedTime, now())
+                .setSql("revision=revision+1")) != 1)
+            throw new BusinessException(ErrorCode.CONFLICT, "客户已变更，请重新同步", List.of());
+        responsibilities.changed(tenant, existing.getId(), existing.getOwnerEmployeeCode(),
+                existing.getOwnerEmployeeNameSnapshot(), existing.getRegionCode(),
+                owner.employeeCode(), owner.employeeName(), existing.getRegionCode(),
+                SOURCE_SYSTEM, SYSTEM_ACTOR, "订货宝同步更新客户业务员", false);
+    }
+
     private void applyInternalCustomer(
             InternalCustomerEntity entity,
             SourceRecord record,
@@ -1108,7 +1131,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         StaffRef primary = staffRefs(f).primary();
         EmployeeRef employee = employee(f, primary.sourceId(), primary.name());
         String ownerEmployeeName = employee.employeeName();
-        if (!"LOCAL".equals(entity.getOwnerManagementMode())) {
+        if (clean(employee.employeeCode()) != null) {
             entity.setOwnerSalesUserId(null);
             entity.setOwnerSalesName(ownerEmployeeName);
             entity.setOwnerEmployeeCode(employee.employeeCode());
@@ -1184,10 +1207,10 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
     }
 
     private static boolean internalCustomerOwnerComplete(InternalCustomerEntity customer, SourceRecord record) {
-        if ("LOCAL".equals(customer.getOwnerManagementMode())
-                || !(sourceWritable(customer.getCreatedBy()) || sourceWritable(customer.getUpdatedBy()))) return true;
         StaffRef primary = staffRefs(record.sourceFields()).primary();
         EmployeeRef expected = employee(record.sourceFields(), primary.sourceId(), primary.name());
+        // 来源未分配或尚未对应员工由同步异常处理，不用空值清除已知主责。
+        if (clean(expected.employeeCode()) == null) return true;
         return Objects.equals(customer.getOwnerEmployeeCode(), expected.employeeCode())
                 && Objects.equals(customer.getOwnerEmployeeNameSnapshot(), expected.employeeName());
     }

@@ -65,7 +65,7 @@ class OrderRegisterServiceTest {
         var store = mock(OrderRegisterStore.class);
         var service = new OrderRegisterService(store,mock(CrmCustomerAreaDisplayClient.class),mock(HrEmployeeDisplayClient.class),invoiceStore(),resolverProvider());
         TestAuthorizationContext.set(caller("order:read"));
-        assertThatThrownBy(() -> service.lines(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1001L, null, null, null)).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.lines(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, 1001L, null, null, null, null)).isInstanceOf(BusinessException.class);
         verify(store,never()).lines(any(),anyInt(),anyInt(),any());
     }
 
@@ -75,14 +75,14 @@ class OrderRegisterServiceTest {
         var service = new OrderRegisterService(store,mock(CrmCustomerAreaDisplayClient.class),mock(HrEmployeeDisplayClient.class),invoiceStore(),resolverProvider());
         TestAuthorizationContext.set(caller("order:read"));
         when(store.lines(any(),anyInt(),anyInt(),any())).thenReturn(new OrderRegisterPage<>(0,0,20,List.of(),Map.of(),null));
-        service.lines(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L,102L),null,null,null,null,1001L,List.of(1003L),null,null);
+        service.lines(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,List.of(101L,102L),null,null,null,null,1001L,List.of(1003L),null,null, null);
         var criteria = ArgumentCaptor.forClass(OrderRegisterStore.LineCriteria.class);
         verify(store).lines(eq(TENANT),eq(0),eq(20),criteria.capture());
         assertThat(criteria.getValue().productIds()).containsExactly(101L,102L);
         assertThat(criteria.getValue().productVariantId()).isNull();
         assertThat(criteria.getValue().productVariantIds()).containsExactly(1001L,1003L);
         assertThatThrownBy(() -> service.lines(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,
-                java.time.Instant.parse("2026-09-03T00:00:00Z"),java.time.Instant.parse("2026-09-02T00:00:00Z"))).isInstanceOf(BusinessException.class);
+                java.time.Instant.parse("2026-09-03T00:00:00Z"),java.time.Instant.parse("2026-09-02T00:00:00Z"), null)).isInstanceOf(BusinessException.class);
     }
 
     @Test
@@ -98,7 +98,7 @@ class OrderRegisterServiceTest {
                         "EMP001", "张三", "ACTIVE", "上海市")));
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
-        var page = service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        var page = service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         assertThat(page.items()).hasSize(1);
         assertThat(page.items().get(0).departmentName()).isEqualTo("上海市");
@@ -114,7 +114,7 @@ class OrderRegisterServiceTest {
                 .thenReturn(new OrderRegisterPage<>(1L, 0, 20, List.of(order("成都市")), Map.of(), null));
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
-        var page = service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        var page = service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         assertThat(page.items().get(0).departmentName()).isEqualTo("成都市");
         verify(hr, never()).resolve(any(), any());
@@ -132,7 +132,7 @@ class OrderRegisterServiceTest {
                 .thenReturn(new OrderRegisterPage<>(0L, 0, 20, List.of(), Map.of(), null));
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
-        service.orders(0, 20, null, null, null, null, null, null, 7L, true, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        service.orders(0, 20, null, null, null, null, null, null, 7L, true, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         ArgumentCaptor<OrderCriteria> captor = ArgumentCaptor.forClass(OrderCriteria.class);
         verify(store).orders(eq(TENANT), eq(0), eq(20), captor.capture());
@@ -156,7 +156,7 @@ class OrderRegisterServiceTest {
                         () ->
                                 service.orders(
                                         0, 20, null, null, null, null, null, null, 7L, false,
-                                        null, null, null, null, null, null, null, null, null, null, null, null, null, null))
+                                        null, null, null, null, null, null, null, null, null, null, null, null, null, null, null))
                 .isInstanceOf(BusinessException.class)
                 .extracting(exception -> ((BusinessException) exception).getErrorCode())
                 .isEqualTo(ErrorCode.SERVICE_UNAVAILABLE);
@@ -171,10 +171,10 @@ class OrderRegisterServiceTest {
         TestAuthorizationContext.set(caller("order:read"));
         when(hr.departmentIdsInScope(any(), eq(7L), eq(false))).thenReturn(Set.of(7L));
         when(hr.departmentEmployeeCodes(any(), eq(7L), eq(false))).thenThrow(new IllegalStateException("HR unavailable"));
-        assertThatThrownBy(() -> service.orders(0,20,null,null,null,null,null,null,7L,false,null,null,null,null,null,null,null,null,null,null,null,null,null,null))
+        assertThatThrownBy(() -> service.orders(0,20,null,null,null,null,null,null,7L,false,null,null,null,null,null,null,null,null,null,null,null,null,null,null, null))
                 .isInstanceOf(BusinessException.class).extracting(e -> ((BusinessException)e).getErrorCode()).isEqualTo(ErrorCode.SERVICE_UNAVAILABLE);
         assertThatThrownBy(() -> service.orders(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,
-                java.time.Instant.parse("2026-10-01T00:00:00Z"),java.time.Instant.parse("2026-09-01T00:00:00Z"))).isInstanceOf(BusinessException.class);
+                java.time.Instant.parse("2026-10-01T00:00:00Z"),java.time.Instant.parse("2026-09-01T00:00:00Z"), null)).isInstanceOf(BusinessException.class);
         verify(store,never()).orders(any(),anyInt(),anyInt(),any());
     }
 
@@ -188,8 +188,8 @@ class OrderRegisterServiceTest {
                 .thenReturn(new OrderRegisterPage<>(0L, 0, 20, List.of(), Map.of(), null));
 
         OrderRegisterService service = new OrderRegisterService(store, crm, hr, invoiceStore(), resolverProvider());
-        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, "PENDING", null, null, null, null, null, null, null, null);
-        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, "PENDING", null, null, null, null, null, null, null, null, null);
+        service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         ArgumentCaptor<OrderCriteria> captor = ArgumentCaptor.forClass(OrderCriteria.class);
         verify(store, org.mockito.Mockito.times(2)).orders(eq(TENANT), eq(0), eq(20), captor.capture());
@@ -201,7 +201,7 @@ class OrderRegisterServiceTest {
                         () ->
                                 service.orders(
                                         0, 20, null, null, null, null, null, null, null, null,
-                                        null, null, null, null, null, "BOGUS", null, null, null, null, null, null, null, null))
+                                        null, null, null, null, null, "BOGUS", null, null, null, null, null, null, null, null, null))
                 .isInstanceOf(BusinessException.class)
                 .extracting(exception -> ((BusinessException) exception).getErrorCode())
                 .isEqualTo(ErrorCode.BAD_REQUEST);
@@ -221,10 +221,11 @@ class OrderRegisterServiceTest {
             new HrEmployeeDisplayClient.DepartmentDisplay(28L,27L,"唐山市","ACTIVE")));
         when(hr.resolve(any(),any())).thenReturn(List.of(new HrEmployeeDisplayClient.EmployeeDisplay("EMP001","张三","ACTIVE","石家庄")));
         var service = new OrderRegisterService(store,crm,hr,invoiceStore(),resolverProvider());
-        var page = service.orders(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null);
+        var page = service.orders(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null, null);
         assertThat(page.items().getFirst().departmentId()).isEqualTo(28L);
         assertThat(page.items().getFirst().departmentName()).isEqualTo("唐山市");
         assertThat(page.items().getFirst().ownerEmployeeCode()).isEqualTo("EMP001");
+        assertThat(page.items().getFirst().paymentOwnerNames()).containsExactly("李四", "王五");
     }
 
     private static OrderRegisterOrderView order(String departmentName) { return order(departmentName,null,null); }
@@ -241,7 +242,7 @@ class OrderRegisterServiceTest {
                 null, null,
                 null, null, null, null, null,
                 null, null, null, null, null, null,
-                1, null);
+                1, null, List.of("李四", "王五"));
     }
 
     private static OrderInvoiceStore invoiceStore() {

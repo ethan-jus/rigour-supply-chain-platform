@@ -270,7 +270,7 @@ class OrderInvoiceServiceTest {
                 new BigDecimal("1000.00"), BigDecimal.ZERO,
                 Instant.parse("2026-09-01T00:00:00Z"),
                 null, null, null, null, null, null, null,
-                1, null);
+                1, null, List.of());
     }
 
     private static CallerIdentity caller(String permission) {

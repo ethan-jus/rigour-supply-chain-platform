@@ -220,6 +220,23 @@ public final class DhbSyncOrchestrationService {
         return executePage(actor, command, progress, background, bucket);
     }
 
+    /** 单任务/单对象入口也先刷新客户，避免绕过统一回款依赖。 */
+    public SyncRunView runTask(CallerIdentity actor, UUID taskId, SyncRunCommand command) {
+        requireManualCaller(actor);
+        var bucket = targets(actor.tenantId(), TargetSelection.CONFIGURED).values().stream()
+                .filter(b -> b.orderTarget != null && b.orderTarget.taskId().equals(taskId))
+                .findFirst().orElseThrow(() -> new IllegalArgumentException("当前租户没有该订单同步任务"));
+        return orchestrationLease.execute(actor.tenantId(), bucket.key.connectorId(), ORCHESTRATION_LEASE_OWNER, () -> {
+            boolean receipt = command == null || (command.sourceId() == null
+                    ? command.syncScope() == null || "RECEIPT".equals(command.syncScope())
+                    : "RECEIPT".equals(command.sourceObjectType()));
+            if (receipt && !refreshCustomersBeforeReceipts(actor, serviceCaller(actor.tenantId()),
+                    bucket, properties.getMaxPages(), new ArrayList<>(), stage -> {}, false))
+                throw new IllegalStateException("客户同步未完整成功，暂停回款同步");
+            return orderSyncService.runOrderPull(actor, taskId, command);
+        });
+    }
+
     public void validateBusinessChain(UUID tenant, UUID connector) {
         var bucket = targets(tenant, TargetSelection.CONFIGURED).values().stream()
                 .filter(b -> b.key.connectorId().equals(connector)).findFirst()
@@ -257,14 +274,7 @@ public final class DhbSyncOrchestrationService {
                                 steps.add(skipped("ORDER", "ORDER_SALES_PACKAGE", "等待业务员关联完成"));
                                 break;
                             }
-                            progress.accept("业务员核对完成，正在同步客户资料及待关联记录");
-                            var customers = crmClient.syncLatestCustomersInBackground(caller,
-                                    bucket.key.connectorId(), bucket.crmTarget.taskId(), pages, actor.userId() == null ? null : actor.principalId(), progress);
-                            for (var item : customers.objects()) steps.add(crmStep(item, customers.status()));
-                            if (!dependencyCompleted(customers.status()) || !dependenciesReady(steps) || customers.objects().isEmpty()) {
-                                steps.add(skipped("ORDER", "ORDER_SALES_PACKAGE", "客户同步未完成，暂停订单同步"));
-                                break;
-                            }
+                            if (!refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, true)) break;
                             runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true);
                         }
                         case VOUCHER_BACKFILL -> {
@@ -275,12 +285,15 @@ public final class DhbSyncOrchestrationService {
                         case SALESPERSON -> runStaffStep(bucket, caller, pages, null, steps, true, progress);
                         case SALES_ORDER, RECEIPT, PAYMENT, SHIPMENT, TRANSFER -> {
                             if (bucket.orderTarget == null) throw new IllegalArgumentException("未配置订单同步任务");
+                            if (command.scope() == com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.RECEIPT
+                                    && !refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, background)) break;
                             SyncRunView r=orderSyncService.runOrderPull(caller,bucket.orderTarget.taskId(),
                                 new SyncRunCommand(command.from(),command.to(),null,null,null,type),pages);
                             steps.add(orderPackageStep(type, r));
                         }
                         case ORDER_SALES_PACKAGE -> {
                             if (bucket.orderTarget == null) throw new IllegalArgumentException("未配置订单同步任务");
+                            if (!refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, background)) break;
                             if (Boolean.TRUE.equals(command.incremental())) {
                                 runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, background);
                             } else {
@@ -310,6 +323,23 @@ public final class DhbSyncOrchestrationService {
                     return new DhbSyncOrchestrationResult(UUID.randomUUID(),aggregateTenantStatus(tenants),
                         ("SERVICE".equals(actor.principalScope()) ? "SCHEDULED_" : "MANUAL_")+type,start,clock.instant(),tenants);
                 });
+    }
+
+    private boolean refreshCustomersBeforeReceipts(CallerIdentity actor, CallerIdentity caller,
+            TargetBucket bucket, int pages, List<DhbSyncOrchestrationStepView> steps,
+            java.util.function.Consumer<String> progress, boolean background) {
+        if (bucket.crmTarget == null) throw new IllegalArgumentException("请先配置客户同步目标");
+        progress.accept("先同步客户及当前业务员归属，再同步回款");
+        var actorId = actor.userId() == null ? null : actor.principalId();
+        var result = background
+                ? crmClient.syncLatestCustomersInBackground(caller, bucket.key.connectorId(), bucket.crmTarget.taskId(), pages, actorId, progress)
+                : crmClient.syncLatestCustomers(caller, bucket.key.connectorId(), bucket.crmTarget.taskId(), pages, actorId);
+        for (var item : result.objects()) steps.add(crmStep(item, result.status()));
+        boolean ready = dependencyCompleted(result.status()) && !result.objects().isEmpty()
+                && result.objects().stream().allMatch(item -> dependencyCompleted(item.status())
+                        && item.rejected() == 0);
+        if (!ready) steps.add(skipped("ORDER", "RECEIPT", "客户同步未完整成功，暂停回款同步"));
+        return ready;
     }
 
     static boolean dependenciesReady(List<DhbSyncOrchestrationStepView> steps) {
@@ -429,6 +459,8 @@ public final class DhbSyncOrchestrationService {
         if (!failed && includeErpSupply) {
             failed = runSupplySteps(bucket, caller, maxPages, triggerType, syncWindow, steps);
         }
+        if (!failed && includeOrder && !includeCrm)
+            failed = !refreshCustomersBeforeReceipts(caller, caller, bucket, maxPages, steps, stage -> {}, false);
         if (!failed && includeOrder) {
             runOrderStep(bucket, caller, maxPages, orderCommand(syncWindow), steps);
         }
@@ -597,7 +629,9 @@ public final class DhbSyncOrchestrationService {
                     : crmClient.sync(serviceCaller(bucket.key.tenantId()), bucket.key.connectorId(),
                     bucket.crmTarget.taskId(), maxPages, syncWindow.from(), syncWindow.to());
             for (SyncObjectResult object : result.objects()) steps.add(crmStep(object));
-            return false;
+            return !dependencyCompleted(result.status()) || result.objects().isEmpty()
+                    || result.objects().stream().anyMatch(item -> !dependencyCompleted(item.status())
+                            || item.rejected() > 0);
         } catch (RuntimeException error) {
             steps.add(failed("CRM", "CRM_MASTER_DATA", error));
             return true;

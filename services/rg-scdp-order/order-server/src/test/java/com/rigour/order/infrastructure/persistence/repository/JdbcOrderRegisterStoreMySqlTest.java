@@ -72,6 +72,43 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
+    void orderAndLineSearchUseDistinctPaymentOwnersWithoutMultiplyingTotals() {
+        String tenant=UUID.randomUUID().toString();
+        long a=order(tenant,"PAY-OWNER-A",1L,"C1","客户甲","HZ","ORDER-STAFF","创建人","2026-09-01T00:00:00Z",100,0);
+        long b=order(tenant,"PAY-OWNER-B",2L,"C2","客户乙","HZ","LI","创建人","2026-09-01T00:00:00Z",200,0);
+        insertLine(tenant,a,1,"商品甲","40");
+        insertLine(tenant,a,2,"商品乙","60");
+        insertLine(tenant,b,1,"商品丙","200");
+        for (String no : List.of("LI-1","LI-2","WANG","PENDING","CANCELLED","DELETED","ZERO")) {
+            insertPayment(tenant,no,a,"2026-09-02T00:00:00Z","ZERO".equals(no)?0:10,"CANCELLED".equals(no)?"CANCELLED":"RECEIVED",null);
+        }
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code='LI',payment_owner_name='李四',payment_owner_evidence='首次同步客户归属' WHERE tenant_id=? AND payment_no IN ('LI-1','LI-2')",tenant);
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code='WANG',payment_owner_name='王五',payment_owner_evidence='人工核实' WHERE tenant_id=? AND payment_no='WANG'",tenant);
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code='INVALID',payment_owner_name='无效回款人',payment_owner_evidence='核实',deleted=CASE WHEN payment_no='DELETED' THEN 1 ELSE 0 END WHERE tenant_id=? AND payment_no IN ('CANCELLED','DELETED','ZERO')",tenant);
+        insertPayment(UUID.randomUUID().toString(),"OTHER-TENANT",a,"2026-09-02T00:00:00Z",10,"RECEIVED",null);
+        jdbc.update("UPDATE order_sales_order SET paid_amount=40,unpaid_amount=60 WHERE tenant_id=? AND id=?",tenant,a);
+        var orderCriteria=new OrderCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,Map.of(),"LI");
+        var lineCriteria=new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,Map.of(),"LI");
+        var orders=store.orders(tenant,0,1,orderCriteria);
+        var lines=store.lines(tenant,0,1,lineCriteria);
+        assertThat(orders.total()).isEqualTo(1);
+        assertThat(orders.items().getFirst().id()).isEqualTo(a);
+        assertThat(orders.items().getFirst().ownerEmployeeCode()).isEqualTo("ORDER-STAFF");
+        assertThat(orders.items().getFirst().paymentOwnerNames()).containsExactlyInAnyOrder("李四","王五","待补齐");
+        assertThat(orders.totals().get("payableAmount")).isEqualByComparingTo("100");
+        assertThat(orders.totals().get("paidAmount")).isEqualByComparingTo("40");
+        assertThat(lines.total()).isEqualTo(2);
+        assertThat(lines.items().getFirst().paymentOwnerNames()).containsExactlyInAnyOrder("李四","王五","待补齐");
+        assertThat(lines.totals().get("orderAmount")).isEqualByComparingTo("100");
+        assertThat(lines.totals().get("receivedAmount")).isEqualByComparingTo("40");
+        for(String code:List.of("ORDER-STAFF","INVALID")) {
+            assertThat(store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,Map.of(),code)).total()).isZero();
+            assertThat(store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,Map.of(),code)).total()).isZero();
+        }
+        assertThat(store.findOrder(tenant,"PAY-OWNER-B").orElseThrow().paymentOwnerNames()).isEmpty();
+    }
+
+    @Test
     void newReceiptUsesCurrentCustomerOwnerAndFreezesItAcrossTransfers() {
         String tenant=UUID.randomUUID().toString();
         long orderId=order(tenant,"RESOLVE-O",1L,"C1","归属客户","HZ","ZHANG","张三","2026-09-01T00:00:00Z",100,0);
@@ -169,9 +206,9 @@ class JdbcOrderRegisterStoreMySqlTest {
             var employees = departments.contains(11L) ? java.util.Set.of("E1") : java.util.Set.<String>of();
             long expected = departments.size()==3 ? 2 : 1;
             var orders = store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,null,null,departments,
-                null,null,null,null,null,null,null,null,null,null,null,null,null,null,employees,regions));
+                null,null,null,null,null,null,null,null,null,null,null,null,null,null,employees,regions,null));
             var lines = store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,departments,
-                null,null,null,null,null,null,null,null,null,null,null,null,null,null,employees,regions));
+                null,null,null,null,null,null,null,null,null,null,null,null,null,null,employees,regions,null));
             var payments = store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,null,null,departments,
                 null,null,null,null,null,null,null,null,null,null,null,null,null,null,employees,regions));
             assertThat(orders.total()).isEqualTo(expected);assertThat(lines.total()).isEqualTo(expected);assertThat(payments.total()).isEqualTo(expected);

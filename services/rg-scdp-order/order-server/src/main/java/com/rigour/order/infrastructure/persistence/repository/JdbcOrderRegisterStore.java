@@ -126,7 +126,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " o.order_date,o.shipment_time,o.created_by,o.created_time,"
                                 + " o.updated_by,o.updated_time,o.synced_by,o.synced_at,o.revision,"
                                 + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at, "
-                                + LATEST_PAYMENT_TIME + " AS payment_time "
+                                + LATEST_PAYMENT_TIME + " AS payment_time," + PAYMENT_OWNER_NAMES + " AS payment_owner_names "
                                 + " FROM order_sales_order o "
                                 + ORDER_ORIGINAL_JOIN
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
@@ -176,7 +176,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         firstInstant(rs, "source_updated_at", "updated_time"),
                                         rs.getString("synced_by"),
                                         instant(rs, "synced_at"),
-                                        rs.getInt("revision"), instant(rs, "payment_time")),
+                                        rs.getInt("revision"), instant(rs, "payment_time"), stringList(rs.getString("payment_owner_names")).stream().distinct().sorted().toList()),
                         append(where.args(), step, begin).toArray());
         Map<String, BigDecimal> totals = orderTotals(tenantId, criteria);
         return new OrderRegisterPage<>(total, begin, step, items, totals, historyCoverage(tenantId));
@@ -187,6 +187,21 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
             "CASE WHEN o.paid_amount>0 THEN (SELECT MAX(r.payment_time) FROM order_payment_record r"
                     + " WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id AND r.deleted=0"
                     + " AND r.payment_status_code IN ('RECEIVED','CHECKED') AND r.paid_amount>0) END";
+
+    // 只关联有效回款，按订单做相关聚合，不展开连接以免金额或行数倍增。
+    private static final String VALID_ORDER_PAYMENTS =
+            "r.tenant_id=o.tenant_id AND r.order_id=o.id AND r.deleted=0"
+                    + " AND r.payment_status_code IN ('RECEIVED','CHECKED') AND r.paid_amount>0";
+    private static final String PAYMENT_OWNER_NAMES =
+            "(SELECT JSON_ARRAYAGG(CASE WHEN r.payment_owner_evidence IS NOT NULL AND r.payment_owner_code IS NOT NULL"
+                    + " THEN COALESCE(NULLIF(r.payment_owner_name,''),r.payment_owner_code) ELSE '待补齐' END)"
+                    + " FROM order_payment_record r WHERE " + VALID_ORDER_PAYMENTS + ")";
+
+    private static void paymentOwnerFilter(Sql where, String employeeCode) {
+        if (employeeCode == null || employeeCode.isBlank()) return;
+        where.and("EXISTS (SELECT 1 FROM order_payment_record r WHERE " + VALID_ORDER_PAYMENTS
+                + " AND r.payment_owner_evidence IS NOT NULL AND r.payment_owner_code=?)", employeeCode);
+    }
 
     @Override
     public OrderRegisterPage<OrderRegisterLineView> lines(
@@ -222,7 +237,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " " + allocatedAmount("paid_amount") + " AS received_amount,"
                                 + " o.created_by,o.created_time,o.updated_by,o.updated_time,"
                                 + " o.source_creator_name,o.source_created_at,o.source_modifier_name,o.source_updated_at,"
-                                + " o.synced_by,o.synced_at, " + LATEST_PAYMENT_TIME + " AS payment_time "
+                                + " o.synced_by,o.synced_at, " + LATEST_PAYMENT_TIME + " AS payment_time," + PAYMENT_OWNER_NAMES + " AS payment_owner_names "
                                 + " FROM order_sales_order_line l "
                                 + " JOIN order_sales_order o ON o.tenant_id=l.tenant_id AND o.id=l.order_id AND o.deleted=0 "
                                 + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
@@ -271,7 +286,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         first(rs.getString("source_modifier_name"), rs.getString("updated_by")),
                                         firstInstant(rs, "source_updated_at", "updated_time"),
                                         rs.getString("synced_by"),
-                                        instant(rs, "synced_at"), instant(rs, "payment_time")),
+                                        instant(rs, "synced_at"), instant(rs, "payment_time"), stringList(rs.getString("payment_owner_names")).stream().distinct().sorted().toList()),
                         append(where.args(), step, begin).toArray());
         where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
         var totals = jdbc.queryForMap(
@@ -292,7 +307,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 criteria.orderNo(), criteria.customerId(), criteria.customerName(), criteria.customerCode(),
                 criteria.regionCode(), criteria.ownerEmployeeCode(), criteria.departmentIds(),
                 criteria.orderDateFrom(), criteria.orderDateTo(), criteria.orderStatusCode(),
-                criteria.paymentStatusCode(), null, null, null, null, null, null, null, null, criteria.paymentTimeFrom(), criteria.paymentTimeTo(), criteria.departmentEmployeeCodes(), criteria.departmentRegionIds()));
+                criteria.paymentStatusCode(), null, null, null, null, null, null, null, null, criteria.paymentTimeFrom(), criteria.paymentTimeTo(), criteria.departmentEmployeeCodes(), criteria.departmentRegionIds(), criteria.paymentOwnerEmployeeCode()));
         boolean lineFiltered = criteria.hasDiscount() != null || (criteria.productKeyword() != null && !criteria.productKeyword().isBlank())
                 || (criteria.productCode() != null && !criteria.productCode().isBlank())
                 || (criteria.productIds() != null && !criteria.productIds().isEmpty());
@@ -1063,6 +1078,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
+        paymentOwnerFilter(where, c.paymentOwnerEmployeeCode());
         departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
@@ -1124,6 +1140,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         like(where, "o.customer_code_snapshot", c.customerCode());
         like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
+        paymentOwnerFilter(where, c.paymentOwnerEmployeeCode());
         departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
@@ -1201,7 +1218,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         if (c.productIds() != null) {
             where.and("EXISTS (SELECT 1 FROM order_sales_order_line l WHERE l.tenant_id=o.tenant_id AND l.order_id=o.id AND l.deleted=0 AND " + paymentProductPredicate(c) + ")");
         }
-        var scope = scopes.predicate("order:read", "o.", null);
+        var scope = scopes.predicate(com.rigour.order.application.service.sales.PaymentReadPermission.current(), "o.", null);
         where.and("(" + scope.sql() + ")", scope.args().toArray());
         return where;
     }

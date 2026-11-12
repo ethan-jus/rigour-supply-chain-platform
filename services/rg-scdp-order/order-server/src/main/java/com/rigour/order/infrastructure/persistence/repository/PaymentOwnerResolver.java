@@ -29,7 +29,11 @@ public class PaymentOwnerResolver {
         if(row.get("customer_id")==null || row.get("payment_time")==null) return;
         try {
             var owner=owners.resolve(AuthorizationContext.requireCurrent(),((Number)row.get("customer_id")).longValue());
-            if(owner==null || !owner.usable()) return;
+            // 回款记录客户主责快照；员工在职/岗位资格只约束新建订单，不抹掉来源回款归属。
+            if (owner == null || !tenant.equals(owner.tenantId())
+                    || owner.customerId() != ((Number) row.get("customer_id")).longValue()
+                    || owner.employeeCode() == null || owner.employeeCode().isBlank()
+                    || owner.employeeName() == null || owner.employeeName().isBlank()) return;
             jdbc.update("UPDATE order_payment_record SET payment_owner_code=?,payment_owner_name=?,payment_owner_evidence=?,payment_owner_department_id=?,payment_owner_department_name=?,payment_owner_region_code=?,updated_time=?,revision=revision+1 WHERE tenant_id=? AND id=? AND customer_id=? AND payment_time=? AND payment_owner_evidence IS NULL AND deleted=0",
                 owner.employeeCode(),owner.employeeName(),currentEvidence(owner),owner.departmentId(),owner.departmentName(),owner.regionCode(),java.time.LocalDateTime.ofInstant(java.time.Instant.now(),java.time.ZoneOffset.UTC),tenant,id,row.get("customer_id"),row.get("payment_time"));
         } catch (RuntimeException failure) {
