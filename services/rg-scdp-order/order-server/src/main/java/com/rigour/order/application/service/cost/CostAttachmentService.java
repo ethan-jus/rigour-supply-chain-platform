@@ -49,6 +49,114 @@ public class CostAttachmentService {
         return storage.url(files.fileKey(tenant, entry, file));
     }
 
+    public String downloadUrl(String entry, String id) {
+        String tenant = authorize("logistics", entry, "read");
+        var file =
+                files.list(tenant, entry).stream()
+                        .filter(f -> f.id().equals(id))
+                        .findFirst()
+                        .orElseThrow(() -> bad("附件不存在"));
+        return storage.downloadUrl(files.fileKey(tenant, entry, id), file.fileName());
+    }
+
+    /** 同源读取已授权的 PDF，浏览器无需开放私有桶跨域访问。 */
+    public byte[] previewPdf(String entry, String id) {
+        String tenant = authorize("logistics", entry, "read");
+        var file =
+                files.list(tenant, entry).stream()
+                        .filter(f -> f.id().equals(id))
+                        .findFirst()
+                        .orElseThrow(() -> bad("附件不存在"));
+        if (!"application/pdf".equals(file.contentType())) throw bad("该附件不是PDF文件");
+        return storage.read(files.fileKey(tenant, entry, id));
+    }
+
+    static String evidenceCategory(String value) {
+        if (!Set.of("EXPENSE_VOUCHER", "RECEIPT", "LOADING", "UNLOADING")
+                .contains(Objects.toString(value, ""))) throw bad("请选择有效的凭证分类");
+        return value;
+    }
+
+    @Transactional
+    public LogisticsCostAttachmentView uploadEvidence(
+            String entry,
+            int revision,
+            String replacing,
+            String evidenceCategory,
+            String name,
+            String contentType,
+            byte[] bytes) {
+        return storeFile(
+                "logistics",
+                entry,
+                revision,
+                name,
+                contentType,
+                bytes,
+                replacing,
+                evidenceCategory(evidenceCategory));
+    }
+
+    /** 已由整单保存服务上传的自有对象，仅登记元数据，不在持有租户锁时等待 COS 网络。 */
+    LogisticsCostAttachmentView attachUploaded(
+            String entry,
+            int revision,
+            String replacing,
+            String category,
+            String name,
+            String type,
+            long size,
+            String key) {
+        String tenant = authorize("logistics", entry, "write");
+        if (!key.startsWith(tenant + "/order-cost-attachments/") || key.contains(".."))
+            throw bad("凭证归档位置无效");
+        files.lock(tenant);
+        var current = costs.entry(tenant, "LOGISTICS", entry, "order:logistics-cost:write");
+        if (!"DRAFT".equals(current.statusCode()) || current.revision() != revision)
+            throw bad("记录已变化或不是待确认，请刷新");
+        var existing = files.list(tenant, entry);
+        if (replacing == null && existing.size() >= 20) throw bad("每条记录最多20个附件");
+        var original =
+                replacing == null
+                        ? null
+                        : existing.stream()
+                                .filter(f -> f.id().equals(replacing))
+                                .findFirst()
+                                .orElseThrow(() -> bad("原附件不存在或已更换，请刷新"));
+        String actor = AuthorizationContext.requireCurrent().principalId().toString();
+        var file =
+                new LogisticsCostAttachmentView(
+                        UUID.randomUUID().toString(),
+                        name,
+                        type,
+                        size,
+                        actor,
+                        Instant.now(),
+                        evidenceCategory(category));
+        if (original != null) files.retire(tenant, entry, original.id());
+        files.add(tenant, entry, revision, file, key);
+        if (original == null)
+            costs.attachmentAdded(
+                    tenant, "LOGISTICS", entry, actor, file.id(), "order:logistics-cost:write");
+        else
+            costs.attachmentChanged(
+                    tenant,
+                    "LOGISTICS",
+                    entry,
+                    actor,
+                    "ATTACHMENT_REPLACED",
+                    original.fileName()
+                            + "（"
+                            + original.id()
+                            + "） → "
+                            + name
+                            + "（"
+                            + file.id()
+                            + "）",
+                    "order:logistics-cost:write");
+        return file;
+    }
+
     @Transactional
     public LogisticsCostAttachmentView upload(
             String category,
@@ -80,6 +188,19 @@ public class CostAttachmentService {
             String contentType,
             byte[] bytes,
             String replacing) {
+        return storeFile(
+                category, entry, revision, name, contentType, bytes, replacing, "EXPENSE_VOUCHER");
+    }
+
+    private LogisticsCostAttachmentView storeFile(
+            String category,
+            String entry,
+            int revision,
+            String name,
+            String contentType,
+            byte[] bytes,
+            String replacing,
+            String evidenceCategory) {
         String tenant = authorize(category, entry, "write");
         files.lock(tenant);
         String c = "LOGISTICS";
@@ -95,7 +216,7 @@ public class CostAttachmentService {
                 || name.chars().anyMatch(ch -> ch < 32)) throw bad("附件名称无效");
         if (bytes == null || bytes.length == 0 || bytes.length > 10 * 1024 * 1024)
             throw bad("附件须为1字节至10MB");
-        if (!validContent(contentType, bytes)) throw bad("仅支持内容匹配的 PNG、JPEG 或 PDF 文件");
+        validateEvidence(name, contentType, bytes);
         var original =
                 replacing == null
                         ? null
@@ -119,7 +240,8 @@ public class CostAttachmentService {
                         contentType,
                         bytes.length,
                         AuthorizationContext.requireCurrent().principalId().toString(),
-                        Instant.now());
+                        Instant.now(),
+                        evidenceCategory);
         if (original != null) files.retire(tenant, entry, original.id());
         files.add(tenant, entry, revision, file, key);
         if (original == null)
@@ -162,6 +284,16 @@ public class CostAttachmentService {
     public void remove(String category, String entry, String id, int revision) {
         String tenant = authorize(category, entry, "write");
         files.lock(tenant);
+        var current = costs.entry(tenant, "LOGISTICS", entry, "order:logistics-cost:write");
+        if (!"DRAFT".equals(current.statusCode()) || current.revision() != revision)
+            throw bad("只有待确认费用可修改附件，请刷新");
+        if (files.list(tenant, entry).size() <= 1) throw bad("至少保留一份业务凭证；更换最后一份凭证请使用更换操作");
+        removeWithinSubmission(category, entry, id, revision);
+    }
+
+    void removeWithinSubmission(String category, String entry, String id, int revision) {
+        String tenant = authorize(category, entry, "write");
+        files.lock(tenant);
         String c = "LOGISTICS", permission = "order:logistics-cost:write";
         var current = costs.entry(tenant, c, entry, permission);
         if (!"DRAFT".equals(current.statusCode()) || current.revision() != revision)
@@ -194,6 +326,48 @@ public class CostAttachmentService {
                         : "application/pdf".equals(type)
                                 && new String(b, 0, 5, java.nio.charset.StandardCharsets.US_ASCII)
                                         .equals("%PDF-");
+    }
+
+    static void validateEvidence(String name, String type, byte[] bytes) {
+        if (name == null
+                || name.isBlank()
+                || name.length() > 200
+                || name.chars().anyMatch(c -> c < 32)) throw bad("附件名称无效");
+        if (bytes == null || bytes.length == 0 || bytes.length > 10 * 1024 * 1024)
+            throw bad("附件须为1字节至10MB");
+        boolean office =
+                switch (Objects.toString(type, "")) {
+                    case "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ->
+                            officeContent(bytes, "word/document.xml");
+                    case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ->
+                            officeContent(bytes, "xl/workbook.xml");
+                    default -> false;
+                };
+        if (!validContent(type, bytes) && !office)
+            throw bad("请选择有效的 PNG、JPEG、PDF、Word（docx）或 Excel（xlsx）文件");
+    }
+
+    private static boolean officeContent(byte[] bytes, String document) {
+        boolean types = false, body = false;
+        int count = 0;
+        long expanded = 0;
+        // 验证实际 Office 包结构并限制展开大小，不能仅靠扩展名或 ZIP 文件头判断。
+        try (var zip = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes))) {
+            byte[] buffer = new byte[8192];
+            for (java.util.zip.ZipEntry entry; (entry = zip.getNextEntry()) != null; ) {
+                if (++count > 2000) return false;
+                int read;
+                while ((read = zip.read(buffer)) != -1) {
+                    expanded += read;
+                    if (expanded > 50L * 1024 * 1024) return false;
+                }
+                types |= "[Content_Types].xml".equals(entry.getName());
+                body |= document.equals(entry.getName());
+            }
+        } catch (java.io.IOException | RuntimeException e) {
+            return false;
+        }
+        return types && body;
     }
 
     private static BusinessException bad(String message) {

@@ -741,7 +741,8 @@ public final class DhbIntegrationService {
         List<com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand> items =
                 command == null ? List.of() : command.items();
         UUID actorId = caller.userId() == null ? caller.principalId() : caller.userId();
-        int accepted = store.saveExternalObjectMappings(caller.tenantId(), actorId, items);
+        int accepted = store.saveExternalObjectMappings(caller.tenantId(), actorId, items,
+                "SERVICE".equals(caller.principalScope()));
         return new ExternalObjectMappingBatchResult(items.size(), accepted);
     }
 
@@ -916,6 +917,20 @@ public final class DhbIntegrationService {
                     "候选入库单已唯一，直接单对象重放收敛历史死信。",
                     false, true, "WAREHOUSING_RECEIPT");
         }
+        if ("DHB_SHIPMENT_SOURCE_ORDER_UNAVAILABLE".equals(normalizedCode)
+                || "DHB_SHIPMENT_SOURCE_ORDER_MISMATCH".equals(normalizedCode)) {
+            return new OpenIssueClassification("SOURCE_ORDER_REQUIRED", "原销售单待核对", "REPLAY_AFTER_MAPPING",
+                    "按发货单中的原销售单号核对订货宝原单，资料补齐后只重试本发货单。", false, replaySupported(sourceObjectType), null);
+        }
+        if ("DHB_ORDER_MAPPING_MISSING".equals(normalizedCode)) {
+            return new OpenIssueClassification("MAPPING_REQUIRED", "资料来源关联待补齐", "FIX_MAPPING",
+                    "按原因中的资料名称和来源编码核对客户、仓库或商品档案；自动补同步仍未关联时处理冲突，再重试本单。",
+                    false, replaySupported(sourceObjectType), null);
+        }
+        if (normalizedCode.endsWith("IDENTITY_CONFLICT")) {
+            return new OpenIssueClassification("IDENTITY_CONFLICT", "资料来源关联冲突", "FIX_MAPPING",
+                    "同一来源资料指向多个本系统对象，须核对来源关联后重试，不能按名称自动改绑。", true, replaySupported(sourceObjectType), null);
+        }
         if (normalizedCode.contains("WAREHOUSE_MAPPING_MISSING")) {
             return new OpenIssueClassification("MAPPING_REQUIRED",
                     "仓库映射缺失", "FIX_MAPPING",
@@ -928,8 +943,7 @@ public final class DhbIntegrationService {
                     "回查订货宝 Raw 或接口补稳定业务时间；不能用系统当前时间兜底。",
                     false, replaySupported(sourceObjectType), null);
         }
-        if ("DHB_ORDER_MAPPING_MISSING".equals(normalizedCode)
-                || "DHB_SHIPMENT_ORDER_MAPPING_MISSING".equals(normalizedCode)
+        if ("DHB_SHIPMENT_ORDER_MAPPING_MISSING".equals(normalizedCode)
                 || "DHB_RECEIPT_ORDER_MAPPING_PENDING".equals(normalizedCode)) {
             return new OpenIssueClassification("ORDER_MAPPING_REQUIRED",
                     "订单映射待恢复", "REPLAY_AFTER_MAPPING",
@@ -1072,6 +1086,9 @@ public final class DhbIntegrationService {
             if (items.containsKey(sourceId)) {
                 return;
             }
+            var required = DhbDependencyRequirement.from(exception.lastErrorCode(),
+                    reconciliation == null ? null : reconciliation.expectedValueJson(),
+                    reconciliation == null ? null : reconciliation.actualValueJson());
             items.put(sourceId, new DhbSyncOpenIssueItemView(
                     exception.sourceObjectType(),
                     sourceId,
@@ -1085,7 +1102,8 @@ public final class DhbIntegrationService {
                     classification.manualResolutionRequired(),
                     classification.replaySupported(),
                     classification.handlingAdvice(),
-                    exception.updatedAt()));
+                    exception.updatedAt(), required == null ? null : required.type(),
+                    required == null ? null : required.sourceId(), required == null ? null : required.salesOrderNo()));
         }
 
         DhbSyncOpenIssueGroupView view() {

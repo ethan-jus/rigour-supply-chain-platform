@@ -113,4 +113,32 @@ class CostCustomerReferenceServiceTest {
                 .isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(store);
     }
+
+    @Test
+    void cityBatchParsesPolicyOnceButRejectsAnyUnauthorizedCityBeforeReading() {
+        when(auth.authorization(any(), eq(EXPORT))).thenReturn(policy(true));
+        var request = new LinkedHashMap<String, List<String>>();
+        request.put("WH", List.of("CUS1"));
+        request.put("CQ", List.of("CUS2"));
+        assertThatThrownBy(() -> service.customersByCities(EXPORT, request))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        verify(auth, times(1)).authorization(any(), eq(EXPORT));
+        verifyNoInteractions(store);
+    }
+
+    @Test
+    void cityBatchDeduplicatesCodesWithoutMixingCities() {
+        when(auth.authorization(any(), eq(EXPORT))).thenReturn(policy(true));
+        var row = new CostCustomerView("1", "CUS1", "门店", "联系人", "13800000000", "地址");
+        var normalized = Map.of("WH", List.of("CUS1"));
+        when(store.customersByCities(tenant.toString(), normalized))
+                .thenReturn(Map.of("WH", List.of(row)));
+        assertThat(
+                        service.customersByCities(EXPORT, Map.of("WH", List.of("CUS1", "CUS1")))
+                                .get("WH"))
+                .containsExactly(row);
+        verify(auth, times(1)).authorization(any(), eq(EXPORT));
+        verify(store).customersByCities(tenant.toString(), normalized);
+        verify(store, never()).customersByCodes(any(), any(), any());
+    }
 }

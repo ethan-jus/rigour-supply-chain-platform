@@ -8,6 +8,11 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 
 public interface CostCustomerReferenceApi {
+    @PostMapping("/api/v1/crm/cost-customer-references/batch-cities")
+    ApiResponse<java.util.Map<String, List<CostCustomerView>>> customersByCities(
+            @RequestParam String action,
+            @RequestBody java.util.Map<String, List<String>> codesByCity);
+
     @PostMapping("/api/v1/crm/cost-customer-references/batch")
     ApiResponse<List<CostCustomerView>> customersByCodes(
             @RequestParam String cityCode,

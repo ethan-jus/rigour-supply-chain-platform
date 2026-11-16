@@ -25,6 +25,14 @@ import com.rigour.shared.context.RequestContext;
 import com.rigour.shared.context.RequestHeaders;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.shared.core.api.ApiResponse;
+
+import org.springframework.http.MediaType;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.util.UriComponentsBuilder;
+
+import tools.jackson.core.type.TypeReference;
+
 import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -33,34 +41,28 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
-import org.springframework.http.MediaType;
-import org.springframework.web.client.RestClient;
-import org.springframework.web.client.RestClientResponseException;
-import org.springframework.web.util.UriComponentsBuilder;
-import tools.jackson.core.type.TypeReference;
 
 /** Integration到Order销售订单的HTTP客户端；只投影到自研业务接口。 */
 public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrderProjectionClient {
     private static final TypeReference<ApiResponse<SalesOrderDetailView>> SALES_ORDER_RESPONSE =
-            new TypeReference<>() { };
-    private static final TypeReference<ApiResponse<OrderPageView<SalesOrderSummaryView>>> SALES_ORDER_PAGE_RESPONSE =
-            new TypeReference<>() { };
-    private static final TypeReference<ApiResponse<SalesPaymentRecordDetailView>> SALES_PAYMENT_RESPONSE =
-            new TypeReference<>() { };
-    private static final TypeReference<ApiResponse<SalesRefundRecordDetailView>> SALES_REFUND_RESPONSE =
-            new TypeReference<>() { };
+            new TypeReference<>() {};
+    private static final TypeReference<ApiResponse<OrderPageView<SalesOrderSummaryView>>>
+            SALES_ORDER_PAGE_RESPONSE = new TypeReference<>() {};
+    private static final TypeReference<ApiResponse<SalesPaymentRecordDetailView>>
+            SALES_PAYMENT_RESPONSE = new TypeReference<>() {};
+    private static final TypeReference<ApiResponse<SalesRefundRecordDetailView>>
+            SALES_REFUND_RESPONSE = new TypeReference<>() {};
     private static final TypeReference<ApiResponse<FundDocumentDetailView>> FUND_DOCUMENT_RESPONSE =
-            new TypeReference<>() { };
-    private static final TypeReference<ApiResponse<SalesShipmentDetailView>> SALES_SHIPMENT_RESPONSE =
-            new TypeReference<>() { };
+            new TypeReference<>() {};
+    private static final TypeReference<ApiResponse<SalesShipmentDetailView>>
+            SALES_SHIPMENT_RESPONSE = new TypeReference<>() {};
 
     private final RestClient restClient;
     private final TrustedContextSigner signer;
     private final URI baseUri;
 
-    public HttpOrderSalesOrderProjectionClient(RestClient.Builder builder,
-                                               TrustedContextSigner signer,
-                                               String baseUrl) {
+    public HttpOrderSalesOrderProjectionClient(
+            RestClient.Builder builder, TrustedContextSigner signer, String baseUrl) {
         this.restClient = Objects.requireNonNull(builder, "RestClient.Builder不能为空").build();
         this.signer = Objects.requireNonNull(signer, "TrustedContextSigner不能为空");
         this.baseUri = baseUri(baseUrl);
@@ -70,18 +72,24 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     public SalesOrderDetailView salesOrder(CallerIdentity caller, Long id) {
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesOrderId无效");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesOrderApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesOrderDetailView> response = restClient.get().uri(uri)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单查询"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesOrderApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesOrderDetailView> response =
+                restClient
+                        .get()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse, SALES_ORDER_RESPONSE, "Order销售订单查询"));
         return requiredResponse(response);
     }
 
@@ -89,72 +97,96 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     public Optional<SalesOrderDetailView> findSalesOrderBySource(
             CallerIdentity caller, String sourceSystemCode, String sourceOrderNo) {
         requireCaller(caller);
-        if (sourceSystemCode == null || sourceSystemCode.isBlank()
-                || sourceOrderNo == null || sourceOrderNo.isBlank()) {
+        if (sourceSystemCode == null
+                || sourceSystemCode.isBlank()
+                || sourceOrderNo == null
+                || sourceOrderNo.isBlank()) {
             return Optional.empty();
         }
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesOrderApi.BASE_PATH)
-                .queryParam("begin", 0)
-                .queryParam("step", 20)
-                .queryParam("sourceOrderNo", sourceOrderNo.strip())
-                .build()
-                .encode()
-                .toUri();
-        ApiResponse<OrderPageView<SalesOrderSummaryView>> response = restClient.get().uri(uri)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_ORDER_PAGE_RESPONSE, "Order销售订单来源查询"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesOrderApi.BASE_PATH)
+                        .queryParam("begin", 0)
+                        .queryParam("step", 20)
+                        .queryParam("sourceOrderNo", sourceOrderNo.strip())
+                        .build()
+                        .encode()
+                        .toUri();
+        ApiResponse<OrderPageView<SalesOrderSummaryView>> response =
+                restClient
+                        .get()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_ORDER_PAGE_RESPONSE,
+                                                "Order销售订单来源查询"));
         OrderPageView<SalesOrderSummaryView> page = requiredSalesOrderPageResponse(response);
-        return page.items().stream()
+        var matches = page.items().stream()
                 .filter(item -> sourceSystemCode.equalsIgnoreCase(item.sourceSystemCode()))
-                .filter(item -> sourceOrderNo.strip().equals(item.sourceOrderNo()))
-                .findFirst()
-                .map(item -> salesOrder(caller, item.id()));
+                .filter(item -> sourceOrderNo.strip().equals(item.sourceOrderNo())).toList();
+        if (matches.size() > 1 || page.total() > page.items().size())
+            throw new IllegalStateException("来源销售单查询存在多笔或分页未完整，不能自动关联 " + sourceOrderNo);
+        return matches.stream().findFirst().map(item -> salesOrder(caller, item.id()));
     }
 
     @Override
     public SalesOrderDetailView createSalesOrder(CallerIdentity caller, SalesOrderCommand command) {
         requireCaller(caller);
         if (command == null) throw new IllegalArgumentException("salesOrder command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesOrderApi.BASE_PATH)
-                .build()
-                .encode()
-                .toUri();
-        ApiResponse<SalesOrderDetailView> response = restClient.post().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单创建"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesOrderApi.BASE_PATH)
+                        .build()
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesOrderDetailView> response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse, SALES_ORDER_RESPONSE, "Order销售订单创建"));
         return requiredResponse(response);
     }
 
     @Override
-    public SalesOrderDetailView updateSalesOrder(CallerIdentity caller, Long id,
-                                                 SalesOrderCommand command) {
+    public SalesOrderDetailView updateSalesOrder(
+            CallerIdentity caller, Long id, SalesOrderCommand command) {
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesOrderId无效");
         if (command == null) throw new IllegalArgumentException("salesOrder command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesOrderApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesOrderDetailView> response = restClient.put().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单更新"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesOrderApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesOrderDetailView> response =
+                restClient
+                        .put()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse, SALES_ORDER_RESPONSE, "Order销售订单更新"));
         return requiredResponse(response);
     }
 
@@ -163,21 +195,30 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
             CallerIdentity caller, Long id, SalesOrderSourceStatusCommand command) {
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesOrderId无效");
-        if (command == null) throw new IllegalArgumentException("salesOrder source status command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesOrderApi.BASE_PATH)
-                .path("/{id}/source-status")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesOrderDetailView> response = restClient.put().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单来源状态更新"));
+        if (command == null)
+            throw new IllegalArgumentException("salesOrder source status command不能为空");
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesOrderApi.BASE_PATH)
+                        .path("/{id}/source-status")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesOrderDetailView> response =
+                restClient
+                        .put()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_ORDER_RESPONSE,
+                                                "Order销售订单来源状态更新"));
         return requiredResponse(response);
     }
 
@@ -186,21 +227,30 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
             CallerIdentity caller, Long id, SalesOrderSourceProjectionCommand command) {
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesOrderId无效");
-        if (command == null) throw new IllegalArgumentException("salesOrder source projection command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesOrderApi.BASE_PATH)
-                .path("/{id}/source-projection")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesOrderDetailView> response = restClient.put().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单来源投影更新"));
+        if (command == null)
+            throw new IllegalArgumentException("salesOrder source projection command不能为空");
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesOrderApi.BASE_PATH)
+                        .path("/{id}/source-projection")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesOrderDetailView> response =
+                restClient
+                        .put()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_ORDER_RESPONSE,
+                                                "Order销售订单来源投影更新"));
         return requiredResponse(response);
     }
 
@@ -209,40 +259,57 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesOrderId无效");
         if (revision < 1) throw new IllegalArgumentException("revision必须大于0");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesOrderApi.BASE_PATH)
-                .path("/{id}/cancellations")
-                .queryParam("revision", revision)
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesOrderDetailView> response = restClient.post().uri(uri)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单取消"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesOrderApi.BASE_PATH)
+                        .path("/{id}/cancellations")
+                        .queryParam("revision", revision)
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesOrderDetailView> response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse, SALES_ORDER_RESPONSE, "Order销售订单取消"));
         return requiredResponse(response);
     }
 
     @Override
-    public SalesOrderDetailView cancelSalesOrderBySource(CallerIdentity caller, Long id, int revision) {
+    public SalesOrderDetailView cancelSalesOrderBySource(
+            CallerIdentity caller, Long id, int revision) {
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesOrderId无效");
         if (revision < 1) throw new IllegalArgumentException("revision必须大于0");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesOrderApi.BASE_PATH)
-                .path("/{id}/source-cancellations")
-                .queryParam("revision", revision)
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesOrderDetailView> response = restClient.post().uri(uri)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_ORDER_RESPONSE, "Order销售订单来源取消"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesOrderApi.BASE_PATH)
+                        .path("/{id}/source-cancellations")
+                        .queryParam("revision", revision)
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesOrderDetailView> response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_ORDER_RESPONSE,
+                                                "Order销售订单来源取消"));
         return requiredResponse(response);
     }
 
@@ -250,18 +317,26 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     public SalesPaymentRecordDetailView salesPayment(CallerIdentity caller, Long id) {
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesPaymentId无效");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesPaymentRecordApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesPaymentRecordDetailView> response = restClient.get().uri(uri)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_PAYMENT_RESPONSE, "Order销售回款查询"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesPaymentRecordApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesPaymentRecordDetailView> response =
+                restClient
+                        .get()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_PAYMENT_RESPONSE,
+                                                "Order销售回款查询"));
         return requiredPaymentResponse(response);
     }
 
@@ -270,22 +345,34 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
             CallerIdentity caller, String sourceSystemCode, String sourceDocumentNo) {
         requireCaller(caller);
         if (!hasText(sourceSystemCode) || !hasText(sourceDocumentNo)) return Optional.empty();
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesPaymentRecordApi.BASE_PATH)
-                .path("/source")
-                .queryParam("sourceSystemCode", sourceSystemCode)
-                .queryParam("sourceDocumentNo", sourceDocumentNo)
-                .build()
-                .encode()
-                .toUri();
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesPaymentRecordApi.BASE_PATH)
+                        .path("/source")
+                        .queryParam("sourceSystemCode", sourceSystemCode)
+                        .queryParam("sourceDocumentNo", sourceDocumentNo)
+                        .build()
+                        .encode()
+                        .toUri();
         try {
-            ApiResponse<SalesPaymentRecordDetailView> response = restClient.get().uri(uri)
-                    .accept(MediaType.APPLICATION_JSON)
-                    .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
-                    .header(RequestHeaders.REQUEST_ID, requestId())
-                    .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                            httpResponse, SALES_PAYMENT_RESPONSE, "Order销售回款来源查询"));
-            return response == null || response.data() == null ? Optional.empty() : Optional.of(response.data());
+            ApiResponse<SalesPaymentRecordDetailView> response =
+                    restClient
+                            .get()
+                            .uri(uri)
+                            .accept(MediaType.APPLICATION_JSON)
+                            .headers(
+                                    headers ->
+                                            signedHeaders("GET", uri, caller).forEach(headers::set))
+                            .header(RequestHeaders.REQUEST_ID, requestId())
+                            .exchange(
+                                    (request, httpResponse) ->
+                                            SignedDomainRequest.readResponse(
+                                                    httpResponse,
+                                                    SALES_PAYMENT_RESPONSE,
+                                                    "Order销售回款来源查询"));
+            return response == null || response.data() == null
+                    ? Optional.empty()
+                    : Optional.of(response.data());
         } catch (RestClientResponseException exception) {
             if (exception.getStatusCode().value() == 404) return Optional.empty();
             throw exception;
@@ -297,19 +384,28 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
             CallerIdentity caller, SalesPaymentRecordCommand command) {
         requireCaller(caller);
         if (command == null) throw new IllegalArgumentException("salesPayment command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesPaymentRecordApi.BASE_PATH)
-                .build()
-                .encode()
-                .toUri();
-        ApiResponse<SalesPaymentRecordDetailView> response = restClient.post().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_PAYMENT_RESPONSE, "Order销售回款创建"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesPaymentRecordApi.BASE_PATH)
+                        .build()
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesPaymentRecordDetailView> response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_PAYMENT_RESPONSE,
+                                                "Order销售回款创建"));
         return requiredPaymentResponse(response);
     }
 
@@ -319,20 +415,28 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesPaymentId无效");
         if (command == null) throw new IllegalArgumentException("salesPayment command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesPaymentRecordApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesPaymentRecordDetailView> response = restClient.put().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_PAYMENT_RESPONSE, "Order销售回款更新"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesPaymentRecordApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesPaymentRecordDetailView> response =
+                restClient
+                        .put()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_PAYMENT_RESPONSE,
+                                                "Order销售回款更新"));
         return requiredPaymentResponse(response);
     }
 
@@ -340,38 +444,56 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     public FundDocumentDetailView fundDocument(CallerIdentity caller, Long id) {
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("fundDocumentId无效");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderFundDocumentApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<FundDocumentDetailView> response = restClient.get().uri(uri)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, FUND_DOCUMENT_RESPONSE, "Order资金单查询"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderFundDocumentApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<FundDocumentDetailView> response =
+                restClient
+                        .get()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                FUND_DOCUMENT_RESPONSE,
+                                                "Order资金单查询"));
         return requiredFundDocumentResponse(response);
     }
 
     @Override
-    public FundDocumentDetailView createFundDocument(CallerIdentity caller, FundDocumentCommand command) {
+    public FundDocumentDetailView createFundDocument(
+            CallerIdentity caller, FundDocumentCommand command) {
         requireCaller(caller);
         if (command == null) throw new IllegalArgumentException("fundDocument command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderFundDocumentApi.BASE_PATH)
-                .build()
-                .encode()
-                .toUri();
-        ApiResponse<FundDocumentDetailView> response = restClient.post().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, FUND_DOCUMENT_RESPONSE, "Order资金单创建"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderFundDocumentApi.BASE_PATH)
+                        .build()
+                        .encode()
+                        .toUri();
+        ApiResponse<FundDocumentDetailView> response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                FUND_DOCUMENT_RESPONSE,
+                                                "Order资金单创建"));
         return requiredFundDocumentResponse(response);
     }
 
@@ -381,20 +503,28 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("fundDocumentId无效");
         if (command == null) throw new IllegalArgumentException("fundDocument command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderFundDocumentApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<FundDocumentDetailView> response = restClient.put().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, FUND_DOCUMENT_RESPONSE, "Order资金单更新"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderFundDocumentApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<FundDocumentDetailView> response =
+                restClient
+                        .put()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                FUND_DOCUMENT_RESPONSE,
+                                                "Order资金单更新"));
         return requiredFundDocumentResponse(response);
     }
 
@@ -402,18 +532,26 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     public SalesRefundRecordDetailView salesRefund(CallerIdentity caller, Long id) {
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesRefundId无效");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesRefundRecordApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesRefundRecordDetailView> response = restClient.get().uri(uri)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_REFUND_RESPONSE, "Order销售退款查询"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesRefundRecordApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesRefundRecordDetailView> response =
+                restClient
+                        .get()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_REFUND_RESPONSE,
+                                                "Order销售退款查询"));
         return requiredRefundResponse(response);
     }
 
@@ -422,19 +560,28 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
             CallerIdentity caller, SalesRefundRecordCommand command) {
         requireCaller(caller);
         if (command == null) throw new IllegalArgumentException("salesRefund command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesRefundRecordApi.BASE_PATH)
-                .build()
-                .encode()
-                .toUri();
-        ApiResponse<SalesRefundRecordDetailView> response = restClient.post().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_REFUND_RESPONSE, "Order销售退款创建"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesRefundRecordApi.BASE_PATH)
+                        .build()
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesRefundRecordDetailView> response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_REFUND_RESPONSE,
+                                                "Order销售退款创建"));
         return requiredRefundResponse(response);
     }
 
@@ -444,59 +591,120 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesRefundId无效");
         if (command == null) throw new IllegalArgumentException("salesRefund command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesRefundRecordApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesRefundRecordDetailView> response = restClient.put().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_REFUND_RESPONSE, "Order销售退款更新"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesRefundRecordApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesRefundRecordDetailView> response =
+                restClient
+                        .put()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_REFUND_RESPONSE,
+                                                "Order销售退款更新"));
         return requiredRefundResponse(response);
+    }
+
+    @Override
+    public com.rigour.order.api.v1.model.ShipmentTransportModels.Source syncShipmentTransport(
+            CallerIdentity caller,
+            com.rigour.order.api.v1.model.ShipmentTransportModels.Command command) {
+        requireCaller(caller);
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path("/api/v1/orders/shipment-transports")
+                        .build()
+                        .encode()
+                        .toUri();
+        var response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(h -> signedHeaders("POST", uri, caller).forEach(h::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                new tools.jackson.core.type.TypeReference<
+                                                        ApiResponse<
+                                                                com.rigour.order.api.v1.model
+                                                                        .ShipmentTransportModels
+                                                                        .Source>>() {},
+                                                "Order发货运输同步"));
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("Order发货运输同步失败");
+        return response.data();
     }
 
     @Override
     public SalesShipmentDetailView salesShipment(CallerIdentity caller, Long id) {
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesShipmentId无效");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesShipmentApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesShipmentDetailView> response = restClient.get().uri(uri)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_SHIPMENT_RESPONSE, "Order销售发货查询"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesShipmentApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesShipmentDetailView> response =
+                restClient
+                        .get()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_SHIPMENT_RESPONSE,
+                                                "Order销售发货查询"));
         return requiredShipmentResponse(response);
     }
 
     @Override
-    public SalesShipmentDetailView createSalesShipment(CallerIdentity caller, SalesShipmentCommand command) {
+    public SalesShipmentDetailView createSalesShipment(
+            CallerIdentity caller, SalesShipmentCommand command) {
         requireCaller(caller);
         if (command == null) throw new IllegalArgumentException("salesShipment command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesShipmentApi.BASE_PATH)
-                .build()
-                .encode()
-                .toUri();
-        ApiResponse<SalesShipmentDetailView> response = restClient.post().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_SHIPMENT_RESPONSE, "Order销售发货创建"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesShipmentApi.BASE_PATH)
+                        .build()
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesShipmentDetailView> response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_SHIPMENT_RESPONSE,
+                                                "Order销售发货创建"));
         return requiredShipmentResponse(response);
     }
 
@@ -506,96 +714,195 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
         requireCaller(caller);
         if (id == null || id < 1) throw new IllegalArgumentException("salesShipmentId无效");
         if (command == null) throw new IllegalArgumentException("salesShipment command不能为空");
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(OrderSalesShipmentApi.BASE_PATH)
-                .path("/{id}")
-                .buildAndExpand(id)
-                .encode()
-                .toUri();
-        ApiResponse<SalesShipmentDetailView> response = restClient.put().uri(uri)
-                .contentType(MediaType.APPLICATION_JSON)
-                .accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
-                .header(RequestHeaders.REQUEST_ID, requestId())
-                .body(command)
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(
-                        httpResponse, SALES_SHIPMENT_RESPONSE, "Order销售发货更新"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(OrderSalesShipmentApi.BASE_PATH)
+                        .path("/{id}")
+                        .buildAndExpand(id)
+                        .encode()
+                        .toUri();
+        ApiResponse<SalesShipmentDetailView> response =
+                restClient
+                        .put()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("PUT", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                SALES_SHIPMENT_RESPONSE,
+                                                "Order销售发货更新"));
         return requiredShipmentResponse(response);
     }
 
     @Override
-    public java.util.List<String> knownSourceOrders(CallerIdentity caller, UUID connectorId, String sourceNo) {
+    public java.util.List<String> knownSourceOrders(
+            CallerIdentity caller, UUID connectorId, String sourceNo) {
         requireCaller(caller);
-        URI uri = UriComponentsBuilder.fromUri(baseUri)
-                .path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE + "/source-orders/known")
-                .queryParam("connectorId", connectorId).queryParamIfPresent("sourceNo", Optional.ofNullable(sourceNo))
-                .build().encode().toUri();
-        var response = restClient.get().uri(uri).accept(MediaType.APPLICATION_JSON)
-                .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
-                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(httpResponse,
-                        new TypeReference<ApiResponse<java.util.List<String>>>() {}, "已同步来源订单"));
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(
+                                com.rigour.order.api.v1.OrderHistorySyncApi.BASE
+                                        + "/source-orders/known")
+                        .queryParam("connectorId", connectorId)
+                        .queryParamIfPresent("sourceNo", Optional.ofNullable(sourceNo))
+                        .build()
+                        .encode()
+                        .toUri();
+        var response =
+                restClient
+                        .get()
+                        .uri(uri)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(headers -> signedHeaders("GET", uri, caller).forEach(headers::set))
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                new TypeReference<
+                                                        ApiResponse<java.util.List<String>>>() {},
+                                                "已同步来源订单"));
         return SignedDomainRequest.required(response, "Order已同步来源订单");
     }
 
     @Override
-    public com.rigour.order.api.v1.model.HistorySyncModels.Intake cancelSourceOrder(CallerIdentity caller,
+    public com.rigour.order.api.v1.model.HistorySyncModels.Intake cancelSourceOrder(
+            CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder command) {
         return historyIntake(caller, "/source-orders/cancel", command);
     }
 
-    public com.rigour.order.api.v1.model.HistorySyncModels.Intake registerSourceOrder(CallerIdentity caller,
+    public com.rigour.order.api.v1.model.HistorySyncModels.Intake registerSourceOrder(
+            CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.SourceOrder command) {
-        return historyIntake(caller,"/source-orders",command);
+        return historyIntake(caller, "/source-orders", command);
     }
+
     @Override
-    public com.rigour.order.api.v1.model.HistorySyncModels.Intake registerReceipt(CallerIdentity caller,
+    public com.rigour.order.api.v1.model.HistorySyncModels.Intake registerReceipt(
+            CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.Receipt command) {
-        return historyIntake(caller,"/receipts",command);
+        return historyIntake(caller, "/receipts", command);
     }
+
     @Override
-    public com.rigour.order.api.v1.model.HistorySyncModels.Intake syncHistoricalReceiptStatus(CallerIdentity caller,
+    public com.rigour.order.api.v1.model.HistorySyncModels.Intake syncHistoricalReceiptStatus(
+            CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.Receipt command) {
-        return historyIntake(caller,"/receipts/historical-status",command);
+        return historyIntake(caller, "/receipts/historical-status", command);
     }
+
     @Override
-    public com.rigour.order.api.v1.model.HistorySyncModels.Intake syncReceiptVouchers(CallerIdentity caller,
+    public com.rigour.order.api.v1.model.HistorySyncModels.Intake syncReceiptVouchers(
+            CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers command) {
         return historyIntake(caller, "/receipts/vouchers", command);
     }
 
     @Override
-    public java.util.List<com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate> claimVoucherBackfill(CallerIdentity caller,
-            com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillClaim command) {
+    public java.util.List<com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate>
+            claimVoucherBackfill(
+                    CallerIdentity caller,
+                    com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillClaim command) {
         requireCaller(caller);
-        URI uri=UriComponentsBuilder.fromUri(baseUri).path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE+"/receipts/vouchers/claim").build().encode().toUri();
-        var response=restClient.post().uri(uri).contentType(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON)
-            .headers(headers->signedHeaders("POST",uri,caller).forEach(headers::set)).body(command)
-            .exchange((request,httpResponse)->SignedDomainRequest.readResponse(httpResponse,
-                new TypeReference<ApiResponse<java.util.List<com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillCandidate>>>() {},"凭证补齐"));
-        return SignedDomainRequest.required(response,"Order凭证补齐");
-    }
-    @Override
-    public void finishVoucherBackfill(CallerIdentity caller,
-            com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillResult command) {
-        requireCaller(caller);
-        URI uri=UriComponentsBuilder.fromUri(baseUri).path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE+"/receipts/vouchers/result").build().encode().toUri();
-        var response=restClient.post().uri(uri).contentType(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON)
-            .headers(headers->signedHeaders("POST",uri,caller).forEach(headers::set)).body(command)
-            .exchange((request,httpResponse)->SignedDomainRequest.readResponse(httpResponse,
-                new TypeReference<ApiResponse<Void>>() {},"凭证补齐结果"));
-        if(response==null || !"OK".equals(response.code())) throw new IllegalStateException("Order凭证补齐结果未确认");
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(
+                                com.rigour.order.api.v1.OrderHistorySyncApi.BASE
+                                        + "/receipts/vouchers/claim")
+                        .build()
+                        .encode()
+                        .toUri();
+        var response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                new TypeReference<
+                                                        ApiResponse<
+                                                                java.util.List<
+                                                                        com.rigour.order.api.v1
+                                                                                .model
+                                                                                .HistorySyncModels
+                                                                                .VoucherBackfillCandidate>>>() {},
+                                                "凭证补齐"));
+        return SignedDomainRequest.required(response, "Order凭证补齐");
     }
 
-    private com.rigour.order.api.v1.model.HistorySyncModels.Intake historyIntake(CallerIdentity caller,String path,Object command) {
+    @Override
+    public void finishVoucherBackfill(
+            CallerIdentity caller,
+            com.rigour.order.api.v1.model.HistorySyncModels.VoucherBackfillResult command) {
         requireCaller(caller);
-        URI uri=UriComponentsBuilder.fromUri(baseUri).path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE+path).build().encode().toUri();
-        ApiResponse<com.rigour.order.api.v1.model.HistorySyncModels.Intake> response=restClient.post().uri(uri)
-            .contentType(MediaType.APPLICATION_JSON).accept(MediaType.APPLICATION_JSON)
-            .headers(headers->signedHeaders("POST",uri,caller).forEach(headers::set))
-            .header(RequestHeaders.REQUEST_ID,requestId()).body(command)
-            .exchange((request,httpResponse)->SignedDomainRequest.readResponse(httpResponse,
-                new TypeReference<ApiResponse<com.rigour.order.api.v1.model.HistorySyncModels.Intake>>() {},"历史订单保护"));
-        return SignedDomainRequest.required(response,"Order历史订单保护");
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(
+                                com.rigour.order.api.v1.OrderHistorySyncApi.BASE
+                                        + "/receipts/vouchers/result")
+                        .build()
+                        .encode()
+                        .toUri();
+        var response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                new TypeReference<ApiResponse<Void>>() {},
+                                                "凭证补齐结果"));
+        if (response == null || !"OK".equals(response.code()))
+            throw new IllegalStateException("Order凭证补齐结果未确认");
+    }
+
+    private com.rigour.order.api.v1.model.HistorySyncModels.Intake historyIntake(
+            CallerIdentity caller, String path, Object command) {
+        requireCaller(caller);
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path(com.rigour.order.api.v1.OrderHistorySyncApi.BASE + path)
+                        .build()
+                        .encode()
+                        .toUri();
+        ApiResponse<com.rigour.order.api.v1.model.HistorySyncModels.Intake> response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                new TypeReference<
+                                                        ApiResponse<
+                                                                com.rigour.order.api.v1.model
+                                                                        .HistorySyncModels
+                                                                        .Intake>>() {},
+                                                "历史订单保护"));
+        return SignedDomainRequest.required(response, "Order历史订单保护");
     }
 
     private Map<String, String> signedHeaders(String method, URI uri, CallerIdentity caller) {
@@ -611,15 +918,16 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
         put(headers, RequestHeaders.TENANT_POLICY_VERSION, caller.tenantPolicyVersion());
         put(headers, RequestHeaders.ROLES, joined(caller.roles()));
         put(headers, RequestHeaders.PERMISSIONS, joined(caller.permissions()));
-        TrustedContextSigner.SignedContext signed = signer.sign(
-                method, uri.getRawPath(), uri.getRawQuery(), headers);
+        TrustedContextSigner.SignedContext signed =
+                signer.sign(method, uri.getRawPath(), uri.getRawQuery(), headers);
         headers.put(RequestHeaders.CONTEXT_KEY_ID, signed.keyId());
         headers.put(RequestHeaders.CONTEXT_TIMESTAMP, signed.timestamp());
         headers.put(RequestHeaders.CONTEXT_SIGNATURE, signed.signature());
         return headers;
     }
 
-    private static SalesOrderDetailView requiredResponse(ApiResponse<SalesOrderDetailView> response) {
+    private static SalesOrderDetailView requiredResponse(
+            ApiResponse<SalesOrderDetailView> response) {
         if (response == null || !"OK".equals(response.code()) || response.data() == null) {
             throw new IllegalStateException("Order销售订单返回空响应");
         }
@@ -675,14 +983,16 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     private static URI baseUri(String value) {
         if (value == null || value.isBlank()) throw new IllegalArgumentException("Order服务地址不能为空");
         URI uri = URI.create(value.strip().replaceAll("/+$", "") + "/");
-        if (!"http".equalsIgnoreCase(uri.getScheme()) && !"https".equalsIgnoreCase(uri.getScheme())) {
+        if (!"http".equalsIgnoreCase(uri.getScheme())
+                && !"https".equalsIgnoreCase(uri.getScheme())) {
             throw new IllegalArgumentException("Order服务地址必须使用http或https");
         }
         return uri;
     }
 
     private static void put(Map<String, String> target, String name, Object value) {
-        if (value != null && !String.valueOf(value).isBlank()) target.put(name, String.valueOf(value));
+        if (value != null && !String.valueOf(value).isBlank())
+            target.put(name, String.valueOf(value));
     }
 
     private static boolean hasText(String value) {

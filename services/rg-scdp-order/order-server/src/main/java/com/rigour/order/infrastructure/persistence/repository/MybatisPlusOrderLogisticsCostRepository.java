@@ -181,7 +181,17 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         case "SALES_ORDER" -> "DELIVERY";
                         default -> filter.orderTypeCode();
                     });
-        if ("MANUAL_ENTRY".equals(filter.sourceSystem())) q.ne("source_system", "HUOLALA");
+        if ("MANUAL_ENTRY".equals(filter.sourceSystem()))
+            q.ne("source_system", "HUOLALA")
+                    .apply(
+                            "NOT EXISTS(SELECT 1 FROM order_transport_shipment_source s WHERE"
+                                    + " s.tenant_id=order_logistics_cost.tenant_id AND"
+                                    + " s.cost_id=order_logistics_cost.id)");
+        else if ("DHB".equals(filter.sourceSystem()))
+            q.apply(
+                    "EXISTS(SELECT 1 FROM order_transport_shipment_source s WHERE"
+                            + " s.tenant_id=order_logistics_cost.tenant_id AND"
+                            + " s.cost_id=order_logistics_cost.id)");
         else q.eq(text(filter.sourceSystem()), "source_system", filter.sourceSystem());
         if ("LINKED".equals(filter.relationState()) || "UNLINKED".equals(filter.relationState())) {
             String condition =
@@ -373,8 +383,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                                     + " FROM order_logistics_import_order i WHERE"
                                                     + " i.id=order_logistics_cost.id AND"
                                                     + " i.cost_id=order_logistics_cost.id AND"
-                                                    + " i.tenant_id=order_logistics_cost.tenant_id LIMIT 1),"
-                                                    + " '')")
+                                                    + " i.tenant_id=order_logistics_cost.tenant_id"
+                                                    + " LIMIT 1), '')")
                                         .orderByDesc("created_time", "id")
                                         .last(
                                                 "LIMIT "
@@ -402,6 +412,41 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         var row = mapper.selectOne(where(tenant, category, action).eq("id", id));
         if (row == null) throw new BusinessException(ErrorCode.NOT_FOUND, "费用不存在或无访问权限", List.of());
         return view(row);
+    }
+
+    public List<LogisticsCostDetailView> linkedSales(String tenant, String orderNo, String action) {
+        return mapper
+                .selectList(
+                        where(tenant, "LOGISTICS", action)
+                                .apply(
+                                        "JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].orderCode','$[*].documentNo')"
+                                            + " IS NOT NULL",
+                                        orderNo)
+                                .orderByDesc("created_time"))
+                .stream()
+                .map(this::view)
+                .filter(
+                        r ->
+                                r.sources().stream()
+                                                .anyMatch(
+                                                        s ->
+                                                                orderNo.equals(s.documentNo())
+                                                                        && "SALES_ORDER"
+                                                                                .equals(
+                                                                                        s
+                                                                                                .sourceType()))
+                                        || r.data().ledger() != null
+                                                && r.data().ledger().sources().stream()
+                                                        .anyMatch(
+                                                                s ->
+                                                                        orderNo.equals(
+                                                                                        s
+                                                                                                .orderCode())
+                                                                                && "SALES_ORDER"
+                                                                                        .equals(
+                                                                                                s
+                                                                                                        .orderTypeCode())))
+                .toList();
     }
 
     @Transactional(readOnly = true)
@@ -785,7 +830,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                 .map(
                         a -> {
                             boolean evidence =
-                                    java.util.Set.of("SOURCE_ACCEPT", "BILL_VERIFY")
+                                    java.util.Set.of("SOURCE_ACCEPT", "BILL_VERIFY", "SOURCE_SYNC")
                                             .contains(a.getActionCode());
                             return new LogisticsCostAuditView(
                                     a.getActionCode(),

@@ -54,11 +54,18 @@ class ManualCostPersistenceTest {
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN deleted INT NOT NULL DEFAULT 0");
 
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN source_system VARCHAR(20)");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN attachment_save_id VARCHAR(36)");
+        jdbc.execute(
+                "ALTER TABLE order_logistics_cost ADD COLUMN attachment_save_hash VARCHAR(64)");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN attachment_save_revision INT");
+        jdbc.execute(
+                "CREATE UNIQUE INDEX uk_attachment_save ON"
+                        + " order_logistics_cost(tenant_id,attachment_save_id)");
         // 手工费用没有平台来源；保留空来源表以执行确认时的真实关联检查。
         jdbc.execute(
-                "CREATE TABLE order_logistics_import_order(tenant_id VARCHAR(36),"
-                        + "cost_id VARCHAR(36),source_json LONGTEXT,bill_verification_json LONGTEXT,"
-                        + "source_difference INT NOT NULL DEFAULT 0)");
+                "CREATE TABLE order_logistics_import_order(tenant_id VARCHAR(36),cost_id"
+                        + " VARCHAR(36),source_json LONGTEXT,bill_verification_json"
+                        + " LONGTEXT,source_difference INT NOT NULL DEFAULT 0)");
         String attachmentDdl =
                 Files.readString(
                                 Path.of(
@@ -69,8 +76,11 @@ class ManualCostPersistenceTest {
         jdbc.execute(attachmentDdl);
         jdbc.execute(
                 "ALTER TABLE order_logistics_cost_attachment ADD COLUMN deleted INT NOT NULL"
-                    + " DEFAULT 0");
+                        + " DEFAULT 0");
         var config = new MybatisConfiguration();
+        jdbc.execute(
+                "ALTER TABLE order_logistics_cost_attachment ADD COLUMN category_code VARCHAR(32)"
+                        + " DEFAULT 'EXPENSE_VOUCHER'");
         config.addMapper(CostAttachmentMapper.class);
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(OrderLogisticsCostMapper.class);
@@ -120,6 +130,37 @@ class ManualCostPersistenceTest {
 
     LogisticsCostDetailView save(String id, LogisticsCostCommand c) {
         return store.save("T1", "LOGISTICS", id, c, List.of(), null, null, "U", "cost:write");
+    }
+
+    @Test
+    void shipmentSyncAuditRetainsSourceEvidenceWithoutParsingItAsAnEntrySnapshot() {
+        var saved = save(null, command(0, "35", "人工录入"));
+        jdbc.update(
+                "INSERT INTO"
+                    + " order_logistics_cost_audit(tenant_id,entry_id,action_code,actor_id,reason,snapshot_json)"
+                    + " VALUES(?,?,?,?,?,?)",
+                "T1",
+                saved.id(),
+                "SOURCE_SYNC",
+                "U",
+                "订货宝发货物流自动带入",
+                json.writeValueAsString(command(0, "35", "来源更新")));
+        var history = store.history("T1", saved.id());
+        var synced =
+                history.stream()
+                        .filter(a -> "SOURCE_SYNC".equals(a.action()))
+                        .findFirst()
+                        .orElseThrow();
+        assertThat(synced.snapshot()).isNull();
+        assertThat(synced.evidence()).containsEntry("amount", 35);
+        assertThat(
+                        history.stream()
+                                .filter(a -> !"SOURCE_SYNC".equals(a.action()))
+                                .findFirst()
+                                .orElseThrow()
+                                .snapshot()
+                                .id())
+                .isEqualTo(saved.id());
     }
 
     @Test
@@ -351,7 +392,7 @@ class ManualCostPersistenceTest {
         assertThat(
                         jdbc.queryForObject(
                                 "SELECT file_key FROM order_logistics_cost_attachment WHERE"
-                                    + " id='old'",
+                                        + " id='old'",
                                 String.class))
                 .isEqualTo("private/old");
         assertThatThrownBy(() -> attachments.retire("T2", first.id(), replacement.id()))
@@ -375,6 +416,19 @@ class ManualCostPersistenceTest {
         assertThat(store.history("T1", first.id()))
                 .extracting(a -> a.action())
                 .contains("ATTACHMENT_REPLACED", "ATTACHMENT_REMOVED");
+    }
+
+    @Test
+    void submissionReceiptIsScopedByTenantAndProtectsTheCompletedRevision() {
+        var first = save(null, command(1, "10", ""));
+        String submission = UUID.randomUUID().toString();
+        attachments.completed("T1", first.id(), submission, "hash1", 1);
+        assertThat(attachments.submission("T1", submission))
+                .isEqualTo(new CostAttachmentStore.Submission(first.id(), "hash1", 1));
+        assertThat(attachments.submission("T2", submission)).isNull();
+        assertThatThrownBy(() -> attachments.completed("T1", first.id(), submission, "hash2", 9))
+                .hasMessageContaining("记录已变化");
+        assertThat(attachments.submission("T1", submission).fingerprint()).isEqualTo("hash1");
     }
 
     @Test

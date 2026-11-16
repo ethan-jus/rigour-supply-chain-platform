@@ -20,6 +20,78 @@ import java.util.Set;
 @Component
 public final class HttpOrderLogisticsReferences implements OrderLogisticsReferences {
     @Override
+    public java.util.Map<String, List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView>>
+            ledgerCustomersByCities(
+                    java.util.Map<String, List<String>> codesByCity, String action) {
+        if (codesByCity.isEmpty()) return java.util.Map.of();
+        var batch = new java.util.LinkedHashMap<String, List<String>>();
+        codesByCity.forEach(
+                (city, codes) -> batch.put(city, codes.stream().distinct().sorted().toList()));
+        var key = java.util.Map.copyOf(batch);
+        // 保存前后的来源校验复用本次请求已读取的同批客户，权限与下次请求仍重新核验。
+        return LogisticsRequestCache.get(
+                AuthorizationContext.requireCurrent().tenantId().toString(),
+                action,
+                "customersByCities",
+                key,
+                () -> readLedgerCustomersByCities(key, action));
+    }
+
+    private java.util.Map<String, List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView>>
+            readLedgerCustomersByCities(
+                    java.util.Map<String, List<String>> codesByCity, String action) {
+        var uri =
+                UriComponentsBuilder.fromUriString(crm)
+                        .path("/api/v1/crm/cost-customer-references/batch-cities")
+                        .queryParam("action", action)
+                        .build()
+                        .encode()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.caller(
+                        signer, "POST", uri, AuthorizationContext.requireCurrent());
+        var response =
+                client.post()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .body(codesByCity)
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<
+                                                java.util.Map<
+                                                        String,
+                                                        List<
+                                                                com.rigour.merchant.api.v1.model
+                                                                        .CostCustomerView>>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("客户档案暂不可用，请重试");
+        var result =
+                new java.util.LinkedHashMap<
+                        String, List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView>>();
+        response.data()
+                .forEach(
+                        (city, rows) ->
+                                result.put(
+                                        city,
+                                        rows.stream()
+                                                .map(
+                                                        r ->
+                                                                new com.rigour.order.api.v1.model
+                                                                        .LogisticsLedgerPartyView(
+                                                                        r.id(),
+                                                                        r.code(),
+                                                                        r.name(),
+                                                                        city,
+                                                                        r.address(),
+                                                                        r.contactName(),
+                                                                        r.phone(),
+                                                                        "CUSTOMER"))
+                                                .toList()));
+        return java.util.Map.copyOf(result);
+    }
+
+    @Override
     public List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> ledgerCustomers(
             String city, List<String> codes, String action) {
         var uri =
@@ -64,6 +136,30 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
 
     @Override
     public List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> ledgerParties(
+            String kind,
+            String code,
+            Long id,
+            String keyword,
+            String city,
+            int begin,
+            String action) {
+        var key =
+                java.util.List.of(
+                        kind,
+                        java.util.Objects.toString(code, ""),
+                        java.util.Objects.toString(id, ""),
+                        java.util.Objects.toString(keyword, ""),
+                        java.util.Objects.toString(city, ""),
+                        Integer.toString(begin));
+        return LogisticsRequestCache.get(
+                AuthorizationContext.requireCurrent().tenantId().toString(),
+                action,
+                "party",
+                key,
+                () -> readLedgerParties(kind, code, id, keyword, city, begin, action));
+    }
+
+    private List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> readLedgerParties(
             String kind,
             String code,
             Long id,
@@ -305,7 +401,8 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
     }
 
     public Set<String> validCodes(String tenant, String code) {
-        return dictionary.activeCodes(tenant, code);
+        return LogisticsRequestCache.get(
+                tenant, "dictionary", "codes", code, () -> dictionary.activeCodes(tenant, code));
     }
 
     public List<LogisticsCostSourceView> sources(
@@ -344,6 +441,15 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
 
     @Override
     public java.util.Map<String, String> cities(String action) {
+        return LogisticsRequestCache.get(
+                AuthorizationContext.requireCurrent().tenantId().toString(),
+                action,
+                "cities",
+                "all",
+                () -> readCities(action));
+    }
+
+    private java.util.Map<String, String> readCities(String action) {
         var uri =
                 UriComponentsBuilder.fromUriString(crm)
                         .path("/api/v1/crm/cost-city-references")

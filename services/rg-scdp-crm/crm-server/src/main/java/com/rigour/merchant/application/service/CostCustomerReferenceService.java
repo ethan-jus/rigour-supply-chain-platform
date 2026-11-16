@@ -39,7 +39,37 @@ public final class CostCustomerReferenceService {
         return store.customersByCodes(tenant, city, codes.stream().distinct().toList());
     }
 
+    /** 同一请求只解析一次当前动作授权；逐城市检查仍保留，不能用批量绕开范围。 */
+    public java.util.Map<String, List<CostCustomerView>> customersByCities(
+            String action, java.util.Map<String, List<String>> requested) {
+        if (requested == null
+                || requested.isEmpty()
+                || requested.size() > 50
+                || requested.values().stream().anyMatch(v -> v == null || v.isEmpty())
+                || requested.values().stream().mapToInt(List::size).sum() > 200)
+            throw new AuthorizationDeniedException(action);
+        var caller = AuthorizationContext.requireCurrent();
+        AuthorizationContext.requirePermission(action);
+        var policy = policy(action);
+        var normalized = new java.util.LinkedHashMap<String, List<String>>();
+        // 复用请求中已经解析的授权上下文；跨城市的代码集合不相互混用。
+        for (var entry : requested.entrySet()) {
+            var codes = entry.getValue();
+            if (codes.stream().anyMatch(c -> c == null || c.isBlank() || c.length() > 100))
+                throw new AuthorizationDeniedException(action);
+            authorize(entry.getKey(), action, policy);
+            normalized.put(entry.getKey(), codes.stream().distinct().toList());
+        }
+        return store.customersByCities(
+                caller.tenantId().toString(), java.util.Collections.unmodifiableMap(normalized));
+    }
+
     private String authorize(String city, String action) {
+        AuthorizationContext.requirePermission(action);
+        return authorize(city, action, policy(action));
+    }
+
+    private com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView policy(String action) {
         if (!Set.of(
                         "order:logistics-cost:read",
                         "order:logistics-cost:write",
@@ -47,18 +77,24 @@ public final class CostCustomerReferenceService {
                         "order:logistics-cost:export")
                 .contains(action)) throw new AuthorizationDeniedException(action);
         var caller = AuthorizationContext.requireCurrent();
-        AuthorizationContext.requirePermission(action);
+        if (!"TENANT".equals(caller.principalScope())) return null;
+        var p =
+                SupplyAuthorizationContext.current().isPresent()
+                        ? SupplyAuthorizationContext.requireAction(action)
+                        : auth.authorization(caller, action);
+        if (!"ACTIVE".equals(p.mode()) || !p.functionAllowed())
+            throw new AuthorizationDeniedException(action);
+        return p;
+    }
+
+    private String authorize(
+            String city,
+            String action,
+            com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView policy) {
+        var caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null || city == null || city.isBlank() || city.length() > 64)
             throw new AuthorizationDeniedException(action);
-        if ("TENANT".equals(caller.principalScope())) {
-            var policy =
-                    SupplyAuthorizationContext.current().isPresent()
-                            ? SupplyAuthorizationContext.requireAction(action)
-                            : auth.authorization(caller, action);
-            if (!"ACTIVE".equals(policy.mode()) || !policy.functionAllowed())
-                throw new AuthorizationDeniedException(action);
-            ManualCostScope.require(policy, "INVENTORY", city, action);
-        }
+        if (policy != null) ManualCostScope.require(policy, "INVENTORY", city, action);
         return caller.tenantId().toString();
     }
 }

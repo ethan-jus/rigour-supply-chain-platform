@@ -27,6 +27,15 @@ public final class CostAttachmentController implements CostAttachmentApi {
         return ApiResponse.success(service.url("logistics", entry, file));
     }
 
+    public org.springframework.http.ResponseEntity<byte[]> previewPdf(String entry, String file) {
+        return org.springframework.http.ResponseEntity.ok()
+                .contentType(org.springframework.http.MediaType.APPLICATION_PDF)
+                .header("Cache-Control", "no-store")
+                .header("X-Content-Type-Options", "nosniff")
+                .header("Content-Disposition", "inline; filename=\"preview.pdf\"")
+                .body(service.previewPdf(entry, file));
+    }
+
     public ApiResponse<LogisticsCostAttachmentView> upload(
             String entry, int revision, MultipartFile file) {
         if (file.getSize() > 10 * 1024 * 1024)

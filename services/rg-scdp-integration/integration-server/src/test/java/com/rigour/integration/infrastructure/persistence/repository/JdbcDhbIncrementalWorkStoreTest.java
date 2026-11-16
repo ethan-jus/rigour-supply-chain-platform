@@ -28,7 +28,8 @@ class JdbcDhbIncrementalWorkStoreTest {
                 new DriverManagerDataSource(
                         MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
         new ResourceDatabasePopulator(
-                        new ClassPathResource("db/migration/V26__dhb_incremental_work.sql"))
+                        new ClassPathResource("db/migration/V26__dhb_incremental_work.sql"),
+                        new ClassPathResource("db/migration/V32__dhb_shipment_manual_dependency_recovery.sql"))
                 .execute(ds);
         store = new JdbcDhbIncrementalWorkStore(new JdbcTemplate(ds));
     }
@@ -83,6 +84,30 @@ class JdbcDhbIncrementalWorkStoreTest {
                                 List.of(newer),
                                 now.plusSeconds(86404)))
                 .isEmpty();
+    }
+
+    @Test
+    void manualDependencyFailureNeedsExplicitReplayUnlessSourceChanges() {
+        var first = item("FH001", "a");
+        store.stage(tenant, connector, "SHIPMENT", List.of(first), now);
+        store.waitForManual(tenant, connector, "SHIPMENT", first, now);
+        store.stage(tenant, connector, "SHIPMENT", List.of(first), now.plusSeconds(3600));
+        assertThat(store.awaitingManual(tenant, connector, "SHIPMENT", Set.of("FH001")))
+                .containsExactly("FH001");
+        assertThat(store.pending(tenant, connector, "SHIPMENT", 100, now.plusSeconds(3600)))
+                .isEmpty();
+        assertThat(store.pendingCount(tenant, connector, "SHIPMENT")).isEqualTo(1);
+
+        var newer = new Item("FH001", "b".repeat(64), "{}", now.plusSeconds(2));
+        store.stage(tenant, connector, "SHIPMENT", List.of(newer), now.plusSeconds(3601));
+        assertThat(store.awaitingManual(tenant, connector, "SHIPMENT", Set.of("FH001"))).isEmpty();
+        assertThat(store.pending(tenant, connector, "SHIPMENT", 100, now.plusSeconds(3602)))
+                .extracting(Item::fingerprint).containsExactly(newer.fingerprint());
+        store.waitForManual(tenant, connector, "SHIPMENT", first, now.plusSeconds(3603));
+        assertThat(store.awaitingManual(tenant, connector, "SHIPMENT", Set.of("FH001"))).isEmpty();
+        store.waitForManual(tenant, connector, "SHIPMENT", newer, now.plusSeconds(3604));
+        store.complete(tenant, connector, "SHIPMENT", newer, true, now.plusSeconds(3605));
+        assertThat(store.pendingCount(tenant, connector, "SHIPMENT")).isZero();
     }
 
     @Test

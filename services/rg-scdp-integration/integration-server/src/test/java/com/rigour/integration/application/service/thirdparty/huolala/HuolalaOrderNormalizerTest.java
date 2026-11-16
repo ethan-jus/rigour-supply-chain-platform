@@ -51,6 +51,64 @@ class HuolalaOrderNormalizerTest {
     }
 
     @Test
+    void projectsEnterpriseBusinessDetailsWithExplicitUnitsAndNoExtraCost() {
+        var d = detail();
+        var item = (ObjectNode) d.at("/order_detail_item/order_item");
+        item.put("pay_type", 8)
+                .put("invoice_status", 3)
+                .put("invoice_amount", 43913)
+                .put("contact_name", "下单联系人")
+                .put("contact_phone_no", "01000000000")
+                .put("total_distance", 15519)
+                .put("pay_status", 0);
+        var body = d.withObject("order_detail_item");
+        body.put("total_meter", 16888)
+                .put("progress_str", "司机接单|2026-11-08 14:00,订单完成|2026-11-08 15:00");
+        body.putObject("commodity_info").put("commodity_display_name", "同城货运");
+        body.putObject("insurance_price_info")
+                .put("insurance_status", 1)
+                .put("insurance_status_desc", "生效中");
+        var projected = HuolalaOrderNormalizer.normalize(c, list(), d, "raw", null, null);
+        assertThat(projected.raw())
+                .containsEntry("支付方式", "月结账期支付")
+                .containsEntry("发票状态", "已开票")
+                .containsEntry("可开票金额（元）", "439.13")
+                .containsEntry("规划里程（公里）", "15.519")
+                .containsEntry("实际行驶里程（公里）", "16.888")
+                .containsEntry("下单联系人", "下单联系人")
+                .containsEntry("服务产品", "同城货运")
+                .containsEntry("保价状态", "生效中");
+        assertThat(projected.raw().get("运输进度")).contains("司机接单|", "订单完成|");
+        assertThat(projected.facts().billAmount()).isEqualByComparingTo("439.13");
+        assertThat(projected.facts().fees()).hasSize(4);
+        assertThat(projected.facts().sourceEmployeeName()).isNull();
+        // 开票与运输进度变化不再产生一笔账单成本或账单金额差异。
+        assertThat(HuolalaOrderNormalizer.fingerprint(projected, json))
+                .isEqualTo(
+                        HuolalaOrderNormalizer.fingerprint(
+                                HuolalaOrderNormalizer.normalize(
+                                        c, list(), detail(), "before", null, null),
+                                json));
+    }
+
+    @Test
+    void missingOrUnknownSupplementalFieldsDoNotPretendToBePaidOrZeroDistance() {
+        var d = detail();
+        ((ObjectNode) d.at("/order_detail_item/order_item"))
+                .put("pay_type", 99)
+                .put("invoice_status", 99)
+                .put("total_distance", -1);
+        var projected = HuolalaOrderNormalizer.normalize(c, list(), d, "raw", null, null);
+        assertThat(projected.raw())
+                .containsEntry("支付方式", "待核对")
+                .containsEntry("发票状态", "待核对")
+                .containsEntry("可开票金额（元）", "")
+                .containsEntry("规划里程（公里）", "")
+                .containsEntry("实际行驶里程（公里）", "")
+                .containsEntry("保价状态", "");
+    }
+
+    @Test
     void finalBillIncludesFeesAndDiscountOnceAndRetainsEveryStop() {
         var order = HuolalaOrderNormalizer.normalize(c, list(), detail(), "raw", "EMP001", "员工甲");
         assertThat(order.facts().billAmount()).isEqualByComparingTo("439.13");

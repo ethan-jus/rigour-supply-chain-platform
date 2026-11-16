@@ -14,5 +14,15 @@ public interface DhbIncrementalWorkStore {
 
     List<Item> pending(UUID tenant, UUID connector, String type, int limit, Instant now);
 
+    default Item find(UUID tenant, UUID connector, String type, String sourceId) { return null; }
+
+    default void waitForManual(UUID tenant, UUID connector, String type, Item item, Instant now) {
+        complete(tenant, connector, type, item, false, now);
+    }
+
+    default Set<String> awaitingManual(UUID tenant, UUID connector, String type, Set<String> sourceIds) {
+        return Set.of();
+    }
+
     long pendingCount(UUID tenant, UUID connector, String type);
 }

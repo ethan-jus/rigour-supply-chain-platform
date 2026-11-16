@@ -37,6 +37,10 @@ public interface DhbSyncStore {
                                             String sourceObjectType, String sourceObjectId);
 
 
+    /** 人工忽略、移除、冲突或软删除的来源关联不得由发货补同步重建。 */
+    default boolean dependencyAutoSyncBlocked(UUID tenantId, UUID connectorId,
+            List<String> objectTypes, List<String> sourceIds) { return false; }
+
     List<TransferInboundReceiptCandidate> findTransferInboundReceiptCandidates(
             UUID tenantId, UUID connectorId, int limit);
 

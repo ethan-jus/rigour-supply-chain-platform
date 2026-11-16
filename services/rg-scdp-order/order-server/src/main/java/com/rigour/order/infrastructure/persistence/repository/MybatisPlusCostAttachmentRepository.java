@@ -1,7 +1,9 @@
 package com.rigour.order.infrastructure.persistence.repository;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.rigour.order.api.v1.model.LogisticsCostAttachmentView;
 import com.rigour.order.application.port.out.CostAttachmentStore;
 import com.rigour.order.infrastructure.persistence.entity.CostAttachmentEntity;
@@ -34,6 +36,37 @@ public class MybatisPlusCostAttachmentRepository implements CostAttachmentStore 
         costs.lock(tenant);
     }
 
+    public Submission submission(String tenant, String submissionId) {
+        var rows =
+                costs.selectMaps(
+                        new QueryWrapper<OrderLogisticsCostEntity>()
+                                .select("id", "attachment_save_hash", "attachment_save_revision")
+                                .eq("tenant_id", tenant)
+                                .eq("attachment_save_id", submissionId));
+        if (rows.isEmpty()) return null;
+        var row = rows.getFirst();
+        return new Submission(
+                (String) row.get("id"),
+                (String) row.get("attachment_save_hash"),
+                ((Number) row.get("attachment_save_revision")).intValue());
+    }
+
+    public void completed(
+            String tenant, String entry, String submissionId, String fingerprint, int revision) {
+        int changed =
+                costs.update(
+                        null,
+                        new UpdateWrapper<OrderLogisticsCostEntity>()
+                                .eq("tenant_id", tenant)
+                                .eq("id", entry)
+                                .eq("revision", revision)
+                                .eq("status_code", "DRAFT")
+                                .set("attachment_save_id", submissionId)
+                                .set("attachment_save_hash", fingerprint)
+                                .set("attachment_save_revision", revision));
+        if (changed != 1) throw new BusinessException(ErrorCode.CONFLICT, "记录已变化，请刷新", List.of());
+    }
+
     private LambdaQueryWrapper<CostAttachmentEntity> scope(String tenant, String entry) {
         return new LambdaQueryWrapper<CostAttachmentEntity>()
                 .eq(CostAttachmentEntity::getTenantId, tenant)
@@ -57,7 +90,8 @@ public class MybatisPlusCostAttachmentRepository implements CostAttachmentStore 
                                         r.getContentType(),
                                         r.getFileSize(),
                                         r.getCreatedBy(),
-                                        r.getCreatedTime().toInstant(ZoneOffset.UTC)))
+                                        r.getCreatedTime().toInstant(ZoneOffset.UTC),
+                                        r.getCategoryCode()))
                 .toList();
     }
 
@@ -82,6 +116,7 @@ public class MybatisPlusCostAttachmentRepository implements CostAttachmentStore 
         row.setFileKey(key);
         row.setFileName(file.fileName());
         row.setContentType(file.contentType());
+        row.setCategoryCode(file.categoryCode());
         row.setFileSize(file.size());
         row.setCreatedBy(file.createdBy());
         row.setCreatedTime(LocalDateTime.ofInstant(file.createdTime(), ZoneOffset.UTC));

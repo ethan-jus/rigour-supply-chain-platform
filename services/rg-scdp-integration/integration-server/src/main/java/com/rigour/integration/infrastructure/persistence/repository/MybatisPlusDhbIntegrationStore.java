@@ -58,6 +58,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.dao.DuplicateKeyException;
@@ -386,13 +387,19 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     @Override
     public int saveExternalObjectMappings(UUID tenantId, UUID actorId,
                                           List<ExternalObjectMappingCommand> commands) {
+        return saveExternalObjectMappings(tenantId, actorId, commands, false);
+    }
+
+    @Override
+    public int saveExternalObjectMappings(UUID tenantId, UUID actorId,
+            List<ExternalObjectMappingCommand> commands, boolean preserveManual) {
         if (commands == null || commands.isEmpty()) return 0;
         Map<ExternalMappingKey, ExternalObjectMappingEntity> existingRows =
                 externalObjectMappingRows(tenantId, commands);
         Integer accepted = transaction.execute(status -> {
             int count = 0;
             for (ExternalObjectMappingCommand command : commands) {
-                saveExternalObjectMapping(tenantId, actorId, command, existingRows);
+                saveExternalObjectMapping(tenantId, actorId, command, existingRows, preserveManual);
                 count++;
             }
             return count;
@@ -462,6 +469,30 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
                         .orderByDesc("updated_at", "created_at")
                         .last("LIMIT " + safeLimit(limit)))
                 .stream().map(MybatisPlusDhbIntegrationStore::syncException).toList();
+    }
+
+    @Override
+    public DhbSyncExceptionView openException(UUID tenantId, String type, String sourceId) {
+        return deadLetterMapper.selectList(Wrappers.<IntegrationDeadLetterEntity>query()
+                .eq("tenant_id", bin(tenantId)).eq("status", "OPEN").eq("source_object_type", type)
+                .eq("source_id", sourceId).orderByDesc("updated_at").last("LIMIT 1"))
+                .stream().map(MybatisPlusDhbIntegrationStore::syncException).findFirst().orElse(null);
+    }
+
+    @Override
+    public DhbSyncReconciliationCaseView openReconciliation(UUID tenantId, String type, String sourceId) {
+        return reconciliationCaseMapper.selectList(Wrappers.<IntegrationReconciliationCaseEntity>query()
+                .eq("tenant_id", bin(tenantId)).eq("status", "OPEN").eq("severity", "ERROR")
+                .eq("source_object_type", type).eq("business_key", sourceId).orderByDesc("created_at").last("LIMIT 1"))
+                .stream().map(MybatisPlusDhbIntegrationStore::reconciliationCase).findFirst().orElse(null);
+    }
+
+    @Override
+    public DhbSyncRunAuditView syncRun(UUID tenantId, UUID runId) {
+        var run = syncRunMapper.selectOne(Wrappers.<IntegrationSyncRunEntity>query().eq("tenant_id", bin(tenantId)).eq("id", bin(runId)));
+        if (run == null) return null;
+        var task = taskById(tenantId, IntegrationUuidCodec.decode(run.taskId));
+        return task == null ? null : syncRunAudit(run, task);
     }
 
     @Override
@@ -662,7 +693,7 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
 
     private void saveExternalObjectMapping(UUID tenantId, UUID actorId,
                                            ExternalObjectMappingCommand command,
-                                           Map<ExternalMappingKey, ExternalObjectMappingEntity> existingRows) {
+                                           Map<ExternalMappingKey, ExternalObjectMappingEntity> existingRows, boolean preserveManual) {
         if (command == null) throw new IllegalArgumentException("mapping command is required");
         UUID connectorId = requireUuid(command.connectorId(), "connectorId");
         String sourceSystem = optionalCode(command.sourceSystem());
@@ -690,6 +721,8 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
         if (row == null && existingRows == null) {
             row = externalObjectMappingRow(tenantId, connectorId, sourceSystem, sourceType, sourceId);
         }
+        // 服务同步接受该项但保留人工决定；后续依赖检查会给具体发货单保留待核对原因。
+        if (preserveManual && preserveExistingMapping(row, command)) return;
         if (row == null) {
             row = new ExternalObjectMappingEntity();
             row.id = bin(UUID.randomUUID());
@@ -711,6 +744,7 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
             row.version = zero(row.version) + 1;
             // 领域批量同步恢复旧映射时，实体 null 不会自动清除数据库里的软删除字段。
             externalObjectMappingMapper.update(row, Wrappers.<ExternalObjectMappingEntity>update()
+                    .eq(preserveManual, "version", row.version - 1)
                     .set("deleted_at", null)
                     .set("deleted_by", null)
                     .set("delete_reason", null)
@@ -770,6 +804,16 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     }
 
     private record ExternalMappingKey(UUID connectorId, String sourceSystem, String sourceType, String sourceId) {
+    }
+
+    static boolean preserveExistingMapping(ExternalObjectMappingEntity row, ExternalObjectMappingCommand command) {
+        if (row == null) return false;
+        if (row.deletedAt != null || !"ACTIVE".equals(row.mappingStatus)) return true;
+        if (!"ACTIVE".equals(command.mappingStatus() == null ? "ACTIVE" : command.mappingStatus())) return false;
+        return !Objects.equals(row.internalDomain, command.internalDomain())
+                || !Objects.equals(row.internalObjectType, command.internalObjectType())
+                || !Objects.equals(row.internalObjectId, command.internalObjectId())
+                || row.internalObjectId == null && !Objects.equals(row.internalObjectNo, command.internalObjectNo());
     }
 
     private static void applyExternalObjectMapping(

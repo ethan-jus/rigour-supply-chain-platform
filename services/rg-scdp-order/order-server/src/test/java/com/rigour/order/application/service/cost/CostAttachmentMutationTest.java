@@ -185,6 +185,7 @@ class CostAttachmentMutationTest {
 
     @Test
     void removalAdvancesVersionAndAuditsWithoutDeletingCosObject() {
+        when(files.list(tenant.toString(), "bill")).thenReturn(List.of(file("old"), file("keep")));
         service.remove("logistics", "bill", "old", 3);
         verify(files).touch(eq(tenant.toString()), eq("bill"), eq(3), anyString());
         verify(files).retire(tenant.toString(), "bill", "old");

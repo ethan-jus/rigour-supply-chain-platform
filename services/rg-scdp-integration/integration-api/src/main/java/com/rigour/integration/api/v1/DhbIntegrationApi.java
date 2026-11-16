@@ -112,6 +112,9 @@ public interface DhbIntegrationApi {
             @RequestParam(name = "severity", required = false) String severity,
             @RequestParam(name = "limit", defaultValue = "100") int limit);
 
+    @PostMapping(SYNC_CENTER_PATH + "/dependency-recoveries")
+    void recoverDependency(@RequestBody com.rigour.integration.api.v1.model.DhbDependencyRecoveryCommand command);
+
     @GetMapping(SYNC_CENTER_PATH + "/open-issues")
     List<DhbSyncOpenIssueGroupView> openIssues(
             @RequestParam(name = "limit", defaultValue = "500") int limit);

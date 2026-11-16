@@ -41,6 +41,8 @@ public class JdbcDhbIncrementalWorkStore implements DhbIncrementalWorkStore {
                     + " VALUES "
                         + String.join(",", Collections.nCopies(items.size(), "(?,?,?,?,?,?,?,?)"))
                         + " ON DUPLICATE KEY UPDATE"
+                        + " retry_policy=IF(" + acceptsVersion()
+                        + " AND fingerprint<>VALUES(fingerprint),'AUTO',retry_policy),"
                         + " applied=IF("
                         + acceptsVersion()
                         + ",IF(fingerprint=VALUES(fingerprint),applied,0),applied),"
@@ -98,7 +100,7 @@ public class JdbcDhbIncrementalWorkStore implements DhbIncrementalWorkStore {
     public void complete(
             UUID tenant, UUID connector, String type, Item item, boolean applied, Instant now) {
         jdbc.update(
-                "UPDATE integration_dhb_incremental_work SET applied=?,checked_at=?,retry_at=?"
+                "UPDATE integration_dhb_incremental_work SET applied=?,retry_policy='AUTO',checked_at=?,retry_at=?"
                     + " WHERE tenant_id=? AND connector_id=? AND object_type=? AND source_id=? AND"
                     + " fingerprint=?",
                 applied ? 1 : 0,
@@ -115,7 +117,7 @@ public class JdbcDhbIncrementalWorkStore implements DhbIncrementalWorkStore {
         return jdbc.query(
                 "SELECT source_id,fingerprint,payload,source_updated_at FROM"
                     + " integration_dhb_incremental_work WHERE tenant_id=? AND connector_id=? AND"
-                    + " object_type=? AND applied=0 AND retry_at<=? ORDER BY retry_at,source_id"
+                    + " object_type=? AND applied=0 AND retry_policy='AUTO' AND retry_at<=? ORDER BY retry_at,source_id"
                     + " LIMIT ?",
                 (r, i) ->
                         new Item(
@@ -128,6 +130,33 @@ public class JdbcDhbIncrementalWorkStore implements DhbIncrementalWorkStore {
                 type,
                 utc(now),
                 limit);
+    }
+
+    @Override
+    public Item find(UUID tenant, UUID connector, String type, String sourceId) {
+        return jdbc.query("SELECT source_id,fingerprint,payload,source_updated_at FROM integration_dhb_incremental_work"
+                + " WHERE tenant_id=? AND connector_id=? AND object_type=? AND source_id=?",
+                (r, i) -> new Item(r.getString(1), r.getString(2), r.getString(3),
+                        instant(r.getObject(4, LocalDateTime.class))),
+                tenant.toString(), connector.toString(), type, sourceId).stream().findFirst().orElse(null);
+    }
+
+    @Override
+    public void waitForManual(UUID tenant, UUID connector, String type, Item item, Instant now) {
+        jdbc.update("UPDATE integration_dhb_incremental_work SET applied=0,retry_policy='MANUAL',checked_at=?"
+                + " WHERE tenant_id=? AND connector_id=? AND object_type=? AND source_id=? AND fingerprint=?",
+                utc(now), tenant.toString(), connector.toString(), type, item.id(), item.fingerprint());
+    }
+
+    @Override
+    public Set<String> awaitingManual(UUID tenant, UUID connector, String type, Set<String> sourceIds) {
+        if (sourceIds.isEmpty()) return Set.of();
+        var args = new ArrayList<Object>(List.of(tenant.toString(), connector.toString(), type));
+        args.addAll(sourceIds);
+        return new HashSet<>(jdbc.queryForList("SELECT source_id FROM integration_dhb_incremental_work"
+                + " WHERE tenant_id=? AND connector_id=? AND object_type=? AND applied=0 AND retry_policy='MANUAL'"
+                + " AND source_id IN (" + String.join(",", Collections.nCopies(sourceIds.size(), "?")) + ")",
+                String.class, args.toArray()));
     }
 
     public long pendingCount(UUID tenant, UUID connector, String type) {

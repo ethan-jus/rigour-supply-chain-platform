@@ -43,6 +43,8 @@ class TransportRecordServiceTest {
                         LogisticsCostDetailView.class);
         when(costs.entry("logistics", "C1")).thenReturn(record);
         when(refs.city(any(), any())).thenReturn("武汉");
+        when(refs.validCodes(anyString(), eq("COST_DELIVERY_MODE")))
+                .thenReturn(Set.of("SELF", "THIRD_PARTY"));
     }
 
     void actor(String... permissions) {
@@ -128,6 +130,39 @@ class TransportRecordServiceTest {
     }
 
     @Test
+    void platformAllocationsAreValidatedBeforeSavingAndUnknownBillRemainsUnallocated() {
+        when(platform.detail(any(), any())).thenReturn(source("137.64"));
+        when(ledgers.salesSources(anyList(), anyString(), eq(false)))
+                .thenReturn(
+                        List.of(
+                                json.readValue(
+                                        "{\"documentNo\":\"SO1\",\"sourceType\":\"SALES_ORDER\",\"documentAmount\":6000}",
+                                        LogisticsCostSourceView.class),
+                                json.readValue(
+                                        "{\"documentNo\":\"SO2\",\"sourceType\":\"SALES_ORDER\",\"documentAmount\":4000}",
+                                        LogisticsCostSourceView.class)));
+        var input = draft("137.64", List.of("SO2", "SO1"));
+        var manual = Map.of("SO1", new BigDecimal("80"), "SO2", new BigDecimal("57.64"));
+        service.saveWithPendingEvidence("C1", input.withAllocations(manual));
+        var saved = org.mockito.ArgumentCaptor.forClass(Draft.class);
+        verify(platform).saveDraft(any(), eq("C1"), saved.capture(), any(), any());
+        assertThat(saved.getValue().orderAllocations().get("SO1")).isEqualByComparingTo("80");
+        clearInvocations(platform);
+        assertThatThrownBy(
+                        () ->
+                                service.saveWithPendingEvidence(
+                                        "C1", input.withAllocations(Map.of("SO1", BigDecimal.ONE))))
+                .hasMessageContaining("全部关联");
+        verify(platform, never()).saveDraft(any(), any(), any(), any(), any());
+        when(platform.detail(any(), any())).thenReturn(source("null"));
+        var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(input);
+        node.putNull("amount");
+        service.saveWithPendingEvidence("C1", json.treeToValue(node, Draft.class));
+        verify(platform).saveDraft(any(), eq("C1"), saved.capture(), any(), any());
+        assertThat(saved.getValue().orderAllocations()).isNull();
+    }
+
+    @Test
     void editedPlatformAmountIsRejectedAtTheServiceBoundary() {
         when(platform.detail(any(), any())).thenReturn(source("137.64"));
         assertThatThrownBy(() -> service.save("C1", draft("1.00", List.of())))
@@ -144,22 +179,25 @@ class TransportRecordServiceTest {
                 .set(
                         "ledger",
                         json.readTree(
-                                "{\"schemaVersion\":2,\"feeItems\":[{\"bearerCode\":\"COMPANY\",\"allocationMethodCode\":\"EQUAL\"}],\"manualBillItems\":[{\"name\":\"原人工运费\",\"amount\":137.64}]}"));
+                                "{\"schemaVersion\":2,\"feeItems\":[{\"feeKey\":\"freight\",\"bearerCode\":\"COMPANY\",\"allocationMethodCode\":\"EQUAL\"}],\"manualBillItems\":[{\"name\":\"原人工运费\",\"amount\":137.64}]}"));
         record = json.treeToValue(previous, LogisticsCostDetailView.class);
         when(costs.entry("logistics", "C1")).thenReturn(record);
         var d = draft("137.64", List.of("SO002", "SO001", "SO003"));
         when(platform.detail(any(), any()))
                 .thenReturn(new PlatformRecord(p.source(), d, List.of()));
-        when(ledgers.sources(any(), eq("order:logistics-cost:confirm")))
+        when(ledgers.salesSources(anyList(), eq("order:logistics-cost:confirm"), eq(false)))
                 .thenAnswer(
                         i -> {
-                            var query = (LogisticsLedgerSourceQuery) i.getArgument(0);
-                            return List.of(
-                                    json.readValue(
-                                            "{\"documentNo\":\""
-                                                    + query.documentNo()
-                                                    + "\",\"sourceType\":\"SALES_ORDER\",\"cityCode\":\"WH\",\"receiverCode\":\"CUS1\",\"receiverName\":\"星河门店\",\"contactName\":\"王先生\",\"contactPhone\":\"13900000001\",\"destinationAddress\":\"沿江大道18号\"}",
-                                            LogisticsCostSourceView.class));
+                            List<String> codes = i.getArgument(0);
+                            return codes.stream()
+                                    .map(
+                                            code ->
+                                                    json.readValue(
+                                                            "{\"documentNo\":\""
+                                                                    + code
+                                                                    + "\",\"sourceType\":\"SALES_ORDER\",\"cityCode\":\"WH\",\"receiverCode\":\"CUS1\",\"receiverName\":\"星河门店\",\"contactName\":\"王先生\",\"contactPhone\":\"13900000001\",\"destinationAddress\":\"沿江大道18号\"}",
+                                                            LogisticsCostSourceView.class))
+                                    .toList();
                         });
         when(costs.preparePlatformConfirmation(eq("C1"), any())).thenReturn(record);
         service.confirm("C1", new LogisticsCostActionCommand(1, "已核对平台账单"));
@@ -200,20 +238,33 @@ class TransportRecordServiceTest {
                 json.readTree(
                         "[{\"name\":\"运费\",\"amount\":100},{\"name\":\"保价费\",\"amount\":5.01},{\"name\":\"优惠\",\"amount\":-5}]"));
         node.put("amount", 999);
+        node.put("senderName", "武汉仓");
+        node.put("senderAddress", "武汉市仓储路18号");
+        var points = json.createArrayNode();
+        for (int index = 0; index < 3; index++)
+            points.add(
+                    json.readTree(
+                            "{\"pointCode\":\"TO"
+                                    + index
+                                    + "\",\"partyTypeCode\":\"CUSTOMER\",\"partyCode\":null,\"manualName\":\"星河门店\",\"contactName\":\"王先生\",\"phone\":\"13900000000\",\"address\":\"武汉市收货路1号\",\"cityCode\":\"WH\"}"));
+        node.set("receivingPoints", points);
         var d = json.treeToValue(node, Draft.class);
-        when(ledgers.sources(any(), any()))
+        when(ledgers.salesSources(anyList(), anyString(), anyBoolean()))
                 .thenAnswer(
                         i -> {
-                            var q = (LogisticsLedgerSourceQuery) i.getArgument(0);
-                            return List.of(
-                                    json.readValue(
-                                            "{\"documentNo\":\""
-                                                    + q.documentNo()
-                                                    + "\",\"sourceType\":\"SALES_ORDER\",\"cityCode\":\"WH\",\"receiverName\":\"星河门店\",\"documentAmount\":800.50,\"documentDate\":\"2026-11-09\"}",
-                                            LogisticsCostSourceView.class));
+                            List<String> codes = i.getArgument(0);
+                            return codes.stream()
+                                    .map(
+                                            code ->
+                                                    json.readValue(
+                                                            "{\"documentNo\":\""
+                                                                    + code
+                                                                    + "\",\"sourceType\":\"SALES_ORDER\",\"cityCode\":\"WH\",\"receiverName\":\"星河门店\",\"documentAmount\":800.50,\"documentDate\":\"2026-11-09\"}",
+                                                            LogisticsCostSourceView.class))
+                                    .toList();
                         });
         when(costs.save(eq("logistics"), isNull(), any())).thenReturn(record);
-        service.save(null, d);
+        service.saveWithPendingEvidence(null, d);
         var capture = org.mockito.ArgumentCaptor.forClass(LogisticsCostCommand.class);
         verify(costs).save(eq("logistics"), isNull(), capture.capture());
         var command =

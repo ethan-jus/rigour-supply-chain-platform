@@ -5,6 +5,13 @@ import com.rigour.order.api.v1.model.LogisticsCostAttachmentView;
 import java.util.List;
 
 public interface CostAttachmentStore {
+    record Submission(String entryId, String fingerprint, int revision) {}
+
+    Submission submission(String tenant, String submissionId);
+
+    void completed(
+            String tenant, String entry, String submissionId, String fingerprint, int revision);
+
     void lock(String tenant);
 
     void retire(String tenant, String entry, String id);

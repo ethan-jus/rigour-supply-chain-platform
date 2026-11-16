@@ -15,6 +15,12 @@ public interface CostAttachmentApi {
     @GetMapping("/api/v1/orders/logistics-costs/{entry}/attachments/{file}/url")
     ApiResponse<String> url(@PathVariable String entry, @PathVariable String file);
 
+    @GetMapping(
+            value = "/api/v1/orders/logistics-costs/{entry}/attachments/{file}/preview",
+            produces = "application/pdf")
+    org.springframework.http.ResponseEntity<byte[]> previewPdf(
+            @PathVariable String entry, @PathVariable String file);
+
     @PostMapping(
             value = "/api/v1/orders/logistics-costs/{entry}/attachments",
             consumes = "multipart/form-data")

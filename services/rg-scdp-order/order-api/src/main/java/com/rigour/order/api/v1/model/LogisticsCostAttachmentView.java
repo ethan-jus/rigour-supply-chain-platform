@@ -8,4 +8,15 @@ public record LogisticsCostAttachmentView(
         String contentType,
         long size,
         String createdBy,
-        Instant createdTime) {}
+        Instant createdTime,
+        String categoryCode) {
+    public LogisticsCostAttachmentView(
+            String id,
+            String fileName,
+            String contentType,
+            long size,
+            String createdBy,
+            Instant createdTime) {
+        this(id, fileName, contentType, size, createdBy, createdTime, "EXPENSE_VOUCHER");
+    }
+}

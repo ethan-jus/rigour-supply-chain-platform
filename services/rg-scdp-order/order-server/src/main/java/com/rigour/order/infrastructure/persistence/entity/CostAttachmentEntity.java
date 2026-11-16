@@ -26,9 +26,18 @@ public class CostAttachmentEntity {
     private String fileKey;
     private String fileName;
     private String contentType;
+    private String categoryCode;
     private Long fileSize;
     private String createdBy;
     private LocalDateTime createdTime;
+
+    public String getCategoryCode() {
+        return categoryCode;
+    }
+
+    public void setCategoryCode(String value) {
+        categoryCode = value;
+    }
 
     public String getId() {
         return id;

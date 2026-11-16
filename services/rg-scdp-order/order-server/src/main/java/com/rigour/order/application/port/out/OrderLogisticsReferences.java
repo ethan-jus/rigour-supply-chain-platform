@@ -6,6 +6,17 @@ import java.util.List;
 import java.util.Set;
 
 public interface OrderLogisticsReferences {
+    default java.util.Map<String, List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView>>
+            ledgerCustomersByCities(
+                    java.util.Map<String, List<String>> codesByCity, String action) {
+        var result =
+                new java.util.LinkedHashMap<
+                        String, List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView>>();
+        codesByCity.forEach(
+                (city, codes) -> result.put(city, ledgerCustomers(city, codes, action)));
+        return result;
+    }
+
     java.util.Map<String, String> cities(String action);
 
     default List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> ledgerCustomers(

@@ -146,6 +146,14 @@ public final class DhbIntegrationController implements DhbIntegrationApi {
         return service.syncReconciliationCases(status, severity, limit);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.rigour.integration.application.service.dhb.DhbDependencyRecoveryService dependencyRecovery;
+
+    @PostMapping("/sync-center/dependency-recoveries")
+    public void recoverDependency(@RequestBody com.rigour.integration.api.v1.model.DhbDependencyRecoveryCommand command) {
+        dependencyRecovery.link(command);
+    }
+
     @GetMapping("/sync-center/open-issues")
     public List<DhbSyncOpenIssueGroupView> openIssues(
             @RequestParam(name = "limit", defaultValue = "500") int limit) {

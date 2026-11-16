@@ -2,10 +2,13 @@ package com.rigour.order.api;
 
 import com.rigour.order.api.v1.model.*;
 import com.rigour.order.api.v1.model.TransportRecordModels.*;
+import com.rigour.order.application.service.cost.CostAttachmentService;
 import com.rigour.order.application.service.cost.TransportRecordService;
+import com.rigour.order.application.service.cost.TransportSubmissionService;
 import com.rigour.shared.core.api.ApiResponse;
 
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.*;
 
@@ -13,9 +16,55 @@ import java.util.*;
 @RequestMapping("/api/v1/orders/transport-records")
 public class TransportRecordController {
     private final TransportRecordService service;
+    private final TransportSubmissionService submissions;
+    private final CostAttachmentService evidence;
 
-    public TransportRecordController(TransportRecordService service) {
+    public TransportRecordController(
+            TransportRecordService service,
+            TransportSubmissionService submissions,
+            CostAttachmentService evidence) {
         this.service = service;
+        this.submissions = submissions;
+        this.evidence = evidence;
+    }
+
+    @PostMapping(value = "/with-evidence", consumes = "multipart/form-data")
+    public ApiResponse<Detail> createWithEvidence(
+            @RequestPart("command") TransportSubmission command,
+            @RequestPart(value = "files", required = false) List<MultipartFile> files)
+            throws java.io.IOException {
+        return ApiResponse.success(submissions.save(null, command, contents(files)));
+    }
+
+    @PostMapping(value = "/{id}/with-evidence", consumes = "multipart/form-data")
+    public ApiResponse<Detail> saveWithEvidence(
+            @PathVariable String id,
+            @RequestPart("command") TransportSubmission command,
+            @RequestPart(value = "files", required = false) List<MultipartFile> files)
+            throws java.io.IOException {
+        return ApiResponse.success(submissions.save(id, command, contents(files)));
+    }
+
+    @GetMapping("/{id}/attachments/{file}/download-url")
+    public ApiResponse<String> download(@PathVariable String id, @PathVariable String file) {
+        return ApiResponse.success(evidence.downloadUrl(id, file));
+    }
+
+    private List<TransportSubmissionService.Content> contents(List<MultipartFile> files)
+            throws java.io.IOException {
+        if (files == null) return List.of();
+        if (files.size() > 20
+                || files.stream().anyMatch(f -> f.isEmpty() || f.getSize() > 10 * 1024 * 1024))
+            throw new com.rigour.shared.core.exception.BusinessException(
+                    com.rigour.shared.core.api.ErrorCode.BAD_REQUEST,
+                    "附件须为非空且单个不超过10MB，最多20份",
+                    List.of());
+        var result = new ArrayList<TransportSubmissionService.Content>();
+        for (var file : files)
+            result.add(
+                    new TransportSubmissionService.Content(
+                            file.getOriginalFilename(), file.getContentType(), file.getBytes()));
+        return result;
     }
 
     @GetMapping

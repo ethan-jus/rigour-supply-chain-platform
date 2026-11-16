@@ -88,6 +88,8 @@ public final class CosCostAttachmentStorage implements CostAttachmentStorage {
             client.putObject(
                     new PutObjectRequest(bucket, key, new ByteArrayInputStream(content), metadata));
         } catch (RuntimeException exception) {
+            // PUT 超时并不代表远端未落对象，按本次唯一键补偿清理。
+            discard(key);
             LOG.warn(
                     "费用附件上传失败 sourceSystem=ORDER errorType={}",
                     exception.getClass().getSimpleName());
@@ -103,7 +105,9 @@ public final class CosCostAttachmentStorage implements CostAttachmentStorage {
         metadata.setContentType(contentType);
         metadata.addUserMetadata("source-system", "ORDER");
         metadata.addUserMetadata("business-type", "cost-attachment");
-        metadata.addUserMetadata("cost-entry-id", entryId);
+        if (entryId != null && entryId.startsWith("request_"))
+            metadata.addUserMetadata("cost-request-id", entryId.substring("request_".length()));
+        else metadata.addUserMetadata("cost-entry-id", entryId);
         return metadata;
     }
 
@@ -128,6 +132,9 @@ public final class CosCostAttachmentStorage implements CostAttachmentStorage {
             case "image/jpeg" -> "jpg";
             case "image/png" -> "png";
             case "application/pdf" -> "pdf";
+            case "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ->
+                    "docx";
+            case "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" -> "xlsx";
             default -> throw new IllegalArgumentException("费用附件类型无效");
         };
     }
@@ -162,6 +169,25 @@ public final class CosCostAttachmentStorage implements CostAttachmentStorage {
             if (client != null) client.deleteObject(bucket, key);
         } catch (RuntimeException ignored) {
             org.slf4j.LoggerFactory.getLogger(getClass()).warn("费用附件回滚清理失败，需要检查孤立对象");
+        }
+    }
+
+    @Override
+    public byte[] read(String key) {
+        if (client == null)
+            throw new BusinessException(
+                    ErrorCode.SERVICE_UNAVAILABLE, "凭证读取服务未就绪，请稍后重试", List.of());
+        try (var object = client.getObject(bucket, key)) {
+            var input = object.getObjectContent();
+            byte[] bytes = input.readNBytes(10 * 1024 * 1024 + 1);
+            if (bytes.length > 10 * 1024 * 1024)
+                throw new java.io.IOException("Attachment exceeds limit");
+            return bytes;
+        } catch (java.io.IOException | RuntimeException exception) {
+            LOG.warn(
+                    "费用凭证读取失败 sourceSystem=ORDER errorType={}",
+                    exception.getClass().getSimpleName());
+            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "凭证暂时无法读取，请稍后重试", List.of());
         }
     }
 

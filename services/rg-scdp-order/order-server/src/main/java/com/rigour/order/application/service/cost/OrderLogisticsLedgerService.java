@@ -56,13 +56,35 @@ public final class OrderLogisticsLedgerService {
             warehouseId =
                     Long.valueOf(party("WAREHOUSE", q.sourceWarehouseCode(), null, action).id());
         if (q.targetWarehouseCode() != null && !q.targetWarehouseCode().isBlank()) return List.of();
-        List<LogisticsCostSourceView> result = new ArrayList<>();
         var documents =
                 sales.sales(
                         AuthorizationContext.requireCurrent().tenantId().toString(),
                         q,
                         action,
                         warehouseId);
+        return withUsage(salesViews(documents, action), q, action);
+    }
+
+    public List<LogisticsCostSourceView> salesSources(
+            List<String> nos, String action, boolean historical) {
+        if (nos == null
+                || nos.size() > 100
+                || new HashSet<>(nos).size() != nos.size()
+                || nos.stream().anyMatch(n -> n == null || n.isBlank() || n.length() > 100))
+            throw bad("销售单据数量或编号无效");
+        if (nos.isEmpty()) return List.of();
+        var documents =
+                sales.salesByNos(
+                        AuthorizationContext.requireCurrent().tenantId().toString(),
+                        nos,
+                        action,
+                        historical);
+        return salesViews(documents, action);
+    }
+
+    private List<LogisticsCostSourceView> salesViews(
+            List<OrderDeliveryCostSourceView> documents, String action) {
+        List<LogisticsCostSourceView> result = new ArrayList<>();
         var operatingCities =
                 documents.isEmpty() ? Map.<String, String>of() : references.cities(action);
         Map<Long, LogisticsLedgerPartyView> warehouses = new HashMap<>();
@@ -71,21 +93,23 @@ public final class OrderLogisticsLedgerService {
         for (var source : documents)
             if (source.cityCode() != null
                     && operatingCities.containsKey(source.cityCode())
-                    && source.customerCode() != null)
+                    && source.customerCode() != null
+                    && (source.contactName() == null
+                            || source.contactPhone() == null
+                            || source.destinationAddress() == null))
                 byCity.computeIfAbsent(source.cityCode(), key -> new LinkedHashSet<>())
                         .add(source.customerCode());
-        byCity.forEach(
-                (city, codes) -> {
-                    Map<String, LogisticsLedgerPartyView> refs = new HashMap<>();
-                    var list = new ArrayList<>(codes);
-                    for (int i = 0; i < list.size(); i += 100)
-                        references
-                                .ledgerCustomers(
-                                        city,
-                                        list.subList(i, Math.min(i + 100, list.size())),
-                                        action)
-                                .forEach(r -> refs.put(r.code(), r));
-                    customers.put(city, refs);
+        var requests = new LinkedHashMap<String, List<String>>();
+        byCity.forEach((city, codes) -> requests.put(city, new ArrayList<>(codes)));
+        var batched =
+                requests.isEmpty()
+                        ? Map.<String, List<LogisticsLedgerPartyView>>of()
+                        : references.ledgerCustomersByCities(requests, action);
+        batched.forEach(
+                (city, rows) -> {
+                    Map<String, LogisticsLedgerPartyView> indexed = new HashMap<>();
+                    rows.forEach(row -> indexed.put(row.code(), row));
+                    customers.put(city, indexed);
                 });
         for (var s : documents) {
             LogisticsLedgerPartyView warehouse =
@@ -155,7 +179,7 @@ public final class OrderLogisticsLedgerService {
                                     issue)
                             .withBusinessSnapshot(s.documentAmount(), null));
         }
-        return withUsage(result, q, action);
+        return result;
     }
 
     private List<LogisticsCostSourceView> withUsage(
@@ -213,6 +237,25 @@ public final class OrderLogisticsLedgerService {
         Map<String, String> pointCities = new HashMap<>();
         points.forEach(p -> pointCities.put(p.pointCode(), p.cityCode()));
         var attributed = new ArrayList<LogisticsCostLedger.Source>();
+        Map<Boolean, Map<String, LogisticsCostSourceView>> salesByUse = new HashMap<>();
+        for (boolean historical : List.of(false, true)) {
+            var codes =
+                    ledger.sources().stream()
+                            .filter(
+                                    s ->
+                                            "SALES_ORDER".equals(s.orderTypeCode())
+                                                    && historical
+                                                            == "TRACE".equals(s.linkRoleCode()))
+                            .map(LogisticsCostLedger.Source::orderCode)
+                            .distinct()
+                            .toList();
+            if (!codes.isEmpty()) {
+                Map<String, LogisticsCostSourceView> indexed = new HashMap<>();
+                salesSources(codes, action, historical)
+                        .forEach(s -> indexed.put(s.documentNo(), s));
+                salesByUse.put(historical, indexed);
+            }
+        }
         for (var link : ledger.sources()) {
             var normalizedLink =
                     new LogisticsCostLedger.Source(
@@ -246,28 +289,26 @@ public final class OrderLogisticsLedgerService {
                                 0,
                                 true,
                                 "TRACE".equals(link.linkRoleCode()));
+                var candidates =
+                        "SALES_ORDER".equals(link.orderTypeCode())
+                                ? salesByUse
+                                        .getOrDefault("TRACE".equals(link.linkRoleCode()), Map.of())
+                                        .values()
+                                : sources(q, action);
                 var source =
-                        sources(q, action).stream()
+                        candidates.stream()
                                 .filter(s -> Objects.equals(s.documentNo(), link.orderCode()))
                                 .findFirst()
                                 .orElseThrow(() -> bad("来源单据不存在、状态不可引用或无权限：" + link.orderCode()));
                 normalizedLink = normalizedLink.attributed(source);
                 if (confirm
                         && "COST".equals(link.linkRoleCode())
-                        && source.referenceIssue() != null) throw bad(source.referenceIssue());
+                        && source.referenceIssue() != null
+                        && !"DELIVERY".equals(ledger.transportPurposeCode()))
+                    throw bad(source.referenceIssue());
                 if ("DELIVERY".equals(ledger.transportPurposeCode())
                         && "COST".equals(link.linkRoleCode())) {
-                    if (source.receiverCode() == null
-                            || source.contactName() == null
-                            || source.contactName().isBlank()
-                            || source.contactPhone() == null
-                            || source.contactPhone().isBlank()
-                            || source.destinationAddress() == null
-                            || source.destinationAddress().isBlank())
-                        throw bad(
-                                "销售单“"
-                                        + source.documentNo()
-                                        + "”的客户收货资料不完整，请先维护客户档案的收货人、电话及地址后重新选择");
+                    if (source.receiverCode() == null) throw bad("来源销售单缺少客户编号，请维护原单");
                     for (var allocation : link.allocations()) {
                         int index = -1;
                         for (int i = 0; i < points.size(); i++)
@@ -283,17 +324,22 @@ public final class OrderLogisticsLedgerService {
                         var oldPoint = points.get(index);
                         if (!Objects.equals(oldPoint.cityCode(), source.cityCode()))
                             throw bad("收货城市必须与所关联销售单一致");
+                        if (confirm
+                                && (first(oldPoint.contactName(), source.contactName()) == null
+                                        || first(oldPoint.phone(), source.contactPhone()) == null
+                                        || first(oldPoint.address(), source.destinationAddress())
+                                                == null)) throw bad("请补齐实际收货联系人、联系电话及地址");
                         points.set(
                                 index,
                                 new LogisticsCostLedger.Party(
                                         oldPoint.pointCode(),
                                         "CUSTOMER",
                                         source.receiverCode(),
-                                        null,
-                                        source.receiverName(),
-                                        source.contactName(),
-                                        source.contactPhone(),
-                                        source.destinationAddress(),
+                                        oldPoint.manualName(),
+                                        first(oldPoint.manualName(), source.receiverName()),
+                                        first(oldPoint.contactName(), source.contactName()),
+                                        first(oldPoint.phone(), source.contactPhone()),
+                                        first(oldPoint.address(), source.destinationAddress()),
                                         source.cityCode()));
                     }
                 }
@@ -398,8 +444,8 @@ public final class OrderLogisticsLedgerService {
                 p.pointCode(),
                 p.partyTypeCode(),
                 ref.code(),
-                null,
-                ref.name(),
+                p.manualName(),
+                first(p.manualName(), ref.name()),
                 p.contactName(),
                 p.phone(),
                 p.address(),
@@ -450,7 +496,9 @@ public final class OrderLogisticsLedgerService {
             String city,
             String action,
             Map<PartyReference, Optional<LogisticsLedgerPartyView>> names) {
-        if ("OTHER".equals(p.partyTypeCode())) return p;
+        // 保存时已经核验过档案；读取保留实际运输快照，不逐点串行回查当前档案。
+        if ("OTHER".equals(p.partyTypeCode())
+                || p.displayName() != null && !p.displayName().isBlank()) return p;
         if (!Set.of("WAREHOUSE", "SUPPLIER", "CUSTOMER")
                 .contains(Objects.toString(p.partyTypeCode(), ""))) throw bad("收发方查询参数无效");
         // 已持久化费用经过列表数据范围校验；CRM 客户引用还会按 action 和 city 校验权限。

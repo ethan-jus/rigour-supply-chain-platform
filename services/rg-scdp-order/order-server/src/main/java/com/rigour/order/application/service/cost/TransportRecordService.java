@@ -7,7 +7,6 @@ import com.rigour.order.application.port.out.*;
 import com.rigour.shared.context.*;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
-import com.rigour.shared.core.math.MoneyAllocation;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +22,18 @@ public class TransportRecordService {
     private final OrderLogisticsReferences refs;
     private final PlatformTransportStore platform;
     private final CostAttachmentStorage attachments;
+    private CostAttachmentService evidence;
+    private ShipmentTransportStore shipments;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void shipmentStore(ShipmentTransportStore store) {
+        this.shipments = store;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void evidenceService(CostAttachmentService service) {
+        this.evidence = service;
+    }
 
     public TransportRecordService(
             OrderLogisticsCostService costs,
@@ -48,18 +59,34 @@ public class TransportRecordService {
         return new Page(
                 p,
                 platform.byCosts(
-                        tenant(), p.items().stream().map(LogisticsCostDetailView::id).toList()));
+                        tenant(), p.items().stream().map(LogisticsCostDetailView::id).toList()),
+                shipmentRecords(p.items().stream().map(LogisticsCostDetailView::id).toList()));
     }
 
     public List<Detail> selected(List<String> ids) {
         var rows = costs.exportSelected(ids);
         var sources = platform.byCosts(tenant(), ids);
-        return rows.stream().map(r -> new Detail(r, sources.get(r.id()))).toList();
+        var shipping = shipmentRecords(ids);
+        return rows.stream()
+                .map(
+                        r ->
+                                TransportAllocationPlan.detail(
+                                        r,
+                                        sources.get(r.id()),
+                                        shipping.getOrDefault(r.id(), List.of())))
+                .toList();
     }
 
     public Detail detail(String id) {
         var row = costs.entry("logistics", id);
-        return new Detail(row, platform.detail(tenant(), id));
+        return TransportAllocationPlan.detail(
+                row,
+                platform.detail(tenant(), id),
+                shipmentRecords(List.of(id)).getOrDefault(id, List.of()));
+    }
+
+    private Map<String, List<ShipmentTransportModels.Source>> shipmentRecords(List<String> ids) {
+        return shipments == null ? Map.of() : shipments.byCosts(tenant(), ids);
     }
 
     public String voucher(String id, String voucherId) {
@@ -94,11 +121,40 @@ public class TransportRecordService {
     @Transactional
     public Detail save(String id, Draft d) {
         AuthorizationContext.requirePermission("order:logistics-cost:write");
+        var old = id == null ? null : detail(id);
+        if (old == null || old.platform() == null) {
+            if (id == null || evidence.list("logistics", id).isEmpty())
+                throw bad("手工运输记录至少上传一份业务凭证，请连同凭证一起保存");
+        }
+        return saveWithPendingEvidence(id, d);
+    }
+
+    /** 仅供同一事务内的整单保存使用；调用方在提交前核验最终附件集合。 */
+    Detail saveWithPendingEvidence(String id, Draft d) {
+        AuthorizationContext.requirePermission("order:logistics-cost:write");
         validate(d);
         var old = id == null ? null : detail(id);
         if (old != null && !"DRAFT".equals(old.record().statusCode())) throw bad("只有待确认记录可编辑，请先撤销");
         if (old != null && !Objects.equals(old.record().revision(), d.revision()))
             throw bad("记录已变化，请刷新");
+        if (old != null && old.platform() == null && !old.shipments().isEmpty()) {
+            var original = old.record().data().ledger();
+            if (original.deliveryModeCode() == null
+                    || !"SELF".equals(original.deliveryModeCode())
+                            && original.carrierCode() == null)
+                throw bad("订货宝配送方式或物流公司尚未映射，请先维护数据字典的来源映射并重新同步");
+            if (!"DELIVERY".equals(d.transportType())
+                    || !Objects.equals(original.carrierCode(), d.carrierCode())
+                    || !Objects.equals(original.platformOrderNo(), d.platformOrderNo())
+                    || !Objects.equals(original.sender().address(), d.senderAddress())
+                    || !Objects.equals(original.sender().displayName(), d.senderName())
+                    || !Objects.equals(old.record().data().costDate(), d.date())
+                    || d.receivingPoints() != null
+                            && !Objects.equals(original.receivingPoints(), d.receivingPoints())
+                    || !new HashSet<>(original.sources().stream().map(Source::orderCode).toList())
+                            .equals(new HashSet<>(d.orderCodes())))
+                throw bad("订货宝发货及原销售关系只读，请在原单更正后同步");
+        }
         if (old == null)
             try {
                 UUID.fromString(d.requestId());
@@ -107,14 +163,7 @@ public class TransportRecordService {
             }
         if (old != null
                 && old.platform() == null
-                && old.record().data().ledger() != null
-                && (old.record().data().ledger().feeItems().size() != 1
-                        || old.record().data().ledger().feeItems().stream()
-                                .anyMatch(
-                                        f ->
-                                                !"COMPANY".equals(f.bearerCode())
-                                                        || !"EQUAL"
-                                                                .equals(f.allocationMethodCode()))))
+                && TransportAllocationPlan.complex(old.record().data().ledger()))
             throw bad("此记录有多项费用或特殊分摊，请使用费用明细编辑，避免覆盖原分摊");
         var sources = documents(d, "order:logistics-cost:write");
         if (old != null && old.platform() != null) {
@@ -136,15 +185,19 @@ public class TransportRecordService {
                     || f != null && !same(d.amount(), f.billAmount()))
                 throw bad("平台物流公司、订单号、日期和金额只读");
             // 未关联也能维护负责人、备注，暂不要求抄录平台未提供的地址。
+            var plan = TransportAllocationPlan.calculate(d.amount(), sources, d.orderAllocations());
             platform.saveDraft(
                     tenant(),
                     id,
-                    d,
+                    sources.isEmpty()
+                            ? d
+                            : d.withAllocations(d.amount() == null ? null : plan.shares()),
                     sources,
                     AuthorizationContext.requireCurrent().principalId().toString());
             return detail(id);
         }
         if (sources.isEmpty()) throw bad("请选择关联业务订单");
+        validateManual(d);
         var saved =
                 costs.save(
                         "logistics",
@@ -161,7 +214,13 @@ public class TransportRecordService {
     public Detail confirm(String id, LogisticsCostActionCommand action) {
         AuthorizationContext.requirePermission("order:logistics-cost:confirm");
         var d = detail(id);
+        if (d.shipments().stream()
+                .anyMatch(
+                        s -> !Set.of("receivedin", "received").contains(s.latest().sourceStatus())))
+            throw bad("来源发货已取消或仍待发货，请核对后再确认成本");
         if (d.record().revision() != action.revision()) throw bad("记录已变化，请刷新");
+        if (d.platform() == null && evidence.list("logistics", id).isEmpty())
+            throw bad("手工运输记录至少上传一份业务凭证后才能确认");
         if (d.platform() != null) {
             var draft = d.platform().draft();
             if (draft == null) throw bad("请先关联业务订单");
@@ -175,39 +234,36 @@ public class TransportRecordService {
                             : order.facts().stops().getFirst();
             var latest =
                     new Draft(
-                            d.record().revision(),
-                            draft.transportType(),
-                            draft.date(),
-                            "HLL",
-                            order.raw() == null ? null : order.raw().get("运单号"),
-                            order.orderNo(),
-                            draft.warehouseCode(),
-                            first(draft.senderName(), from == null ? null : from.name()),
-                            first(draft.senderContact(), from == null ? null : from.contactName()),
-                            first(draft.senderPhone(), from == null ? null : from.contactPhone()),
-                            first(draft.senderAddress(), from == null ? null : from.address()),
-                            draft.cityCode(),
-                            amount,
-                            draft.ownerEmployeeCode(),
-                            draft.remark(),
-                            action.reason(),
-                            draft.zeroReason(),
-                            draft.orderCodes(),
-                            draft.requestId(),
-                            null,
-                            List.of());
+                                    d.record().revision(),
+                                    draft.transportType(),
+                                    draft.date(),
+                                    "HLL",
+                                    order.raw() == null ? null : order.raw().get("运单号"),
+                                    order.orderNo(),
+                                    draft.warehouseCode(),
+                                    first(draft.senderName(), from == null ? null : from.name()),
+                                    first(
+                                            draft.senderContact(),
+                                            from == null ? null : from.contactName()),
+                                    first(
+                                            draft.senderPhone(),
+                                            from == null ? null : from.contactPhone()),
+                                    first(
+                                            draft.senderAddress(),
+                                            from == null ? null : from.address()),
+                                    draft.cityCode(),
+                                    amount,
+                                    draft.ownerEmployeeCode(),
+                                    draft.remark(),
+                                    action.reason(),
+                                    draft.zeroReason(),
+                                    draft.orderCodes(),
+                                    draft.requestId(),
+                                    null,
+                                    List.of())
+                            .withAllocations(draft.orderAllocations());
             var existing = d.record().data().ledger();
-            boolean custom =
-                    existing != null
-                            && (existing.feeItems().size() != 1
-                                    || existing.feeItems().stream()
-                                            .anyMatch(
-                                                    f ->
-                                                            !"COMPANY".equals(f.bearerCode())
-                                                                    || !"EQUAL"
-                                                                            .equals(
-                                                                                    f
-                                                                                            .allocationMethodCode())));
+            boolean custom = TransportAllocationPlan.complex(existing);
             LogisticsCostCommand checked;
             if (custom) {
                 var codes =
@@ -265,6 +321,17 @@ public class TransportRecordService {
             throw bad("关联订单最多50张且不可重复");
         if (d.orderCodes().isEmpty()) return List.of();
         if (!types.containsKey(Objects.toString(d.transportType(), ""))) throw bad("请先选择运输类型");
+        if (d.orderCodes().stream()
+                .anyMatch(code -> code == null || code.isBlank() || code.length() > 100))
+            throw bad("业务单号无效");
+        if ("DELIVERY".equals(d.transportType())) {
+            var rows = ledgers.salesSources(d.orderCodes(), action, false);
+            if (!new HashSet<>(rows.stream().map(LogisticsCostSourceView::documentNo).toList())
+                    .equals(new HashSet<>(d.orderCodes()))) throw bad("部分业务单据不存在、状态无效或无权限，请重新核对");
+            return rows.stream()
+                    .sorted(Comparator.comparing(LogisticsCostSourceView::documentNo))
+                    .toList();
+        }
         var result = new ArrayList<LogisticsCostSourceView>();
         for (String code : d.orderCodes()) {
             if (code == null || code.length() > 100) throw bad("业务单号无效");
@@ -324,11 +391,11 @@ public class TransportRecordService {
                             "FROM",
                             "WAREHOUSE",
                             w.code(),
-                            null,
-                            w.name(),
-                            first(d.senderContact(), w.contactName()),
-                            first(d.senderPhone(), w.phone()),
-                            first(d.senderAddress(), w.address()),
+                            d.senderName(),
+                            d.senderName(),
+                            d.senderContact(),
+                            d.senderPhone(),
+                            d.senderAddress(),
                             w.cityCode());
         } else
             sender =
@@ -344,11 +411,7 @@ public class TransportRecordService {
                             city);
         var points = new ArrayList<Party>();
         var sources = new ArrayList<Source>();
-        var allocations =
-                amount == null
-                        ? Collections.nCopies(rows.size(), BigDecimal.ZERO)
-                        : MoneyAllocation.split(
-                                amount, Collections.nCopies(rows.size(), BigDecimal.ONE));
+        var allocation = TransportAllocationPlan.calculate(amount, rows, d.orderAllocations());
         for (int i = 0; i < rows.size(); i++) {
             var row = rows.get(i);
             String point = "TO" + i;
@@ -378,6 +441,27 @@ public class TransportRecordService {
                                 row.destinationAddress(),
                                 row.cityCode()));
             }
+            if (d.receivingPoints() != null) {
+                var actual =
+                        d.receivingPoints().stream()
+                                .filter(p -> point.equals(p.pointCode()))
+                                .findFirst()
+                                .orElseThrow(() -> bad("实际收货信息与所选订单不一致，请重新核对"));
+                if (!Objects.equals(actual.partyCode(), row.receiverCode()))
+                    throw bad("实际收货方必须属于关联销售订单客户");
+                points.set(
+                        i,
+                        new Party(
+                                point,
+                                points.get(i).partyTypeCode(),
+                                row.receiverCode(),
+                                actual.manualName(),
+                                first(actual.manualName(), actual.displayName()),
+                                actual.contactName(),
+                                actual.phone(),
+                                actual.address(),
+                                row.cityCode()));
+            }
             sources.add(
                     new Source(
                                     row.sourceType(),
@@ -388,8 +472,12 @@ public class TransportRecordService {
                                                     "freight",
                                                     point,
                                                     row.cityCode(),
-                                                    BigDecimal.ONE,
-                                                    allocations.get(i))),
+                                                    allocation.bases().get(row.documentNo()),
+                                                    Objects.requireNonNullElse(
+                                                            allocation
+                                                                    .shares()
+                                                                    .get(row.documentNo()),
+                                                            BigDecimal.ZERO))),
                                     null)
                             .attributed(row));
         }
@@ -405,7 +493,9 @@ public class TransportRecordService {
                 new LogisticsCostLedger(
                                 2,
                                 d.transportType(),
-                                "SELF".equals(d.carrierCode()) ? "SELF" : "THIRD_PARTY",
+                                first(
+                                        d.deliveryModeCode(),
+                                        "SELF".equals(d.carrierCode()) ? "SELF" : "THIRD_PARTY"),
                                 d.carrierCode(),
                                 d.date().toString().substring(0, 7),
                                 d.trackingNo(),
@@ -419,7 +509,7 @@ public class TransportRecordService {
                                                 amount,
                                                 "COMPANY",
                                                 amount,
-                                                "EQUAL",
+                                                allocation.method(),
                                                 d.zeroReason(),
                                                 null)),
                                 sources,
@@ -450,6 +540,44 @@ public class TransportRecordService {
                 d.remark(),
                 d.reason(),
                 ledger);
+    }
+
+    private void validateManual(Draft d) {
+        String mode =
+                first(
+                        d.deliveryModeCode(),
+                        "SELF".equals(d.carrierCode()) ? "SELF" : "THIRD_PARTY");
+        if (!refs.validCodes(tenant(), "COST_DELIVERY_MODE").contains(mode))
+            throw bad("请选择启用的配送方式");
+        if (!"SELF".equals(mode)) {
+            required(d.carrierCode(), 64, "物流公司");
+            required(d.platformOrderNo(), 80, "快递单号");
+        }
+        required(d.senderName(), 100, "实际发货方");
+        required(d.senderAddress(), 500, "发货地址");
+        phone(d.senderPhone(), false);
+        if (d.receivingPoints() == null || d.receivingPoints().isEmpty()) throw bad("请填写实际收货信息");
+        if (d.receivingPoints() != null) {
+            if (d.receivingPoints().size() != d.orderCodes().size()) throw bad("实际收货信息与关联订单数量不一致");
+            for (var point : d.receivingPoints()) {
+                required(first(point.manualName(), point.displayName()), 100, "收货单位");
+                required(point.contactName(), 100, "收货联系人");
+                required(point.address(), 500, "收货地址");
+                phone(point.phone(), true);
+            }
+        }
+    }
+
+    private static void required(String value, int max, String name) {
+        if (value == null || value.isBlank() || value.length() > max) throw bad("请填写有效的" + name);
+    }
+
+    private static void phone(String value, boolean required) {
+        if (value == null || value.isBlank()) {
+            if (required) throw bad("请填写收货联系电话");
+            return;
+        }
+        if (value.length() > 50 || !value.matches("[+0-9()（） \\-#]{5,50}")) throw bad("联系电话格式无效");
     }
 
     private void validate(Draft d) {

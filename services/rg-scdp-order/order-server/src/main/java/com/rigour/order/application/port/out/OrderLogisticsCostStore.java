@@ -11,6 +11,11 @@ import com.rigour.order.api.v1.model.LogisticsCostSourceView;
 import java.util.List;
 
 public interface OrderLogisticsCostStore {
+    default List<LogisticsCostDetailView> linkedSales(
+            String tenant, String orderNo, String action) {
+        return List.of();
+    }
+
     LogisticsCostPageView entries(
             String tenant, String category, LogisticsCostQuery query, String action);
 

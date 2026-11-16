@@ -18,7 +18,7 @@ public record DhbSyncOpenIssueItemView(
         /** 是否必须人工裁决。 */ boolean manualResolutionRequired,
         /** 是否可直接单对象重放。 */ boolean replaySupported,
         /** 前端展示用处理建议。 */ String handlingAdvice,
-        /** 最近更新时间。 */ Instant updatedAt) {
+        /** 最近更新时间。 */ Instant updatedAt, String requiredDataType, String requiredSourceId, String relatedSalesOrderNo) {
     public DhbSyncOpenIssueItemView {
         candidateSourceIds = candidateSourceIds == null ? List.of() : List.copyOf(candidateSourceIds);
     }

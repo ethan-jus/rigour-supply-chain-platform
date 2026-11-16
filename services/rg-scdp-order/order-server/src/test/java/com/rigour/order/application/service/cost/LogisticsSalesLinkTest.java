@@ -23,6 +23,7 @@ class LogisticsSalesLinkTest {
 
     @BeforeEach
     void setup() {
+        when(refs.ledgerCustomersByCities(anyMap(), anyString())).thenCallRealMethod();
         UUID user = UUID.randomUUID();
         TestAuthorizationContext.set(
                 new CallerIdentity(
@@ -58,7 +59,7 @@ class LogisticsSalesLinkTest {
                 .thenAnswer(call -> List.of(customer(call.getArgument(1), true)));
         when(refs.ledgerCustomers(eq("WH"), anyList(), eq(action)))
                 .thenReturn(List.of(customer("CUS1", true)));
-        when(sources.sales(any(), any(), eq(action), isNull()))
+        when(sources.salesByNos(any(), anyList(), eq(action), eq(false)))
                 .thenReturn(
                         List.of(
                                 new OrderDeliveryCostSourceView(
@@ -100,11 +101,11 @@ class LogisticsSalesLinkTest {
 
     LogisticsCostCommand command() {
         return json.readValue(
-"""
+                """
 {"cityCode":"WH","costDate":"2026-11-06","paymentStatusCode":"UNPAID","ownerEmployeeCode":"FEE_OWNER","departmentId":999,
 "ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","deliveryModeCode":"SELF","costMonth":"2026-11",
 "sender":{"pointCode":"S1","partyTypeCode":"WAREHOUSE","partyCode":"WH1","cityCode":"WH","address":"仓库地址"},
-"receivingPoints":[{"pointCode":"P1","partyTypeCode":"CUSTOMER","partyCode":"CUS1","cityCode":"WH","address":"伪造地址","contactName":"伪造收货人","phone":"13000000000"}],
+"receivingPoints":[{"pointCode":"P1","partyTypeCode":"CUSTOMER","partyCode":"CUS1","cityCode":"WH","address":"本次收货地址","contactName":"本次收货人","phone":"13000000000"}],
 "feeItems":[{"feeKey":"F","feeTypeCode":"FREIGHT","feeAmount":40.5,"bearerCode":"COMPANY","ourAmount":40.5,"allocationMethodCode":"MANUAL"}],
 "sources":[{"orderTypeCode":"SALES_ORDER","orderCode":"SO001","linkRoleCode":"COST","employeeCode":"FORGED","departmentId":999,"allocations":[{"feeKey":"F","receivingPointCode":"P1","cityCode":"WH","amount":40.5}]}]}}
 """,
@@ -112,16 +113,16 @@ class LogisticsSalesLinkTest {
     }
 
     @Test
-    void savedContactsAndSalesAttributionComeFromTrustedOrderAndCustomerData() {
+    void editableShippingSnapshotKeepsActualContactsButAttributionComesFromTrustedOrder() {
         var normalized = service.normalize(command(), action, false);
         var link = normalized.ledger().sources().getFirst();
         assertThat(link.employeeCode()).isEqualTo("E1");
         assertThat(link.departmentId()).isEqualTo(10L);
         assertThat(normalized.ownerEmployeeCode()).isEqualTo("FEE_OWNER");
         var point = normalized.ledger().receivingPoints().getFirst();
-        assertThat(point.address()).isEqualTo("客户档案地址");
-        assertThat(point.contactName()).isEqualTo("档案收货人");
-        assertThat(point.phone()).isEqualTo("13800000000");
+        assertThat(point.address()).isEqualTo("本次收货地址");
+        assertThat(point.contactName()).isEqualTo("本次收货人");
+        assertThat(point.phone()).isEqualTo("13000000000");
     }
 
     @Test
@@ -143,7 +144,7 @@ class LogisticsSalesLinkTest {
 
     @Test
     void orderWithoutWarehouseAllowsAnExplicitAuthorizedLogisticsWarehouse() {
-        var original = sources.sales("", null, action, null).getFirst();
+        var original = sources.salesByNos("", List.of("SO001"), action, false).getFirst();
         var withoutWarehouse =
                 new OrderDeliveryCostSourceView(
                         original.id(),
@@ -163,14 +164,14 @@ class LogisticsSalesLinkTest {
                         original.departmentName(),
                         original.contactName(),
                         original.contactPhone());
-        when(sources.sales(any(), any(), eq(action), isNull()))
+        when(sources.salesByNos(any(), anyList(), eq(action), eq(false)))
                 .thenReturn(List.of(withoutWarehouse));
         var result = service.normalize(command(), action, false);
         assertThat(result.ledger().sender().partyCode()).isEqualTo("WH1");
         assertThat(result.ledger().scopeWarehouseIds()).contains(1L);
         assertThat(result.ledger().sources().getFirst().sourceWarehouseCode()).isNull();
         assertThat(result.ledger().sources().getFirst().departmentId()).isEqualTo(10L);
-        assertThat(result.ledger().receivingPoints().getFirst().address()).isEqualTo("客户档案地址");
+        assertThat(result.ledger().receivingPoints().getFirst().address()).isEqualTo("本次收货地址");
     }
 
     @Test
@@ -183,10 +184,11 @@ class LogisticsSalesLinkTest {
     }
 
     @Test
-    void incompleteCustomerArchiveRequiresMaintenanceBeforeSave() {
+    void incompleteArchiveCanBeCompletedWithActualShippingSnapshot() {
         when(refs.ledgerCustomers(eq("WH"), anyList(), eq(action)))
                 .thenReturn(List.of(customer("CUS1", false)));
-        assertThatThrownBy(() -> service.normalize(command(), action, false))
-                .hasMessageContaining("客户收货资料不完整", "维护客户档案");
+        var saved = service.normalize(command(), action, false);
+        assertThat(saved.ledger().receivingPoints().getFirst().address()).isEqualTo("本次收货地址");
+        assertThat(saved.ledger().sources().getFirst().employeeCode()).isEqualTo("E1");
     }
 }

@@ -81,12 +81,25 @@ public interface DhbIntegrationStore {
     FieldMappingView saveFieldMapping(UUID tenantId, UUID actorId, UUID id, FieldMappingCommand command);
     int saveExternalObjectMappings(UUID tenantId, UUID actorId,
                                    List<ExternalObjectMappingCommand> commands);
+    default int saveExternalObjectMappings(UUID tenantId, UUID actorId,
+            List<ExternalObjectMappingCommand> commands, boolean preserveManual) {
+        return saveExternalObjectMappings(tenantId, actorId, commands);
+    }
     DhbExternalObjectMappingPageView externalObjectMappings(
             UUID tenantId, String sourceObjectType, String internalDomain, String mappingStatus,
             int limit, int offset);
     List<DhbSyncRunAuditView> syncRuns(UUID tenantId, String objectType, String status, int limit);
     List<DhbSyncLogDetailView> syncLogDetails(UUID tenantId, UUID runId, String level, int limit);
     List<DhbSyncExceptionView> syncExceptions(UUID tenantId, String status, int limit);
+    default DhbSyncExceptionView openException(UUID tenantId, String type, String sourceId) {
+        return syncExceptions(tenantId, "OPEN", 500).stream().filter(r -> type.equals(r.sourceObjectType()) && sourceId.equals(r.sourceId())).findFirst().orElse(null);
+    }
+    default DhbSyncReconciliationCaseView openReconciliation(UUID tenantId, String type, String sourceId) {
+        return syncReconciliationCases(tenantId, "OPEN", "ERROR", 500).stream().filter(r -> type.equals(r.sourceObjectType()) && sourceId.equals(r.businessKey())).findFirst().orElse(null);
+    }
+    default DhbSyncRunAuditView syncRun(UUID tenantId, UUID runId) {
+        return syncRuns(tenantId, null, null, 500).stream().filter(r -> runId.equals(r.runId())).findFirst().orElse(null);
+    }
     List<DhbSyncReconciliationCaseView> syncReconciliationCases(
             UUID tenantId, String status, String severity, int limit);
     List<DhbManualResolutionView> manualResolutions(

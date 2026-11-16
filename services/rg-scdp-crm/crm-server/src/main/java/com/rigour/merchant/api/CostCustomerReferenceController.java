@@ -22,6 +22,11 @@ public final class CostCustomerReferenceController implements CostCustomerRefere
         return ApiResponse.success(service.customersByCodes(cityCode, action, codes));
     }
 
+    public ApiResponse<java.util.Map<String, List<CostCustomerView>>> customersByCities(
+            String action, java.util.Map<String, List<String>> codesByCity) {
+        return ApiResponse.success(service.customersByCities(action, codesByCity));
+    }
+
     public ApiResponse<List<CostCustomerView>> customers(
             String cityCode, String keyword, Long id, int begin, String action) {
         return ApiResponse.success(service.customers(cityCode, keyword, id, begin, action));

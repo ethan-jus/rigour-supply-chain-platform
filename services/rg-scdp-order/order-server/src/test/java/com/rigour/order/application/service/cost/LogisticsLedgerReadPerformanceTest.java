@@ -30,6 +30,7 @@ class LogisticsLedgerReadPerformanceTest {
 
     @BeforeEach
     void setup() {
+        when(refs.ledgerCustomersByCities(anyMap(), anyString())).thenCallRealMethod();
         UUID user = UUID.randomUUID();
         TestAuthorizationContext.set(
                 new CallerIdentity(
@@ -89,6 +90,34 @@ class LogisticsLedgerReadPerformanceTest {
                 null,
                 Instant.EPOCH,
                 Instant.EPOCH);
+    }
+
+    @Test
+    void multipleExactSalesOrdersReadOnceAndShareOneCustomerBatch() {
+        var sources = mock(OrderLedgerSourceStore.class);
+        var service = new OrderLogisticsLedgerService(refs, sources);
+        var rows =
+                IntStream.range(0, 50)
+                        .mapToObj(
+                                i ->
+                                        json.readValue(
+                                                "{\"id\":"
+                                                        + i
+                                                        + ",\"documentNo\":\"SO"
+                                                        + i
+                                                        + "\",\"cityCode\":\"WH\",\"customerCode\":\"CUS"
+                                                        + i
+                                                        + "\",\"statusCode\":\"CONFIRMED\"}",
+                                                OrderDeliveryCostSourceView.class))
+                        .toList();
+        var codes = rows.stream().map(OrderDeliveryCostSourceView::documentNo).toList();
+        when(sources.salesByNos(tenant.toString(), codes, READ, false)).thenReturn(rows);
+        when(refs.ledgerCustomersByCities(anyMap(), eq(READ))).thenReturn(Map.of());
+        assertThat(service.salesSources(codes, READ, false)).hasSize(50);
+        verify(sources).salesByNos(tenant.toString(), codes, READ, false);
+        verify(sources, never()).sales(anyString(), any(), anyString(), any());
+        verify(refs).ledgerCustomersByCities(argThat(m -> m.get("WH").size() == 50), eq(READ));
+        verify(refs, never()).ledgerCustomers(anyString(), anyList(), anyString());
     }
 
     @ParameterizedTest
@@ -407,5 +436,65 @@ class LogisticsLedgerReadPerformanceTest {
         assertThatThrownBy(() -> costs.exportSelected(List.of("LC1")))
                 .isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(store, refs);
+    }
+
+    @Test
+    void completeSalesSnapshotsDoNotReadCurrentCustomerArchive() {
+        var sourceStore = mock(OrderLedgerSourceStore.class);
+        var picker = new OrderLogisticsLedgerService(refs, sourceStore);
+        when(sourceStore.sales(any(), any(), eq(READ), isNull()))
+                .thenReturn(
+                        List.of(
+                                new OrderDeliveryCostSourceView(
+                                        1L,
+                                        "SO1",
+                                        "WH",
+                                        null,
+                                        "CUS1",
+                                        "门店",
+                                        "CONFIRMED",
+                                        "DHB",
+                                        "DH.1",
+                                        java.time.LocalDate.now(),
+                                        "本次收货地址",
+                                        "E1",
+                                        "业务员",
+                                        1L,
+                                        "销售部",
+                                        "王先生",
+                                        "13800000000")));
+        var rows =
+                picker.sources(
+                        new LogisticsLedgerSourceQuery(
+                                "SALES_ORDER",
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                null,
+                                0,
+                                false,
+                                false),
+                        READ);
+        assertThat(rows.getFirst().destinationAddress()).isEqualTo("本次收货地址");
+        verify(refs, never()).ledgerCustomersByCities(anyMap(), anyString());
+        verify(refs, never()).ledgerCustomers(anyString(), anyList(), anyString());
+    }
+
+    @Test
+    void distinctCitiesArePassedThroughOneBatchCall() {
+        var sourceStore = mock(OrderLedgerSourceStore.class);
+        var picker = new OrderLogisticsLedgerService(refs, sourceStore);
+        when(sourceStore.sales(any(), any(), eq(READ), isNull()))
+                .thenReturn(List.of(candidate("WH", "CUS1"), candidate("BJ", "CUS2")));
+        picker.sources(
+                new LogisticsLedgerSourceQuery(
+                        "SALES_ORDER", null, null, null, null, null, null, null, 0, false, false),
+                READ);
+        verify(refs)
+                .ledgerCustomersByCities(
+                        eq(Map.of("WH", List.of("CUS1"), "BJ", List.of("CUS2"))), eq(READ));
     }
 }

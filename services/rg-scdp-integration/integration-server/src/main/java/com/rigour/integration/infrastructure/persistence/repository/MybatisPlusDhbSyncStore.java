@@ -319,6 +319,20 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
     }
 
     @Override
+    public boolean dependencyAutoSyncBlocked(UUID tenantId, UUID connectorId,
+            List<String> objectTypes, List<String> sourceIds) {
+        if (objectTypes.isEmpty() || sourceIds.isEmpty()) return false;
+        return !externalObjectMappingMapper.selectList(Wrappers.<ExternalObjectMappingEntity>query()
+                .eq("tenant_id", bin(tenantId))
+                .in("source_system", List.of("DHB", "DINGHUOBAO"))
+                .and(w -> w.eq("connector_id", bin(connectorId)).or().isNull("connector_id"))
+                .in("source_object_type", objectTypes)
+                .and(w -> w.in("source_object_id", sourceIds).or().in("source_object_no", sourceIds))
+                .and(w -> w.ne("mapping_status", "ACTIVE").or().isNull("mapping_status").or().isNotNull("deleted_at"))
+                .last("LIMIT 1")).isEmpty();
+    }
+
+    @Override
     public void upsertExternalObjectMapping(UUID tenantId, UUID actorId,
                                             ExternalObjectMappingWrite value) {
         if (value == null) throw new IllegalArgumentException("external object mapping is required");
@@ -783,30 +797,49 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
     private ExternalObjectMappingEntity findActiveMappingRow(UUID tenantId, UUID connectorId,
                                                              String sourceObjectType,
                                                              String sourceObjectId) {
-        QueryWrapper<ExternalObjectMappingEntity> query = mappingQuery(tenantId, connectorId,
-                sourceObjectType, sourceObjectId)
-                .eq("mapping_status", "ACTIVE")
-                .isNull("deleted_at")
-                .orderByDesc("updated_at")
-                .last("LIMIT 1");
-        return first(externalObjectMappingMapper.selectList(query));
+        QueryWrapper<ExternalObjectMappingEntity> query = activeMappingScope(tenantId, connectorId,
+                sourceObjectType)
+                .eq("source_object_id", sourceObjectId)
+                .orderByDesc("updated_at");
+        return unambiguousMapping(externalObjectMappingMapper.selectList(query));
     }
 
     private ExternalObjectMappingEntity findActiveMappingBySourceNo(UUID tenantId, UUID connectorId,
                                                                     String sourceObjectType,
                                                                     String sourceObjectNo) {
-        QueryWrapper<ExternalObjectMappingEntity> query = Wrappers.<ExternalObjectMappingEntity>query()
+        QueryWrapper<ExternalObjectMappingEntity> query = activeMappingScope(tenantId, connectorId,
+                sourceObjectType)
+                .eq("source_object_no", sourceObjectNo)
+                .orderByDesc("updated_at");
+        return unambiguousMapping(externalObjectMappingMapper.selectList(query));
+    }
+
+    private QueryWrapper<ExternalObjectMappingEntity> activeMappingScope(
+            UUID tenantId, UUID connectorId, String objectType) {
+        // 历史领域同步曾使用展示码DINGHUOBAO；两种已知编码仍属于同一订货宝来源。
+        // 只兼容读取，不改历史、放宽租户/连接边界或根据名称猜测业务对象。
+        return Wrappers.<ExternalObjectMappingEntity>query()
                 .eq("tenant_id", bin(tenantId))
                 .eq(connectorId != null, "connector_id", bin(connectorId))
                 .isNull(connectorId == null, "connector_id")
-                .eq("source_system", SOURCE_SYSTEM)
-                .eq("source_object_type", sourceObjectType)
-                .eq("source_object_no", sourceObjectNo)
+                .in("source_system", SOURCE_SYSTEM, ExternalSourceCodes.DOMAIN_DINGHUOBAO)
+                .eq("source_object_type", objectType)
                 .eq("mapping_status", "ACTIVE")
-                .isNull("deleted_at")
-                .orderByDesc("updated_at")
-                .last("LIMIT 1");
-        return first(externalObjectMappingMapper.selectList(query));
+                .isNull("deleted_at");
+    }
+
+    private ExternalObjectMappingEntity unambiguousMapping(List<ExternalObjectMappingEntity> rows) {
+        if (rows.isEmpty()) return null;
+        var row = rows.getFirst();
+        if (rows.stream().anyMatch(other ->
+                !java.util.Objects.equals(row.internalDomain, other.internalDomain)
+                        || !java.util.Objects.equals(row.internalObjectType, other.internalObjectType)
+                        || !java.util.Objects.equals(row.internalObjectId, other.internalObjectId)
+                        || row.internalObjectId == null
+                            && !java.util.Objects.equals(row.internalObjectNo, other.internalObjectNo)))
+            throw new BusinessException(ErrorCode.CONFLICT,
+                    "同一订货宝来源存在不同的本系统关联，请核对来源关联后重试", List.of());
+        return row;
     }
 
     private ExternalObjectMappingEntity findMappingRow(UUID tenantId, UUID connectorId,

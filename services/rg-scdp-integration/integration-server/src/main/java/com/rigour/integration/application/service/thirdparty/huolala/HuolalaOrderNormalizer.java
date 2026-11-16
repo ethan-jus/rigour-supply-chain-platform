@@ -144,6 +144,22 @@ public final class HuolalaOrderNormalizer {
         raw.put("司机", detail.path("driver_info").path("name").asText(""));
         raw.put("司机联系电话", detail.path("driver_info").path("phone_no").asText(""));
         raw.put("车牌号", detail.path("driver_info").path("license_plate").asText(""));
+        // 只投影明确的业务字段；技术标识、原始资源URL及扩展字段留在Integration来源回执。
+        raw.put("下单联系人", item.path("contact_name").asText(""));
+        raw.put("下单联系电话", item.path("contact_phone_no").asText(""));
+        raw.put("支付方式", paymentType(integer(item, "pay_type")));
+        raw.put("发票状态", invoiceStatus(integer(item, "invoice_status")));
+        raw.put("可开票金额（元）", decimal(cents(item, "invoice_amount")));
+        raw.put("规划里程（公里）", kilometers(item.path("total_distance")));
+        raw.put("实际行驶里程（公里）", kilometers(HuolalaEvidence.detailField(detail, "total_meter")));
+        raw.put("运输进度", HuolalaEvidence.detailField(detail, "progress_str").asText(""));
+        raw.put(
+                "服务产品",
+                HuolalaEvidence.detailField(detail, "commodity_info")
+                        .path("commodity_display_name")
+                        .asText(""));
+        var insurance = HuolalaEvidence.detailField(detail, "insurance_price_info");
+        raw.put("保价状态", insurance.path("insurance_status_desc").asText(""));
         String label =
                 switch (status) {
                     case 0 -> "匹配中";
@@ -201,6 +217,43 @@ public final class HuolalaOrderNormalizer {
     private static Integer integer(JsonNode node, String field) {
         var value = node.path(field);
         return value.isIntegralNumber() && value.canConvertToInt() ? value.intValue() : null;
+    }
+
+    private static String decimal(BigDecimal value) {
+        return value == null ? "" : value.toPlainString();
+    }
+
+    private static String kilometers(JsonNode meters) {
+        // 规划、实际里程都以米返回，未知值和不合法的负数不能补成0公里。
+        if (!meters.isNumber() || meters.decimalValue().signum() < 0) return "";
+        return meters.decimalValue().movePointLeft(3).stripTrailingZeros().toPlainString();
+    }
+
+    private static String paymentType(Integer code) {
+        if (code == null) return "";
+        return switch (code) {
+            case 0 -> "到付";
+            case 1 -> "微信支付";
+            case 2 -> "支付宝";
+            case 3 -> "企业账户余额支付";
+            case 8 -> "月结账期支付";
+            case 11 -> "共享账期";
+            default -> "待核对";
+        };
+    }
+
+    private static String invoiceStatus(Integer code) {
+        if (code == null) return "";
+        return switch (code) {
+            case 0 -> "未到开票阶段";
+            case 1 -> "不可开票";
+            case 2 -> "可开票";
+            case 3 -> "已开票";
+            case 4 -> "待结清";
+            case 5 -> "开票中";
+            case 6 -> "开票失败";
+            default -> "待核对";
+        };
     }
 
     public static String fingerprint(CarrierOrder order, ObjectMapper json) {

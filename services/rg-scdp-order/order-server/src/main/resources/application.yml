@@ -14,7 +14,7 @@ spring:
     multipart:
       # 发票附件单文件上限略高于业务校验（10MB），让超限返回业务错误而不是框架错误。
       max-file-size: ${RIGOUR_ORDER_INVOICE_MAX_FILE_SIZE:12MB}
-      max-request-size: ${RIGOUR_ORDER_INVOICE_MAX_REQUEST_SIZE:60MB}
+      max-request-size: ${RIGOUR_ORDER_MAX_REQUEST_SIZE:${RIGOUR_ORDER_INVOICE_MAX_REQUEST_SIZE:210MB}}
 
 management:
   endpoints:

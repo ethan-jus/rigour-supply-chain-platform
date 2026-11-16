@@ -458,6 +458,13 @@ public final class OrderSalesOrderService {
         return result;
     }
 
+    /** 物流关联只需要授权范围内的原单快照，不解析无关的收款凭证链接和显示名称。 */
+    public SalesOrderDetailView salesOrderForLogistics(Long id) {
+        CallerIdentity caller = actor(READ_PERMISSION);
+        return store.salesOrder(caller.tenantId().toString(), requireId(id, "销售订单ID无效"))
+                .orElseThrow(() -> notFound("销售订单不存在"));
+    }
+
     public SalesOrderDetailView create(SalesOrderCommand command) {
         CallerIdentity actor = action("order:create");
         String tenantId = actor.tenantId().toString();
@@ -484,10 +491,7 @@ public final class OrderSalesOrderService {
         return created;
     }
 
-    /**
-     * 订货宝订单号是外部业务身份，必须保留来源值（包括前导零），不能在第一次投影时换成内部编码。
-     * 其他订单仍使用既有内部编码规则；历史订单不会通过这里批量改号。
-     */
+    /** 订货宝订单号是外部业务身份，必须保留来源值（包括前导零），不能在第一次投影时换成内部编码。 其他订单仍使用既有内部编码规则；历史订单不会通过这里批量改号。 */
     private String sourceOrderNoOrGenerated(
             String tenantId, SalesOrderCommand command, SalesOrderWrite normalized) {
         if (SOURCE_SYSTEM_DINGHUOBAO.equalsIgnoreCase(normalized.sourceSystemCode())) {
@@ -664,7 +668,8 @@ public final class OrderSalesOrderService {
         updated = withDetailEnrichment(actor, updated);
         log.info(
                 "Order销售订单来源投影资料更新完成 tenantId={} salesOrderId={} orderNo={} sourceStatusCode={}"
-                        + " sourceCreatorName={} ownerEmployeeCode={} regionCode={} revision={} actorId={}",
+                    + " sourceCreatorName={} ownerEmployeeCode={} regionCode={} revision={}"
+                    + " actorId={}",
                 tenantId,
                 updated.id(),
                 updated.orderNo(),
@@ -1128,8 +1133,12 @@ public final class OrderSalesOrderService {
         if (command == null) throw badRequest("销售订单参数不能为空");
         checkRevision(command.revision(), update);
         String sourceSystemCode = code(command.sourceSystemCode(), "sourceSystemCode", false);
-        List<SalesOrderLineWrite> lines = lines(command.lines(), allowIncompleteFeishuOrder,
-                serviceCaller(AuthorizationContext.requireCurrent()) && externalSource(sourceSystemCode));
+        List<SalesOrderLineWrite> lines =
+                lines(
+                        command.lines(),
+                        allowIncompleteFeishuOrder,
+                        serviceCaller(AuthorizationContext.requireCurrent())
+                                && externalSource(sourceSystemCode));
         BigDecimal totalQuantity =
                 lines.stream().map(SalesOrderLineWrite::quantity).reduce(ZERO, BigDecimal::add);
         BigDecimal originalAmount =
@@ -1293,7 +1302,8 @@ public final class OrderSalesOrderService {
     }
 
     private List<SalesOrderLineWrite> lines(
-            List<SalesOrderLineCommand> source, boolean allowIncompleteFeishuOrder,
+            List<SalesOrderLineCommand> source,
+            boolean allowIncompleteFeishuOrder,
             boolean preserveSourceLines) {
         if (source == null || source.isEmpty()) {
             if (allowIncompleteFeishuOrder) return List.of();
@@ -1325,7 +1335,8 @@ public final class OrderSalesOrderService {
                             ? productId + "::" + variantId
                             : "INCOMPLETE::" + result.size();
             // 来源单可按不同价格/赠品拆成同SKU多行，不能合并后改变真实数量和单价。
-            if (!duplicateGuard.add(duplicateKey) && !preserveSourceLines) throw badRequest("销售订单明细商品规格不能重复");
+            if (!duplicateGuard.add(duplicateKey) && !preserveSourceLines)
+                throw badRequest("销售订单明细商品规格不能重复");
             BigDecimal quantity = positive(item.quantity(), "quantity");
             BigDecimal unitPrice = money(item.unitPrice(), "unitPrice");
             BigDecimal originalLineAmount = quantity.multiply(unitPrice);
@@ -1532,10 +1543,14 @@ public final class OrderSalesOrderService {
         return normalized;
     }
 
-    private static String initialOrderStatus(String sourceSystem, String sourceStatus, Boolean submit) {
+    private static String initialOrderStatus(
+            String sourceSystem, String sourceStatus, Boolean submit) {
         String imported = dhbOrderStatus(sourceSystem, sourceStatus);
-        return imported != null ? imported : Boolean.TRUE.equals(submit)
-                ? SalesOrderStatus.SUBMITTED.code() : SalesOrderStatus.DRAFT.code();
+        return imported != null
+                ? imported
+                : Boolean.TRUE.equals(submit)
+                        ? SalesOrderStatus.SUBMITTED.code()
+                        : SalesOrderStatus.DRAFT.code();
     }
 
     private static String syncedOrderStatus(SalesOrderDetailView current, String sourceStatus) {
@@ -1548,12 +1563,15 @@ public final class OrderSalesOrderService {
     }
 
     private static String dhbOrderStatus(String sourceSystem, String sourceStatus) {
-        if (!SOURCE_SYSTEM_DINGHUOBAO.equalsIgnoreCase(sourceSystem) || sourceStatus == null) return null;
+        if (!SOURCE_SYSTEM_DINGHUOBAO.equalsIgnoreCase(sourceSystem) || sourceStatus == null)
+            return null;
         // 当前订货宝承担实际业务流程，完成依据来自来源单，不要求补建我方发货/签收。
         return switch (sourceStatus.trim().toUpperCase(Locale.ROOT)) {
             case "PENDING_PRICING", "PENDING_REVIEW" -> SalesOrderStatus.DRAFT.code();
-            case "PENDING_OUTBOUND", "PENDING_SHIPPED", "RECEIVED" -> SalesOrderStatus.SUBMITTED.code();
-            case "COMPLETED", "FINISHED", "FORCE_COMPLETED", "RETURNED" -> SalesOrderStatus.COMPLETED.code();
+            case "PENDING_OUTBOUND", "PENDING_SHIPPED", "RECEIVED" ->
+                    SalesOrderStatus.SUBMITTED.code();
+            case "COMPLETED", "FINISHED", "FORCE_COMPLETED", "RETURNED" ->
+                    SalesOrderStatus.COMPLETED.code();
             default -> null;
         };
     }

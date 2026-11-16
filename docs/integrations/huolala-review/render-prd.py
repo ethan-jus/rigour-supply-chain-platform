@@ -2,14 +2,19 @@
 from pathlib import Path
 import html
 import re
+import argparse
 
 root = Path(__file__).parent
-lines = (root / '产品需求文档.md').read_text().splitlines()
+parser = argparse.ArgumentParser()
+parser.add_argument('--input', default='产品需求文档.md')
+parser.add_argument('--output', default='ui/public/prd.html')
+args = parser.parse_args()
+lines = (root / args.input).read_text().splitlines()
 
 def inline(value):
     value = html.escape(value)
     value = re.sub(r'`([^`]+)`', r'<code>\1</code>', value)
-    return re.sub(r'\[([^\]]+)\]\((https://[^\s)]+)\)',
+    return re.sub(r'\[([^\]]+)\]\(((?:https?://|/)[^\s)]+)\)',
                   r'<a href="\2" target="_blank" rel="noopener">\1</a>', value)
 
 output, toc = [], []
@@ -58,4 +63,4 @@ head = re.sub(r'<title>.*?</title>', '<title>' + html.escape(title) + '</title>'
 page = (head + '<nav><strong>产品需求文档</strong>' + ''.join(toc) + '</nav><article>'
         + '<button class="print" onclick="window.print()">打印／保存 PDF</button>'
         + ''.join(output) + '</article></html>')
-existing.write_text(page)
+(root / args.output).write_text(page)

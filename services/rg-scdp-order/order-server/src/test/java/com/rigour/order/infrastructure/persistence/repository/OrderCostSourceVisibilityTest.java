@@ -22,6 +22,7 @@ class OrderCostSourceVisibilityTest {
     SingleConnectionDataSource ds;
     MybatisPlusOrderCostSourceRepository store;
     LogisticsWarehouseDataScope scope;
+    MybatisOrderLedgerSourceStore batchStore;
 
     @BeforeEach
     void setup() {
@@ -31,9 +32,9 @@ class OrderCostSourceVisibilityTest {
         var jdbc = new JdbcTemplate(ds);
         jdbc.execute(
                 "CREATE TABLE order_sales_order(id BIGINT,tenant_id VARCHAR,deleted"
-                    + " INT,order_status_code VARCHAR,selected_warehouse_id BIGINT,region_code"
-                    + " VARCHAR,order_no VARCHAR,customer_name_snapshot VARCHAR,source_order_no"
-                    + " VARCHAR)");
+                        + " INT,order_status_code VARCHAR,selected_warehouse_id BIGINT,region_code"
+                        + " VARCHAR,order_no VARCHAR,customer_name_snapshot VARCHAR,source_order_no"
+                        + " VARCHAR)");
         jdbc.execute(
                 "INSERT INTO order_sales_order VALUES"
                     + " (1,'T1',0,'COMPLETED',NULL,'C1','S1','客户','D1'),(2,'T1',0,'COMPLETED',7,'C1','S2','客户','D2'),(3,'T2',0,'COMPLETED',NULL,'C1','S3','客户','D3'),(4,'T1',0,'CANCELLED',NULL,'C1','S4','客户','D4'),(5,'T1',0,'COMPLETED',NULL,'C2','S5','客户','D5')");
@@ -70,6 +71,9 @@ class OrderCostSourceVisibilityTest {
                                     .toList();
                         });
         store = new MybatisPlusOrderCostSourceRepository(mapper, scope);
+        batchStore =
+                new MybatisOrderLedgerSourceStore(
+                        mapper, scope, mock(MybatisPlusOrderLogisticsCostRepository.class));
     }
 
     @AfterEach
@@ -94,5 +98,31 @@ class OrderCostSourceVisibilityTest {
                 .extracting(OrderDeliveryCostSourceView::id)
                 .containsExactly(2L);
         assertThat(store.deliveries("T1", "", List.of(1L), "C1", 0, "cost:read")).isEmpty();
+    }
+
+    @Test
+    void exactBatchKeepsTenantCityStatusAndWarehouseScopeIncludingHistoricalRead() {
+        doAnswer(
+                        call -> {
+                            QueryWrapper<?> q = call.getArgument(0);
+                            q.eq("o.region_code", "C1");
+                            return null;
+                        })
+                .when(scope)
+                .applyCity(any(), eq("cost:read"), eq("o.region_code"));
+        var codes = List.of("S1", "S2", "S3", "S4", "S5");
+        assertThat(batchStore.salesByNos("T1", codes, "cost:read", false))
+                .extracting(OrderDeliveryCostSourceView::id)
+                .containsExactly(1L, 2L);
+        assertThat(batchStore.salesByNos("T1", codes, "cost:read", true))
+                .extracting(OrderDeliveryCostSourceView::id)
+                .containsExactly(1L, 2L, 4L);
+        when(scope.predicate(anyString(), any(String[].class)))
+                .thenReturn(
+                        new LogisticsWarehouseDataScope.Predicate(
+                                "o.selected_warehouse_id=?", List.of(7L)));
+        assertThat(batchStore.salesByNos("T1", codes, "cost:read", false))
+                .extracting(OrderDeliveryCostSourceView::id)
+                .containsExactly(2L);
     }
 }

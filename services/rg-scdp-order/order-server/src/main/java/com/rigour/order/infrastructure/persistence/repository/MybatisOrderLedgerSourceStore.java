@@ -29,6 +29,19 @@ public class MybatisOrderLedgerSourceStore implements OrderLedgerSourceStore {
         return costs.sourceUsage(tenant, documentNos, action);
     }
 
+    public List<String> visibleSalesNos(String tenant, List<String> documentNos, String action) {
+        if (documentNos.isEmpty()) return List.of();
+        var q =
+                new QueryWrapper<Object>()
+                        .eq("o.tenant_id", tenant)
+                        .eq("o.deleted", 0)
+                        .in("o.order_no", documentNos);
+        var p = scope.predicate(action, "o.selected_warehouse_id");
+        MybatisPlusOrderLogisticsCostRepository.bind(q, p.sql(), p.args());
+        scope.applyCity(q, action, "o.region_code");
+        return mapper.deliveries(q).stream().map(OrderDeliveryCostSourceView::documentNo).toList();
+    }
+
     public List<OrderDeliveryCostSourceView> sales(
             String tenant, LogisticsLedgerSourceQuery f, String action, Long warehouseId) {
         var q =
@@ -70,6 +83,21 @@ public class MybatisOrderLedgerSourceStore implements OrderLedgerSourceStore {
                 f.dateTo() == null ? null : f.dateTo().plusDays(1).atStartOfDay().minusHours(8));
         return mapper.deliveries(
                 q.orderByDesc("o.id").last("LIMIT 50 OFFSET " + Math.max(0, f.begin())));
+    }
+
+    public List<OrderDeliveryCostSourceView> salesByNos(
+            String tenant, List<String> documentNos, String action, boolean historical) {
+        if (documentNos.isEmpty()) return List.of();
+        var q =
+                new QueryWrapper<Object>()
+                        .eq("o.tenant_id", tenant)
+                        .eq("o.deleted", 0)
+                        .notIn(!historical, "o.order_status_code", "DRAFT", "CANCELLED", "DELETED")
+                        .in("o.order_no", documentNos);
+        var predicate = scope.predicate(action, "o.selected_warehouse_id");
+        MybatisPlusOrderLogisticsCostRepository.bind(q, predicate.sql(), predicate.args());
+        scope.applyCity(q, action, "o.region_code");
+        return mapper.deliveries(q.orderByAsc("o.order_no"));
     }
 
     private static boolean text(String v) {
