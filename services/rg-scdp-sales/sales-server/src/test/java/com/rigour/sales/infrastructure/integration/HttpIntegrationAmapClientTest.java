@@ -82,4 +82,17 @@ class HttpIntegrationAmapClientTest {
                         e -> assertThat(e.reason()).isEqualTo("AMAP_IP_NOT_ALLOWED"))
                 .hasMessageNotContaining("private");
     }
+
+    @Test void gpsConversionUsesSignedServiceContract() {
+        body = """
+                {"code":"OK","data":{"longitude":120.104,"latitude":30.202,"coordinateSystem":"GCJ02"}}
+                """;
+        var point=client.convertGps(new BigDecimal("120.1"),new BigDecimal("30.2"));
+        assertThat(point.coordinateSystem()).isEqualTo("GCJ02");
+        assertThat(point.longitude()).isEqualByComparingTo("120.104");
+        assertThat(signer.verify(request)).isTrue();
+        assertThat(request.getRequestURI()).endsWith("/coordinates/gps");
+        assertThat(request.getHeader(RequestHeaders.PRINCIPAL_SCOPE)).isEqualTo("SERVICE");
+        assertThat(request.getQueryString()).doesNotContain("key=");
+    }
 }

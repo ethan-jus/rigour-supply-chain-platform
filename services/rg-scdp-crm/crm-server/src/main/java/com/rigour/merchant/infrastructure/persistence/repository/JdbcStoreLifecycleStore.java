@@ -18,6 +18,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class JdbcStoreLifecycleStore implements StoreLifecycleStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private static final String CYCLES = "SELECT o.*,p.first_visit_hours,p.followup_days,p.cooperating_days,p.return_cooldown_hours FROM crm_store_ownership o JOIN crm_pool_policy p ON p.tenant_id=o.tenant_id AND p.id=o.policy_id";
     private final JdbcTemplate jdbc;
     public JdbcStoreLifecycleStore(JdbcTemplate jdbc) { this.jdbc=jdbc; }
@@ -38,6 +41,7 @@ public class JdbcStoreLifecycleStore implements StoreLifecycleStore {
     }
     private RefreshResult stale(Cycle c) { return new RefreshResult(c.id(),"RETRY",null,null,null); }
     @Override @Transactional public RefreshResult hold(Cycle c,Instant now) {
+        queryCache.changed(c.tenant());
         if(!unchanged(c))return stale(c);
         return setHold(c,now,"SOURCE_UNAVAILABLE");
     }
@@ -48,6 +52,7 @@ public class JdbcStoreLifecycleStore implements StoreLifecycleStore {
         return new RefreshResult(c.id(),"HOLD",null,c.deadline(),reason);
     }
     @Override @Transactional public RefreshResult reconcile(Cycle c,StoreOrderFacts facts,Instant now) {
+        queryCache.changed(c.tenant());
         if(!unchanged(c))return stale(c);
         if(!c.tenant().equals(facts.tenantId())||!c.storeId().equals(facts.storeId())||!c.id().equals(facts.ownershipId()))throw new IllegalArgumentException("订单事实范围错误");
         var before=visibleState(c);

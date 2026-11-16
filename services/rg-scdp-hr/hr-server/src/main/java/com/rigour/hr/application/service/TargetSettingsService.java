@@ -191,6 +191,26 @@ public class TargetSettingsService {
                 false);
     }
 
+    /** 个人工作台仅接收指定员工的整单付清目标；默认值仍由 HR 的入职阶段规则决定。 */
+    @Transactional(readOnly = true)
+    public BigDecimal performanceValue(String employee, String from, String to) {
+        var actor = AuthorizationContext.requireCurrent();
+        if (!"SERVICE".equals(actor.principalScope()) || actor.tenantId() == null)
+            throw new AuthorizationDeniedException("service-target-reader");
+        AuthorizationContext.requirePermission("hr:targets:service-read");
+        var start = month(from);
+        var end = month(to);
+        if (employee == null || employee.isBlank() || employee.length() > 80
+                || end.isBefore(start) || java.time.temporal.ChronoUnit.MONTHS.between(start, end) > 11)
+            throw invalid("业绩目标查询条件无效");
+        String tenant = actor.tenantId().toString();
+        var subject = store.subjects(tenant).stream()
+                .filter(s -> "SALES_OWNER".equals(s.dimensionType()) && employee.equals(s.code()))
+                .findFirst().orElseThrow(() -> invalid("业绩目标员工不存在"));
+        return effective(tenant, from, to, List.of(subject), Set.of("FULLY_PAID_RECEIPT_BASIS"), true)
+                .stream().map(Target::value).reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
     private List<Target> effective(
             String tenant,
             String from,

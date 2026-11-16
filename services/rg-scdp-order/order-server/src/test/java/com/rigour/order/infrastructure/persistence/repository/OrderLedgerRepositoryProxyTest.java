@@ -31,7 +31,8 @@ class OrderLedgerRepositoryProxyTest {
         var jdbc = mock(JdbcTemplate.class);
         when(jdbc.queryForObject(
                         "SELECT COUNT(*) FROM order_logistics_cost WHERE tenant_id=? AND"
-                                + " carrier_code='HLL' AND tracking_no=?",
+                                + " carrier_code='HLL' AND"
+                                + " JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo'))=?",
                         Long.class,
                         "T1",
                         "HL000001"))

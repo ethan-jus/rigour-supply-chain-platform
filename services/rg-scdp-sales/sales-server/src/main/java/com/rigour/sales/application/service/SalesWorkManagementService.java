@@ -57,6 +57,7 @@ public class SalesWorkManagementService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final StoreVisitCaptureService captures;
+    private final SalesFieldworkService fieldwork;
 
     public SalesWorkManagementService(SalesWorkManagementRepository repository,
                                       SalesWorkRecordingRepository recordingRepository,
@@ -65,7 +66,7 @@ public class SalesWorkManagementService {
                                       OutboxStore outboxStore,
                                       AuditSink auditSink,
                                       ObjectMapper objectMapper,
-                                      Clock clock, StoreVisitCaptureService captures) {
+                                      Clock clock, StoreVisitCaptureService captures, SalesFieldworkService fieldwork) {
         this.repository = repository;
         this.recordingRepository = recordingRepository;
         this.evidenceRepository = evidenceRepository;
@@ -75,19 +76,21 @@ public class SalesWorkManagementService {
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.captures = captures;
+        this.fieldwork = fieldwork;
     }
 
     public ManagementDashboardView dashboard(LocalDate from, LocalDate to) {
         CallerIdentity caller = SalesWorkContextService.requireTenantCaller();
         AuthorizationContext.requirePermission("sales:dashboard:read");
         validateRange(from, to);
-        var row = repository.totals(caller.tenantId(), from, to);
+        var scope = fieldwork.access("sales:dashboard:read");
+        var row = repository.totals(caller.tenantId(), from, to, scope);
         var totals = new ManagementDashboardTotals(row.activeSalesCount(), row.attendedSalesCount(),
                 row.workingSalesCount(), row.finishedWorkDayCount(), row.totalInterruptionCount(),
                 row.totalVisitCount(), row.completedVisitCount(), row.effectiveVisitCount(),
                 row.pendingReviewVisitCount(), row.firstVisitCount(), row.revisitCount(),
                 row.uniqueStoreCount(), row.assignedStoreCount());
-        List<SalesPersonActivityView> people = repository.people(caller.tenantId(), from, to).stream()
+        List<SalesPersonActivityView> people = repository.people(caller.tenantId(), from, to, scope).stream()
                 .map(person -> new SalesPersonActivityView(person.salesProfileId(), person.employeeId(),
                         person.salesNo(), person.working(), person.workDayCount(), person.totalVisitCount(),
                         person.completedVisitCount(), person.effectiveVisitCount(),
@@ -105,8 +108,9 @@ public class SalesWorkManagementService {
             throw invalid("分页参数无效");
         }
         int offset = Math.multiplyExact(page - 1, pageSize);
+        var scope = fieldwork.access("sales:visit:review");
         List<VisitReviewQueueItemView> items = repository
-                .reviewQueue(caller.tenantId(), from, to, pageSize, offset).stream()
+                .reviewQueue(caller.tenantId(), from, to, scope, pageSize, offset).stream()
                 .map(row -> new VisitReviewQueueItemView(row.visitId(), row.salesProfileId(),
                         row.salesNo(), row.storeName(), row.checkedInAt(), row.checkedOutAt(),
                         row.dwellMinutes(), row.minimumDwellMinutes(), row.uploadedRecordingSeconds(),
@@ -116,12 +120,13 @@ public class SalesWorkManagementService {
                         row.visitType(), row.anomalyCodes()))
                 .toList();
         return new VisitReviewQueueView(from, to, items, page, pageSize,
-                repository.countReviewQueue(caller.tenantId(), from, to));
+                repository.countReviewQueue(caller.tenantId(), from, to, scope));
     }
 
     public ManagementRecordingSessionView reviewRecordings(UUID visitId) {
         CallerIdentity caller = SalesWorkContextService.requireTenantCaller();
         AuthorizationContext.requirePermission("sales:recording:sensitive:play");
+        fieldwork.requireVisit(visitId, "sales:recording:sensitive:play");
         requireReviewTarget(caller, visitId);
         var session = recordingRepository.findSession(caller.tenantId(), visitId);
         if (session.isEmpty()) {
@@ -139,6 +144,7 @@ public class SalesWorkManagementService {
     public RecordingContent reviewRecordingClip(UUID visitId, UUID clipId) {
         CallerIdentity caller = SalesWorkContextService.requireTenantCaller();
         AuthorizationContext.requirePermission("sales:recording:sensitive:play");
+        fieldwork.requireVisit(visitId, "sales:recording:sensitive:play");
         requireReviewTarget(caller, visitId);
         if (clipId == null) throw invalid("录音片段不能为空");
         var session = recordingRepository.findSession(caller.tenantId(), visitId)
@@ -166,6 +172,7 @@ public class SalesWorkManagementService {
     public ManagementVisitEvidenceView reviewEvidence(UUID visitId) {
         CallerIdentity caller = SalesWorkContextService.requireTenantCaller();
         AuthorizationContext.requirePermission("sales:evidence:sensitive:read");
+        fieldwork.requireVisit(visitId, "sales:evidence:sensitive:read");
         requireReviewTarget(caller, visitId);
         var assessment = repository.findVisitAssessment(caller.tenantId(), visitId)
                 .orElseThrow(() -> invalid("拜访证据规则不存在"));
@@ -181,6 +188,7 @@ public class SalesWorkManagementService {
     public EvidenceContent reviewEvidencePhoto(UUID visitId, UUID evidenceId) {
         CallerIdentity caller = SalesWorkContextService.requireTenantCaller();
         AuthorizationContext.requirePermission("sales:evidence:sensitive:read");
+        fieldwork.requireVisit(visitId, "sales:evidence:sensitive:read");
         requireReviewTarget(caller, visitId);
         if (evidenceId == null) throw invalid("照片证据不能为空");
         var photo = evidenceRepository.findStorefrontPhotos(caller.tenantId(), visitId).stream()
@@ -213,6 +221,7 @@ public class SalesWorkManagementService {
         CallerIdentity caller = SalesWorkContextService.requireTenantCaller();
         AuthorizationContext.requirePermission("sales:visit:review");
         if (visitId == null || command == null) throw invalid("复核请求无效");
+        fieldwork.requireVisit(visitId, "sales:visit:review");
         if (repository.isCrmCapture(caller.tenantId(), visitId)) throw invalid("新门店拜访请在 CRM 中核验");
         String decision = required(command.decision(), "decision", 24).toUpperCase(Locale.ROOT);
         if (!Set.of("EFFECTIVE", "INEFFECTIVE").contains(decision)) {

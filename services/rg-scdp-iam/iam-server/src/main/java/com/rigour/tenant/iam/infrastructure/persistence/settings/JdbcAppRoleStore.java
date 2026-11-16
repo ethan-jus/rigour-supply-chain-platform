@@ -7,6 +7,7 @@ import com.rigour.shared.core.exception.StateConflictException;
 import com.rigour.tenant.iam.application.port.out.AppRoleStore;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
 import com.rigour.tenant.iam.application.service.settings.AppAccessModels.*;
+import com.rigour.tenant.iam.application.model.settings.AppAuthorizationRole;
 import com.rigour.tenant.iam.application.service.settings.AppGrantDeniedException;
 import com.rigour.tenant.iam.application.service.settings.RoleDataScopes;
 import com.rigour.tenant.iam.domain.model.settings.AppMenuTree;
@@ -32,6 +33,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
     private final TransactionTemplate tx;
     private final AppReferenceValidator references;
     private final com.rigour.tenant.iam.application.port.out.AppEmployeeClient employees;
+    private final VersionedIamReadCache<JdbcAppSettingsStore.AuthorizationKey, List<AppAuthorizationRole>> authorizationCache = new VersionedIamReadCache<>();
 
     public JdbcAppRoleStore(
             JdbcTemplate jdbc,
@@ -106,6 +108,41 @@ public class JdbcAppRoleStore implements AppRoleStore {
                 },
                 tenant(a),
                 app());
+    }
+
+    public List<AppAuthorizationRole> authorizationRoles(Actor actor) {
+        return settings.authorizationDefinition(actor, authorizationCache, () -> loadAuthorizationRoles(actor));
+    }
+
+    private List<AppAuthorizationRole> loadAuthorizationRoles(Actor actor) {
+        record Definition(UUID id, String status, RoleDataScope scope) {}
+        // Collect rows before loading grants; never borrow a second connection inside a RowMapper.
+        var definitions = jdbc.query("""
+                SELECT mr.role_id,r.status,r.data_scope_mode,r.data_scope_departments
+                  FROM iam_app_member_role mr LEFT JOIN iam_app_role r
+                    ON r.tenant_id=mr.tenant_id AND r.application_id=mr.application_id
+                   AND r.id=mr.role_id AND r.deleted_at IS NULL
+                 WHERE mr.tenant_id=? AND mr.application_id=? AND mr.user_id=? ORDER BY mr.role_id
+                """, (rs, row) -> {
+            if (rs.getString("status") == null) throw new RequestValidationException("角色不存在");
+            String departments = rs.getString("data_scope_departments");
+            var scope = new RoleDataScope(rs.getString("data_scope_mode"),
+                    tools.jackson.databind.json.JsonMapper.builder().build().readValue(
+                            departments == null ? "[]" : departments,
+                            new tools.jackson.core.type.TypeReference<List<String>>() {}));
+            return new Definition(UuidBinaryCodec.decode(rs.getBytes("role_id")), rs.getString("status"), scope);
+        }, tenant(actor), app(), bin(actor.principalId()));
+        var grants = new HashMap<UUID, Set<UUID>>();
+        jdbc.query("""
+                SELECT g.role_id,g.menu_node_id FROM iam_app_role_grant g JOIN iam_app_member_role mr
+                  ON mr.tenant_id=g.tenant_id AND mr.application_id=g.application_id AND mr.role_id=g.role_id
+                 WHERE mr.tenant_id=? AND mr.application_id=? AND mr.user_id=?
+                """, (org.springframework.jdbc.core.RowCallbackHandler) rs ->
+                grants.computeIfAbsent(UuidBinaryCodec.decode(rs.getBytes("role_id")), ignored -> new HashSet<>())
+                        .add(UuidBinaryCodec.decode(rs.getBytes("menu_node_id"))),
+                tenant(actor), app(), bin(actor.principalId()));
+        return definitions.stream().map(role -> new AppAuthorizationRole(role.id(), role.status(),
+                grants.getOrDefault(role.id(), Set.of()), role.scope())).toList();
     }
 
     public Role role(Actor a, UUID id) {

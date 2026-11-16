@@ -11,6 +11,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.List;
 
 @Service
 public class SalesDashboardService {
@@ -32,6 +33,31 @@ public class SalesDashboardService {
             String customerType,
             Long category,
             String source) {
+        var filter = filter(from, to, region, owner, customerType, category, source);
+        var actor = AuthorizationContext.requireCurrent();
+        var data = store.query(actor.tenantId().toString(), filter);
+        if (data.products().isEmpty()) return data;
+        var urls = images.urls(actor.tenantId().toString(), data.products().stream()
+                .map(SalesDashboardData.Product::productId).distinct().toList());
+        var products = data.products().stream().map(p -> new SalesDashboardData.Product(
+                p.categoryId(), p.category(), p.productId(), p.product(), p.sku(), p.quantity(),
+                p.sales(), p.received(), p.receipts(), p.allocated(), urls.get(p.productId()))).toList();
+        return new SalesDashboardData(data.people(), data.goals(), data.history(), products,
+                data.customers(), data.months(), data.receiptSplit(), data.productSyncedAt(), data.dailyReceipts());
+    }
+
+    public SalesDashboardSummary summary(Instant from, Instant to, String region, String owner,
+            String customerType, Long category, String source, List<String> owners) {
+        var filter = filter(from, to, region, owner, customerType, category, source);
+        if (owners == null || owners.isEmpty() || owners.size() > 1000
+                || owners.stream().anyMatch(c -> c == null || c.isBlank() || c.length() > 128))
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "请选择有效销售", List.of());
+        return store.summary(AuthorizationContext.requireCurrent().tenantId().toString(),
+                filter, owners.stream().distinct().toList());
+    }
+
+    private SupplyDashboardFilter filter(Instant from, Instant to, String region, String owner,
+            String customerType, Long category, String source) {
         var actor = AuthorizationContext.requireCurrent();
         AuthorizationContext.requirePermission("analytics:dashboard:read");
         if (actor.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
@@ -41,23 +67,7 @@ public class SalesDashboardService {
             throw new BusinessException(
                     ErrorCode.BAD_REQUEST, "商品分类请在个人商品分析区域筛选", java.util.List.of());
         var scope = scopes.resolve(region, owner);
-        var data = store.query(
-                actor.tenantId().toString(),
-                new SupplyDashboardFilter(
-                        from,
-                        to,
-                        scope.regionCode(),
-                        scope.ownerStaffCode(),
-                        customerType,
-                        null,
-                        source));
-        if (data.products().isEmpty()) return data;
-        var urls = images.urls(actor.tenantId().toString(), data.products().stream()
-                .map(SalesDashboardData.Product::productId).distinct().toList());
-        var products = data.products().stream().map(p -> new SalesDashboardData.Product(
-                p.categoryId(), p.category(), p.productId(), p.product(), p.sku(), p.quantity(),
-                p.sales(), p.received(), p.receipts(), p.allocated(), urls.get(p.productId()))).toList();
-        return new SalesDashboardData(data.people(), data.goals(), data.history(), products,
-                data.customers(), data.months(), data.receiptSplit(), data.productSyncedAt(), data.dailyReceipts());
+        return new SupplyDashboardFilter(from, to, scope.regionCode(), scope.ownerStaffCode(),
+                customerType, null, source);
     }
 }

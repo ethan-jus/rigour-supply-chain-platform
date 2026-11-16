@@ -7,6 +7,7 @@ import com.rigour.tenant.iam.application.service.identity.CurrentUser;
 public interface IdentityAccessReader {
 
     CurrentUser readCurrentUser(IdentityAccessQuery query);
+    CurrentUser readUserProfile(IdentityAccessQuery query);
     java.util.Set<String> readSupplyRoles(IdentityAccessQuery query);
 
 }

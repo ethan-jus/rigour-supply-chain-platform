@@ -11,6 +11,9 @@ import java.time.ZoneOffset;
 /** 看板商品预计算：整批替换，历史修正/删除也重算；失败保留上一个完整版本。 */
 @Component
 public class BiDashboardProductProjector {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private final JdbcTemplate jdbc;
 
     public BiDashboardProductProjector(JdbcTemplate jdbc) {
@@ -20,6 +23,7 @@ public class BiDashboardProductProjector {
     /** 全量源镜像成功后退役已物理删除的事实，不能仅依赖更新时间水位。 */
     @Transactional
     public void retireMissingFacts(String tenant) {
+        queryCache.changed(tenant);
         for (String[] mapping :
                 new String[][] {
                     {"bi_customer_dim", "customer_id", "bi_source_crm_crm_customer"},
@@ -53,6 +57,7 @@ public class BiDashboardProductProjector {
 
     @Transactional
     public long refresh(String tenant, long runId, Instant syncedAt) {
+        queryCache.changed(tenant);
         var at = LocalDateTime.ofInstant(syncedAt, ZoneOffset.UTC);
         jdbc.update("DELETE FROM bi_dashboard_customer_history WHERE tenant_id=?", tenant);
         jdbc.update(

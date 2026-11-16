@@ -79,6 +79,7 @@ public class SalesWorkRecordingService {
     private final SalesRecordingProperties properties;
     private final AuditSink auditSink;
     private final Clock clock;
+    private final com.rigour.sales.application.port.out.SalesRecordingAnalysisRepository analysis;
 
     public SalesWorkRecordingService(SalesWorkRecordingRepository recordingRepository,
                                      SalesWorkVisitRepository visitRepository,
@@ -89,7 +90,7 @@ public class SalesWorkRecordingService {
                                      FileStorage fileStorage,
                                      SalesRecordingProperties properties,
                                      AuditSink auditSink,
-                                     Clock clock) {
+                                     Clock clock, com.rigour.sales.application.port.out.SalesRecordingAnalysisRepository analysis) {
         this.recordingRepository = recordingRepository;
         this.visitRepository = visitRepository;
         this.queryRepository = queryRepository;
@@ -100,11 +101,18 @@ public class SalesWorkRecordingService {
         this.properties = properties;
         this.auditSink = auditSink;
         this.clock = clock;
+        this.analysis = analysis;
     }
 
     @Transactional
     public RecordingClipView uploadClip(UUID visitId, MultipartFile file, String clientClipId, Long durationMs,
                                         Instant recordedFrom, Instant recordedTo) {
+        return uploadClip(visitId,file,clientClipId,durationMs,recordedFrom,recordedTo,null);
+    }
+
+    @Transactional
+    public RecordingClipView uploadClip(UUID visitId,MultipartFile file,String clientClipId,Long durationMs,
+            Instant recordedFrom,Instant recordedTo,String captureSource) {
         CallerIdentity caller = requireCaller("sales:recording:own:write");
         if (visitId == null || file == null || file.isEmpty()) {
             throw invalid("录音文件不能为空");
@@ -113,7 +121,9 @@ public class SalesWorkRecordingService {
             throw invalid("录音片段超过大小限制 " + properties.getMaxClipBytes() + " 字节");
         }
         String normalizedClientClipId = normalizeClientClipId(clientClipId);
-        validateTiming(durationMs, recordedFrom, recordedTo);
+        if ("FILE_IMPORT".equals(captureSource)) throw invalid("只允许App现场录音");
+        boolean nativeDurationUnknown = "APP_RECORDER".equals(captureSource) && durationMs == null;
+        validateTiming(durationMs, recordedFrom, recordedTo, nativeDurationUnknown);
         Instant receivedAt = clock.instant();
         SalesWorkContextService.SalesIdentity identity = contextService.resolveIdentity(caller, receivedAt);
         VisitSnapshot visit = visitRepository
@@ -122,6 +132,9 @@ public class SalesWorkRecordingService {
         if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status())) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE, "当前拜访状态不允许上传录音", List.of());
         }
+        var visitPolicy=queryRepository.findVisitPolicy(caller.tenantId(),visit.visitPolicyVersionId())
+            .orElseThrow(()->new BusinessException(ErrorCode.SALES_VISIT_POLICY_NOT_FOUND));
+        SalesCapturePolicyChecks.recording(visitPolicy,captureSource);
         if (recordedFrom.isBefore(visit.checkedInAt().minusSeconds(60))) {
             throw invalid("录音开始时间早于本次拜访");
         }
@@ -131,7 +144,7 @@ public class SalesWorkRecordingService {
             throw invalid("录音结束时间超出本次拜访范围");
         }
         long minimumClipDurationMs = minimumClipDurationMs();
-        if (durationMs < minimumClipDurationMs) {
+        if (durationMs != null && durationMs < minimumClipDurationMs) {
             throw invalid("录音片段不足 " + properties.getMinimumClipSeconds() + " 秒，不保存且不计入有效时长");
         }
 
@@ -152,6 +165,20 @@ public class SalesWorkRecordingService {
         }
         Long decodedDurationMs = "VERIFIED".equals(verification.status())
                 ? verification.observedDurationMs() : null;
+        if (nativeDurationUnknown && decodedDurationMs != null && decodedDurationMs < minimumClipDurationMs) {
+            var discarded=recordingRepository.findDiscardByClientId(caller.tenantId(),visitId,normalizedClientClipId);
+            if (discarded.isPresent()) {
+                var row=discarded.get();
+                if (row.clientDurationMs()!=decodedDurationMs || !samePersistedInstant(row.recordedFrom(),recordedFrom)
+                        || !samePersistedInstant(row.recordedTo(),recordedTo)) throw invalid("clientClipId已被不同短录音登记使用");
+            } else {
+                UUID discardId=UUID.nameUUIDFromBytes((caller.tenantId()+":"+visitId+":discard:"+normalizedClientClipId).getBytes(StandardCharsets.UTF_8));
+                recordingRepository.insertDiscard(discardId,caller.tenantId(),visitId,normalizedClientClipId,
+                        decodedDurationMs,recordedFrom,recordedTo,"TOO_SHORT",receivedAt);
+                appendAudit(caller,"SALES_RECORDING_CLIP_DISCARDED_SHORT",visitId,Map.of("clientClipId",normalizedClientClipId,"durationMs",decodedDurationMs.toString(),"reason","DECODED_TOO_SHORT"));
+            }
+            return new RecordingClipView(null,null,normalizedClientClipId,0,0L,decodedDurationMs,"DISCARDED_NOT_STORED",receivedAt);
+        }
         if (decodedDurationMs != null
                 && decodedDurationMs + MINIMUM_CLIP_CODEC_PADDING_TOLERANCE_MS
                 < minimumClipDurationMs) {
@@ -160,14 +187,20 @@ public class SalesWorkRecordingService {
         }
         Long verifiedDurationMs = decodedDurationMs;
         String verifyStatus = "VERIFIED".equals(verification.status()) ? "VERIFIED" : "PENDING";
-        if ("VERIFIED".equals(verifyStatus)
-                && Math.abs(decodedDurationMs - durationMs) > durationVerificationTolerance()) {
-            verifyStatus = "DURATION_MISMATCH";
-            verifiedDurationMs = null;
-        } else if ("VERIFIED".equals(verifyStatus)) {
+        if ("VERIFIED".equals(verifyStatus)) {
             long recordedIntervalMs = Duration.between(recordedFrom, recordedTo).toMillis();
-            verifiedDurationMs = Math.min(decodedDurationMs,
-                    Math.min(durationMs, recordedIntervalMs));
+            // Native onStop supplies a file path, not its duration. Count decoded audio only;
+            // the device's elapsed timer must not turn missing audio into trusted time.
+            boolean durationMismatch = nativeDurationUnknown
+                    ? decodedDurationMs > recordedIntervalMs + durationVerificationTolerance()
+                    : Math.abs(decodedDurationMs - durationMs) > durationVerificationTolerance();
+            if (durationMismatch) {
+                verifyStatus = "DURATION_MISMATCH";
+                verifiedDurationMs = null;
+            } else {
+                verifiedDurationMs = Math.min(decodedDurationMs, nativeDurationUnknown
+                        ? recordedIntervalMs : Math.min(durationMs, recordedIntervalMs));
+            }
         }
         String decodedContentHash = verification.decodedContentHash();
         int maximumClipGapSeconds = queryRepository
@@ -182,7 +215,7 @@ public class SalesWorkRecordingService {
         if (existing.isPresent()) {
             RecordingClipRow row = existing.get();
             if (!Objects.equals(row.sha256(), sha256)
-                    || !Objects.equals(row.clientDurationMs(), durationMs)
+                    || (!nativeDurationUnknown && !Objects.equals(row.clientDurationMs(), durationMs))
                     || !samePersistedInstant(row.recordedFrom(), recordedFrom)
                     || !samePersistedInstant(row.recordedTo(), recordedTo)) {
                 throw invalid("clientClipId已被不同录音内容使用");
@@ -244,6 +277,7 @@ public class SalesWorkRecordingService {
                 durationMs,
                 verifiedDurationMs, verifyStatus,
                 recordedFrom, recordedTo, receivedAt);
+        recordingRepository.recordClipSource(caller.tenantId(),clipId,captureSource);
         recordingRepository.incrementSessionClipCount(caller.tenantId(), sessionId);
         recordingRepository.refreshSessionVerification(
                 caller.tenantId(), sessionId, maximumClipGapSeconds, receivedAt);
@@ -252,9 +286,31 @@ public class SalesWorkRecordingService {
                 "objectSizeBytes", Long.toString(bytes.length),
                 "verifyStatus", verifyStatus));
         if ("CHECKED_OUT".equals(visit.status())) assessmentService.assess(caller, visitId);
+        if (visitPolicy.aiAsrEnabled() && "APP_RECORDER".equals(captureSource)) {
+            analysis.enqueue(caller.tenantId(), visitId, clipId, receivedAt);
+        }
         return new RecordingClipView(clipId, sessionId, normalizedClientClipId,
                 clipIndex, bytes.length, durationMs,
                 "RECEIVED", receivedAt);
+    }
+
+    public record RecordingPlayback(String mediaType, byte[] bytes) {}
+
+    public RecordingPlayback playOwnClip(UUID visitId, UUID clipId) {
+        CallerIdentity caller = requireCaller("sales:recording:own:read");
+        var identity=contextService.resolveIdentity(caller,clock.instant());
+        visitRepository.findVisit(caller.tenantId(),identity.profile().id(),visitId)
+                .orElseThrow(()->new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
+        var recording=recordingRepository.findSession(caller.tenantId(),visitId)
+                .orElseThrow(()->invalid("拜访没有可播放的录音"));
+        var clip=recordingRepository.findClips(caller.tenantId(),recording.id()).stream()
+                .filter(item->item.id().equals(clipId)).findFirst().orElseThrow(()->invalid("录音片段不存在"));
+        try(var input=fileStorage.open(caller.tenantId().toString(),clip.objectKey())) {
+            byte[] bytes=input.readAllBytes();
+            if(bytes.length!=clip.objectSizeBytes()) throw new IOException("recording size mismatch");
+            appendAudit(caller,"SALES_RECORDING_OWN_PLAY",visitId,Map.of("clipId",clipId.toString()));
+            return new RecordingPlayback(clip.mediaType(),bytes);
+        } catch(IOException error) { throw new BusinessException(ErrorCode.SALES_RECORDING_STORAGE_FAILED,"录音片段读取失败",List.of()); }
     }
 
     public RecordingSessionView recordings(UUID visitId) {
@@ -350,15 +406,19 @@ public class SalesWorkRecordingService {
         return normalized;
     }
 
-    private static void validateTiming(Long durationMs, Instant recordedFrom, Instant recordedTo) {
-        if (durationMs == null || durationMs <= 0 || durationMs > MAX_CLIP_DURATION_MS) {
+    private static void validateTiming(Long durationMs, Instant recordedFrom, Instant recordedTo,
+                                       boolean nativeDurationUnknown) {
+        if (!nativeDurationUnknown && (durationMs == null || durationMs <= 0 || durationMs > MAX_CLIP_DURATION_MS)) {
             throw invalid("durationMs必须在1到600000之间");
         }
         if (recordedFrom == null || recordedTo == null || !recordedFrom.isBefore(recordedTo)) {
             throw invalid("recordedFrom和recordedTo必须构成有效时间范围");
         }
         long wallClockDuration = Duration.between(recordedFrom, recordedTo).toMillis();
-        if (Math.abs(wallClockDuration - durationMs) > DURATION_CLOCK_TOLERANCE_MS) {
+        if (nativeDurationUnknown && wallClockDuration > MAX_CLIP_DURATION_MS + DURATION_CLOCK_TOLERANCE_MS) {
+            throw invalid("录音起止时间超过单片段时长限制");
+        }
+        if (!nativeDurationUnknown && Math.abs(wallClockDuration - durationMs) > DURATION_CLOCK_TOLERANCE_MS) {
             throw invalid("durationMs与录音起止时间不一致");
         }
     }
@@ -389,7 +449,7 @@ public class SalesWorkRecordingService {
 
     private static boolean samePersistedInstant(Instant persisted, Instant requested) {
         // 与 MySQL DATETIME(6) 的微秒四舍五入口径一致，不比较数据库无法保留的纳秒尾数。
-        return persisted != null && requested != null
+        return persisted==null && requested==null || persisted != null && requested != null
                 && persisted.plusNanos(500).truncatedTo(ChronoUnit.MICROS)
                 .equals(requested.plusNanos(500).truncatedTo(ChronoUnit.MICROS));
     }

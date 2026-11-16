@@ -28,7 +28,6 @@ class ScdpAdministratorAuthorizationTest {
     JdbcTemplate jdbc;
     JdbcAppSettingsStore settings;
     JdbcAppAuthorizationStore authorization;
-    JdbcAppMemberStore members;
     Actor admin, ordinary;
     UUID app, role, page, button;
     String action;
@@ -42,8 +41,7 @@ class ScdpAdministratorAuthorizationTest {
         jdbc = new JdbcTemplate(ds);
         var employee = mock(AppEmployeeClient.class);
         settings = new JdbcAppSettingsStore(jdbc, new DataSourceTransactionManager(ds), employee);
-        members = mock(JdbcAppMemberStore.class);
-        authorization = new JdbcAppAuthorizationStore(jdbc, settings, mock(JdbcAppRoleStore.class), members, employee);
+        authorization = new JdbcAppAuthorizationStore(jdbc, settings, mock(JdbcAppRoleStore.class), employee);
         app = settings.applicationId();
         UUID tenant = tenant();
         admin = new Actor("TENANT", user(tenant, "admin", true), tenant);
@@ -226,9 +224,7 @@ class ScdpAdministratorAuthorizationTest {
         settings = new JdbcAppSettingsStore(jdbc, manager, employee);
         var roleStore = new JdbcAppRoleStore(jdbc, settings, manager,
                 mock(AppReferenceValidator.class), employee);
-        var memberStore = new JdbcAppMemberStore(jdbc, settings, roleStore, employee,
-                mock(com.rigour.tenant.iam.application.port.out.PasswordHasher.class), manager);
-        authorization = new JdbcAppAuthorizationStore(jdbc, settings, roleStore, memberStore, employee);
+        authorization = new JdbcAppAuthorizationStore(jdbc, settings, roleStore, employee);
         byte[] tenant = bin(ordinary.tenantId()), user = bin(ordinary.principalId());
         jdbc.update("UPDATE iam_app_member SET member_kind='BUSINESS' WHERE tenant_id=? AND user_id=?", tenant, user);
         jdbc.update("INSERT INTO iam_app_employee_binding(tenant_id,application_id,user_id,employee_code,hr_revision,hr_access_version) VALUES(?,?,?,'CITY-EMPLOYEE',0,0)", tenant, bin(app), user);
@@ -266,6 +262,7 @@ class ScdpAdministratorAuthorizationTest {
                 .singleElement().satisfies(clause ->
                         assertThat(clause.departments().references()).containsExactly("20"));
         jdbc.update("UPDATE iam_app_role SET data_scope_mode='ALL' WHERE tenant_id=? AND id=?", tenant, assignedRole);
+        settings.bump(ordinary); // Simulate the same version publication as saveRole.
         assertThat(authorization.proposed(ordinary, "analytics:dashboard:read").clauses())
                 .singleElement().satisfies(clause -> {
                     assertThat(clause.scopeMode()).isEqualTo("ALL");
@@ -318,7 +315,6 @@ class ScdpAdministratorAuthorizationTest {
         });
         assertThat(snapshot.regionLimit().mode()).isEqualTo("ALL");
         assertThat(snapshot.warehouseLimit().mode()).isEqualTo("ALL");
-        verifyNoInteractions(members);
         var unknown = authorization.proposed(admin, "crm:customer:unknown");
         assertThat(unknown.functionAllowed()).isFalse();
         assertThat(unknown.clauses()).isEmpty();

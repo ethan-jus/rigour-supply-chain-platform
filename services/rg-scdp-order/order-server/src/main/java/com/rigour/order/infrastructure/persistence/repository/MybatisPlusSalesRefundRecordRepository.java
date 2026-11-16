@@ -44,6 +44,9 @@ import java.util.Optional;
 public class MybatisPlusSalesRefundRecordRepository
         extends ServiceImpl<InternalSalesRefundRecordMapper, InternalSalesRefundRecordEntity>
         implements OrderSalesRefundRecordStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private static final ObjectMapper JSON = JsonMapper.builder().build();
     private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() {};
     private static final BigDecimal ZERO = BigDecimal.ZERO;
@@ -108,6 +111,7 @@ public class MybatisPlusSalesRefundRecordRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesRefundRecordDetailView create(
             String tenantId, String refundNo, SalesRefundWrite command, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireRelatedOrder(tenantId, command.orderId(), "order:refund:create");
         requireOrder(tenantId, command.orderId());
         LocalDateTime now = now();
@@ -125,6 +129,7 @@ public class MybatisPlusSalesRefundRecordRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesRefundRecordDetailView update(
             String tenantId, Long id, SalesRefundWrite command, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireRelated(tenantId, id, "order:refund:update", "order_refund_record");
         scopes.requireRelatedOrder(tenantId, command.orderId(), "order:refund:update");
         InternalSalesRefundRecordEntity existing =
@@ -204,6 +209,7 @@ public class MybatisPlusSalesRefundRecordRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(String tenantId, Long id, int revision, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireRelated(tenantId, id, "order:refund:delete", "order_refund_record");
         InternalSalesRefundRecordEntity existing =
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售退款记录不存在"));

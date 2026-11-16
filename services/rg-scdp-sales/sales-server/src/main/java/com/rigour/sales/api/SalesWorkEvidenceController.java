@@ -35,7 +35,7 @@ public final class SalesWorkEvidenceController {
             @RequestPart("file") MultipartFile file,
             @RequestParam("clientEvidenceId") String clientEvidenceId,
             @RequestParam("captureSource") String captureSource,
-            @RequestParam("capturedAt")
+            @RequestParam(value = "capturedAt", required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant capturedAt,
             @RequestParam("longitude") BigDecimal longitude,
             @RequestParam("latitude") BigDecimal latitude,

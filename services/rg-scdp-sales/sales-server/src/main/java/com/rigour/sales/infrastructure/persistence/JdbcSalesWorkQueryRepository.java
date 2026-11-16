@@ -11,11 +11,15 @@ import java.util.List;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import com.rigour.shared.cache.QueryCache;
+import org.springframework.beans.factory.annotation.Autowired;
+import tools.jackson.core.type.TypeReference;
 
 /** Sales Work 查询仓储；所有读取都以租户和当前销售画像为边界。 */
 @Repository
 public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
 
+    @Autowired(required=false) private QueryCache queryCache=QueryCache.disabled();
     private final JdbcTemplate jdbc;
 
     public JdbcSalesWorkQueryRepository(JdbcTemplate jdbc) {
@@ -135,11 +139,8 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
     @Override
     public java.util.Optional<VisitPolicy> findActiveVisitPolicy(UUID tenantId, UUID salesProfileId,
                                                                  UUID cityOrgId, Instant at) {
-        List<VisitPolicy> rows = jdbc.query("""
-                SELECT fpv.id, fp.policy_code, fp.policy_name, fpv.version_no, fpv.publish_status,
-                       fpv.require_assigned_target, fpv.allow_prospect_target,
-                       fpv.check_in_radius_meters, fpv.minimum_dwell_minutes, fpv.required_photo_count,
-                       fpv.recording_enabled, fpv.minimum_recording_seconds, fpv.maximum_clip_gap_seconds
+        List<UUID> rows = jdbc.query("""
+                SELECT fpv.id
                   FROM sales_visit_policy_version fpv
                   JOIN sales_visit_policy fp ON fp.id=fpv.policy_id AND fp.tenant_id=fpv.tenant_id
                  WHERE fpv.tenant_id=? AND fpv.publish_status='PUBLISHED'
@@ -180,24 +181,25 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
                    )
                  ORDER BY fpv.version_no DESC
                  LIMIT 1
-                """, (rs, row) -> visitPolicy(rs), bin(tenantId), timestamp(at), timestamp(at),
+                """, (rs, row) -> uuid(rs, "id"), bin(tenantId), timestamp(at), timestamp(at),
                 timestamp(at), timestamp(at), timestamp(at), timestamp(at), bin(salesProfileId),
                 bin(cityOrgId), bin(salesProfileId), timestamp(at), timestamp(at));
-        return rows.stream().findFirst();
+        return rows.stream().findFirst().flatMap(id -> findVisitPolicy(tenantId,id));
     }
 
     @Override
     public java.util.Optional<VisitPolicy> findVisitPolicy(UUID tenantId, UUID visitPolicyVersionId) {
-        List<VisitPolicy> rows = jdbc.query("""
+        List<VisitPolicy> rows = queryCache.read(tenantId.toString(),"visit-policy-definition",visitPolicyVersionId,86400,
+                new TypeReference<List<VisitPolicy>>() {}, () -> jdbc.query("""
                 SELECT fpv.id, fp.policy_code, fp.policy_name, fpv.version_no, fpv.publish_status,
                        fpv.require_assigned_target, fpv.allow_prospect_target,
                        fpv.check_in_radius_meters, fpv.minimum_dwell_minutes, fpv.required_photo_count,
-                       fpv.recording_enabled, fpv.minimum_recording_seconds, fpv.maximum_clip_gap_seconds
+                       fpv.recording_enabled, fpv.minimum_recording_seconds, fpv.maximum_clip_gap_seconds, fpv.capture_rules_json, fpv.ai_asr_enabled
                   FROM sales_visit_policy_version fpv
                   JOIN sales_visit_policy fp ON fp.id=fpv.policy_id AND fp.tenant_id=fpv.tenant_id
                  WHERE fpv.tenant_id=? AND fpv.id=?
                  LIMIT 1
-                """, (rs, row) -> visitPolicy(rs), bin(tenantId), bin(visitPolicyVersionId));
+                """, (rs, row) -> visitPolicy(rs), bin(tenantId), bin(visitPolicyVersionId)));
         return rows.stream().findFirst();
     }
 
@@ -312,7 +314,8 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
                 rs.getBoolean("require_assigned_target"), rs.getBoolean("allow_prospect_target"),
                 rs.getInt("check_in_radius_meters"), rs.getInt("minimum_dwell_minutes"),
                 rs.getInt("required_photo_count"), rs.getBoolean("recording_enabled"),
-                rs.getInt("minimum_recording_seconds"), rs.getInt("maximum_clip_gap_seconds"));
+                rs.getInt("minimum_recording_seconds"), rs.getInt("maximum_clip_gap_seconds"),
+                rs.getString("capture_rules_json")==null ? null : tools.jackson.databind.json.JsonMapper.builder().build().readValue(rs.getString("capture_rules_json"), com.rigour.sales.api.v1.model.SalesVisitPolicyModels.CaptureRules.class),rs.getBoolean("ai_asr_enabled"));
     }
 
     private static Integer integerValue(Object value) {

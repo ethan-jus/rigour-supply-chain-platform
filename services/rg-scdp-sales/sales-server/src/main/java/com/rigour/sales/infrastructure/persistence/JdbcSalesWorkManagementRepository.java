@@ -1,6 +1,9 @@
 package com.rigour.sales.infrastructure.persistence;
 
 import com.rigour.sales.application.port.out.SalesWorkManagementRepository;
+import com.rigour.sales.application.port.out.SalesManagementDirectory.Access;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.sql.Date;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -21,32 +24,32 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
     }
 
     @Override
-    public ManagementTotalsRow totals(UUID tenantId, LocalDate from, LocalDate to) {
+    public ManagementTotalsRow totals(UUID tenantId, LocalDate from, LocalDate to, Access scope) {
         byte[] tenant = bin(tenantId);
-        Long activeSales = value(jdbc.queryForObject("""
+        Long activeSales = value(jdbc.queryForObject(scopeSql(scope) + """
                 SELECT COUNT(*) FROM sales_profile
-                 WHERE tenant_id=? AND status='ACTIVE'
-                """, Long.class, tenant));
-        Long totalInterruptionCount = jdbc.queryForObject("""
+                 WHERE tenant_id=? AND status='ACTIVE' AND id IN (SELECT id FROM permitted_profiles)
+                """, Long.class, scopeArgs(tenantId, scope, tenant)));
+        Long totalInterruptionCount = jdbc.queryForObject(scopeSql(scope) + """
                 SELECT COALESCE(SUM(session.interruption_count), 0)
                   FROM sales_location_session session
                   JOIN sales_work_day work_day
                     ON work_day.tenant_id=session.tenant_id AND work_day.id=session.work_day_id
-                 WHERE session.tenant_id=? AND work_day.business_date BETWEEN ? AND ?
-                """, Long.class, tenant, Date.valueOf(from), Date.valueOf(to));
-        WorkTotals work = jdbc.queryForObject("""
+                 WHERE work_day.sales_profile_id IN (SELECT id FROM permitted_profiles) AND session.tenant_id=? AND work_day.business_date BETWEEN ? AND ?
+                """, Long.class, scopeArgs(tenantId, scope, tenant, Date.valueOf(from), Date.valueOf(to)));
+        WorkTotals work = jdbc.queryForObject(scopeSql(scope) + """
                 SELECT COUNT(DISTINCT sales_profile_id) AS attended_sales_count,
                        COALESCE(SUM(CASE WHEN business_date=? AND status='ACTIVE' THEN 1 ELSE 0 END), 0)
                            AS working_sales_count,
                        COALESCE(SUM(CASE WHEN status IN ('FINISHED','PENDING_REVIEW') THEN 1 ELSE 0 END), 0)
                            AS finished_work_day_count
                   FROM sales_work_day work_day
-                 WHERE work_day.tenant_id=? AND work_day.business_date BETWEEN ? AND ?
+                 WHERE work_day.sales_profile_id IN (SELECT id FROM permitted_profiles) AND work_day.tenant_id=? AND work_day.business_date BETWEEN ? AND ?
                 """, (rs, row) -> new WorkTotals(rs.getLong("attended_sales_count"),
                         rs.getLong("working_sales_count"), rs.getLong("finished_work_day_count"),
-                        value(totalInterruptionCount)), Date.valueOf(to), tenant,
-                Date.valueOf(from), Date.valueOf(to));
-        VisitTotals visit = jdbc.queryForObject("""
+                        value(totalInterruptionCount)), scopeArgs(tenantId, scope, Date.valueOf(to), tenant,
+                Date.valueOf(from), Date.valueOf(to)));
+        VisitTotals visit = jdbc.queryForObject(scopeSql(scope) + """
                 SELECT COUNT(*) AS total_visit_count,
                        COALESCE(SUM(CASE WHEN current_visit.checked_out_at IS NOT NULL THEN 1 ELSE 0 END), 0)
                            AS completed_visit_count,
@@ -75,19 +78,19 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                   JOIN sales_work_day work_day
                     ON work_day.tenant_id=current_visit.tenant_id
                    AND work_day.id=current_visit.work_day_id
-                 WHERE current_visit.tenant_id=? AND work_day.business_date BETWEEN ? AND ?
+                 WHERE current_visit.sales_profile_id IN (SELECT id FROM permitted_profiles) AND current_visit.tenant_id=? AND work_day.business_date BETWEEN ? AND ?
                 """, (rs, row) -> new VisitTotals(rs.getLong("total_visit_count"),
                         rs.getLong("completed_visit_count"), rs.getLong("effective_visit_count"),
                         rs.getLong("pending_review_visit_count"), rs.getLong("first_visit_count"),
                         rs.getLong("revisit_count"), rs.getLong("unique_store_count")),
-                tenant, Date.valueOf(from), Date.valueOf(to));
-        Long assignedStores = jdbc.queryForObject("""
+                scopeArgs(tenantId, scope, tenant, Date.valueOf(from), Date.valueOf(to)));
+        Long assignedStores = jdbc.queryForObject(scopeSql(scope) + """
                 SELECT COUNT(DISTINCT store_id)
                   FROM crm_sales_assignment_projection
-                 WHERE tenant_id=? AND store_id IS NOT NULL AND status='ACTIVE'
+                 WHERE sales_profile_id IN (SELECT id FROM permitted_profiles) AND tenant_id=? AND store_id IS NOT NULL AND status='ACTIVE'
                    AND effective_from < DATE_ADD(?, INTERVAL 1 DAY)
                    AND (effective_to IS NULL OR effective_to >= ?)
-                """, Long.class, tenant, Date.valueOf(to), Date.valueOf(from));
+                """, Long.class, scopeArgs(tenantId, scope, tenant, Date.valueOf(to), Date.valueOf(from)));
         return new ManagementTotalsRow(activeSales, work.attendedSalesCount(), work.workingSalesCount(),
                 work.finishedWorkDayCount(), work.totalInterruptionCount(), visit.totalVisitCount(),
                 visit.completedVisitCount(), visit.effectiveVisitCount(), visit.pendingReviewVisitCount(),
@@ -96,9 +99,9 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
     }
 
     @Override
-    public List<SalesPersonActivityRow> people(UUID tenantId, LocalDate from, LocalDate to) {
+    public List<SalesPersonActivityRow> people(UUID tenantId, LocalDate from, LocalDate to, Access scope) {
         byte[] tenant = bin(tenantId);
-        return jdbc.query("""
+        return jdbc.query(scopeSql(scope) + """
                 SELECT profile.id, profile.employee_id, profile.sales_no,
                        EXISTS(SELECT 1 FROM sales_work_day active_day
                                WHERE active_day.tenant_id=profile.tenant_id
@@ -183,7 +186,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                             AND (assignment.effective_to IS NULL OR assignment.effective_to >= ?))
                           AS assigned_store_count
                   FROM sales_profile profile
-                 WHERE profile.tenant_id=? AND profile.status='ACTIVE'
+                 WHERE profile.id IN (SELECT id FROM permitted_profiles) AND profile.tenant_id=? AND profile.status='ACTIVE'
                  ORDER BY completed_visit_count DESC, total_visit_count DESC, profile.sales_no
                 """, (rs, row) -> new SalesPersonActivityRow(uuid(rs.getBytes("id")),
                         uuid(rs.getBytes("employee_id")), rs.getString("sales_no"), rs.getBoolean("working"),
@@ -192,18 +195,18 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                         rs.getLong("pending_review_visit_count"), rs.getLong("first_visit_count"),
                         rs.getLong("revisit_count"), rs.getLong("unique_store_count"),
                         rs.getLong("assigned_store_count")),
-                Date.valueOf(to), Date.valueOf(from), Date.valueOf(to),
+                scopeArgs(tenantId, scope, Date.valueOf(to), Date.valueOf(from), Date.valueOf(to),
                 Date.valueOf(from), Date.valueOf(to), Date.valueOf(from), Date.valueOf(to),
                 Date.valueOf(from), Date.valueOf(to), Date.valueOf(from), Date.valueOf(to),
                 Date.valueOf(from), Date.valueOf(to), Date.valueOf(from), Date.valueOf(to),
                 Date.valueOf(from), Date.valueOf(to), Date.valueOf(from), Date.valueOf(to),
-                tenant);
+                tenant));
     }
 
     @Override
-    public List<VisitReviewRow> reviewQueue(UUID tenantId, LocalDate from, LocalDate to,
+    public List<VisitReviewRow> reviewQueue(UUID tenantId, LocalDate from, LocalDate to, Access scope,
                                             int limit, int offset) {
-        return jdbc.query("""
+        return jdbc.query(scopeSql(scope) + """
                 SELECT current_visit.id AS visit_id, current_visit.sales_profile_id,
                        profile.sales_no, target.store_name, current_visit.checked_in_at,
                        current_visit.checked_out_at,
@@ -254,7 +257,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                   JOIN sales_visit_policy_version policy
                     ON policy.tenant_id=current_visit.tenant_id
                    AND policy.id=current_visit.visit_policy_version_id
-                 WHERE current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
+                 WHERE current_visit.sales_profile_id IN (SELECT id FROM permitted_profiles) AND current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
                    AND current_visit.finalized_at IS NULL AND current_visit.crm_visit_id IS NULL
                    AND work_day.business_date BETWEEN ? AND ?
                  ORDER BY current_visit.checked_out_at, current_visit.id
@@ -269,21 +272,35 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                         rs.getInt("required_storefront_photo_count"), rs.getString("contact_outcome"),
                         rs.getString("kp_name"), rs.getString("intention_level"), rs.getString("result_note"),
                         rs.getString("visit_type"), codes(rs.getString("anomaly_codes"))),
-                bin(tenantId), Date.valueOf(from), Date.valueOf(to),
-                limit, offset);
+                scopeArgs(tenantId, scope, bin(tenantId), Date.valueOf(from), Date.valueOf(to),
+                limit, offset));
     }
 
     @Override
-    public long countReviewQueue(UUID tenantId, LocalDate from, LocalDate to) {
-        Long count = jdbc.queryForObject("""
+    public long countReviewQueue(UUID tenantId, LocalDate from, LocalDate to, Access scope) {
+        Long count = jdbc.queryForObject(scopeSql(scope) + """
                 SELECT COUNT(*) FROM sales_visit current_visit
                   JOIN sales_work_day work_day
                     ON work_day.tenant_id=current_visit.tenant_id AND work_day.id=current_visit.work_day_id
-                 WHERE current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
+                 WHERE current_visit.sales_profile_id IN (SELECT id FROM permitted_profiles) AND current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
                    AND current_visit.finalized_at IS NULL AND current_visit.crm_visit_id IS NULL
                    AND work_day.business_date BETWEEN ? AND ?
-                """, Long.class, bin(tenantId), Date.valueOf(from), Date.valueOf(to));
+                """, Long.class, scopeArgs(tenantId, scope, bin(tenantId), Date.valueOf(from), Date.valueOf(to)));
         return value(count);
+    }
+
+    private static String scopeSql(Access scope) {
+        String condition = scope.all() ? "1=1" : scope.employeeCodes().isEmpty() ? "1=0"
+                : "hr_employee_code IN (" + String.join(",", Collections.nCopies(scope.employeeCodes().size(), "?")) + ")";
+        return "WITH permitted_profiles AS (SELECT id FROM sales_profile WHERE tenant_id=? AND " + condition + ") ";
+    }
+
+    private static Object[] scopeArgs(UUID tenantId, Access scope, Object... values) {
+        var args = new ArrayList<Object>();
+        args.add(bin(tenantId));
+        if (!scope.all()) args.addAll(scope.employeeCodes());
+        Collections.addAll(args, values);
+        return args.toArray();
     }
 
     @Override public boolean isCrmCapture(UUID tenantId,UUID visitId){return jdbc.queryForObject("SELECT COUNT(*) FROM sales_visit WHERE tenant_id=? AND id=? AND crm_visit_id IS NOT NULL",Long.class,bin(tenantId),bin(visitId))>0;}

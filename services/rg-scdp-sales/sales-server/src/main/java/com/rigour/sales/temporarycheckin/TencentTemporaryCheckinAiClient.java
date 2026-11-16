@@ -1,9 +1,9 @@
 package com.rigour.sales.temporarycheckin;
 
-import static com.rigour.sales.temporarycheckin.TemporaryCheckinAiClient.AsrState.FAILED;
-import static com.rigour.sales.temporarycheckin.TemporaryCheckinAiClient.AsrState.PROCESSING;
-import static com.rigour.sales.temporarycheckin.TemporaryCheckinAiClient.AsrState.SUCCEEDED;
-import static com.rigour.sales.temporarycheckin.TemporaryCheckinAiClient.AsrState.WAITING;
+import static com.rigour.sales.application.port.out.SalesAudioAiClient.AsrState.FAILED;
+import static com.rigour.sales.application.port.out.SalesAudioAiClient.AsrState.PROCESSING;
+import static com.rigour.sales.application.port.out.SalesAudioAiClient.AsrState.SUCCEEDED;
+import static com.rigour.sales.application.port.out.SalesAudioAiClient.AsrState.WAITING;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
@@ -97,11 +97,20 @@ public class TencentTemporaryCheckinAiClient implements TemporaryCheckinAiClient
 
     @Override
     public AsrTask createTranscriptionTask(URI audioUrl) {
+        return createTranscriptionTask(audioUrl, properties.getAsrResTextFormat());
+    }
+
+    @Override
+    public AsrTask createDetailedTranscriptionTask(URI audioUrl) {
+        return createTranscriptionTask(audioUrl, 3);
+    }
+
+    private AsrTask createTranscriptionTask(URI audioUrl, int textFormat) {
         String safeAudioUrl = requireAudioUrl(audioUrl);
         Map<String, Object> request = new LinkedHashMap<>();
         request.put("EngineModelType", properties.getAsrEngineModelType());
         request.put("ChannelNum", properties.getAsrChannelNum());
-        request.put("ResTextFormat", properties.getAsrResTextFormat());
+        request.put("ResTextFormat", textFormat);
         request.put("SourceType", 0);
         request.put("Url", safeAudioUrl);
         TencentResponse result = invoke(
@@ -145,7 +154,21 @@ public class TencentTemporaryCheckinAiClient implements TemporaryCheckinAiClient
                 transcript,
                 errorCode,
                 requestId(response, result.headerRequestId()),
-                duration);
+                duration, parseSegments(data.path("ResultDetail")));
+    }
+
+    static List<TranscriptSegment> parseSegments(JsonNode details) {
+        if (!details.isArray()) return List.of();
+        var segments = new java.util.ArrayList<TranscriptSegment>();
+        for (JsonNode item : details) {
+            var start = item.path("StartMs"); var end = item.path("EndMs");
+            String text = nullableText(item.path("FinalSentence"));
+            if (!start.isIntegralNumber() || !end.isIntegralNumber() || start.longValue() < 0
+                    || end.longValue() <= start.longValue() || !StringUtils.hasText(text)) continue;
+            segments.add(new TranscriptSegment(start.longValue(), end.longValue(), text,
+                    item.path("SpeakerId").isIntegralNumber() ? item.path("SpeakerId").intValue() : null));
+        }
+        return List.copyOf(segments);
     }
 
     @Override

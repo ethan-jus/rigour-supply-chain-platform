@@ -13,6 +13,9 @@ import java.util.*;
 /** 按源版本同步最小归属，整批成功后发布；源变化或中断回滚旧投影并拒绝当前请求。 */
 @Component
 public class BiAuthorityProjector {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private final JdbcTemplate jdbc;
     private final BiAuthoritySource source;
     private final JsonMapper json = JsonMapper.builder().build();
@@ -43,6 +46,7 @@ public class BiAuthorityProjector {
                             kind);
             String version = source.version(tenantId, kind);
             if (version.equals(previous)) continue;
+            queryCache.changed(tenant);
             String table = "ORDER".equals(kind) ? "bi_order_authority" : "bi_customer_authority";
             jdbc.update("DELETE FROM " + table + " WHERE tenant_id=?", tenant);
             if ("CRM".equals(kind))

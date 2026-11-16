@@ -192,6 +192,23 @@ public class RestAmapPoiClient implements AmapPoiClient {
         }
     }
 
+    @Override
+    public Coordinates convertGps(BigDecimal longitude,BigDecimal latitude) {
+        if (!StringUtils.hasText(properties.getWebKey())) throw new AmapPoiException("高德 Web 服务 key 未配置");
+        String location=longitude.setScale(6,java.math.RoundingMode.HALF_UP).toPlainString()+","+latitude.setScale(6,java.math.RoundingMode.HALF_UP).toPlainString();
+        try {
+            String body=restClient.get().uri(uri->uri.path("/assistant/coordinate/convert")
+                    .queryParam("key",properties.getWebKey()).queryParam("locations",location)
+                    .queryParam("coordsys","gps").queryParam("output","JSON").build()).retrieve().body(String.class);
+            JsonNode response=objectMapper.readTree(body);
+            if(response==null||!"1".equals(scalarText(response.get("status"))))throw providerFailure(response,"坐标转换失败");
+            var point=coordinates(scalarText(response.get("locations")));
+            if(point[0]==null||point[1]==null||point[0].abs().doubleValue()>180||point[1].abs().doubleValue()>90)throw new AmapPoiException("坐标转换结果无效");
+            return new Coordinates(point[0],point[1],"GCJ02");
+        } catch (AmapPoiException e) { throw e; }
+        catch (RuntimeException e) { throw new AmapPoiException("坐标转换服务暂不可用，请重试定位"); }
+    }
+
     private static AmapPoiException providerFailure(JsonNode response,String fallback) {
         if(response!=null&&"10005".equals(scalarText(response.get("infocode"))))
             return new AmapPoiException("AMAP_IP_NOT_ALLOWED","高德拒绝当前服务器 IP（10005），请检查 Web 服务 Key 的 IP 白名单");

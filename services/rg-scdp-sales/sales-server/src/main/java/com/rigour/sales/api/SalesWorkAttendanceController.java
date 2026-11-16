@@ -31,6 +31,11 @@ public final class SalesWorkAttendanceController {
         this.service = service;
     }
 
+    @GetMapping("/api/v1/sales/me/attendance-context")
+    public ApiResponse<com.rigour.sales.api.v1.model.SalesWorkApiModels.AttendanceContextView> attendanceContext() {
+        return ApiResponse.success(service.attendanceContext());
+    }
+
     @PostMapping(SalesWorkApi.CHECK_IN_PATH)
     public ApiResponse<WorkDayView> checkIn(@RequestBody CheckInCommand command) {
         return ApiResponse.success(service.checkIn(command));

@@ -117,6 +117,8 @@ public class SalesWorkAdminService {
         Instant now = clock.instant();
         var policy = repository.ensureVisitPolicy(caller.tenantId(), command.policyCode().trim(),
                 command.policyName().trim(), now);
+        if(command.expectedVersion()!=null && command.expectedVersion()!=policy.nextVersionNo()-1)
+            throw new com.rigour.shared.core.exception.StateConflictException("政策已更新，请刷新后重新确认");
         UUID versionId = repository.insertVisitPolicyVersion(caller.tenantId(), policy.policyId(),
                 policy.nextVersionNo(), command.publish(), command.requireAssignedTarget(),
                 command.allowProspectTarget(), command.checkInRadiusMeters(),
@@ -124,6 +126,7 @@ public class SalesWorkAdminService {
                 command.minimumRecordingSeconds(), command.maximumClipGapSeconds(),
                 command.aiAsrEnabled(), command.aiRelevanceEnabled(), command.aiDuplicateEnabled(),
                 command.aiAutoConfirmThreshold(), caller.userId(), now);
+        repository.saveVisitCaptureRules(caller.tenantId(),versionId,command.captureRules());
         insertScope(caller, "VISIT", versionId, command.scopeType(), command.scopeId(), now);
         appendAudit(caller, "SALES_ADMIN_VISIT_POLICY_VERSION", "SALES_VISIT_POLICY", policy.policyId(),
                 Map.of("versionNo", Integer.toString(policy.nextVersionNo()),
@@ -233,15 +236,21 @@ public class SalesWorkAdminService {
         }
         required(command.policyCode(), "policyCode", 64);
         required(command.policyName(), "policyName", 128);
+        var rules=command.captureRules();
+        if(rules!=null) {
+            Integer maximum=rules.maximumLocationAccuracyMeters();
+            if(maximum!=null && (maximum<1 || maximum>1000)) throw invalid("定位精度上限应为1至1000米");
+            if(rules.automaticRecording() && !command.recordingEnabled()) throw invalid("自动录音需要启用录音要求");
+        }
+        if(command.checkInRadiusMeters()>5000 || command.minimumDwellMinutes()>480 || command.requiredPhotoCount()>10 || command.minimumRecordingSeconds()>28800 || command.maximumClipGapSeconds()>3600)
+            throw invalid("拜访距离、时长或照片数量超出允许范围");
+        if(command.aiAutoConfirmThreshold()!=null && (command.aiAutoConfirmThreshold().signum()<0 || command.aiAutoConfirmThreshold().doubleValue()>1)) throw invalid("AI阈值应为0至1");
         if (command.checkInRadiusMeters() <= 0) {
             throw invalid("checkInRadiusMeters必须大于0");
         }
         if (command.minimumDwellMinutes() < 0 || command.requiredPhotoCount() < 1
                 || command.minimumRecordingSeconds() < 0 || command.maximumClipGapSeconds() < 0) {
             throw invalid("拜访停留/录音阈值不能为负数，门头照至少要求1张");
-        }
-        if (command.recordingEnabled() && command.minimumRecordingSeconds() <= 0) {
-            throw invalid("启用录音时minimumRecordingSeconds必须大于0");
         }
     }
 

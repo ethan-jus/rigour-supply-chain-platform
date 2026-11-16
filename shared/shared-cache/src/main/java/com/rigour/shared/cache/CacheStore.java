@@ -14,4 +14,8 @@ public interface CacheStore {
     void put(String tenantId, String key, byte[] value, Duration timeToLive);
 
     void evict(String tenantId, String key);
+
+    boolean tryLock(String tenantId, String key, String token, Duration lease);
+
+    void unlock(String tenantId, String key, String token);
 }

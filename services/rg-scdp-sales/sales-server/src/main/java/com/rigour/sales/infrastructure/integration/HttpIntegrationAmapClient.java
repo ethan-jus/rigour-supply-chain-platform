@@ -43,6 +43,9 @@ public class HttpIntegrationAmapClient implements AmapPoiClient, TemporaryChecki
         if(id==null || !id.matches("[A-Za-z0-9]{1,64}")) throw new AmapPoiException("POI 编码无效");
         return get("/pois/"+id,Map.of(),new ParameterizedTypeReference<>(){});
     }
+    public Coordinates convertGps(BigDecimal longitude,BigDecimal latitude) {
+        return get("/coordinates/gps",Map.of("longitude",longitude,"latitude",latitude),new ParameterizedTypeReference<>(){});
+    }
     public GeocodeResult resolve(BigDecimal longitude,BigDecimal latitude) {
         try { return get("/reverse-geocode",Map.of("longitude",longitude,"latitude",latitude),new ParameterizedTypeReference<>(){}); }
         catch(AmapPoiException e) { return GeocodeResult.failed(e.reason()); }

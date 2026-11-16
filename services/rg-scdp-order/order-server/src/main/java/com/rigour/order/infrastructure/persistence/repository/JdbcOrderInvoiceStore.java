@@ -26,6 +26,9 @@ import java.util.Optional;
 /** 开票登记仓储；只维护 order_invoice，不参与订货宝同步，也不回写订单主表。 */
 @Repository
 public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private static final TypeReference<List<String>> STRING_LIST = new TypeReference<>() {};
     private static final String COLUMNS =
@@ -116,8 +119,10 @@ public class JdbcOrderInvoiceStore implements OrderInvoiceStore {
     }
 
     @Override
+    @org.springframework.transaction.annotation.Transactional
     public OrderInvoiceRow save(
             String tenantId, OrderInvoiceRow row, String expectedStatus, String actorId) {
+        queryCache.changed(tenantId);
         if (row.id() == null) {
             jdbc.update(
                     "INSERT INTO order_invoice (tenant_id,sales_order_id,order_no,customer_id,customer_code,"

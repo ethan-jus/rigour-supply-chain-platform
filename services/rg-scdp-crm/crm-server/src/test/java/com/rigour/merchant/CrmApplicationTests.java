@@ -274,7 +274,7 @@ class CrmApplicationTests {
                                  WHERE table_schema = DATABASE() AND table_name LIKE 'crm\\_%'
                                 """,
                                 Integer.class))
-                .isEqualTo(41);
+                .isEqualTo(46);
         assertThat(
                         jdbcTemplate.queryForList(
                                 """
@@ -296,6 +296,11 @@ class CrmApplicationTests {
                         "crm_party",
                         "crm_customer_profile",
                         "crm_contact",
+                        "crm_contact_person",
+                        "crm_store_contact",
+                        "crm_contact_method",
+                        "crm_contact_change",
+                        "crm_visit_contact",
                         "crm_address",
                         "crm_source_binding",
                         "crm_source_identity_alias",
@@ -1684,6 +1689,36 @@ SELECT COUNT(*) FROM crm_contact c
     }
 
     @Test
+    void missingSourceStaffPreservesExistingExternalOwnerAndAllowsMasterUpdates() {
+        UUID tenant=UUID.randomUUID(),connector=UUID.randomUUID(),actor=UUID.randomUUID();
+        var type=CrmMasterDataObjectType.CUSTOMER;var run=start(tenant,connector,actor,type);
+        var original=customerRecord("来源临时未分配销售的客户");
+        assertThat(store.importRecord(tenant,connector,run,type,original).created()).isEqualTo(1);
+        long id=jdbcTemplate.queryForObject("SELECT id FROM crm_customer WHERE tenant_id=?",Long.class,tenant.toString());
+        var before=internalCustomerStore.customer(tenant.toString(),id).orElseThrow();
+        var fields=new LinkedHashMap<String,Object>(original.sourceFields());
+        fields.put("staffID","0");fields.put("staffName","");fields.put("_employeeBySourceId",Map.of());
+        fields.put("clientPhone","13900000123");
+        var source=new SourceRecord(original.sourceId(),original.sourceCode(),original.sourceName(),"T",
+                original.sourceCreatedAt(),original.sourceUpdatedAt(),fields);
+        for(int repeat=0;repeat<2;repeat++) {
+            assertThat(store.importRecord(tenant,connector,run,type,source).unmapped()).isZero();
+            var after=internalCustomerStore.customer(tenant.toString(),id).orElseThrow();
+            assertThat(after.ownerEmployeeCode()).isEqualTo(before.ownerEmployeeCode());
+            assertThat(after.contactPhone()).isEqualTo("13900000123");
+            assertThat(after.businessCreatedAt()).isEqualTo(before.businessCreatedAt());
+            assertThat(store.externalObjectMappings(tenant,connector,run,type)).singleElement()
+                    .satisfies(mapping->assertThat(mapping.mappingStatus()).isEqualTo("ACTIVE"));
+        }
+        fields.put("staffID","UNMAPPED-STAFF");
+        var changed=new SourceRecord(source.sourceId(),source.sourceCode(),source.sourceName(),"T",
+                source.sourceCreatedAt(),source.sourceUpdatedAt(),fields);
+        assertThat(store.importRecord(tenant,connector,run,type,changed).unmapped()).isEqualTo(1);
+        assertThat(internalCustomerStore.customer(tenant.toString(),id).orElseThrow().ownerEmployeeCode())
+                .isEqualTo(before.ownerEmployeeCode());
+    }
+
+    @Test
     void missingSourceStaffKeepsExplicitLocalAssignmentAcrossRepeatedSyncOnly() {
         UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID(), actor = UUID.randomUUID();
         var type = CrmMasterDataObjectType.CUSTOMER;
@@ -1734,6 +1769,23 @@ SELECT COUNT(*) FROM crm_contact c
                 .isEqualTo("EMP-LOCAL");
         assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
                 .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("CONFLICT"));
+
+        // 来源补齐真实业务员后替换临时部门负责人；重放不重复记历史。
+        fields.put("_employeeBySourceId", Map.of("UNMAPPED-STAFF",
+                Map.of("employeeCode", "EMP-FORMAL", "employeeName", "正式业务员")));
+        var completed = new SourceRecord(source.sourceId(), source.sourceCode(), source.sourceName(), "T",
+                source.sourceCreatedAt(), source.sourceUpdatedAt(), fields);
+        for (int repeat=0; repeat<2; repeat++) {
+            assertThat(store.importRecord(tenant, connector, run, type, completed).unmapped()).isZero();
+            var current=internalCustomerStore.customer(tenant.toString(), id).orElseThrow();
+            assertThat(current.ownerEmployeeCode()).isEqualTo("EMP-FORMAL");
+            assertThat(current.regionCode()).isEqualTo(before.regionCode());
+        }
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer_responsibility_history"
+                + " WHERE tenant_id=? AND customer_id=? AND old_employee_code='EMP-LOCAL'"
+                + " AND new_employee_code='EMP-FORMAL'", Long.class, tenant.toString(), id)).isEqualTo(1);
+        assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
+                .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("ACTIVE"));
     }
 
     private long sourceRevision(UUID tenant,String sourceId) {

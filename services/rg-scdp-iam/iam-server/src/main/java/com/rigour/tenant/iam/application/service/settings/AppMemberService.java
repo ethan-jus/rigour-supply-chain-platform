@@ -24,8 +24,9 @@ public final class AppMemberService {
         this.settings = settings;
     }
 
-    public Page members(Actor a, String keyword, int page, int size, Long departmentId) {
-        return store.members(a, keyword, page, size, departmentId);
+    public Page members(Actor a, String keyword, int page, int size, Long departmentId,
+            UUID roleId, String employeeName, String positionName) {
+        return store.members(a, keyword, page, size, departmentId, roleId, employeeName, positionName);
     }
 
     public List<Account> accounts(Actor a, String keyword) {

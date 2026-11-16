@@ -79,7 +79,12 @@ public class JdbcSalesWorkAdminRepository implements SalesWorkAdminRepository {
 
     @Override
     public PolicyIdentity ensureVisitPolicy(UUID tenantId, String policyCode, String policyName, Instant now) {
-        return ensurePolicy("sales_visit_policy", tenantId, policyCode, policyName, now);
+        jdbc.update("INSERT INTO sales_visit_policy(id,tenant_id,policy_code,policy_name,status,version,created_at,updated_at) VALUES(?,?,?,?,'ACTIVE',0,?,?) ON DUPLICATE KEY UPDATE id=id",
+            bin(UUID.randomUUID()),bin(tenantId),policyCode,policyName,timestamp(now),timestamp(now));
+        UUID id=jdbc.queryForObject("SELECT id FROM sales_visit_policy WHERE tenant_id=? AND policy_code=? FOR UPDATE",(rs,row)->SalesUuidCodec.decode(rs.getBytes(1)),bin(tenantId),policyCode);
+        Integer version=jdbc.queryForObject("SELECT COALESCE(MAX(version_no),0) FROM sales_visit_policy_version WHERE tenant_id=? AND policy_id=?",Integer.class,bin(tenantId),bin(id));
+        jdbc.update("UPDATE sales_visit_policy SET policy_name=?,updated_at=? WHERE tenant_id=? AND id=?",policyName,timestamp(now),bin(tenantId),bin(id));
+        return new PolicyIdentity(id,version+1);
     }
 
     private PolicyIdentity ensurePolicy(String table, UUID tenantId, String policyCode, String policyName,
@@ -167,6 +172,11 @@ public class JdbcSalesWorkAdminRepository implements SalesWorkAdminRepository {
                 publish ? timestamp(now) : null, publish ? bin(actorId) : null,
                 publish ? timestamp(now) : null, bin(actorId));
         return versionId;
+    }
+
+    @Override public void saveVisitCaptureRules(UUID tenantId,UUID versionId,com.rigour.sales.api.v1.model.SalesVisitPolicyModels.CaptureRules rules) {
+        jdbc.update("UPDATE sales_visit_policy_version SET capture_rules_json=? WHERE tenant_id=? AND id=?",
+            rules==null ? null : new tools.jackson.databind.ObjectMapper().writeValueAsString(rules),bin(tenantId),bin(versionId));
     }
 
     @Override

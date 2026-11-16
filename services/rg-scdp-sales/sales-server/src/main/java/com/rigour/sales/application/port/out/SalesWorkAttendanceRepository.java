@@ -46,6 +46,9 @@ public interface SalesWorkAttendanceRepository {
     void insertLocationSession(
             UUID id, UUID tenantId, UUID workDayId, Instant startedAt, int expectedIntervalMinutes);
 
+    record LocationSessionSnapshot(UUID id, Instant startedAt, Instant endedAt, String status) {}
+    Optional<LocationSessionSnapshot> findLocationSession(UUID tenantId, UUID workDayId, UUID sessionId);
+
     List<String> findExistingLocationEventIds(UUID tenantId, List<String> deviceEventIds);
 
     void insertLocationPoint(
@@ -60,7 +63,7 @@ public interface SalesWorkAttendanceRepository {
             Instant clientOccurredAt,
             Instant serverReceivedAt,
             String source,
-            String qualityStatus);
+            String qualityStatus, BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem);
 
     int incrementLocationPointCount(
             UUID tenantId, UUID workDayId, UUID locationSessionId, int amount);
@@ -142,7 +145,12 @@ public interface SalesWorkAttendanceRepository {
             Instant clientOccurredAt,
             Instant serverReceivedAt,
             String source,
-            String qualityStatus) {}
+            String qualityStatus, UUID sessionId) {
+        public LocationPointRow(BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
+                Instant clientOccurredAt, Instant serverReceivedAt, String source, String qualityStatus) {
+            this(longitude, latitude, accuracyMeters, clientOccurredAt, serverReceivedAt, source, qualityStatus, null);
+        }
+    }
 
     record PunchEventRow(
             String eventType,

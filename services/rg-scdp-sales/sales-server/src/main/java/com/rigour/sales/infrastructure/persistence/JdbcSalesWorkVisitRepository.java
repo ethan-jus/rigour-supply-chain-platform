@@ -101,6 +101,33 @@ public class JdbcSalesWorkVisitRepository implements SalesWorkVisitRepository {
         return count == null ? 0L : count;
     }
 
+    private static String activityWhere(String kind) {
+        String where = " FROM sales_visit visit JOIN sales_work_day work_day"
+                + " ON work_day.tenant_id=visit.tenant_id AND work_day.id=visit.work_day_id"
+                + " WHERE visit.tenant_id=? AND visit.sales_profile_id=?"
+                + " AND work_day.business_date BETWEEN ? AND ?";
+        if ("effective".equals(kind)) where += " AND visit.finalized_at IS NOT NULL AND visit.final_reason_code='EFFECTIVE'";
+        else if ("first".equals(kind)) where += " AND NOT EXISTS (SELECT 1 FROM sales_visit previous"
+                + " WHERE previous.tenant_id=visit.tenant_id AND previous.sales_profile_id=visit.sales_profile_id"
+                + " AND previous.store_id=visit.store_id AND previous.checked_in_at<visit.checked_in_at)";
+        return where;
+    }
+
+    @Override
+    public List<VisitSnapshot> findActivityVisits(UUID tenantId, UUID salesProfileId, LocalDate from,
+                                                  LocalDate to, String kind, int limit, int offset) {
+        return jdbc.query("SELECT visit.*" + activityWhere(kind)
+                + " ORDER BY visit.checked_in_at DESC,visit.id DESC LIMIT ? OFFSET ?",
+                (rs, row) -> visit(rs), bin(tenantId), bin(salesProfileId),
+                java.sql.Date.valueOf(from), java.sql.Date.valueOf(to), limit, offset);
+    }
+
+    @Override
+    public long countActivityVisits(UUID tenantId, UUID salesProfileId, LocalDate from, LocalDate to, String kind) {
+        return jdbc.queryForObject("SELECT COUNT(*)" + activityWhere(kind), Long.class,
+                bin(tenantId), bin(salesProfileId), java.sql.Date.valueOf(from), java.sql.Date.valueOf(to));
+    }
+
     @Override
     public VisitActivitySummaryRow summarizeVisits(UUID tenantId, UUID salesProfileId,
                                                     LocalDate from, LocalDate to) {

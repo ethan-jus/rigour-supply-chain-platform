@@ -1,5 +1,7 @@
 package com.rigour.merchant.application.port.out;
 
+import com.rigour.merchant.api.v1.model.NearbyModels;
+
 import com.rigour.merchant.api.v1.model.StoreModels.*;
 import com.rigour.merchant.application.service.StoreScope;
 import java.util.List;
@@ -15,6 +17,8 @@ public interface StorePoolStore {
     List<Event> events(StoreScope scope, String id);
     default Page list(StoreScope scope, Query query) {return list(scope, query, Set.of());}
     Page list(StoreScope scope, Query query, Set<String> typeCodes);
+    NearbyModels.Page<Row> nearby(StoreScope scope, Query query, Set<String> typeCodes, NearbyModels.Origin origin, String cursor);
+    long count(StoreScope scope, Query query, Set<String> typeCodes);
     MapResult map(StoreScope scope, Query query, Set<String> typeCodes, MapWindow window);
     Page mapStores(StoreScope scope, Query query, Set<String> typeCodes, MapWindow window, String coordinateSystem);
     Row detail(StoreScope scope, String id);

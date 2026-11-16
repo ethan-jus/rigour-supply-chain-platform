@@ -42,6 +42,8 @@ public interface SalesWorkAdminRepository {
                                   boolean aiDuplicateEnabled, BigDecimal aiAutoConfirmThreshold,
                                   UUID actorId, Instant now);
 
+    void saveVisitCaptureRules(UUID tenantId,UUID versionId,com.rigour.sales.api.v1.model.SalesVisitPolicyModels.CaptureRules rules);
+
     void insertPolicyScope(UUID tenantId, String policyType, UUID policyVersionId, String scopeType,
                            UUID scopeId, UUID actorId, Instant now);
 

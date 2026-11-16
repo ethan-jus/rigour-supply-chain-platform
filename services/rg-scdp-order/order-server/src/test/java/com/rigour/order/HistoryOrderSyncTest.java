@@ -59,6 +59,7 @@ class HistoryOrderSyncTest {
                     + " BIGINT,product_id BIGINT,product_variant_id BIGINT,unit_code"
                     + " VARCHAR(32),quantity DECIMAL(20,6),deleted INT)");
         try (var c = ds.getConnection()) {
+            ScriptUtils.executeSqlScript(c, new ClassPathResource("db/migration/V75__manual_order_sync_protection.sql"));
             ScriptUtils.executeSqlScript(c, new ClassPathResource("db/migration/V50__dhb_projection_change_audit.sql"));
             ScriptUtils.executeSqlScript(
                     c,
@@ -169,6 +170,87 @@ class HistoryOrderSyncTest {
 
     void intake(String no, long customer, String total, String qty) {
         tx.executeWithoutResult(s -> store.sourceOrder(tenant, source(no, customer, total, qty)));
+    }
+
+    void protect(String sourceNo, long orderId) {
+        db.update("INSERT INTO order_manual_sync_protection(tenant_id,connector_id,source_no,order_id,reason,operation_id,created_by)"
+                + " VALUES(?,?,?,?,?,?,?)", tenant, connector.toString(), sourceNo, orderId,
+                "用户核定历史部分退货，按实际成交及凭证保留", UUID.randomUUID().toString(), "tester");
+    }
+
+    @Test
+    void manualCorrectionSurvivesChangedLinesAmountsCancellationAndSourceDeletion() {
+        order(1, 1, "156", "26", "2");
+        intake("D1", 1, "156", "2");
+        bind(List.of("D1"), List.of(base(1, "26")));
+        db.update("UPDATE order_sales_order SET payable_amount=26,unpaid_amount=0,payment_status_code='PAID' WHERE tenant_id=? AND id=1", tenant);
+        db.update("UPDATE order_sales_order_line SET quantity=4,line_amount=26,unit_code='BUCKET' WHERE tenant_id=? AND order_id=1", tenant);
+        protect("D1", 1);
+        var before = db.queryForList("SELECT * FROM order_sales_order");
+        var lines = db.queryForList("SELECT * FROM order_sales_order_line");
+        var sourceBefore = db.queryForList("SELECT * FROM order_sync_source");
+        for (String amount : List.of("156", "234", "0")) {
+            var changed = source("D1", 1, amount, "3");
+            assertThat(tx.execute(s -> store.sourceOrder(tenant, changed)).state()).isEqualTo("MANUAL_PROTECTED");
+        }
+        for (String state : List.of("CANCELLED", "DELETED")) {
+            var cancelled = new CancelSourceOrder(connector, "D1", state, date, BigDecimal.ZERO, "门店A", paidAt, null);
+            assertThat(tx.execute(s -> store.cancelSourceOrder(tenant, "SYSTEM", cancelled)).state()).isEqualTo("MANUAL_PROTECTED");
+            assertThat(tx.execute(s -> store.cancelSourceOrder(tenant, "SYSTEM", cancelled)).state()).isEqualTo("MANUAL_PROTECTED");
+        }
+        assertThat(db.queryForList("SELECT * FROM order_sales_order")).isEqualTo(before);
+        assertThat(db.queryForList("SELECT * FROM order_sales_order_line")).isEqualTo(lines);
+        assertThat(db.queryForList("SELECT * FROM order_sync_source")).isEqualTo(sourceBefore);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit WHERE object_type LIKE 'PROTECTED_%'", Integer.class)).isEqualTo(5);
+        verifyNoInteractions(salesOrders);
+    }
+
+    @Test
+    void protectedReceiptsCannotBeReactivatedChangedOrMovedIncludingHistoricalStatusPath() {
+        order(1, 1, "26", "26", "4");
+        intake("D1", 1, "156", "2");
+        protect("D1", 1);
+        db.update("INSERT INTO order_payment_record(id,tenant_id,order_id,connector_id,source_document_no,paid_amount,deleted,revision)"
+                + " VALUES(100,?,1,?,'R1',26,1,7)", tenant, connector.toString());
+        var paymentsBefore = db.queryForList("SELECT * FROM order_payment_record");
+        for (String state : List.of("CONFIRMED", "CANCELLED", "PENDING")) {
+            // 来源单号被改为空或另一订单也不能重新激活已人工删除的回款。
+            var changed = new Receipt(connector, "R1", "ANOTHER", 1L, new BigDecimal("156"), date, state, paidAt, state);
+            assertThat(tx.execute(s -> store.receipt(tenant, changed)).state()).isEqualTo("MANUAL_PROTECTED");
+            assertThat(tx.execute(s -> store.historicalReceiptStatus(tenant, changed)).state()).isEqualTo("MANUAL_PROTECTED");
+        }
+        assertThat(tx.execute(s -> store.receipt(tenant, receipt("R-NEW", "D1", "130", "CONFIRMED", "new"))).state()).isEqualTo("MANUAL_PROTECTED");
+        assertThat(db.queryForList("SELECT * FROM order_payment_record")).isEqualTo(paymentsBefore);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sync_receipt", Integer.class)).isZero();
+    }
+
+    @Test
+    void voucherCancellationAndReplacementPreserveManualAttachmentsEvenWithoutSourceOrderNumber() {
+        order(1, 1, "26", "26", "4");
+        protect("D1", 1);
+        db.execute("ALTER TABLE order_payment_record ADD voucher_keys_json VARCHAR(1000)");
+        db.update("INSERT INTO order_payment_record(id,tenant_id,order_id,paid_amount,deleted,revision,voucher_keys_json)"
+                + " VALUES(100,?,1,26,0,7,'[\"manual-proof\"]')", tenant);
+        db.execute("CREATE TABLE order_payment_voucher_source(tenant_id VARCHAR(36),connector_id VARCHAR(36),source_payment_no VARCHAR(128),payment_id BIGINT)");
+        db.update("INSERT INTO order_payment_voucher_source VALUES(?,?,'FP1',100)", tenant, connector.toString());
+        var before = db.queryForList("SELECT * FROM order_payment_record");
+        for (String status : List.of("CANCELLED", "CONFIRMED")) {
+            var c = new ReceiptVouchers(connector, null, "FP1", null, status, List.of(tenant + "/old-proof"));
+            assertThat(tx.execute(s -> store.receiptVouchers(tenant, "SYSTEM", c)).state()).isEqualTo("MANUAL_PROTECTED");
+        }
+        assertThat(db.queryForList("SELECT * FROM order_payment_record")).isEqualTo(before);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_voucher_source", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void protectionIsTenantAndConnectorScopedAndNormalOrdersStillIntake() {
+        protect("D1", 1);
+        assertThat(tx.execute(s -> store.sourceOrder("another-tenant", source("D1", 1, "78", "1"))).state()).isNotEqualTo("MANUAL_PROTECTED");
+        var original = source("D2", 1, "78", "1");
+        assertThat(tx.execute(s -> store.sourceOrder(tenant, original)).state()).isNotEqualTo("MANUAL_PROTECTED");
+        var otherConnector = new SourceOrder(UUID.randomUUID(), "D1", original.order(), original.amount(), "other");
+        assertThat(tx.execute(s -> store.sourceOrder(tenant, otherConnector)).state()).isNotEqualTo("MANUAL_PROTECTED");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sync_source", Integer.class)).isEqualTo(3);
     }
 
     @Test
@@ -530,6 +612,23 @@ class HistoryOrderSyncTest {
                         "h0");
         assertThat(pay(p).state()).isEqualTo("BASELINE_COVERED");
         assertThat(paid(1)).isEqualByComparingTo("200");
+    }
+
+    @Test
+    void cancelledUnlinkedReceiptCannotBeRestoredByNormalOrHistoricalReplay() {
+        var cancelled=new Receipt(connector,"VOID-1","MISSING-ORDER",1L,new BigDecimal("78"),
+                date,"CANCELLED",date,"cancelled");
+        assertThat(pay(cancelled).state()).isEqualTo("CANCELLED");
+        for (String state:List.of("CANCELLED","CONFIRMED","RECEIVED","PENDING")) {
+            var replay=new Receipt(connector,"VOID-1","MISSING-ORDER",1L,new BigDecimal("78"),
+                    date,state,date.plusSeconds(3600),"replay-"+state);
+            pay(replay);
+            tx.execute(s -> store.historicalReceiptStatus(tenant,replay));
+            assertThat(db.queryForObject("SELECT source_status FROM order_sync_receipt WHERE receipt_no='VOID-1'",String.class)).isEqualTo("CANCELLED");
+            assertThat(db.queryForObject("SELECT state FROM order_sync_receipt WHERE receipt_no='VOID-1'",String.class)).isEqualTo("CANCELLED");
+            assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record",Integer.class)).isZero();
+            assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sync_allocation",Integer.class)).isZero();
+        }
     }
 
     @Test

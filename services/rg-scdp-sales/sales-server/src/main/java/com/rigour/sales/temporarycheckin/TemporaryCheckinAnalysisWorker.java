@@ -1,8 +1,8 @@
 package com.rigour.sales.temporarycheckin;
 
 import com.rigour.sales.infrastructure.storage.CosRecordingFileStorage;
-import com.rigour.sales.temporarycheckin.TemporaryCheckinAiClient.AiClientException;
-import com.rigour.sales.temporarycheckin.TemporaryCheckinAiClient.AsrState;
+import com.rigour.sales.application.port.out.SalesAudioAiClient.AiClientException;
+import com.rigour.sales.application.port.out.SalesAudioAiClient.AsrState;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.TranscriptionJob;
 import java.net.URI;
 import java.time.Clock;

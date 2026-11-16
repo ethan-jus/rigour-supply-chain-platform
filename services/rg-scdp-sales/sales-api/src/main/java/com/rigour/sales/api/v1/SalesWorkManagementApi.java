@@ -26,6 +26,12 @@ import org.springframework.http.ResponseEntity;
 
 /** 供应链 SCDP Web 销售管理查询契约；不对移动销售端开放。 */
 public interface SalesWorkManagementApi {
+    @GetMapping("/api/v1/sales/management/fieldwork")
+    ApiResponse<com.rigour.sales.api.v1.model.SalesFieldworkModels.Page> fieldwork(
+            @RequestParam("date") LocalDate date, @RequestParam(name="status",required=false) String status,
+            @RequestParam(name="keyword",required=false) String keyword, @RequestParam(name="page",defaultValue="1") int page,
+            @RequestParam(name="pageSize",defaultValue="20") int pageSize);
+
 
     String MANAGEMENT_BASE_PATH = SalesWorkApi.BASE_PATH + "/management";
     String DASHBOARD_PATH = MANAGEMENT_BASE_PATH + "/dashboard";

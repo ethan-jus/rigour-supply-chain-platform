@@ -158,6 +158,14 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMES
     }
 
     @Override
+    public Optional<LocationSessionSnapshot> findLocationSession(UUID tenantId, UUID workDayId, UUID sessionId) {
+        return jdbc.query("SELECT id, started_at, ended_at, status FROM sales_location_session WHERE tenant_id=? AND work_day_id=? AND id=?",
+                (rs, row) -> new LocationSessionSnapshot(uuid(rs, "id"), instant(rs.getTimestamp("started_at")),
+                        instant(rs.getTimestamp("ended_at")), rs.getString("status")),
+                bin(tenantId), bin(workDayId), bin(sessionId)).stream().findFirst();
+    }
+
+    @Override
     public List<String> findExistingLocationEventIds(UUID tenantId, List<String> deviceEventIds) {
         if (deviceEventIds == null || deviceEventIds.isEmpty()) return List.of();
         String placeholders =
@@ -188,14 +196,14 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMES
             Instant clientOccurredAt,
             Instant serverReceivedAt,
             String source,
-            String qualityStatus) {
+            String qualityStatus, BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem) {
         jdbc.update(
                 """
                 INSERT INTO sales_location_point
                     (id, tenant_id, location_session_id, work_day_id, device_event_id,
                      longitude, latitude, accuracy_meters, client_occurred_at, server_received_at,
-                     source, quality_status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))
+                     source, quality_status, raw_longitude, raw_latitude, raw_coordinate_system, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))
                 """,
                 bin(id),
                 bin(tenantId),
@@ -208,7 +216,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMES
                 timestamp(clientOccurredAt),
                 timestamp(serverReceivedAt),
                 source,
-                qualityStatus);
+                qualityStatus, rawLongitude, rawLatitude, rawCoordinateSystem);
     }
 
     @Override
@@ -218,7 +226,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMES
                 """
                 UPDATE sales_location_session
                    SET point_count=point_count+?, version=version+1, updated_at=UTC_TIMESTAMP(6)
-                 WHERE tenant_id=? AND work_day_id=? AND id=? AND status='ACTIVE'
+                 WHERE tenant_id=? AND work_day_id=? AND id=? AND status IN ('ACTIVE','CLOSED')
                 """,
                 amount,
                 bin(tenantId),
@@ -382,10 +390,10 @@ VALUES (?, ?, ?, ?, 'PENDING_REVIEW', ?, ?, ?, ?, ?, 0, 0, 0, ?, JSON_ARRAY(), ?
         return jdbc.query(
                 """
 SELECT longitude, latitude, accuracy_meters, client_occurred_at, server_received_at,
-       source, quality_status
+       source, quality_status, location_session_id
   FROM sales_location_point
  WHERE tenant_id=? AND work_day_id=?
- ORDER BY server_received_at ASC, created_at ASC
+ ORDER BY COALESCE(client_occurred_at, server_received_at) ASC, created_at ASC
 """,
                 (rs, row) ->
                         new LocationPointRow(
@@ -395,7 +403,7 @@ SELECT longitude, latitude, accuracy_meters, client_occurred_at, server_received
                                 instant(rs.getTimestamp("client_occurred_at")),
                                 instant(rs.getTimestamp("server_received_at")),
                                 rs.getString("source"),
-                                rs.getString("quality_status")),
+                                rs.getString("quality_status"), uuid(rs, "location_session_id")),
                 bin(tenantId),
                 bin(workDayId));
     }

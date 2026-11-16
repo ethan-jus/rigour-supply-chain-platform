@@ -55,6 +55,15 @@ public final class SalesWorkVisitController {
         return ApiResponse.success(service.visits(date, page, pageSize));
     }
 
+    @GetMapping("/api/v1/sales/me/activity-visits")
+    public ApiResponse<VisitPageView> activityVisits(
+            @RequestParam LocalDate from, @RequestParam LocalDate to,
+            @RequestParam(defaultValue = "all") String kind,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int pageSize) {
+        return ApiResponse.success(service.activityVisits(from, to, kind, page, pageSize));
+    }
+
     @GetMapping(SalesWorkApi.ACTIVITY_SUMMARY_PATH)
     public ApiResponse<VisitActivitySummaryView> activitySummary(
             @RequestParam("from") LocalDate from,
@@ -67,10 +76,25 @@ public final class SalesWorkVisitController {
         return ApiResponse.success(service.visit(visitId));
     }
 
+    @GetMapping(SalesWorkApi.VISIT_PATH + "/capture-rules")
+    public ApiResponse<com.rigour.sales.api.v1.model.SalesVisitPolicyModels.CaptureRules> captureRules(@PathVariable("visitId") UUID visitId) {
+        return ApiResponse.success(service.captureRules(visitId));
+    }
+
     @PostMapping(SalesWorkApi.VISIT_CHECK_OUT_PATH)
     public ApiResponse<VisitView> checkOutVisit(@PathVariable("visitId") UUID visitId,
                                                 @RequestBody CheckOutVisitCommand command) {
         return ApiResponse.success(service.checkOutVisit(visitId, command));
+    }
+
+    @GetMapping(SalesWorkApi.VISIT_PATH + "/auto-departure-context")
+    public ApiResponse<com.rigour.sales.api.v1.model.SalesWorkApiModels.AutoDepartureContext> autoDepartureContext(@PathVariable("visitId") UUID visitId) {
+        return ApiResponse.success(service.autoDepartureContext(visitId));
+    }
+
+    @PostMapping(SalesWorkApi.VISIT_PATH + "/auto-check-out")
+    public ApiResponse<VisitView> autoCheckOutVisit(@PathVariable("visitId") UUID visitId,@RequestBody CheckOutVisitCommand command) {
+        return ApiResponse.success(service.autoCheckOutVisit(visitId,command));
     }
 
     @PutMapping(SalesWorkApi.VISIT_RESULT_PATH)

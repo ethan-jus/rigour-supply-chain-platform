@@ -11,6 +11,9 @@ import java.util.UUID;
 /** 当前组织/业务关联变化后原子重建人员和拜访投影；失败拒绝请求，不能返回旧的扩大范围。 */
 @Component
 public class BiPeopleProjector {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private final BiSourceSnapshotProjector sources;
     private final EmployeeAnalyticsStore employees;
     private final CityContactAnalyticsStore contacts;
@@ -30,6 +33,7 @@ public class BiPeopleProjector {
     @Transactional
     public void refreshOrganization(UUID tenant) {
         if (sources.refreshOrganization(tenant)) {
+            queryCache.changed(tenant.toString());
             employees.refresh(tenant.toString(), clock.instant());
             contacts.refreshCities(tenant.toString());
         }
@@ -38,6 +42,7 @@ public class BiPeopleProjector {
     @Transactional
     public void refresh(UUID tenant) {
         if (sources.refreshPeople(tenant)) {
+            queryCache.changed(tenant.toString());
             employees.refresh(tenant.toString(), clock.instant());
             contacts.refresh(tenant.toString(), clock.instant());
         }

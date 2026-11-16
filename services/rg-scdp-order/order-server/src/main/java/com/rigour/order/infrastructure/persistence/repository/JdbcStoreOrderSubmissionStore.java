@@ -12,12 +12,16 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class JdbcStoreOrderSubmissionStore implements StoreOrderSubmissionStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private final JdbcTemplate jdbc;
     private final OrderDataScope scopes;
     private final JdbcStoreOrderOutbox outbox;
     // 账期订单正式提交即生效；正常履约后的退货不删除已成立的合作事实。
     public JdbcStoreOrderSubmissionStore(JdbcTemplate jdbc,OrderDataScope scopes,JdbcStoreOrderOutbox outbox){this.jdbc=jdbc;this.scopes=scopes;this.outbox=outbox;}
     @Override @Transactional public Submission reserve(String tenant,String user,long id,int revision,String store,String ownership,String request,Instant now){
+        queryCache.changed(tenant);
         scopes.requireOrder(tenant,id,"order:submit");
         var rows=jdbc.queryForList("SELECT * FROM order_sales_order WHERE tenant_id=? AND id=? AND deleted=0 FOR UPDATE",tenant,id);
         if(rows.isEmpty())throw new StateConflictException("订单不存在");
@@ -33,6 +37,7 @@ public class JdbcStoreOrderSubmissionStore implements StoreOrderSubmissionStore 
         return new Submission(store,ownership,request,"PENDING_AUTH",revision+1);
     }
     @Override @Transactional public void authorize(String tenant,String user,long id,String request,OrderPermit p,Instant now){
+        queryCache.changed(tenant);
         int n=jdbc.update("UPDATE order_sales_order SET store_submission_status='AUTHORIZED',store_authorization_revision=?,store_authorized_at=?,store_salesperson_id=?,store_department_id=?,store_name_snapshot=? WHERE tenant_id=? AND id=? AND store_id=? AND ownership_id=? AND store_request_id=? AND store_operator_user_id=? AND store_submission_status IN ('PENDING_AUTH','AUTHORIZED') AND store_authorization_expires_at>? AND order_status_code='DRAFT' AND deleted=0",p.ownershipRevision(),ts(p.acceptedAt()),p.salespersonId(),p.departmentId(),p.storeName(),tenant,id,p.storeId(),p.ownershipId(),request,user,ts(now));
         if(n!=1)throw new StateConflictException("订单受理已过期或状态变化，不能迟到提交");
         outbox.enqueue(tenant,id);

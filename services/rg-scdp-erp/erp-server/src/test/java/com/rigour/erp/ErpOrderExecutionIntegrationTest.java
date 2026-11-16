@@ -59,6 +59,30 @@ class ErpOrderExecutionIntegrationTest {
     long warehouse, product, variant;
     CallerIdentity actor;
 
+    @Autowired com.rigour.erp.infrastructure.persistence.repository.JdbcProcurementGoodsCosts goodsCosts;
+
+    @Test
+    void procurementCostProjectionSupportsLegacyAndNewColumnCollations() {
+        // V19 的单头/供应商使用 0900，V41 新增的单号/供应商编码使用 general。
+        assertThat(jdbc.queryForObject("SELECT collation_name FROM information_schema.columns"
+                + " WHERE table_schema=DATABASE() AND table_name='erp_procurement_order'"
+                + " AND column_name='procurement_no'", String.class)).isEqualTo("utf8mb4_0900_ai_ci");
+        assertThat(jdbc.queryForObject("SELECT collation_name FROM information_schema.columns"
+                + " WHERE table_schema=DATABASE() AND table_name='erp_procurement_order_line'"
+                + " AND column_name='procurement_no'", String.class)).isEqualTo("utf8mb4_general_ci");
+        jdbc.update("INSERT INTO erp_supplier_profile(tenant_id,supplier_code,supplier_name) VALUES(?,'SUP','供应商')",tenant);
+        jdbc.update("INSERT INTO erp_procurement_order(tenant_id,procurement_no,supplier_code,target_warehouse_code,"
+                + "status_code,confirmation_status_code,total_amount,total_quantity,purchase_date)"
+                + " VALUES(?,'PO-COLLATION','SUP','HZ','COMPLETED','CONFIRMED',90,2,'2026-11-01')",tenant);
+        jdbc.update("INSERT INTO erp_procurement_order_line(tenant_id,procurement_no,product_code,variant_code,"
+                + "unit_code,quantity,unit_price,line_amount) VALUES(?,'PO-COLLATION','P1','V1','PCS',2,45,90)",tenant);
+        var facts=goodsCosts.page(tenant, "");
+        assertThat(facts).hasSize(1);
+        assertThat(new BigDecimal(facts.getFirst().get("amount"))).isEqualByComparingTo("90");
+        assertThat(goodsCosts.page(UUID.randomUUID().toString(), "")).isEmpty();
+        assertThat(goodsCosts.page(tenant,facts.getFirst().get("id"))).isEmpty();
+    }
+
     @BeforeEach
     void setup() {
         tenant = UUID.randomUUID().toString();

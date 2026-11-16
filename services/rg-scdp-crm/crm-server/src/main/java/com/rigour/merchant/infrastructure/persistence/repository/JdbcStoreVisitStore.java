@@ -7,6 +7,8 @@ import com.rigour.merchant.application.service.StoreScope;
 import com.rigour.merchant.domain.store.OwnershipProtection;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.core.exception.StateConflictException;
+import com.rigour.shared.core.exception.BusinessException;
+import com.rigour.shared.core.api.ErrorCode;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
@@ -17,6 +19,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class JdbcStoreVisitStore implements StoreVisitStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private final JdbcTemplate jdbc;
     private final JdbcStorePoolStore pool;
     private final JdbcStoreLifecycleStore lifecycle;
@@ -30,6 +35,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
         return cycle;
     }
     @Override @Transactional public Visit checkIn(StoreScope s,String store,CheckIn c,com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy policy,Instant now){
+        queryCache.changed(s.access().tenantId());
         lock(s,store);
         var previous=jdbc.queryForList("SELECT id,store_id,ownership_id,salesperson_id FROM crm_visit WHERE tenant_id=? AND request_id=?",tenant(s),c.requestId());
         if(!previous.isEmpty()){
@@ -42,7 +48,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
         if(!Objects.equals(row.coordinateSystem(),c.coordinateSystem()))throw new StateConflictException("定位坐标系与门店不同，请完成坐标转换后提交");
         if(row.longitude()==null||row.latitude()==null)throw new StateConflictException("请先补全门店定位");
         double distance=distance(c.longitude(),c.latitude(),row.longitude(),row.latitude());
-        if(distance>policy.radiusMeters())throw new StateConflictException("当前位置超过门店"+policy.radiusMeters()+"米，不能签到");
+        if(distance>policy.radiusMeters())throw new BusinessException(ErrorCode.CRM_STORE_VISIT_OUTSIDE_RADIUS);
         if(jdbc.queryForObject("SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND ownership_id=? AND status_code='IN_PROGRESS'",Long.class,tenant(s),cycle.id())>0)throw new StateConflictException("本轮已有未完成拜访，请先处理原记录");
         long id=IdWorker.getId();
         jdbc.update("INSERT INTO crm_visit(id,tenant_id,created_at,updated_at,created_by,updated_by,store_id,ownership_id,salesperson_id,department_id_snapshot,visited_at,accepted_at,checkin_accepted_at,checkin_longitude,checkin_latitude,checkin_coordinate_system,accuracy_meters,distance_meters,store_snapshot,validation_policy_version,request_id,capture_ref,employee_code_snapshot) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,JSON_OBJECT('name',?,'address',?,'longitude',?,'latitude',?,'coordinateSystem',?,'areaCode',?,'areaVersion',?),?,?,?,?)",id,tenant(s),ts(now),ts(now),s.access().userId(),s.access().userId(),store,cycle.id(),cycle.employeeId(),s.access().departmentId(),ts(now),ts(now),ts(now),c.longitude(),c.latitude(),c.coordinateSystem(),c.accuracyMeters(),BigDecimal.valueOf(distance),row.name(),row.address(),row.longitude(),row.latitude(),row.coordinateSystem(),row.areaCode(),s.catalog().version(),policy.id(),c.requestId(),c.captureRef(),s.access().employeeCode());
@@ -51,6 +57,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
         return visit(s,store,Long.toString(id));
     }
     @Override @Transactional public Visit submit(StoreScope s,String store,String id,SubmitVisit c,Instant now){
+        queryCache.changed(s.access().tenantId());
         lock(s,store);var v=visit(s,store,id);
         if(!Objects.equals(v.salespersonId(),s.access().employeeId()))throw new AuthorizationDeniedException("visit-owner");
         if(!"IN_PROGRESS".equals(v.status())) {
@@ -66,6 +73,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
         return visit(s,store,id);
     }
     @Override @Transactional public Visit cancel(StoreScope s,String store,String id,CancelVisit c,Instant now){
+        queryCache.changed(s.access().tenantId());
         lock(s,store);var v=visit(s,store,id);if(!Objects.equals(s.access().employeeId(),v.salespersonId()))throw new AuthorizationDeniedException("visit-owner");
         if("INVALID".equals(v.status())&&Objects.equals(v.reviewReason(),c.reason()))return v;
         if(!"IN_PROGRESS".equals(v.status())||c.revision()!=v.revision())throw new StateConflictException("仅能取消尚未提交的本次拜访");
@@ -74,6 +82,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
         event(s,store,v.ownershipId(),Long.parseLong(id),"VISIT_CANCELLED",c.reason(),now);return visit(s,store,id);
     }
     @Override @Transactional public Visit review(StoreScope s,String store,String id,ReviewVisit c,Instant now){
+        queryCache.changed(s.access().tenantId());
         lock(s,store);var v=visit(s,store,id);
         if(v.revision()!=c.revision())throw new StateConflictException("拜访版本已变化");
         boolean revoke="VOID".equals(c.decision());
@@ -100,6 +109,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
     }
     private Visit visit(StoreScope s,String store,String id){return queryVisits(s,store,id).stream().filter(v->id.equals(v.id())).findFirst().orElseThrow(()->new StateConflictException("拜访不存在"));}
     @Override @Transactional public OrderPermit authorize(StoreScope s,String store,OrderAuthorization c,Instant now){
+        queryCache.changed(s.access().tenantId());
         lock(s,store);
         var prior=jdbc.queryForList("SELECT actor_user_id,store_id,ownership_id,object_id,after_data FROM crm_store_event WHERE tenant_id=? AND request_id=? AND event_type='ORDER_AUTHORIZED'",tenant(s),c.requestId());
         if(!prior.isEmpty()){

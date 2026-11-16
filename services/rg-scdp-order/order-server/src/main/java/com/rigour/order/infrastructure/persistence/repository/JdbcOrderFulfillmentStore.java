@@ -22,6 +22,9 @@ import java.util.*;
 /** 同一订单先锁订单行，再锁执行行；意图不可替换仓库或明细，重复回写不会再次产生库存。 */
 @Repository
 public class JdbcOrderFulfillmentStore implements OrderFulfillmentStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private final JdbcTemplate jdbc;
     private final OrderDataScope scopes;
@@ -78,6 +81,7 @@ public class JdbcOrderFulfillmentStore implements OrderFulfillmentStore {
     @Transactional
     public OrderFulfillmentStatusView select(
             CallerIdentity actor, long id, long warehouse, int revision) {
+        queryCache.changed(actor.tenantId().toString());
         String tenant = actor.tenantId().toString();
         var order = lock(tenant, id);
         scopes.requireOrder(tenant, id, "order:warehouse:select", warehouse);
@@ -107,6 +111,7 @@ public class JdbcOrderFulfillmentStore implements OrderFulfillmentStore {
             int revision,
             Instant time,
             String remark) {
+        queryCache.changed(actor.tenantId().toString());
         String tenant = actor.tenantId().toString();
         var order = lock(tenant, id);
         scopes.requireOrder(tenant, id, "order:outbound:confirm", warehouse);
@@ -208,6 +213,7 @@ public class JdbcOrderFulfillmentStore implements OrderFulfillmentStore {
     @Override
     @Transactional
     public FulfillmentExecutionView claim(CallerIdentity actor, String id) {
+        queryCache.changed(actor.tenantId().toString());
         UUID.fromString(id);
         String tenant = actor.tenantId().toString();
         var ids =
@@ -242,6 +248,7 @@ public class JdbcOrderFulfillmentStore implements OrderFulfillmentStore {
     @Transactional
     public OrderFulfillmentStatusView complete(
             String tenant, String id, long stockOutId, String no, Instant time, long warehouse) {
+        queryCache.changed(tenant);
         var ids =
                 jdbc.queryForList(
                         "SELECT order_id FROM order_fulfillment_execution WHERE tenant_id=? AND"
@@ -289,6 +296,7 @@ public class JdbcOrderFulfillmentStore implements OrderFulfillmentStore {
     @Override
     @Transactional
     public void failed(String tenant, String id, String reason) {
+        queryCache.changed(tenant);
         jdbc.update(
                 "UPDATE order_fulfillment_execution SET last_error=?,updated_at=UTC_TIMESTAMP(6)"
                     + " WHERE tenant_id=? AND execution_id=? AND status<>'COMPLETED'",

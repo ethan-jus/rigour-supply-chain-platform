@@ -62,7 +62,21 @@ public interface SalesWorkQueryRepository {
     record VisitPolicy(UUID id, String policyCode, String policyName, int versionNo,
                        String publishStatus, boolean requireAssignedTarget, boolean allowProspectTarget,
                        int checkInRadiusMeters, int minimumDwellMinutes, int requiredPhotoCount,
-                       boolean recordingEnabled, int minimumRecordingSeconds, int maximumClipGapSeconds) {
+                       boolean recordingEnabled, int minimumRecordingSeconds, int maximumClipGapSeconds,
+                       com.rigour.sales.api.v1.model.SalesVisitPolicyModels.CaptureRules captureRules, boolean aiAsrEnabled) {
+        public VisitPolicy(UUID id,String policyCode,String policyName,int versionNo,String publishStatus,
+                boolean requireAssignedTarget,boolean allowProspectTarget,int checkInRadiusMeters,int minimumDwellMinutes,
+                int requiredPhotoCount,boolean recordingEnabled,int minimumRecordingSeconds,int maximumClipGapSeconds,
+                com.rigour.sales.api.v1.model.SalesVisitPolicyModels.CaptureRules captureRules) {
+            this(id,policyCode,policyName,versionNo,publishStatus,requireAssignedTarget,allowProspectTarget,checkInRadiusMeters,
+                minimumDwellMinutes,requiredPhotoCount,recordingEnabled,minimumRecordingSeconds,maximumClipGapSeconds,captureRules,false);
+        }
+        public VisitPolicy(UUID id,String policyCode,String policyName,int versionNo,String publishStatus,
+                boolean requireAssignedTarget,boolean allowProspectTarget,int checkInRadiusMeters,int minimumDwellMinutes,
+                int requiredPhotoCount,boolean recordingEnabled,int minimumRecordingSeconds,int maximumClipGapSeconds) {
+            this(id,policyCode,policyName,versionNo,publishStatus,requireAssignedTarget,allowProspectTarget,checkInRadiusMeters,
+                minimumDwellMinutes,requiredPhotoCount,recordingEnabled,minimumRecordingSeconds,maximumClipGapSeconds,null);
+        }
     }
 
     record StoreProjection(UUID storeId, UUID customerId, String customerName, String storeName,

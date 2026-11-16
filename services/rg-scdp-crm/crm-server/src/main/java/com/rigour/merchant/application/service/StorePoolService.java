@@ -1,5 +1,7 @@
 package com.rigour.merchant.application.service;
 
+import com.rigour.merchant.api.v1.model.NearbyModels;
+
 import com.rigour.merchant.api.v1.model.StoreModels.*;
 import com.rigour.merchant.application.port.out.*;
 import com.rigour.shared.context.AuthorizationDeniedException;
@@ -9,6 +11,8 @@ import org.springframework.stereotype.Service;
 
 @Service
 public class StorePoolService {
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.rigour.shared.cache.QueryCache queryCache=com.rigour.shared.cache.QueryCache.disabled();
     private final StoreReferenceClient references;
     private final CrmEmployeeClient employees;
     private final StorePoolStore store;
@@ -80,6 +84,31 @@ public class StorePoolService {
     public Page list(Query query) {
         listView(query.view());validate(query);var scope=scope(action(query.view()));
         return store.list(scope,query,typeCodes(scope,query));
+    }
+    public NearbyModels.Page<Row> nearby(Query query,NearbyModels.Query near) {
+        if(!Set.of("PUBLIC","MINE").contains(query.view()))throw new RequestValidationException("此门店视图不支持附近排序");
+        validate(query);var scope=scope(action(query.view()));
+        return store.nearby(scope,query,typeCodes(scope,query),nearbyOrigin(scope,near),near.nearCursor());
+    }
+    public NearbyModels.Origin nearbyOrigin(String view,NearbyModels.Query near) {
+        if(!Set.of("PUBLIC","MINE").contains(view))throw new RequestValidationException("门店视图无效");
+        return nearbyOrigin(scope(action(view)),near);
+    }
+    public NearbyModels.Origin nearbyOrigin(StoreScope scope,NearbyModels.Query near) {
+        if(near==null||near.nearLongitude()==null||near.nearLatitude()==null||!Double.isFinite(near.nearLongitude())||!Double.isFinite(near.nearLatitude())
+                ||Math.abs(near.nearLongitude())>180||Math.abs(near.nearLatitude())>90||!"WGS84".equals(near.nearCoordinateSystem())
+                ||near.nearCursor()!=null&&near.nearCursor().length()>512)throw new RequestValidationException("请提供有效的设备 WGS84 定位");
+        var point=queryCache.read(scope.access().tenantId(),"nearby-origin",List.of(near.nearLongitude(),near.nearLatitude()),300,
+                new tools.jackson.core.type.TypeReference<NearbyModels.Coordinates>(){},
+                ()->pois.convertGps(scope.access().tenantId(),near.nearLongitude(),near.nearLatitude()));
+        if(point==null||!"GCJ02".equals(point.coordinateSystem())||!Double.isFinite(point.longitude())||!Double.isFinite(point.latitude())
+                ||Math.abs(point.longitude())>180||Math.abs(point.latitude())>90)throw new RequestValidationException("坐标转换未完成，请重新定位");
+        return new NearbyModels.Origin(near.nearLongitude(),near.nearLatitude(),point.longitude(),point.latitude());
+    }
+    long count(StoreScope scope,Query query) {
+        listView(query.view());validate(query);
+        if(!action(query.view()).equals(scope.access().action()))throw new AuthorizationDeniedException("store-count-scope");
+        return store.count(scope,query,typeCodes(scope,query));
     }
     public MapResult map(Query query,MapWindow window) {
         listView(query.view());validate(query);validateWindow(window,false);

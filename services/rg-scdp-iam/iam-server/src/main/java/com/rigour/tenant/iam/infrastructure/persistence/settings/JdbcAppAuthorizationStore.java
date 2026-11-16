@@ -6,6 +6,7 @@ import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.exception.RequestValidationException;
 import com.rigour.shared.core.exception.StateConflictException;
 import com.rigour.tenant.iam.application.model.settings.AppAuthorizationSnapshot;
+import com.rigour.tenant.iam.application.model.settings.AppAuthorizationRole;
 import com.rigour.tenant.iam.application.model.settings.AppAuthorizationSnapshot.*;
 import com.rigour.tenant.iam.application.port.out.*;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
@@ -22,19 +23,16 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
     private final JdbcTemplate jdbc;
     private final JdbcAppSettingsStore settings;
     private final JdbcAppRoleStore roles;
-    private final JdbcAppMemberStore members;
     private final AppEmployeeClient employees;
 
     public JdbcAppAuthorizationStore(
             JdbcTemplate jdbc,
             JdbcAppSettingsStore settings,
             JdbcAppRoleStore roles,
-            JdbcAppMemberStore members,
             AppEmployeeClient employees) {
         this.jdbc = jdbc;
         this.settings = settings;
         this.roles = roles;
-        this.members = members;
         this.employees = employees;
     }
 
@@ -174,7 +172,7 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
             AppEmployeeClient.Employee employee,
             long memberVersion,
             UUID administratorRole,
-            List<com.rigour.tenant.iam.application.service.settings.AppAccessModels.Role> roles) {}
+            List<AppAuthorizationRole> roles) {}
 
     private AuthorizationFacts prepare(Actor actor, Collection<String> actions) {
         var context = settings.context(actor);
@@ -202,26 +200,10 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
                         app,
                         bin(actor.principalId()));
         UUID administratorRole = settings.protectedAdministratorRole(actor, null);
-        List<com.rigour.tenant.iam.application.service.settings.AppAccessModels.Role> assigned =
-                List.of();
+        List<AppAuthorizationRole> assigned = List.of();
         if (administratorRole == null
                 && actions.stream().anyMatch(context.permissions()::contains)) {
-            var assignments = members.assignments(actor, actor.principalId());
-            var byId =
-                    roles.all(actor).stream()
-                            .collect(
-                                    java.util.stream.Collectors.toMap(
-                                            role -> role.id(), role -> role));
-            assigned =
-                    assignments.stream()
-                            .map(
-                                    assignment -> {
-                                        var role = byId.get(assignment.roleId());
-                                        if (role == null)
-                                            throw new RequestValidationException("角色不存在");
-                                        return role;
-                                    })
-                            .toList();
+            assigned = roles.authorizationRoles(actor);
         }
         return new AuthorizationFacts(
                 actor, context, code, employee, memberVersion, administratorRole, assigned);

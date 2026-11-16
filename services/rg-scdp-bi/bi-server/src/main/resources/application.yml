@@ -29,6 +29,13 @@ mybatis-plus:
     banner: false
 
 rigour:
+  query-cache:
+    enabled: ${QUERY_CACHE_ENABLED:true}
+    namespace: ${QUERY_CACHE_NAMESPACE:${spring.profiles.active:local}:${NACOS_NAMESPACE:default}:bi}
+    command-timeout-ms: ${QUERY_CACHE_COMMAND_TIMEOUT_MS:500}
+    max-entry-bytes: 2097152
+    max-tenant-bytes: 33554432
+    max-concurrent-loads: 16
   analytics:
     supply-dashboard:
       refresh:

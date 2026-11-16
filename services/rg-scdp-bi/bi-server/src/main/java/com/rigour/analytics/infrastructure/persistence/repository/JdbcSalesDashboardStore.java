@@ -16,6 +16,9 @@ import java.util.List;
 
 @Repository
 public class JdbcSalesDashboardStore implements SalesDashboardStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private final NamedParameterJdbcTemplate jdbc;
 
     private final HrDashboardTargets targets;
@@ -51,7 +54,52 @@ public class JdbcSalesDashboardStore implements SalesDashboardStore {
 
     @Override
     @Transactional(readOnly = true)
+    public SalesDashboardSummary summary(String tenant, SupplyDashboardFilter f, List<String> owners) {
+        return queryCache.read(tenant, "summary", java.util.Arrays.asList(f, owners.stream().sorted().toList()), 60,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadSummary(tenant, f, owners));
+    }
+
+    private SalesDashboardSummary loadSummary(String tenant, SupplyDashboardFilter f, List<String> owners) {
+        var args = new MapSqlParameterSource("tenant", tenant)
+                .addValue("from", Timestamp.from(f.from())).addValue("to", Timestamp.from(f.to()))
+                .addValue("region", f.regionCode()).addValue("owner", f.ownerStaffCode())
+                .addValue("customerType", f.customerTypeCode()).addValue("source", f.sourceSystemCode())
+                .addValue("owners", owners);
+        // The selection only narrows authorized facts; customer history is tenant-wide,
+        // matching customerRetention even when a customer has changed salesperson or city.
+        return BiScopedQueries.queryForObject(jdbc, BASE + """
+            SELECT COALESCE(SUM(o.payable_amount),0) sales,
+                   (SELECT COALESCE(SUM(p.paid_amount),0) FROM payments p
+                     WHERE p.payment_time BETWEEN :from AND :to
+                       AND p.owner_staff_code IN (:owners)) receipts,
+                   COUNT(DISTINCT o.customer_id) customers,
+                   COUNT(DISTINCT CASE WHEN h.first_order_date BETWEEN :from AND :to
+                         THEN o.customer_id END) newCustomers,
+                   COUNT(DISTINCT CASE WHEN h.first_order_date < :from
+                         THEN o.customer_id END) returningCustomers,
+                   COUNT(DISTINCT CASE WHEN
+                       (YEAR(TIMESTAMPADD(HOUR,8,h.first_order_date))*12
+                         + MONTH(TIMESTAMPADD(HOUR,8,h.first_order_date)))
+                       < (YEAR(TIMESTAMPADD(HOUR,8,o.order_date))*12
+                         + MONTH(TIMESTAMPADD(HOUR,8,o.order_date)))
+                         THEN o.customer_id END) annualReturningCustomers
+              FROM orders o
+              LEFT JOIN bi_dashboard_customer_history h
+                ON h.tenant_id=o.tenant_id AND h.customer_id=o.customer_id
+             WHERE o.order_date BETWEEN :from AND :to AND o.owner_staff_code IN (:owners)
+            """, args, (r, n) -> new SalesDashboardSummary(r.getBigDecimal("sales"),
+                r.getBigDecimal("receipts"), r.getLong("customers"), r.getLong("newCustomers"),
+                r.getLong("returningCustomers"), r.getLong("annualReturningCustomers")));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public SalesDashboardData query(String tenant, SupplyDashboardFilter f) {
+        return queryCache.read(tenant, "query", f, 60,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadQuery(tenant, f));
+    }
+
+    private SalesDashboardData loadQuery(String tenant, SupplyDashboardFilter f) {
         int year = f.from().atZone(BiBusinessTime.ZONE).getYear();
         var args =
                 new MapSqlParameterSource("tenant", tenant)

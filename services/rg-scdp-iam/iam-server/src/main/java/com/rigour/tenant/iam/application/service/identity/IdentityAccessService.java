@@ -18,10 +18,11 @@ public final class IdentityAccessService {
     }
 
     public CurrentUser currentUser(IdentityAccessQuery query) {
-        var identity = reader.readCurrentUser(query);
         var actor = new Actor("TENANT", query.principalId(), query.tenantId());
-        if (!settings.initialized(actor)) return identity;
+        if (!settings.initialized(actor)) return reader.readCurrentUser(query);
         var context = settings.context(actor);
+        var identity = "ACTIVE".equals(context.mode())
+                ? reader.readUserProfile(query) : reader.readCurrentUser(query);
         var permissions = new HashSet<>(context.permissions());
         // 旧数据升级准备期保留供应链旧授权，启用新模型后仅使用应用角色授权。
         if (!"ACTIVE".equals(context.mode())) permissions.addAll(identity.permissions());

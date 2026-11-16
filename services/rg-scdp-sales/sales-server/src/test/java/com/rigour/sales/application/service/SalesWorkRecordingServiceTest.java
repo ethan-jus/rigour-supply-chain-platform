@@ -10,6 +10,7 @@ import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.DiscardRecordingClipCommand;
@@ -57,6 +58,7 @@ class SalesWorkRecordingServiceTest {
     private final Instant now = Instant.parse("2026-08-09T03:00:00Z");
     private SalesWorkRecordingService service;
     private SalesWorkRecordingRepository recordingRepository;
+    private SalesWorkQueryRepository queryRepository;
     private SalesWorkVisitRepository visitRepository;
     private RecordingMediaVerifier mediaVerifier;
     private FileStorage fileStorage;
@@ -66,7 +68,7 @@ class SalesWorkRecordingServiceTest {
     void setUp() throws Exception {
         recordingRepository = mock(SalesWorkRecordingRepository.class);
         visitRepository = mock(SalesWorkVisitRepository.class);
-        SalesWorkQueryRepository queryRepository = mock(SalesWorkQueryRepository.class);
+        queryRepository = mock(SalesWorkQueryRepository.class);
         SalesWorkContextService contextService = mock(SalesWorkContextService.class);
         mediaVerifier = mock(RecordingMediaVerifier.class);
         SalesWorkVisitAssessmentService assessmentService = mock(SalesWorkVisitAssessmentService.class);
@@ -101,7 +103,7 @@ class SalesWorkRecordingServiceTest {
 
         service = new SalesWorkRecordingService(recordingRepository, visitRepository, queryRepository,
                 contextService, mediaVerifier, assessmentService, fileStorage, properties, auditSink,
-                Clock.fixed(now, ZoneOffset.UTC));
+                Clock.fixed(now, ZoneOffset.UTC), org.mockito.Mockito.mock(com.rigour.sales.application.port.out.SalesRecordingAnalysisRepository.class));
     }
 
     @AfterEach
@@ -110,6 +112,30 @@ class SalesWorkRecordingServiceTest {
         clear.setAccessible(true);
         clear.invoke(null);
         RequestContext.clear();
+    }
+
+    @Test
+    void ownPlaybackRequiresReadPermissionBeforeStorageAccess() {
+        assertThatThrownBy(()->service.playOwnClip(visitId,UUID.randomUUID())).isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        verifyNoInteractions(fileStorage);
+    }
+
+    @Test
+    void ownPlaybackCannotReadAnotherEmployeesVisit() throws Exception {
+        var caller=new CallerIdentity("TENANT",userId,tenantId,userId,null,UUID.randomUUID(),1,1,1,Set.of("SALES"),Set.of("sales:recording:own:read"));
+        var setter=AuthorizationContext.class.getDeclaredMethod("set",CallerIdentity.class);setter.setAccessible(true);setter.invoke(null,caller);
+        var otherVisit=UUID.randomUUID();
+        when(visitRepository.findVisit(tenantId,profileId,otherVisit)).thenReturn(Optional.empty());
+        assertThatThrownBy(()->service.playOwnClip(otherVisit,UUID.randomUUID())).isInstanceOfSatisfying(BusinessException.class,e->assertThat(e.getErrorCode()).isEqualTo(ErrorCode.SALES_VISIT_NOT_FOUND));
+        verifyNoInteractions(fileStorage);
+    }
+
+    @Test
+    void externalAudioIsRejectedBeforeReadingOrStoringTheFile() {
+        var file = new MockMultipartFile("file", "import.aac", "audio/aac", new byte[]{1, 2, 3});
+        assertThatThrownBy(() -> service.uploadClip(visitId, file, "import-one", null, null, null, "FILE_IMPORT"))
+                .hasMessageContaining("只允许App现场录音");
+        verifyNoInteractions(mediaVerifier, fileStorage, recordingRepository);
     }
 
     @Test
@@ -386,6 +412,100 @@ class SalesWorkRecordingServiceTest {
                 eq("duration-tolerance-exceeded"), eq(0), any(), eq("audio/aac"), eq(3L), any(),
                 eq(decodedContentHash), eq(30_000L), isNull(), eq("DURATION_MISMATCH"),
                 eq(recordedFrom), eq(recordedTo), eq(now));
+    }
+
+    @Test
+    void nativeRecordingCountsDecodedAudioWithoutClaimingElapsedTimerAsDuration() {
+        Instant recordedFrom = now.minusMillis(300_429L);
+        when(visitRepository.findVisit(tenantId, profileId, visitId)).thenReturn(Optional.of(
+                new VisitSnapshot(visitId, UUID.randomUUID(), profileId, "MY_STORE",
+                        UUID.randomUUID(), UUID.randomUUID(), "CHECKED_IN",
+                        now.minusSeconds(700), null, UUID.randomUUID(), now.minusSeconds(700),
+                        null, null, null, null, null, null, null, null, null)));
+        byte[] bytes = new byte[]{1, 2, 3};
+        when(mediaVerifier.verify("audio/aac", bytes))
+                .thenReturn(Verification.verified(294_656L, "audio/m4a", "native-decoded"));
+
+        service.uploadClip(visitId, new MockMultipartFile("file", "native.aac", "audio/aac", bytes),
+                "native-clock-drift", null, recordedFrom, now, "APP_RECORDER");
+
+        verify(recordingRepository).insertClip(any(), eq(tenantId), eq(sessionId),
+                eq("native-clock-drift"), eq(0), any(), eq("audio/m4a"), eq(3L), any(),
+                eq("native-decoded"), isNull(), eq(294_656L), eq("VERIFIED"),
+                eq(recordedFrom), eq(now), eq(now));
+    }
+
+    @Test
+    void nativeRecordingLongerThanItsCaptureIntervalStillRequiresReview() {
+        byte[] bytes = new byte[]{1, 2, 3};
+        when(mediaVerifier.verify("audio/aac", bytes))
+                .thenReturn(Verification.verified(41_000L, "audio/aac", "native-too-long"));
+
+        service.uploadClip(visitId, new MockMultipartFile("file", "native.aac", "audio/aac", bytes),
+                "native-too-long", null, now.minusSeconds(35), now, "APP_RECORDER");
+
+        verify(recordingRepository).insertClip(any(), any(), any(), eq("native-too-long"),
+                anyInt(), any(), any(), anyLong(), any(), any(), isNull(), isNull(),
+                eq("DURATION_MISMATCH"), any(), any(), any());
+    }
+
+    @Test
+    void nativeRecordingWithoutDecodedDurationRemainsPending() {
+        byte[] bytes = new byte[]{1, 2, 3};
+        when(mediaVerifier.verify("audio/aac", bytes))
+                .thenReturn(Verification.structurallyValid(35_000L, "audio/m4a"));
+
+        service.uploadClip(visitId, new MockMultipartFile("file", "native.aac", "audio/aac", bytes),
+                "native-pending", null, now.minusSeconds(35), now, "APP_RECORDER");
+
+        verify(recordingRepository).insertClip(any(), any(), any(), eq("native-pending"),
+                anyInt(), any(), any(), anyLong(), any(), any(), isNull(), isNull(),
+                eq("PENDING"), any(), any(), any());
+    }
+
+    @Test
+    void nativeRetryWithoutEstimateKeepsExistingClipAndItsVerification() {
+        byte[] bytes = new byte[]{1, 2, 3};
+        Instant recordedFrom = now.minusSeconds(40);
+        var existing = new RecordingClipRow(UUID.randomUUID(), sessionId, "native-retry", 0,
+                "file.aac", "audio/aac", 3, sha256(bytes), "decoded", 40_000L, null,
+                "RECEIVED", "DURATION_MISMATCH", recordedFrom, now, now);
+        when(recordingRepository.findClipByClientId(tenantId, sessionId, "native-retry"))
+                .thenReturn(Optional.of(existing));
+        when(mediaVerifier.verify("audio/aac", bytes))
+                .thenReturn(Verification.verified(34_000L, "audio/aac", "decoded"));
+
+        var result = service.uploadClip(visitId,
+                new MockMultipartFile("file", "native.aac", "audio/aac", bytes),
+                "native-retry", null, recordedFrom, now, "APP_RECORDER");
+
+        assertThat(result.clipId()).isEqualTo(existing.id());
+        verify(fileStorage, never()).put(any(), any());
+        verify(recordingRepository, never()).refreshSessionVerification(any(), any(), anyInt(), any());
+    }
+
+    @Test
+    void durationOmissionRequiresExplicitNativeSourceAndBoundedCaptureTimes() {
+        var file = new MockMultipartFile("file", "native.aac", "audio/aac", new byte[]{1, 2, 3});
+        assertThatThrownBy(() -> service.uploadClip(visitId, file, "legacy", null,
+                now.minusSeconds(35), now)).hasMessageContaining("durationMs");
+        assertThatThrownBy(() -> service.uploadClip(visitId, file, "native", null,
+                null, now, "APP_RECORDER")).hasMessageContaining("有效时间范围");
+        assertThatThrownBy(() -> service.uploadClip(visitId, file, "native", null,
+                now.minusSeconds(606), now, "APP_RECORDER")).hasMessageContaining("单片段时长限制");
+        verify(fileStorage, never()).put(any(), any());
+    }
+
+    @Test
+    void nativeDecodedShortClipIsAcknowledgedWithoutAudioStorage() {
+        byte[] bytes=new byte[]{1,2,3};
+        when(mediaVerifier.verify("audio/aac",bytes)).thenReturn(Verification.verified(29_980L,"audio/aac","short"));
+        var result=service.uploadClip(visitId,new MockMultipartFile("file","short.aac","audio/aac",bytes),
+                "native-short",null,now.minusSeconds(31),now,"APP_RECORDER");
+        assertThat(result.uploadStatus()).isEqualTo("DISCARDED_NOT_STORED");
+        verify(fileStorage,never()).put(any(),any());
+        verify(recordingRepository,never()).ensureSession(any(),any(),any(),any());
+        verify(recordingRepository).insertDiscard(any(),eq(tenantId),eq(visitId),eq("native-short"),eq(29_980L),any(),any(),eq("TOO_SHORT"),any());
     }
 
     private static String sha256(byte[] bytes) {

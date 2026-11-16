@@ -522,7 +522,7 @@ class IamApplicationTests {
                 1);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'",
-                5);
+                6);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui ui JOIN iam_resource r ON r.id=ui.resource_id"
                         + " JOIN iam_resource_ui parent ON parent.resource_id=r.parent_id"
@@ -1790,6 +1790,46 @@ INSERT INTO iam_user_credential (
     }
 
     @Test
+    void memberFiltersPrecedePaginationAndKeepNewestFirst() {
+        var fixture = insertTenantAdministrator();
+        var actor = fixture.actor();
+        appSettingsStore.initialize(actor);
+        var grant = appSettingsStore.menus(actor).stream()
+                .filter(n -> "supply:menu:read".equals(n.permissionCode())).findFirst().orElseThrow();
+        var role = appRoles.saveRole(actor, null,
+                new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(
+                        "LIST_VIEWER", "列表角色", null, "ACTIVE", 0, java.util.Set.of(grant.id()),
+                        java.util.List.of(), testDataScope(java.util.List.of())));
+        var identities = new java.util.HashMap<String,com.rigour.tenant.iam.application.port.out.AppEmployeeClient.Employee>();
+        var ids = new java.util.ArrayList<java.util.UUID>();
+        for (int i=0; i<3; i++) {
+            var employee = new com.rigour.tenant.iam.application.port.out.AppEmployeeClient.Employee(
+                    i+10, "EMP-FILTER-"+i, i == 1 ? "李四" : "王凤"+i, "ACTIVE", 2L, "销售部",
+                    "SALES", "业务员", java.util.List.of(1L,2L), 1,1,0,true,null);
+            identities.put(employee.employeeCode(),employee);
+            org.mockito.Mockito.when(appEmployees.employee(actor.tenantId(),employee.employeeCode())).thenReturn(employee);
+            var member = appMembers.save(actor,null,
+                    new com.rigour.tenant.iam.application.service.settings.AppMemberModels.Command(
+                            null,"filter-user-"+i,"R7!mK2xp",employee.employeeCode(),"ACTIVE",null,0,
+                            java.util.List.of(new com.rigour.tenant.iam.application.service.settings.AppMemberModels.Assignment(role.id(),java.util.Map.of())),null));
+            ids.add(member.id());
+            jdbcTemplate.update("UPDATE iam_app_member SET created_at=? WHERE tenant_id=? AND user_id=?",
+                    java.sql.Timestamp.valueOf("2026-11-0"+(i+1)+" 00:00:00"),uuidBytes(actor.tenantId()),uuidBytes(member.id()));
+        }
+        org.mockito.Mockito.when(appEmployees.employees(org.mockito.ArgumentMatchers.eq(actor.tenantId()),org.mockito.ArgumentMatchers.anyList())).thenReturn(identities);
+        var first=appMembers.members(actor,"filter-user",1,1,1L,role.id(),"王凤","业务");
+        assertThat(first.total()).isEqualTo(2);
+        assertThat(first.items()).extracting(com.rigour.tenant.iam.application.service.settings.AppMemberModels.Member::id).containsExactly(ids.get(2));
+        assertThat(appMembers.members(actor,"filter-user",2,1,1L,role.id(),"王凤","业务").items())
+                .extracting(com.rigour.tenant.iam.application.service.settings.AppMemberModels.Member::id).containsExactly(ids.get(0));
+        assertThat(appMembers.members(actor,"filter-user",1,20,null,null,null,null).items())
+                .extracting(com.rigour.tenant.iam.application.service.settings.AppMemberModels.Member::id).containsExactly(ids.get(2),ids.get(1),ids.get(0));
+        var other=insertTenantAdministrator().actor();
+        appSettingsStore.initialize(other);
+        assertThat(appMembers.members(other,"filter-user",1,20,null,role.id(),null,null).total()).isZero();
+    }
+
+    @Test
     void supplyMemberEmployeeBindingAndRoleBatchRemainApplicationLocal() {
         var fixture = insertTenantAdministrator();
         var actor = fixture.actor();
@@ -1858,10 +1898,17 @@ INSERT INTO iam_user_credential (
         assertThat(member.employeeCode()).isEqualTo(employee.employeeCode());
         org.mockito.Mockito.when(appEmployees.employees(org.mockito.ArgumentMatchers.eq(actor.tenantId()),org.mockito.ArgumentMatchers.anyList()))
                 .thenReturn(java.util.Map.of(employee.employeeCode(),employee));
-        assertThat(appMembers.members(actor,"sales-test",1,1,1L).items()).extracting(com.rigour.tenant.iam.application.service.settings.AppMemberModels.Member::id).containsExactly(member.id());
-        assertThat(appMembers.members(actor,"sales-test",2,1,1L).items()).isEmpty();
-        assertThat(appMembers.members(actor,"sales-test",2,1,1L).total()).isEqualTo(1);
-        assertThat(appMembers.members(actor,"sales-test",1,1,999L).total()).isZero();
+        assertThat(appMembers.members(actor,"sales-test",1,1,1L,null,null,null).items()).extracting(com.rigour.tenant.iam.application.service.settings.AppMemberModels.Member::id).containsExactly(member.id());
+        assertThat(appMembers.members(actor,"sales-test",2,1,1L,null,null,null).items()).isEmpty();
+        assertThat(appMembers.members(actor,"sales-test",2,1,1L,null,null,null).total()).isEqualTo(1);
+        assertThat(appMembers.members(actor,"sales-test",1,1,999L,null,null,null).total()).isZero();
+        assertThat(appMembers.members(actor,"sales-test",1,1,1L,role.id(),"张","业务").items())
+                .extracting(com.rigour.tenant.iam.application.service.settings.AppMemberModels.Member::id).containsExactly(member.id());
+        assertThat(appMembers.members(actor,"sales-test",2,1,1L,role.id(),"张","业务").total()).isEqualTo(1);
+        assertThat(appMembers.members(actor,"sales-test",1,20,null,role.id(),null,null).total()).isEqualTo(1);
+        assertThat(appMembers.members(actor,"sales-test",1,20,null,java.util.UUID.randomUUID(),null,null).total()).isZero();
+        assertThat(appMembers.members(actor,"sales-test",1,20,null,null,"李",null).total()).isZero();
+        assertThat(appMembers.members(actor,"sales-test",1,20,null,null,null,"财务").total()).isZero();
         assertThat(member.createdByName()).isNotBlank();
         assertThat(member.createdTime()).isNotNull();
 

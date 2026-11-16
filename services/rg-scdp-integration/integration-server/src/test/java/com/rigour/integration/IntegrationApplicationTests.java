@@ -641,9 +641,9 @@ class IntegrationApplicationTests {
         doAnswer(
                         invocation -> {
                             DhbClient.ShipmentQuery query = invocation.getArgument(1);
-                            assertThat(query.createdWindow()).isNotNull();
-                            assertThat(query.updatedWindow()).isNull();
-                            assertThat(query.isApi()).isNull();
+                            assertThat(query.createdWindow()).isNull();
+                            assertThat(query.updatedWindow()).isNotNull();
+                            assertThat(query.isApi()).isIn("F", "T");
                             return new DhbClient.Page<>(query.page(), 0, List.of());
                         })
                 .when(client)

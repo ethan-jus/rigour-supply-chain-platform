@@ -7,7 +7,8 @@ import java.util.List;
 import java.util.UUID;
 
 public interface AppMemberStore {
-    Page members(Actor a, String keyword, int page, int size, Long departmentId);
+    Page members(Actor a, String keyword, int page, int size, Long departmentId,
+            UUID roleId, String employeeName, String positionName);
 
     List<Account> accounts(Actor a, String keyword);
 

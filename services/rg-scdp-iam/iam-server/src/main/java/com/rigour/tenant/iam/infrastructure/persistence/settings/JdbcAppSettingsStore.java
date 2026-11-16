@@ -45,10 +45,32 @@ public class JdbcAppSettingsStore implements AppSettingsStore {
         this.tx = new TransactionTemplate(manager);
     }
 
-    // 仅一次只读授权计算内复用；不跨请求缓存，退出（包括异常）即清除。
+    // 身份、资格等事实只在一次授权计算内复用；定义缓存另按当前数据库版本管理。
     private final ThreadLocal<Map<ReadKey, Object>> authorizationReads = new ThreadLocal<>();
+    private final VersionedIamReadCache<AuthorizationKey, Set<UUID>> grantCache = new VersionedIamReadCache<>();
 
     private record ReadKey(String operation, Actor actor, UUID excludedRole) {}
+    record AuthorizationKey(UUID tenantId, UUID applicationId, UUID userId) {}
+
+    <T> T authorizationDefinition(Actor actor, VersionedIamReadCache<AuthorizationKey, T> cache, Supplier<T> load) {
+        // Management writes must see their own uncommitted changes and must never publish them.
+        if (authorizationReads.get() == null
+                || (org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()
+                    && !org.springframework.transaction.support.TransactionSynchronizationManager.isCurrentTransactionReadOnly()))
+            return load.get();
+        long version = readOnce(new ReadKey("version", actor, null), () -> loadAuthorizationVersion(actor));
+        return cache.get(new AuthorizationKey(actor.tenantId(), applicationId(), actor.principalId()), version, () -> {
+            T value = load.get();
+            if (loadAuthorizationVersion(actor) != version)
+                throw new StateConflictException("授权配置已变化，请重新读取");
+            return value;
+        });
+    }
+
+    private long loadAuthorizationVersion(Actor actor) {
+        return jdbc.queryForObject("SELECT version FROM iam_app_settings WHERE tenant_id=? AND application_id=?",
+                Long.class, bin(actor.tenantId()), bin(applicationId()));
+    }
 
     <T> T authorizationRead(Supplier<T> operation) {
         if (authorizationReads.get() != null) return operation.get();
@@ -130,11 +152,7 @@ SELECT COUNT(*) FROM iam_user u JOIN iam_tenant t ON t.id=u.tenant_id
         requireIdentity(actor);
         if (!initialized(actor))
             return new Context(false, canBootstrap(actor), "ACTIVE", 0, Set.of());
-        long version = jdbc.queryForObject(
-                "SELECT version FROM iam_app_settings WHERE tenant_id=? AND application_id=?",
-                Long.class,
-                bin(actor.tenantId()),
-                bin(applicationId()));
+        long version = readOnce(new ReadKey("version", actor, null), () -> loadAuthorizationVersion(actor));
         // 版本查询释放连接后再读取权限，避免并发请求持有连接并等待第二个连接。
         return new Context(true, false, "ACTIVE", version, permissions(actor));
     }
@@ -569,7 +587,7 @@ SELECT r.id FROM iam_app_member m
     private Set<UUID> grantIds(Actor actor) {
         if (protectedAdministrator(actor))
             return rows(actor).stream().map(Node::id).collect(Collectors.toSet());
-        return new HashSet<>(
+        return authorizationDefinition(actor, grantCache, () -> Set.copyOf(
                 jdbc.query(
                         """
 SELECT g.menu_node_id FROM iam_app_member m
@@ -582,7 +600,7 @@ SELECT g.menu_node_id FROM iam_app_member m
                         (rs, row) -> uuid(rs, "menu_node_id"),
                         bin(actor.tenantId()),
                         bin(applicationId()),
-                        bin(actor.principalId())));
+                        bin(actor.principalId()))));
     }
 
     public void requirePermission(Actor actor, String permission) {

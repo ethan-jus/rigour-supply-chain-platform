@@ -7,4 +7,9 @@
     <artifactId>shared-cache</artifactId>
     <name>Rigour Shared Cache</name>
     <description>租户隔离缓存端口，不绑定 Redis</description>
+    <dependencies>
+        <dependency><groupId>tools.jackson.core</groupId><artifactId>jackson-databind</artifactId></dependency>
+        <dependency><groupId>io.micrometer</groupId><artifactId>micrometer-core</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+    </dependencies>
 </project>

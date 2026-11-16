@@ -21,6 +21,11 @@ public interface SalesWorkVisitRepository {
 
     long countVisits(UUID tenantId, UUID salesProfileId, LocalDate businessDate);
 
+    List<VisitSnapshot> findActivityVisits(UUID tenantId, UUID salesProfileId, LocalDate from,
+                                            LocalDate to, String kind, int limit, int offset);
+
+    long countActivityVisits(UUID tenantId, UUID salesProfileId, LocalDate from, LocalDate to, String kind);
+
     VisitActivitySummaryRow summarizeVisits(UUID tenantId, UUID salesProfileId,
                                              LocalDate from, LocalDate to);
 

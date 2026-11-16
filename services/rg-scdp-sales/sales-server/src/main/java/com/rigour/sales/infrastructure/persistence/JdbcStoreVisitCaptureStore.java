@@ -39,11 +39,12 @@ public class JdbcStoreVisitCaptureStore implements StoreVisitCaptureStore {
                 require_assigned_target,allow_prospect_target,check_in_radius_meters,minimum_dwell_minutes,
                 required_photo_count,recording_enabled,minimum_recording_seconds,maximum_clip_gap_seconds,
                 ai_asr_enabled,ai_relevance_enabled,ai_duplicate_enabled,ai_auto_confirm_threshold,
-                created_by,created_at,source_system)
-                VALUES(?,?,?,1,'SNAPSHOT',1,0,?,?,?,?,?,?,?,?,?,?,?,?,'CRM')
+                created_by,created_at,source_system,capture_rules_json)
+                VALUES(?,?,?,1,'SNAPSHOT',1,0,?,?,?,?,?,?,?,?,?,?,?,?,'CRM',?)
                 ON DUPLICATE KEY UPDATE id=id
                 """,id,tenantBytes,parentBytes,p.radiusMeters(),p.minimumDwellMinutes(),p.requiredPhotoCount(),
                 p.recordingEnabled(),p.minimumRecordingSeconds(),p.maximumClipGapSeconds(),p.aiAsrEnabled(),
-                p.aiRelevanceEnabled(),p.aiDuplicateEnabled(),p.aiAutoConfirmThreshold(),parentBytes,now);
+                p.aiRelevanceEnabled(),p.aiDuplicateEnabled(),p.aiAutoConfirmThreshold(),parentBytes,now,
+                tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(p.captureRules()));
     }
 }

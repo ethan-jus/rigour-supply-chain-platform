@@ -1,5 +1,7 @@
 package com.rigour.merchant.infrastructure.integration;
 
+import com.rigour.merchant.api.v1.model.NearbyModels;
+
 import com.rigour.merchant.api.v1.model.StoreModels.Poi;
 import com.rigour.merchant.application.port.out.StorePoiClient;
 import com.rigour.shared.context.*;
@@ -34,6 +36,11 @@ public class HttpStorePoiClient implements StorePoiClient {
         URI uri=UriComponentsBuilder.fromUriString(base).path("/internal/v1/integration/store-pois")
                 .queryParam("keyword",keyword).queryParam("areaCode",areaCode).build().encode().toUri();
         return get(tenant,uri,new ParameterizedTypeReference<ApiResponse<List<Poi>>>(){});
+    }
+    public NearbyModels.Coordinates convertGps(String tenant,double longitude,double latitude) {
+        URI uri=UriComponentsBuilder.fromUriString(base).path("/internal/v1/integration/amap/coordinates/gps")
+                .queryParam("longitude",longitude).queryParam("latitude",latitude).build().encode().toUri();
+        return get(tenant,uri,new ParameterizedTypeReference<ApiResponse<NearbyModels.Coordinates>>(){});
     }
     public Poi detail(String tenant,String id) {
         return get(tenant,URI.create(base+"/internal/v1/integration/store-pois/"+id),new ParameterizedTypeReference<ApiResponse<Poi>>(){});

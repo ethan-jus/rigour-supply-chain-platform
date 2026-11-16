@@ -1,5 +1,7 @@
 package com.rigour.merchant.infrastructure.persistence.repository;
 
+import com.rigour.merchant.api.v1.model.NearbyModels;
+
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.rigour.merchant.api.v1.model.StoreModels.*;
 import com.rigour.merchant.application.port.out.StorePoolStore;
@@ -16,6 +18,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class JdbcStorePoolStore implements StorePoolStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private static final String FROM=" FROM crm_store_summary q JOIN crm_store_master s ON s.tenant_id=q.tenant_id AND s.id=q.store_id LEFT JOIN crm_store_ownership current_o ON current_o.tenant_id=q.tenant_id AND current_o.id=q.current_ownership_id ";
     private static final String ACTIVITY="CASE WHEN q.activity_status='ACTIVE' AND q.activity_expires_at<=UTC_TIMESTAMP(6) THEN CASE WHEN q.order_history_complete_to>=UTC_TIMESTAMP(6) THEN 'DORMANT' ELSE 'UNKNOWN' END ELSE q.activity_status END";
     private final JdbcTemplate jdbc;
@@ -81,12 +86,41 @@ public class JdbcStorePoolStore implements StorePoolStore {
     @Override
     @Transactional(readOnly=true)
     public Page list(StoreScope scope,Query query,Set<String> typeCodes) {
+        return queryCache.read(scope.access().tenantId(), "list", java.util.Arrays.asList(scope.access(), scope.catalog().version(), scope.departmentMembers(), query, new java.util.TreeSet<>(typeCodes)), 10,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadList(scope, query, typeCodes));
+    }
+
+    @Override
+    public long count(StoreScope scope,Query query,Set<String> typeCodes) {
         var totalFilter=filter(scope,query,false,typeCodes);
-        long total=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+FROM+" WHERE "+totalFilter.sql(),Long.class,totalFilter.args().toArray()));
+        return queryCache.read(scope.access().tenantId(), "store-count", mapKey(scope,totalFilter,"count"), 10,
+                new tools.jackson.core.type.TypeReference<Long>() {}, () -> Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+FROM+" WHERE "+totalFilter.sql(),Long.class,totalFilter.args().toArray())));
+    }
+
+    private Page loadList(StoreScope scope,Query query,Set<String> typeCodes) {
+        long total=count(scope,query,typeCodes);
         var f=filter(scope,query,true,typeCodes);var args=new ArrayList<Object>();args.add(scope.access().employeeId());args.addAll(f.args());args.add(query.size()+1);
         var rows=jdbc.query(select(scope)+" WHERE "+f.sql()+" ORDER BY q.store_id DESC LIMIT ?",(rs,n)->row(scope,rs),args.toArray());
         boolean more=rows.size()>query.size();var items=more?rows.subList(0,query.size()):rows;
         return new Page(total,List.copyOf(items),more?items.getLast().id():null);
+    }
+    @Override
+    @Transactional(readOnly=true)
+    public NearbyModels.Page<Row> nearby(StoreScope scope,Query query,Set<String> typeCodes,NearbyModels.Origin origin,String cursor) {
+        return queryCache.read(scope.access().tenantId(),"nearby-list",Arrays.asList(scope.access(),scope.catalog().version(),scope.departmentMembers(),query,new TreeSet<>(typeCodes),origin,cursor),10,
+                new tools.jackson.core.type.TypeReference<>(){},()->loadNearby(scope,query,typeCodes,origin,cursor));
+    }
+    private NearbyModels.Page<Row> loadNearby(StoreScope scope,Query query,Set<String> typeCodes,NearbyModels.Origin origin,String cursor) {
+        long total=count(scope,query,typeCodes);
+        if(total==0)return new NearbyModels.Page<>(0,List.of(),null,origin);
+        var f=filter(scope,query,false,typeCodes);
+        var nearby=NearbyStoreQuery.search(jdbc,FROM,f.sql(),f.args(),origin,cursor,query.size(),total);
+        if(nearby.hits().isEmpty())return new NearbyModels.Page<>(total,List.of(),null,origin);
+        var args=new ArrayList<Object>();args.add(scope.access().employeeId());args.addAll(f.args());nearby.hits().forEach(h->args.add(h.id()));
+        var rows=jdbc.query(select(scope)+" WHERE "+f.sql()+" AND s.id IN ("+String.join(",",Collections.nCopies(nearby.hits().size(),"?"))+")",(rs,n)->row(scope,rs),args.toArray());
+        var byId=new HashMap<String,Row>();rows.forEach(r->byId.put(r.id(),r));
+        var items=nearby.hits().stream().filter(h->byId.containsKey(h.id())).map(h->new NearbyModels.Item<>(byId.get(h.id()),h.meters(),h.longitude(),h.latitude(),h.coordinateSystem())).toList();
+        return new NearbyModels.Page<>(total,items,nearby.nextCursor(),origin);
     }
     private static final String LOCATED="s.longitude BETWEEN -180 AND 180 AND s.latitude BETWEEN -90 AND 90 AND s.coordinate_system IN ('GCJ02','WGS84')";
     private record MapStats(long total,long located,MapBounds bounds) {}
@@ -95,45 +129,21 @@ public class JdbcStorePoolStore implements StorePoolStore {
     @Transactional(readOnly=true)
     public MapResult map(StoreScope scope,Query query,Set<String> typeCodes,MapWindow window) {
         var f=filter(scope,query,false,typeCodes);
-        var stats=jdbc.queryForObject("SELECT COUNT(*) AS total,COALESCE(SUM("+LOCATED+"),0) AS located,"
-                +"MIN(CASE WHEN "+LOCATED+" THEN s.longitude END) AS west,MAX(CASE WHEN "+LOCATED+" THEN s.longitude END) AS east,"
-                +"MIN(CASE WHEN "+LOCATED+" THEN s.latitude END) AS south,MAX(CASE WHEN "+LOCATED+" THEN s.latitude END) AS north"
-                +FROM+" WHERE "+f.sql(),(rs,n)->new MapStats(rs.getLong("total"),rs.getLong("located"),rs.getLong("located")==0?null:
-                    new MapBounds(rs.getDouble("west"),rs.getDouble("south"),rs.getDouble("east"),rs.getDouble("north"))),f.args().toArray());
+        var stats=mapStats(scope,f);
         double zoom=window.zoom()==null?4:window.zoom();
         String level=zoom<7?"PROVINCE":zoom<10?"PREFECTURE":zoom<13?"COUNTY":"STORE";
         if(stats.located()==0)return new MapResult(stats.total(),0,0,null,List.of(),level);
         if(!"STORE".equals(level))return administrativeMap(scope,f,stats,window,level);
-        var bounds=window.west()==null?stats.bounds():new MapBounds(window.west(),window.south(),window.east(),window.north());
-        // 约 80px 一个聚合格；按视野跨度设置下限，保证全国查询也只有有限网格，不截断门店。
-        double grid=Math.max(360/Math.pow(2,window.zoom()==null?4:window.zoom())/4,
-                Math.max((bounds.east()-bounds.west())/24,(bounds.north()-bounds.south())/16));
-        var visible=mapFilter(f,window,null);
-        double gpsGrid=window.west()==null?grid:Math.max(grid,Math.max((bounds.east()-bounds.west()+.04)/24,(bounds.north()-bounds.south()+.04)/16));
-        long visibleCount=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+FROM+" WHERE "+visible.sql(),Long.class,visible.args().toArray()));
-        // 街道层优先展示真实位置；密集视野才保留聚合，不能按条数截断门店。
-        boolean exact=visibleCount<=800;
-        var args=new ArrayList<Object>();
-        if(!exact){args.add(gpsGrid);args.add(grid);args.add(gpsGrid);args.add(grid);}
-        args.addAll(visible.args());
-        String cells=exact?"s.longitude AS gx,s.latitude AS gy,":
-                "FLOOR(s.longitude/CASE WHEN s.coordinate_system='WGS84' THEN ? ELSE ? END) AS gx,"
-                +"FLOOR(s.latitude/CASE WHEN s.coordinate_system='WGS84' THEN ? ELSE ? END) AS gy,";
-        String sql="SELECT "+cells+"s.coordinate_system,COUNT(*) AS amount,"
-                +"MIN(s.id) AS store_id,MIN(s.name) AS name,AVG(s.longitude) AS lng,AVG(s.latitude) AS lat,"
-                +"SUM(q.pool_type='PRIVATE') AS private_count,SUM(q.cooperation_status='COOPERATED') AS cooperated_count,"
-                +"MIN(s.longitude) AS west,MAX(s.longitude) AS east,MIN(s.latitude) AS south,MAX(s.latitude) AS north"
-                +FROM+" WHERE "+visible.sql()+" GROUP BY gx,gy,s.coordinate_system ORDER BY gx,gy,s.coordinate_system";
-        var points=jdbc.query(sql,(rs,n)->{
-            long count=rs.getLong("amount");String system=rs.getString("coordinate_system");
-            return new MapPoint(system+":"+rs.getString("gx")+":"+rs.getString("gy"),count==1?rs.getString("store_id"):null,
-                    count==1?rs.getString("name"):null,rs.getDouble("lng"),rs.getDouble("lat"),system,count,
-                    rs.getLong("private_count"),rs.getLong("cooperated_count"),
-                    new MapBounds(rs.getDouble("west"),rs.getDouble("south"),rs.getDouble("east"),rs.getDouble("north")),null,null);
-        },args.toArray());
-        return new MapResult(stats.total(),stats.located(),points.stream().mapToLong(MapPoint::count).sum(),stats.bounds(),points,level);
+        return streetMap(scope, f, stats, window);
     }
     private MapResult administrativeMap(StoreScope scope,Filter filter,MapStats stats,MapWindow window,String level) {
+        var data=queryCache.read(scope.access().tenantId(), "map-area-"+level, mapKey(scope,filter,level), 30,
+                new tools.jackson.core.type.TypeReference<MapResult>() {},
+                () -> loadAdministrativeMap(scope,filter,stats,window,level));
+        var points=data.points().stream().filter(p -> intersects(p.bounds(),window)).toList();
+        return new MapResult(data.total(),data.located(),points.stream().mapToLong(MapPoint::count).sum(),data.bounds(),points,level);
+    }
+    private MapResult loadAdministrativeMap(StoreScope scope,Filter filter,MapStats stats,MapWindow window,String level) {
         // 先按完整授权/筛选范围汇总，再裁剪区域；不能用视野先裁剪门店而改变同一区域的数字。
         String area=switch(level) {
             case "PROVINCE" -> "q.province_code";
@@ -158,11 +168,7 @@ public class JdbcStorePoolStore implements StorePoolStore {
                     rs.getLong("amount"),rs.getLong("private_count"),rs.getLong("cooperated_count"),
                     new MapBounds(rs.getDouble("west"),rs.getDouble("south"),rs.getDouble("east"),rs.getDouble("north")),
                     code,node==null?level:node.level());
-        },filter.args().toArray()).stream().filter(point->{
-            if(window.west()==null)return true;
-            var b=point.bounds();
-            return b.east()+.02>=window.west()&&b.west()-.02<=window.east()&&b.north()+.02>=window.south()&&b.south()-.02<=window.north();
-        }).toList();
+        },filter.args().toArray());
         return new MapResult(stats.total(),stats.located(),points.stream().mapToLong(MapPoint::count).sum(),stats.bounds(),points,level);
     }
     private static Filter mapFilter(Filter base,MapWindow window,String coordinateSystem) {
@@ -180,8 +186,16 @@ public class JdbcStorePoolStore implements StorePoolStore {
     @Override
     @Transactional(readOnly=true)
     public Page mapStores(StoreScope scope,Query query,Set<String> typeCodes,MapWindow window,String coordinateSystem) {
+        return queryCache.read(scope.access().tenantId(), "map-stores", Arrays.asList(
+                scope.access(), scope.catalog().version(), scope.departmentMembers(), query,
+                new TreeSet<>(typeCodes), window, coordinateSystem), 10,
+                new tools.jackson.core.type.TypeReference<>() {},
+                () -> loadMapStores(scope,query,typeCodes,window,coordinateSystem));
+    }
+    private Page loadMapStores(StoreScope scope,Query query,Set<String> typeCodes,MapWindow window,String coordinateSystem) {
         var totalFilter=mapFilter(filter(scope,query,false,typeCodes),window,coordinateSystem);
-        long total=Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+FROM+" WHERE "+totalFilter.sql(),Long.class,totalFilter.args().toArray()));
+        long total=queryCache.read(scope.access().tenantId(), "store-count", mapKey(scope,totalFilter,"count"), 10,
+                new tools.jackson.core.type.TypeReference<Long>() {}, () -> Objects.requireNonNull(jdbc.queryForObject("SELECT COUNT(*)"+FROM+" WHERE "+totalFilter.sql(),Long.class,totalFilter.args().toArray())));
         var f=mapFilter(filter(scope,query,true,typeCodes),window,coordinateSystem);
         var args=new ArrayList<Object>();args.add(scope.access().employeeId());args.addAll(f.args());args.add(query.size()+1);
         var rows=jdbc.query(select(scope)+" WHERE "+f.sql()+" ORDER BY q.store_id DESC LIMIT ?",(rs,n)->row(scope,rs),args.toArray());
@@ -225,6 +239,7 @@ public class JdbcStorePoolStore implements StorePoolStore {
     @Override
     @Transactional
     public void claim(StoreScope scope,String id,Claim command) {
+        queryCache.changed(scope.access().tenantId());
         lock(scope,id);var current=detail(scope,id);
         var previous=jdbc.queryForList("SELECT store_id,owner_employee_id FROM crm_store_ownership WHERE tenant_id=? AND request_id=?",scope.access().tenantId(),command.requestId());
         if(!previous.isEmpty()) {
@@ -244,6 +259,7 @@ public class JdbcStorePoolStore implements StorePoolStore {
     @Override
     @Transactional
     public void release(StoreScope scope,String id,Release command) {
+        queryCache.changed(scope.access().tenantId());
         lock(scope,id);var current=detail(scope,id);
         if(jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_event WHERE tenant_id=? AND request_id=? AND event_type='RELEASED' AND store_id=? AND actor_user_id=?",Integer.class,scope.access().tenantId(),command.requestId(),id,scope.access().userId())>0)return;
         if(current.revision()!=command.revision())throw new StateConflictException("门店状态已变化，请刷新后重试");
@@ -337,6 +353,7 @@ public class JdbcStorePoolStore implements StorePoolStore {
         },args.toArray());
     }
     @Override @Transactional public Admission admit(StoreScope scope,AmapAdmission c,Poi poi,String typeCode) {
+        queryCache.changed(scope.access().tenantId());
         admissionLock(scope);String tenant=scope.access().tenantId();
         var previous=jdbc.queryForList("SELECT store_id,actor_user_id,JSON_UNQUOTE(JSON_EXTRACT(after_data,'$.poiId')) poi FROM crm_store_event WHERE tenant_id=? AND request_id=? AND event_type='AMAP_ADMITTED'",tenant,c.requestId());
         if(!previous.isEmpty()) {
@@ -376,6 +393,7 @@ public class JdbcStorePoolStore implements StorePoolStore {
     @Override
     @Transactional
     public Lead review(StoreScope scope,String id,Review command) {
+        queryCache.changed(scope.access().tenantId());
         admissionLock(scope);
         var rows=jdbc.queryForList("SELECT * FROM crm_store_lead WHERE tenant_id=? AND id=? FOR UPDATE",scope.access().tenantId(),id);
         if(rows.isEmpty())throw new AuthorizationDeniedException("lead-not-visible");var data=rows.getFirst();String area=(String)data.get("proposed_admin_area_code");
@@ -438,6 +456,7 @@ public class JdbcStorePoolStore implements StorePoolStore {
     @Override
     @Transactional
     public void update(StoreScope scope,String id,Update c) {
+        queryCache.changed(scope.access().tenantId());
         if(!"crm:store:manage".equals(scope.access().action()))throw new AuthorizationDeniedException("crm:store:manage");
         admissionLock(scope);lock(scope,id);var old=detail(scope,id);
         if(replayed(scope,c.requestId(),"PROFILE_UPDATED","STORE",id,c))return;
@@ -476,6 +495,7 @@ public class JdbcStorePoolStore implements StorePoolStore {
         jdbc.update("UPDATE crm_store_master SET dedup_key=UNHEX(SHA2(CONCAT_WS('|',admin_area_code,REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(name,'（','('),'）',')'))), '[[:space:]　]', ''),REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(address,'（','('),'）',')'))), '[[:space:]　]', '')),256)) WHERE tenant_id=? AND id=?",scope.access().tenantId(),id);
     }
     @Override @Transactional public void businessStatus(StoreScope scope,String id,BusinessStatusChange c) {
+        queryCache.changed(scope.access().tenantId());
         lock(scope,id);
         if(replayed(scope,c.requestId(),"BUSINESS_STATUS_CHANGED","STORE",id,c))return;
         var current=detail(scope,id);
@@ -531,8 +551,83 @@ public class JdbcStorePoolStore implements StorePoolStore {
     }
     @Override
     public Coverage coverage(StoreScope scope,Query query,Set<String> typeCodes) {
+        return queryCache.read(scope.access().tenantId(), "coverage", java.util.Arrays.asList(scope.access(), scope.catalog().version(), scope.departmentMembers(), query, new java.util.TreeSet<>(typeCodes)), 30,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadCoverage(scope, query, typeCodes));
+    }
+
+    private Coverage loadCoverage(StoreScope scope,Query query,Set<String> typeCodes) {
         var f=filter(scope,query,false,typeCodes);
         return jdbc.queryForObject("SELECT COUNT(*) AS total,COALESCE(SUM(q.pool_type='PUBLIC'),0) AS public_count,COALESCE(SUM(q.pool_type='PRIVATE'),0) AS private_count,COALESCE(SUM(q.cooperation_status='COOPERATED'),0) AS cooperated,COALESCE(SUM(q.valid_visit_count>0),0) AS visited,COALESCE(SUM(q.wecom_active_contact_count>0),0) AS connected,COALESCE(SUM(q.customer_tier='A'),0) AS a,COALESCE(SUM(q.customer_tier='B'),0) AS b,COALESCE(SUM(q.customer_tier='C'),0) AS c,COALESCE(SUM(q.customer_tier='UNRATED'),0) AS unrated,COALESCE(SUM(q.visit_data_status<>'COMPLETE'),0) AS unknown_visit,COALESCE(SUM(q.wecom_data_status<>'COMPLETE'),0) AS unknown_wecom"+FROM+" WHERE "+f.sql(),
                 (rs,n)->new Coverage(rs.getLong("total"),rs.getLong("public_count"),rs.getLong("private_count"),rs.getLong("cooperated"),rs.getLong("visited"),rs.getLong("connected"),rs.getLong("a"),rs.getLong("b"),rs.getLong("c"),rs.getLong("unrated"),rs.getLong("unknown_visit"),rs.getLong("unknown_wecom")),f.args().toArray());
+    }
+
+    private Object mapKey(StoreScope scope,Filter filter,Object partition) {
+        return Arrays.asList(scope.access(),scope.catalog().version(),scope.departmentMembers(),filter.sql(),filter.args(),partition);
+    }
+    private MapStats mapStats(StoreScope scope,Filter f) {
+        return queryCache.read(scope.access().tenantId(), "map-statistics", mapKey(scope,f,"total"), 30,
+                new tools.jackson.core.type.TypeReference<MapStats>() {}, () -> {
+        return jdbc.queryForObject("SELECT COUNT(*) AS total,COALESCE(SUM("+LOCATED+"),0) AS located,"
+                +"MIN(CASE WHEN "+LOCATED+" THEN s.longitude END) AS west,MAX(CASE WHEN "+LOCATED+" THEN s.longitude END) AS east,"
+                +"MIN(CASE WHEN "+LOCATED+" THEN s.latitude END) AS south,MAX(CASE WHEN "+LOCATED+" THEN s.latitude END) AS north"
+                +FROM+" WHERE "+f.sql(),(rs,n)->new MapStats(rs.getLong("total"),rs.getLong("located"),rs.getLong("located")==0?null:
+                    new MapBounds(rs.getDouble("west"),rs.getDouble("south"),rs.getDouble("east"),rs.getDouble("north"))),f.args().toArray());
+
+        });
+    }
+    private static boolean intersects(MapBounds b,MapWindow w) {
+        return w.west()==null || b.east()+.02>=w.west()&&b.west()-.02<=w.east()
+                && b.north()+.02>=w.south()&&b.south()-.02<=w.north();
+    }
+    private MapResult streetMap(StoreScope scope,Filter f,MapStats stats,MapWindow window) {
+        var bounds=window.west()==null?stats.bounds():new MapBounds(window.west(),window.south(),window.east(),window.north());
+        int zoom=(int)Math.floor(window.zoom()==null?13:window.zoom());
+        double tile=360/Math.pow(2,Math.max(1,zoom-2));
+        // Fixed world grid, not a grid derived from the current viewport width. Large windows
+        // are coarsened instead of truncating stores; adjacent requests reuse the same tiles.
+        while ((Math.ceil((bounds.east()-bounds.west()+.04)/tile)+2)
+                *(Math.ceil((bounds.north()-bounds.south()+.04)/tile)+2)>32) tile*=2;
+        int west=(int)Math.floor((bounds.west()-.02)/tile),east=(int)Math.floor((bounds.east()+.02)/tile);
+        int south=(int)Math.floor((bounds.south()-.02)/tile),north=(int)Math.floor((bounds.north()+.02)/tile);
+        var points=new LinkedHashMap<String,MapPoint>();
+        for(int x=west;x<=east;x++)for(int y=south;y<=north;y++) {
+            double unit=tile; int tx=x,ty=y;
+            var batch=queryCache.read(scope.access().tenantId(),"map-tile",
+                    mapKey(scope,f,List.of(unit,tx,ty)),10,
+                    new tools.jackson.core.type.TypeReference<List<MapPoint>>() {},
+                    () -> streetTile(f,unit,tx,ty));
+            for(var point:batch) {
+                double margin="WGS84".equals(point.coordinateSystem())?.02:0;
+                var box=point.bounds();
+                if(window.west()==null || box.east()+margin>=window.west()&&box.west()-margin<=window.east()
+                        &&box.north()+margin>=window.south()&&box.south()-margin<=window.north())points.put(point.id(),point);
+            }
+        }
+        var visible=List.copyOf(points.values());
+        return new MapResult(stats.total(),stats.located(),visible.stream().mapToLong(MapPoint::count).sum(),stats.bounds(),visible,"STORE");
+    }
+    private List<MapPoint> streetTile(Filter f,double tile,int x,int y) {
+        // Half-open source-coordinate tiles avoid duplicate WGS84/GCJ02 edge points. The
+        // viewport selects an extra 0.02-degree ring; display conversion remains client-side.
+        String where=f.sql()+" AND "+LOCATED+" AND s.longitude>=? AND s.longitude<? AND s.latitude>=? AND s.latitude<?";
+        var args=new ArrayList<Object>(f.args());
+        args.add(x*tile);args.add((x+1)*tile);args.add(y*tile);args.add((y+1)*tile);
+        long count=jdbc.queryForObject("SELECT COUNT(*)"+FROM+" WHERE "+where,Long.class,args.toArray());
+        boolean exact=count<=100;
+        String gx=exact?"s.longitude":"FLOOR(s.longitude/?)",gy=exact?"s.latitude":"FLOOR(s.latitude/?)";
+        var parameters=new ArrayList<Object>();
+        if(!exact){parameters.add(tile/8);parameters.add(tile/8);}
+        parameters.addAll(args);
+        return jdbc.query("SELECT "+gx+" gx,"+gy+" gy,s.coordinate_system,COUNT(*) amount,MIN(s.id) store_id,MIN(s.name) name,"
+                +"AVG(s.longitude) lng,AVG(s.latitude) lat,SUM(q.pool_type='PRIVATE') private_count,"
+                +"SUM(q.cooperation_status='COOPERATED') cooperated_count,MIN(s.longitude) west,MAX(s.longitude) east,"
+                +"MIN(s.latitude) south,MAX(s.latitude) north"+FROM+" WHERE "+where
+                +" GROUP BY gx,gy,s.coordinate_system ORDER BY gx,gy,s.coordinate_system",(rs,n)->{
+                    long amount=rs.getLong("amount");String system=rs.getString("coordinate_system");
+                    return new MapPoint(system+":"+(exact?"point":"grid:"+tile)+":"+rs.getString("gx")+":"+rs.getString("gy"),
+                            amount==1?rs.getString("store_id"):null,amount==1?rs.getString("name"):null,
+                            rs.getDouble("lng"),rs.getDouble("lat"),system,amount,rs.getLong("private_count"),rs.getLong("cooperated_count"),
+                            new MapBounds(rs.getDouble("west"),rs.getDouble("south"),rs.getDouble("east"),rs.getDouble("north")),null,null);
+                },parameters.toArray());
     }
 }

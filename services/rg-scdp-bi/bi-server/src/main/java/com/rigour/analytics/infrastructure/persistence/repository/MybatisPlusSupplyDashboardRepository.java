@@ -26,6 +26,9 @@ import java.util.stream.Collectors;
 public class MybatisPlusSupplyDashboardRepository
         extends ServiceImpl<SupplyDashboardQueryMapper, SupplyDashboardSourceMarkerEntity>
         implements SupplyDashboardStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     @org.springframework.beans.factory.annotation.Autowired
     private org.springframework.jdbc.core.JdbcTemplate scopeJdbc;
 
@@ -103,6 +106,11 @@ public class MybatisPlusSupplyDashboardRepository
     @Override
     @Transactional(readOnly = true)
     public SupplyDashboardData overview(String tenantId, SupplyDashboardFilter filter) {
+        return queryCache.read(tenantId, "overview", filter, 60,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadOverview(tenantId, filter));
+    }
+
+    private SupplyDashboardData loadOverview(String tenantId, SupplyDashboardFilter filter) {
         LocalDateTime from = local(filter.from());
         LocalDateTime to = local(filter.to());
         SupplyDashboardQueryMapper mapper = getBaseMapper();
@@ -414,6 +422,12 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(readOnly = true)
     public OperatingAnalysisData operatingAnalysis(
             String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter) {
+        return queryCache.read(tenantId, "operatingAnalysis", java.util.Arrays.asList(filter, previousFilter), 60,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadOperatingAnalysis(tenantId, filter, previousFilter));
+    }
+
+    private OperatingAnalysisData loadOperatingAnalysis(
+            String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter) {
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime from = local(filter.from());
         LocalDateTime to = local(filter.to());
@@ -604,6 +618,11 @@ public class MybatisPlusSupplyDashboardRepository
 
     @Override
     public FilterOptions filterOptions(String tenantId) {
+        return queryCache.read(tenantId, "filterOptions", "options", 60,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadFilterOptions(tenantId));
+    }
+
+    private FilterOptions loadFilterOptions(String tenantId) {
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         return new FilterOptions(
                 mapper.regionOptions(tenantId).stream()
@@ -773,6 +792,7 @@ public class MybatisPlusSupplyDashboardRepository
             Instant watermarkTime,
             Instant successTime,
             Long runId) {
+        queryCache.changed(tenantId);
         getBaseMapper()
                 .updateCheckpoint(
                         tenantId,
@@ -787,6 +807,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(rollbackFor = Exception.class)
     public SourceRefreshResult refreshCustomerDim(
             String tenantId, Instant from, Instant to, Instant syncedAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime localFrom = local(from);
         LocalDateTime localTo = local(to);
@@ -809,6 +830,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(rollbackFor = Exception.class)
     public SourceRefreshResult refreshSalesOrderFact(
             String tenantId, Instant from, Instant to, Instant syncedAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime localFrom = local(from);
         LocalDateTime localTo = local(to);
@@ -823,6 +845,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(rollbackFor = Exception.class)
     public SourceRefreshResult refreshSalesOrderLineFact(
             String tenantId, Instant from, Instant to, Instant syncedAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime localFrom = local(from);
         LocalDateTime localTo = local(to);
@@ -837,6 +860,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(rollbackFor = Exception.class)
     public SourceRefreshResult refreshProductDim(
             String tenantId, Instant from, Instant to, Instant syncedAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime localFrom = local(from);
         LocalDateTime localTo = local(to);
@@ -864,6 +888,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(rollbackFor = Exception.class)
     public SourceRefreshResult refreshSalesPaymentFact(
             String tenantId, Instant from, Instant to, Instant syncedAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime localFrom = local(from);
         LocalDateTime localTo = local(to);
@@ -877,6 +902,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public long alignFrozenOrderAttribution(String tenantId, Instant syncedAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime localSyncedAt = local(syncedAt);
         long affected = 0;
@@ -894,6 +920,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public SourceRefreshResult refreshInventoryBalanceCurrent(String tenantId, Instant syncedAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         Map<String, Object> summary = mapper.inventorySourceSummary(tenantId);
         LocalDateTime localSyncedAt = local(syncedAt);
@@ -905,6 +932,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public SourceRefreshResult refreshInventoryOperationFact(String tenantId, Instant syncedAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         Map<String, Object> summary = mapper.inventoryOperationSourceSummary(tenantId);
         LocalDateTime localSyncedAt = local(syncedAt);
@@ -918,6 +946,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(rollbackFor = Exception.class)
     public SourceRefreshResult refreshReconciliationCurrent(
             String tenantId, Instant from, Instant to, Instant observedAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime localFrom = local(from);
         LocalDateTime localTo = local(to);
@@ -987,6 +1016,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(rollbackFor = Exception.class)
     public CityCostImportResult importCityCostRecords(
             String tenantId, List<CityCostImportRow> rows, Instant importedAt) {
+        queryCache.changed(tenantId);
         requireCityCostScope(tenantId, rows);
         int upserted = 0;
         LocalDateTime localImportedAt = local(importedAt);
@@ -1015,6 +1045,7 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(rollbackFor = Exception.class)
     public FeishuArchiveRow registerFeishuArchive(
             String tenantId, FeishuArchiveWrite command, Instant registeredAt) {
+        queryCache.changed(tenantId);
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         mapper.upsertFeishuArchive(
                 tenantId,

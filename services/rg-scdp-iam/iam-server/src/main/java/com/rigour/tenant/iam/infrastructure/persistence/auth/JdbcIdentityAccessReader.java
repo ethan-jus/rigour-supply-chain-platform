@@ -30,6 +30,16 @@ public final class JdbcIdentityAccessReader implements IdentityAccessReader {
 
     @Override
     public CurrentUser readCurrentUser(IdentityAccessQuery query) {
+        CurrentUser user = readUserProfile(query);
+        byte[] tenantId = UuidBinaryCodec.encode(query.tenantId());
+        byte[] userId = UuidBinaryCodec.encode(query.principalId());
+        return new CurrentUser(user.id(), user.tenantId(), user.tenantName(), user.principalScope(),
+                user.username(), user.displayName(),
+                tenantRoles(tenantId, userId), tenantPermissions(tenantId, userId));
+    }
+
+    @Override
+    public CurrentUser readUserProfile(IdentityAccessQuery query) {
         if (!"TENANT".equals(query.principalScope()) || query.tenantId() == null)
             throw new org.springframework.security.access.AccessDeniedException("SCDP requires a tenant account");
         return tenantUser(query);
@@ -61,10 +71,7 @@ public final class JdbcIdentityAccessReader implements IdentityAccessReader {
                         tenantId,
                         userId);
         // JdbcTemplate has released the user-query connection before further reads borrow one.
-        CurrentUser user = exactlyOne(users);
-        return new CurrentUser(user.id(), user.tenantId(), user.tenantName(), user.principalScope(),
-                user.username(), user.displayName(),
-                tenantRoles(tenantId, userId), tenantPermissions(tenantId, userId));
+        return exactlyOne(users);
     }
 
     @Override

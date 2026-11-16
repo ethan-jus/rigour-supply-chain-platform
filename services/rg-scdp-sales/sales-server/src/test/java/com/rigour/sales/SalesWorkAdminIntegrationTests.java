@@ -11,6 +11,10 @@ import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.StoreProjectionComm
 import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.VisitPolicyCommand;
 import com.rigour.sales.application.service.SalesWorkAdminService;
 import com.rigour.sales.application.service.SalesWorkContextService;
+import com.rigour.sales.application.service.SalesVisitPolicyService;
+import com.rigour.sales.application.port.out.SalesVisitPolicyReadRepository;
+import com.rigour.sales.api.v1.model.SalesVisitPolicyModels.CaptureRules;
+import com.rigour.shared.core.exception.StateConflictException;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
@@ -76,6 +80,12 @@ class SalesWorkAdminIntegrationTests {
 
     @Autowired
     private SalesWorkContextService contextService;
+
+    @Autowired
+    private SalesVisitPolicyService visitPolicies;
+
+    @Autowired
+    private SalesVisitPolicyReadRepository policyReadRepository;
 
     @BeforeEach
     void setAdminCaller() {
@@ -174,10 +184,37 @@ class SalesWorkAdminIntegrationTests {
     }
 
     @Test
-    void enabledRecordingPolicyRejectsZeroMinimumDuration() {
+    void publishedCaptureRulesAreImmutableAndSelectedFromSalesWithStaleWritesRejected() {
+        adminService.bindIdentity(new IdentityBindingCommand(salesUserId, employeeId));
+        adminService.upsertSalesProfile(new SalesProfileCommand(employeeId, "CAPTURE-TEST", null));
+        var strict = new CaptureRules(true, 100, true, false, false);
+        var firstCommand = new VisitPolicyCommand("CAPTURE-TEST", "现场作业规则", true, false,
+                500, 10, 1, true, 600, 30, true, true, true, new BigDecimal("0.9"),
+                "ALL", null, true, strict, 0);
+        var first = adminService.upsertVisitPolicy(firstCommand);
+        assertThatThrownBy(() -> adminService.upsertVisitPolicy(firstCommand)).isInstanceOf(StateConflictException.class);
+        var second = adminService.upsertVisitPolicy(new VisitPolicyCommand("CAPTURE-TEST", "现场作业规则", true, false,
+                500, 10, 1, true, 0, 30, true, true, true, new BigDecimal("0.9"),
+                "ALL", null, true, new CaptureRules(false, 50, true, false, false, true), 1));
+        assertThat(second.versionNo()).isEqualTo(2);
+        assertThat(policyReadRepository.snapshot(tenantId, first.policyVersionId()).captureRules()).isEqualTo(strict);
+        assertThat(policyReadRepository.snapshot(tenantId, first.policyVersionId()).minimumRecordingSeconds()).isEqualTo(600);
+        setCaller(adminUserId, Set.of("sales:policy:read"));
+        assertThat(visitPolicies.versions()).hasSize(2);
+        setCaller(salesUserId, Set.of("sales:context:read"));
+        assertThat(visitPolicies.current().id()).isEqualTo(second.policyVersionId().toString());
+        assertThat(visitPolicies.current().captureRules().maximumLocationAccuracyMeters()).isEqualTo(50);
+        assertThat(visitPolicies.current().recordingEnabled()).isTrue();
+        assertThat(visitPolicies.current().minimumRecordingSeconds()).isZero();
+        assertThat(visitPolicies.current().captureRules().automaticRecording()).isTrue();
+        assertThat(visitPolicies.current().captureRules().automaticCheckout()).isTrue();
+    }
+
+    @Test
+    void enabledRecordingPolicyRejectsNegativeMinimumDuration() {
         assertThatThrownBy(() -> adminService.upsertVisitPolicy(new VisitPolicyCommand(
-                "VISIT-ZERO-RECORDING", "错误录音规则", false, true, 500, 5, 1,
-                true, 0, 30, true, true, true, null, "ALL", null, true)))
+                "VISIT-NEGATIVE-RECORDING", "错误录音规则", false, true, 500, 5, 1,
+                true, -1, 30, true, true, true, null, "ALL", null, true)))
                 .isInstanceOfSatisfying(BusinessException.class,
                         error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_ADMIN_INVALID));
     }

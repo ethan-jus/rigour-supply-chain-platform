@@ -8,6 +8,9 @@
     <name>crm-server</name>
     <description>Merchant CRM业务实现和启动应用</description>
     <dependencies>
+        <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>test</scope></dependency>
+        <dependency><groupId>com.rigour</groupId><artifactId>shared-cache</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-redis</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>iam-client</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>hr-api</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>crm-api</artifactId></dependency>

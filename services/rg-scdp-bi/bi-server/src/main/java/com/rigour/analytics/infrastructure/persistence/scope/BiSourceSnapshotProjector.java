@@ -13,6 +13,9 @@ import java.util.*;
 /** 完整批次发布本地源镜像，源版本变化、缺列、跨租户或网络失败都会回滚，不发布半份数据。 */
 @Component
 public class BiSourceSnapshotProjector {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private static final Set<String> PEOPLE_DATASETS =
             Set.of("HR_DEPARTMENT", "HR_EMPLOYEE", "SALES_SUBMITTED_VISIT", "CRM_CUSTOMER_AREA");
     private static final Logger log = LoggerFactory.getLogger(BiSourceSnapshotProjector.class);
@@ -79,6 +82,7 @@ public class BiSourceSnapshotProjector {
             String previous = mapper.lockVersion(tenant, checkpoint);
             String version = client.version(tenantId, d.source(), d.code());
             if (version.equals(previous)) continue;
+            queryCache.changed(tenant);
             changed = true;
             String expected =
                     d.binaryTenant() ? tenant.replace("-", "").toUpperCase(Locale.ROOT) : tenant;

@@ -80,6 +80,8 @@ public class SalesDashboardRepositoryTest {
         jdbc.execute(
                 "CREATE TABLE bi_sales_order_line_fact(tenant_id VARCHAR,order_id"
                     + " BIGINT,order_line_id BIGINT,quantity DECIMAL(24,6),deleted INT)");
+        jdbc.execute("CREATE TABLE bi_dashboard_customer_history(tenant_id VARCHAR, customer_id BIGINT, first_order_date TIMESTAMP, PRIMARY KEY(tenant_id,customer_id))");
+        jdbc.update("INSERT INTO bi_dashboard_customer_history VALUES('T',10,'2026-07-10 00:00:00'),('T',11,'2026-08-05 00:00:00')");
         jdbc.update(
                 "INSERT INTO bi_sales_order_line_fact"
                     + " VALUES('T',1,1,2.5,0),('T',2,2,8,0),('OTHER',1,1,999,0)");
@@ -126,6 +128,28 @@ public class SalesDashboardRepositoryTest {
                 null,
                 null,
                 null);
+    }
+
+    @Test
+    void selectedSummaryDeduplicatesCustomersAndUsesPaymentOwnerAndActualPaymentDate() {
+        jdbc.update("INSERT INTO bi_sales_order_fact VALUES"
+            + "('T',4,'S2','Sales2','HZ','杭州',10,'CustomerA','STORE','DHB',0,'COMPLETED','2026-08-15 00:00:00',50,0),"
+            + "('T',5,'S2','Sales2','HZ','杭州',11,'CustomerB','STORE','DHB',0,'COMPLETED','2026-08-16 00:00:00',80,0),"
+            + "('T',6,'S2','Sales2','HZ','杭州',11,'CustomerB','STORE','DHB',0,'CANCELLED','2026-08-16 00:00:00',999,0)");
+        jdbc.update("UPDATE bi_sales_payment_fact SET owner_staff_code='S2' WHERE tenant_id='T'");
+        var selected=store.summary("T",filter(null),List.of("S1","S2"));
+        assertThat(selected.sales()).isEqualByComparingTo("230");
+        assertThat(selected.receipts()).isEqualByComparingTo("50");
+        assertThat(selected.customers()).isEqualTo(2);
+        assertThat(selected.newCustomers()).isEqualTo(1);
+        assertThat(selected.returningCustomers()).isEqualTo(1);
+        assertThat(selected.annualReturningCustomers()).isEqualTo(1);
+        var single=store.summary("T",filter(null),List.of("S2"));
+        assertThat(single.sales()).isEqualByComparingTo("130");
+        assertThat(single.receipts()).isEqualByComparingTo("50");
+        assertThat(single.returningCustomers()).isEqualTo(1);
+        assertThat(store.summary("T",filter("S1"),List.of("S2")).sales()).isZero();
+        assertThat(store.summary("T",filter(null),List.of("NO_MATCH")).customers()).isZero();
     }
 
     @Test

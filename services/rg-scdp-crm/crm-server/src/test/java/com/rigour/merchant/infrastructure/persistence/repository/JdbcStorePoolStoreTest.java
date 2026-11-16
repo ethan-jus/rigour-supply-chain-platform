@@ -699,4 +699,41 @@ class JdbcStorePoolStoreTest {
         assertThat(store.leads(empty,true,1,20,null,null)).isEqualTo(new LeadPage(0,List.of(),1,20));
     }
 
+
+    @Test void cachedAdministrativeAggregatesSurvivePanningAndClaimInvalidatesListsAndMap() {
+        String first=create("330105","缓存认领一"),second=create("330106","缓存认领二");
+        var observed=org.mockito.Mockito.spy(new JdbcTemplate(jdbc.getDataSource()));
+        var cached=new JdbcStorePoolStore(observed);
+        var values=new java.util.concurrent.ConcurrentHashMap<String,byte[]>();
+        var backend=new com.rigour.shared.cache.CacheStore(){
+            public java.util.Optional<byte[]> get(String t,String k){return java.util.Optional.ofNullable(values.get(t+k));}
+            public void put(String t,String k,byte[] v,java.time.Duration ttl){values.put(t+k,v);}
+            public void evict(String t,String k){values.remove(t+k);}
+            public boolean tryLock(String t,String k,String token,java.time.Duration ttl){return true;}
+            public void unlock(String t,String k,String token){}
+        };
+        var versions=new com.rigour.merchant.infrastructure.cache.JdbcCacheVersions(jdbc);
+        var cache=new com.rigour.shared.cache.QueryCache(backend,versions,()->"verified-test-actor",()->false,null,"map-test",2097152,4);
+        org.springframework.test.util.ReflectionTestUtils.setField(cached,"queryCache",cache);
+        var scope=national("crm:pool:public-read","1");var q=query("PUBLIC",null);
+        assertThat(inTx(()->cached.map(scope,q,Set.of(),new MapWindow(null,null,null,null,5d))).total()).isEqualTo(2);
+        org.mockito.Mockito.clearInvocations(observed);
+        var panned=inTx(()->cached.map(scope,q,Set.of(),new MapWindow(120d,30d,121d,31d,5d)));
+        assertThat(panned.points().getFirst().count()).isEqualTo(2);
+        assertThat(org.mockito.Mockito.mockingDetails(observed).getInvocations().stream()
+                .filter(call->call.getArguments().length>0&&call.getArguments()[0] instanceof String sql&&sql.contains("GROUP BY area_code"))).isEmpty();
+        assertThat(inTx(()->cached.list(scope,q,Set.of())).total()).isEqualTo(2);
+        var window=new MapWindow(null,null,null,null,15d);
+        var members=inTx(()->cached.mapStores(scope,q,Set.of(),window,"GCJ02"));
+        org.mockito.Mockito.clearInvocations(observed);
+        assertThat(inTx(()->cached.mapStores(scope,q,Set.of(),window,"GCJ02"))).isEqualTo(members);
+        org.mockito.Mockito.verifyNoInteractions(observed);
+        var claimer=hangzhou("crm:pool:claim","2");
+        inTx(()->{cached.claim(claimer,first,new Claim(UUID.randomUUID().toString(),cached.detail(claimer,first).revision()));return null;});
+        assertThat(inTx(()->cached.list(scope,q,Set.of())).items()).extracting(Row::id).containsExactly(second);
+        assertThat(inTx(()->cached.map(scope,q,Set.of(),new MapWindow(null,null,null,null,5d))).total()).isEqualTo(1);
+        assertThat(inTx(()->cached.mapStores(scope,q,Set.of(),window,"GCJ02"))).isNotEqualTo(members);
+        assertThat(inTx(()->cached.list(hangzhou("crm:pool:private-read","2"),query("MINE",null),Set.of())).items()).extracting(Row::id).containsExactly(first);
+        assertThat(inTx(()->cached.list(hangzhou("crm:pool:private-read","3"),query("MINE",null),Set.of())).total()).isZero();
+    }
 }

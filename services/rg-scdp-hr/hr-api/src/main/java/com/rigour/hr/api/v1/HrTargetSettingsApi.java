@@ -22,6 +22,10 @@ public interface HrTargetSettingsApi {
     @GetMapping(ROOT + "/values")
     ApiResponse<List<Target>> values(@RequestParam String from, @RequestParam String to);
 
+    @GetMapping(ROOT + "/performance-value")
+    ApiResponse<java.math.BigDecimal> performanceValue(@RequestParam String employeeCode,
+            @RequestParam String from, @RequestParam String to);
+
     @GetMapping(ROOT + "/history")
     ApiResponse<List<History>> history(
             @RequestParam String month,

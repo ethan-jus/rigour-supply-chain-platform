@@ -17,6 +17,9 @@ import tools.jackson.databind.ObjectMapper;
 
 @Repository
 public class JdbcStoreFactStore implements StoreFactStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final JdbcStoreLifecycleStore lifecycle;
@@ -29,6 +32,7 @@ public class JdbcStoreFactStore implements StoreFactStore {
     }
     @Override @Transactional
     public void acceptEvidence(Evidence e,Instant now) {
+        queryCache.changed(e.tenantId());
         lock(e.tenantId(),e.storeId());
         var rows=jdbc.query("SELECT v.*,o.deadline_at FROM crm_visit v JOIN crm_store_ownership o ON o.tenant_id=v.tenant_id AND o.id=v.ownership_id WHERE v.tenant_id=? AND v.id=?",(rs,n)->{
             var row=new org.springframework.jdbc.core.ColumnMapRowMapper().mapRow(rs,n);
@@ -83,6 +87,7 @@ public class JdbcStoreFactStore implements StoreFactStore {
     }
     @Override @Transactional
     public void acceptOrder(StoreOrderResult r,Instant now) {
+        queryCache.changed(r.tenantId());
         lock(r.tenantId(),r.storeId());
         var owners=jdbc.queryForList("SELECT owner_employee_id FROM crm_store_ownership WHERE tenant_id=? AND id=? AND store_id=?",r.tenantId(),r.ownershipId(),r.storeId());
         if(owners.isEmpty() || r.salespersonId()!=null && !r.salespersonId().equals(owners.getFirst().get("owner_employee_id").toString()))

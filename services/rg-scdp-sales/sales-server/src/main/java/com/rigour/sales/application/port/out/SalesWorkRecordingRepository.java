@@ -33,6 +33,8 @@ public interface SalesWorkRecordingRepository {
                     Long verifiedDurationMs, String verifyStatus,
                     Instant recordedFrom, Instant recordedTo, Instant now);
 
+    void recordClipSource(UUID tenantId,UUID clipId,String source);
+
     int incrementSessionClipCount(UUID tenantId, UUID sessionId);
 
     /** 按已核验片段的录制区间并集重算可信时长，并识别重复、重叠和超间隙风险。 */

@@ -52,6 +52,9 @@ import java.util.Optional;
 public class MybatisPlusSalesOrderRepository
         extends ServiceImpl<InternalSalesOrderMapper, InternalSalesOrderEntity>
         implements OrderSalesOrderStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private static final ObjectMapper JSON = JsonMapper.builder().build();
     private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() {};
     private static final String SYSTEM_ACTOR = "SYSTEM";
@@ -167,6 +170,7 @@ public class MybatisPlusSalesOrderRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView create(
             String tenantId, String orderNo, SalesOrderWrite command, String actorId) {
+        queryCache.changed(tenantId);
         LocalDateTime now = now();
         InternalSalesOrderEntity entity = orderEntity(tenantId, orderNo, command, actorId, now);
         try {
@@ -187,6 +191,7 @@ public class MybatisPlusSalesOrderRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView update(
             String tenantId, Long id, SalesOrderWrite command, String actorId) {
+        queryCache.changed(tenantId);
         attribution.requireNoExecution(tenantId, id);
         scopes.requireOrder(tenantId, id, "order:update");
         InternalSalesOrderEntity existing = requireDraft(tenantId, id);
@@ -323,6 +328,7 @@ public class MybatisPlusSalesOrderRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView updateExternalProjection(
             String tenantId, Long id, SalesOrderWrite command, String actorId) {
+        queryCache.changed(tenantId);
         attribution.requireNoExecution(tenantId, id);
         attribution.rejectFrozenSourceRewrite(
                 tenantId, id, command.ownerEmployeeCode(), command.regionCode());
@@ -501,6 +507,7 @@ public class MybatisPlusSalesOrderRepository
             String orderStatusCode,
             int revision,
             String actorId) {
+        queryCache.changed(tenantId);
         InternalSalesOrderEntity existing =
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售订单不存在"));
         String businessStatusCode =
@@ -539,6 +546,7 @@ public class MybatisPlusSalesOrderRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView updateSourceProjection(
             String tenantId, Long id, SalesOrderSourceProjectionWrite command, String actorId) {
+        queryCache.changed(tenantId);
         attribution.requireNoExecution(tenantId, id);
         attribution.rejectFrozenSourceRewrite(
                 tenantId, id, command.ownerEmployeeCode(), command.regionCode());
@@ -627,6 +635,7 @@ public class MybatisPlusSalesOrderRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView submit(String tenantId, Long id, int revision, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireOrder(tenantId, id, "order:submit");
         getBaseMapper().selectOne(Wrappers.<InternalSalesOrderEntity>lambdaQuery()
                 .eq(InternalSalesOrderEntity::getTenantId, tenantId)
@@ -676,6 +685,7 @@ public class MybatisPlusSalesOrderRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView cancel(String tenantId, Long id, int revision, String actorId) {
+        queryCache.changed(tenantId);
         attribution.requireNoExecution(tenantId, id);
         scopes.requireOrder(tenantId, id, "order:cancel");
         InternalSalesOrderEntity existing =
@@ -717,6 +727,7 @@ public class MybatisPlusSalesOrderRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView cancelBySource(
             String tenantId, Long id, int revision, String actorId) {
+        queryCache.changed(tenantId);
         attribution.requireNoExecution(tenantId, id);
         InternalSalesOrderEntity existing =
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售订单不存在"));
@@ -763,6 +774,7 @@ public class MybatisPlusSalesOrderRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesOrderDetailView confirmOutbound(
             String tenantId, Long id, int revision, Instant shipmentTime, String actorId) {
+        queryCache.changed(tenantId);
         attribution.requireExecutedReceipt(tenantId, id);
         InternalSalesOrderEntity existing =
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售订单不存在"));
@@ -811,6 +823,7 @@ public class MybatisPlusSalesOrderRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(String tenantId, Long id, int revision, String actorId) {
+        queryCache.changed(tenantId);
         attribution.requireNoExecution(tenantId, id);
         scopes.requireOrder(tenantId, id, "order:delete");
         requireDraft(tenantId, id);

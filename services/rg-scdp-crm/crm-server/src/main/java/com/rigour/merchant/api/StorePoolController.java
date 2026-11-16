@@ -1,5 +1,7 @@
 package com.rigour.merchant.api;
 
+import com.rigour.merchant.api.v1.model.NearbyModels;
+
 import com.rigour.merchant.api.v1.model.StoreModels.*;
 import com.rigour.merchant.application.service.StorePoolService;
 import com.rigour.shared.core.api.ApiResponse;
@@ -29,6 +31,10 @@ public class StorePoolController {
     public ApiResponse<Context> context(@RequestParam(defaultValue="PUBLIC")String view){return ApiResponse.success(service.context(view));}
     @GetMapping
     public ApiResponse<Page> list(@ModelAttribute Query query){return ApiResponse.success(service.list(query));}
+    @GetMapping("/nearby/origin")
+    public ApiResponse<NearbyModels.Origin> nearbyOrigin(@RequestParam String view,@ModelAttribute("near") NearbyModels.Query near){return ApiResponse.success(service.nearbyOrigin(view,near));}
+    @GetMapping("/nearby")
+    public ApiResponse<NearbyModels.Page<Row>> nearby(@ModelAttribute Query query,@ModelAttribute("near") NearbyModels.Query near){return ApiResponse.success(service.nearby(query,near));}
     @GetMapping("/map")
     public ApiResponse<MapResult> map(@ModelAttribute Query query,@ModelAttribute MapWindow window){return ApiResponse.success(service.map(query,window));}
     @GetMapping("/map/stores")

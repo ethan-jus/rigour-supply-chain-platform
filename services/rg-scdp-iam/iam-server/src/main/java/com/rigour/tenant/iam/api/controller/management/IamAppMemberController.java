@@ -22,8 +22,11 @@ public final class IamAppMemberController {
     public Page members(
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int pageSize, @RequestParam(required = false) Long departmentId) {
-        return service.members(IamAppSettingsController.actor(), keyword, page, pageSize, departmentId);
+            @RequestParam(defaultValue = "20") int pageSize, @RequestParam(required = false) Long departmentId,
+            @RequestParam(required = false) UUID roleId,
+            @RequestParam(required = false) String employeeName,
+            @RequestParam(required = false) String positionName) {
+        return service.members(IamAppSettingsController.actor(), keyword, page, pageSize, departmentId, roleId, employeeName, positionName);
     }
 
     @GetMapping("/account-candidates")

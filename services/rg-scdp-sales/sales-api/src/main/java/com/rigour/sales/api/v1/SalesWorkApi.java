@@ -42,6 +42,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 /** Sales Work V1 的 H5 销售作业契约；不暴露跨域数据库模型。 */
 public interface SalesWorkApi {
+    @GetMapping("/api/v1/sales/me/attendance-context")
+    ApiResponse<com.rigour.sales.api.v1.model.SalesWorkApiModels.AttendanceContextView> attendanceContext();
+
 
     String BASE_PATH = "/api/v1/sales";
     String CONTEXT_PATH = BASE_PATH + "/me/context";
@@ -132,17 +135,25 @@ public interface SalesWorkApi {
     ApiResponse<VisitView> submitVisitResult(@PathVariable("visitId") UUID visitId,
                                              @RequestBody VisitResultCommand command);
 
+    @GetMapping(VISIT_PATH + "/auto-departure-context")
+    ApiResponse<com.rigour.sales.api.v1.model.SalesWorkApiModels.AutoDepartureContext> autoDepartureContext(@PathVariable("visitId") UUID visitId);
+
+    @PostMapping(VISIT_PATH + "/auto-check-out")
+    ApiResponse<VisitView> autoCheckOutVisit(@PathVariable("visitId") UUID visitId,@RequestBody CheckOutVisitCommand command);
+
+    /** APP_RECORDER 可不声明 durationMs，实际时长由服务端解码；FILE_IMPORT 不声明现场时间。 */
     @PostMapping(path = VISIT_RECORDINGS_PATH + "/clips",
             consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     ApiResponse<RecordingClipView> uploadRecordingClip(
             @PathVariable("visitId") UUID visitId,
             @RequestPart("file") MultipartFile file,
             @RequestParam("clientClipId") String clientClipId,
-            @RequestParam("durationMs") Long durationMs,
-            @RequestParam("recordedFrom")
+            @RequestParam(value = "durationMs", required = false) Long durationMs,
+            @RequestParam(value = "recordedFrom", required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant recordedFrom,
-            @RequestParam("recordedTo")
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant recordedTo);
+            @RequestParam(value = "recordedTo", required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant recordedTo,
+            @RequestParam(value = "captureSource", required = false) String captureSource);
 
     @PostMapping(VISIT_RECORDINGS_PATH + "/discarded-clips")
     ApiResponse<DiscardRecordingClipView> discardRecordingClip(

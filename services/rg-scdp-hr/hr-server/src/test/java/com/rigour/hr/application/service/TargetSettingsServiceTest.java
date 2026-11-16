@@ -272,4 +272,38 @@ class TargetSettingsServiceTest {
         assertThatThrownBy(() -> service.values("2026-01", "2028-01"))
                 .isInstanceOf(BusinessException.class);
     }
+    void serviceCaller() {
+        TestAuthorizationContext.set(new CallerIdentity("SERVICE",user,tenant,null,null,UUID.randomUUID(),0,0,0,Set.of(),Set.of("hr:targets:service-read")));
+    }
+    @Test void performanceContractIsServiceOnlyAndIncludesOnlySelectedEmployeesFullyPaidTargets() {
+        assertThatThrownBy(() -> service.performanceValue("E1","2026-09","2026-11")).isInstanceOf(AuthorizationDeniedException.class);
+        serviceCaller();
+        when(store.targets(any(),any(),any())).thenReturn(List.of(
+                new Target("2026-09","SALES_OWNER","E1","销售","FULLY_PAID_RECEIPT_BASIS",new BigDecimal("5000"),1),
+                new Target("2026-10","SALES_OWNER","E1","销售","FULLY_PAID_RECEIPT_BASIS",BigDecimal.ZERO,2),
+                new Target("2026-11","SALES_OWNER","E1","销售","FULLY_PAID_RECEIPT_BASIS",new BigDecimal("7000"),1),
+                new Target("2026-11","SALES_OWNER","E1","销售","RECEIPT_AMOUNT",new BigDecimal("99999"),1),
+                new Target("2026-11","SALES_OWNER","OTHER","其他","FULLY_PAID_RECEIPT_BASIS",new BigDecimal("99999"),1)));
+        assertThat(service.performanceValue("E1","2026-09","2026-11")).isEqualByComparingTo("12000");
+        assertThatThrownBy(() -> service.performanceValue("MISSING","2026-11","2026-11")).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.performanceValue("E1","2026-11","2026-10")).isInstanceOf(BusinessException.class);
+        assertThatThrownBy(() -> service.performanceValue("E1","2026-01","2027-01")).isInstanceOf(BusinessException.class);
+    }
+    @Test void performanceTargetsReuseEntryStageDefaultsAndExplicitMonthlyOverrides() {
+        serviceCaller();
+        var payroll = mock(com.rigour.hr.application.port.out.HrPayrollStore.class);
+        var schemes = mock(com.rigour.hr.application.port.out.HrPayrollSchemeStore.class);
+        var components = mock(com.rigour.hr.application.port.out.HrPayrollComponentStore.class);
+        service.setPayrollRules(components, schemes, payroll);
+        when(payroll.employee(tenant.toString(), "E1", TargetSettingsService.READ)).thenReturn(
+                new com.rigour.hr.api.v1.model.PayrollEmployeeView("E1","销售",1L,"部门","北京",LocalDate.of(2026,9,3),null,"SALES"));
+        when(payroll.departmentAt(eq(tenant.toString()),eq("E1"),any())).thenReturn(1L);
+        when(schemes.versions(tenant.toString())).thenReturn(List.of(PayrollSchemeTestFixture.version(PayrollSchemeTestFixture.definition())));
+        assertThat(service.performanceValue("E1","2026-09","2026-09")).isZero();
+        assertThat(service.performanceValue("E1","2026-10","2026-10")).isEqualByComparingTo("5000");
+        assertThat(service.performanceValue("E1","2026-09","2026-11")).isEqualByComparingTo("12000");
+        when(store.targets(any(),any(),any())).thenReturn(List.of(new Target("2026-10","SALES_OWNER","E1","销售","FULLY_PAID_RECEIPT_BASIS",BigDecimal.ZERO,1)));
+        assertThat(service.performanceValue("E1","2026-09","2026-11")).isEqualByComparingTo("7000");
+    }
+
 }

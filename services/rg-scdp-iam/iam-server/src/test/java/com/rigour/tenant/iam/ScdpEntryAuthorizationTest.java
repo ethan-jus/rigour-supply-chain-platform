@@ -44,7 +44,7 @@ class ScdpEntryAuthorizationTest {
     @Test void activatedRolesReplaceLegacyPermissionsAndRevocationsAreImmediate() {
         var reader = mock(IdentityAccessReader.class);
         var query = new IdentityAccessQuery("TENANT", user, tenant);
-        when(reader.readCurrentUser(query)).thenReturn(new CurrentUser(user, tenant, "tenant", "TENANT", "account", "name", Set.of("TENANT_SUPER_ADMIN"), Set.of("old:permission", "*:*:*")));
+        when(reader.readUserProfile(query)).thenReturn(new CurrentUser(user, tenant, "tenant", "TENANT", "account", "name", Set.of("TENANT_SUPER_ADMIN"), Set.of("old:permission", "*:*:*")));
         when(settings.initialized(actor)).thenReturn(true);
         when(reader.readSupplyRoles(query)).thenReturn(Set.of("SALES"));
         var service = new IdentityAccessService(reader, settings);
@@ -53,5 +53,6 @@ class ScdpEntryAuthorizationTest {
         assertThat(service.currentUser(query).roles()).containsExactly("SALES");
         when(settings.context(actor)).thenReturn(new Context(true, false, "ACTIVE", 3, Set.of()));
         assertThat(service.currentUser(query).permissions()).isEmpty();
+        verify(reader, never()).readCurrentUser(query);
     }
 }

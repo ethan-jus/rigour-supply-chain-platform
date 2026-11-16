@@ -201,13 +201,13 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         return existing == null || clean(existing.getOwnerEmployeeCode()) == null;
     }
 
-    private boolean locallyAssignedOwnerForMissingStaff(UUID tenantId, SourceBindingEntity binding,
+    private boolean assignedOwnerForMissingStaff(UUID tenantId, SourceBindingEntity binding,
             StaffRef sourceOwner) {
         if (usableStaffId(sourceOwner.sourceId()) != null || binding == null || binding.targetId == null)
             return false;
         var existing = internalCustomerByPartyId(tenantId, uuid(binding.targetId));
-        // 人工移交已校验员工身份；来源未填写业务员不能撤销该明确归属。
-        return existing != null && "LOCAL".equals(existing.getOwnerManagementMode())
+        // 来源未填写业务员不能撤销系统已有归属；非空来源仍必须先完成员工映射。
+        return existing != null
                 && clean(existing.getOwnerEmployeeCode()) != null
                 && clean(existing.getOwnerEmployeeNameSnapshot()) != null;
     }
@@ -798,7 +798,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         StaffRef primary = staffRefs(fields).primary();
         EmployeeRef resolved = employee(fields, primary.sourceId(), null);
         String code = null, message = null;
-        if (!ownerPendingAllowed(tenantId, binding) && !locallyAssignedOwnerForMissingStaff(tenantId, binding, primary)
+        if (!ownerPendingAllowed(tenantId, binding) && !assignedOwnerForMissingStaff(tenantId, binding, primary)
                 && (usableStaffId(primary.sourceId()) == null || clean(resolved.employeeCode()) == null
                 || clean(resolved.employeeName()) == null)) {
             code = "CUSTOMER_EMPLOYEE_MAPPING_REQUIRED";

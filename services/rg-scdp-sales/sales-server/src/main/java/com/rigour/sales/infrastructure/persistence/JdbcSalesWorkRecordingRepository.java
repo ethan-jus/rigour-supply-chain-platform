@@ -153,6 +153,10 @@ public class JdbcSalesWorkRecordingRepository implements SalesWorkRecordingRepos
                 "VERIFIED".equals(verifyStatus) ? timestamp(now) : null);
     }
 
+    @Override public void recordClipSource(UUID tenantId,UUID clipId,String source) {
+        jdbc.update("UPDATE sales_recording_clip SET capture_source=? WHERE tenant_id=? AND id=?",source,bin(tenantId),bin(clipId));
+    }
+
     @Override
     public int incrementSessionClipCount(UUID tenantId, UUID sessionId) {
         return jdbc.update("""

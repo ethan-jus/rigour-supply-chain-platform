@@ -75,6 +75,19 @@ class SalesDashboardServiceTest {
         verify(images).urls(tenant.toString(), List.of("101"));
     }
 
+    @Test
+    void selectedSummaryKeepsTenantAndFiltersAndRejectsAnEmptySelection() {
+        service.summary(now, now, "HZ", "E1", "STORE", null, "DHB", List.of("E1", "E2", "E1"));
+        verify(data).summary(eq(tenant.toString()), argThat(f ->
+                "HZ".equals(f.regionCode()) && "E1".equals(f.ownerStaffCode())
+                && "STORE".equals(f.customerTypeCode()) && "DHB".equals(f.sourceSystemCode())),
+                eq(List.of("E1", "E2")));
+        clearInvocations(data);
+        assertThatThrownBy(() -> service.summary(now, now, null, null, null, null, null, List.of()))
+                .isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        verifyNoInteractions(data);
+    }
+
     private SalesDashboardData snapshot(List<SalesDashboardData.Product> products) {
         return new SalesDashboardData(List.of(), List.of(), null, products, List.of(), List.of(), null, now, List.of());
     }

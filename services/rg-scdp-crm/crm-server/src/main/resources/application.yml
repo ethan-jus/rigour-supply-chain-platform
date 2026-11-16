@@ -23,6 +23,13 @@ logging:
     com.rigour: INFO
 
 rigour:
+  query-cache:
+    enabled: ${QUERY_CACHE_ENABLED:true}
+    namespace: ${QUERY_CACHE_NAMESPACE:${spring.profiles.active:local}:${NACOS_NAMESPACE:default}:crm}
+    command-timeout-ms: ${QUERY_CACHE_COMMAND_TIMEOUT_MS:500}
+    max-entry-bytes: 2097152
+    max-tenant-bytes: 33554432
+    max-concurrent-loads: 16
   hr:
     # CRM 只读取 HR 员工主档做人员归属解析，IAM 不再承载人员主数据。
     base-url: ${RIGOUR_HR_BASE_URL:http://rigour-hr-payroll-service}

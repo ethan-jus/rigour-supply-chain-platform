@@ -76,6 +76,7 @@ public class SalesWorkAttendanceService {
     private final AuditSink auditSink;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final SalesFieldworkService fieldwork;
 
     public SalesWorkAttendanceService(
             SalesWorkContextService contextService,
@@ -85,7 +86,7 @@ public class SalesWorkAttendanceService {
             OutboxStore outboxStore,
             AuditSink auditSink,
             ObjectMapper objectMapper,
-            Clock clock) {
+            Clock clock, SalesFieldworkService fieldwork) {
         this.contextService = contextService;
         this.repository = repository;
         this.visitRepository = visitRepository;
@@ -94,6 +95,7 @@ public class SalesWorkAttendanceService {
         this.auditSink = auditSink;
         this.objectMapper = objectMapper;
         this.clock = clock;
+        this.fieldwork = fieldwork;
     }
 
     @Transactional
@@ -213,8 +215,25 @@ public class SalesWorkAttendanceService {
         Reservation reservation = reserve(caller, "LOCATION_BATCH", key, command);
         if (reservation.status() == Status.COMPLETED) return replayLocationBatch(reservation);
         throwIfNotReserved(reservation);
-        if (!"ACTIVE".equals(workDay.status())) {
+        UUID sessionId = command.locationSessionId() == null ? workDay.locationSessionId() : command.locationSessionId();
+        // Legacy requests are accepted only for the currently active session. New clients bind
+        // every offline batch to its original session; a reopened day cannot relabel old points.
+        if (command.locationSessionId() == null && !"ACTIVE".equals(workDay.status()))
             throw new BusinessException(ErrorCode.SALES_WORK_DAY_INVALID_STATE);
+        if (command.locationSessionId() != null) {
+            var capture = repository.findLocationSession(caller.tenantId(), workDay.id(), sessionId)
+                    .orElseThrow(() -> badRequest("定位会话不属于本次作业"));
+            Instant cutoff=workDay.businessDate().plusDays(1).atTime(policy.businessDayCutoff())
+                    .atZone(ZoneId.of(policy.timezoneId())).toInstant();
+            Instant end = capture.endedAt() == null ? receivedAt : capture.endedAt();
+            if(end.isAfter(cutoff)) end=cutoff;
+            if ((capture.endedAt()!=null || !receivedAt.isBefore(cutoff)) && receivedAt.isAfter(end.plusSeconds(policy.offlineUploadDeadlineMinutes() * 60L)))
+                throw badRequest("已超过原定位会话补传期限");
+            for (var point : command.points()) {
+                if (point.clientOccurredAt() == null || point.clientOccurredAt().isBefore(capture.startedAt().minusSeconds(60))
+                        || point.clientOccurredAt().isAfter(end.plusSeconds(60)))
+                    throw badRequest("定位点不在原作业时段内");
+            }
         }
 
         List<LocationPointCommand> uniquePoints = uniquePoints(command.points());
@@ -235,7 +254,7 @@ public class SalesWorkAttendanceService {
             repository.insertLocationPoint(
                     UUID.randomUUID(),
                     caller.tenantId(),
-                    workDay.locationSessionId(),
+                    sessionId,
                     workDay.id(),
                     point.deviceEventId(),
                     point.longitude(),
@@ -244,14 +263,14 @@ public class SalesWorkAttendanceService {
                     point.clientOccurredAt(),
                     receivedAt,
                     normalizeSource(point.source()),
-                    qualityStatus(point.accuracyMeters(), policy));
+                    qualityStatus(point.accuracyMeters(), policy), point.rawLongitude(), point.rawLatitude(), point.rawCoordinateSystem());
             acceptedCount++;
         }
         if (acceptedCount > 0) {
             if (repository.incrementLocationPointCount(
                             caller.tenantId(),
                             workDay.id(),
-                            workDay.locationSessionId(),
+                            sessionId,
                             acceptedCount)
                     != 1) {
                 throw new BusinessException(ErrorCode.SALES_WORK_DAY_INVALID_STATE);
@@ -454,6 +473,19 @@ public class SalesWorkAttendanceService {
                                 () -> new BusinessException(ErrorCode.SALES_WORK_DAY_NOT_FOUND)));
     }
 
+    public com.rigour.sales.api.v1.model.SalesWorkApiModels.AttendanceContextView attendanceContext() {
+        var caller=requireCaller("sales:context:read");
+        var now=clock.instant();
+        var identity=contextService.resolveIdentity(caller,now);
+        var policy=contextService.resolvePolicy(caller.tenantId(),identity.profile(),now);
+        var date=businessDate(now,policy);
+        var day=repository.findWorkDay(caller.tenantId(),identity.profile().id(),date).map(SalesWorkAttendanceService::view).orElse(null);
+        if(day!=null) policy=contextService.resolvePolicyVersion(caller.tenantId(),day.fieldPolicyVersionId());
+        var until=date.plusDays(1).atTime(policy.businessDayCutoff()).atZone(java.time.ZoneId.of(policy.timezoneId())).toInstant();
+        return new com.rigour.sales.api.v1.model.SalesWorkApiModels.AttendanceContextView(date,until,now,
+                policy.locationEnabled(),policy.locationIntervalMinutes(),policy.offlineUploadDeadlineMinutes(),day);
+    }
+
     public WorkDayView workDay(LocalDate date) {
         CallerIdentity caller = requireCaller("sales:context:read");
         if (date == null) throw badRequest("业务日期不能为空");
@@ -547,6 +579,7 @@ public class SalesWorkAttendanceService {
     public WorkDayTrackView managementTrack(UUID salesProfileId, LocalDate date) {
         CallerIdentity caller = requireCaller("sales:location:sensitive:read");
         if (salesProfileId == null || date == null) throw badRequest("销售人员和业务日期不能为空");
+        fieldwork.requireProfile(salesProfileId, "sales:location:sensitive:read");
         WorkDayTrackView result = buildTrack(caller.tenantId(), salesProfileId, date);
         appendAudit(
                 caller,
@@ -567,8 +600,8 @@ public class SalesWorkAttendanceService {
                         .orElseThrow(
                                 () -> new BusinessException(ErrorCode.SALES_WORK_DAY_NOT_FOUND));
         var pointRows = repository.findLocationPoints(tenantId, workDay.id());
-        var acceptedPointRows =
-                pointRows.stream().filter(row -> "ACCEPTED".equals(row.qualityStatus())).toList();
+        var policy = contextService.resolvePolicyVersion(tenantId, workDay.fieldPolicyVersionId());
+        var metrics = SalesTrackMetrics.calculate(pointRows, policy.locationIntervalMinutes());
         List<TrackPointView> points =
                 pointRows.stream()
                         .map(
@@ -639,50 +672,23 @@ public class SalesWorkAttendanceService {
                             reviewStatus(visit)));
         }
         List<TrackTravelSegmentView> segments =
-                travelSegments(visitRows, targets, acceptedPointRows);
+                travelSegments(visitRows, targets, pointRows, policy.locationIntervalMinutes());
         return new WorkDayTrackView(
                 workDay.id(),
                 workDay.businessDate(),
                 workDay.status(),
-                pathDistance(acceptedPointRows),
-                trackedDurationMinutes(acceptedPointRows),
+                metrics.distanceMeters(),
+                metrics.trackedMinutes(),
                 points,
                 punches,
                 visits,
-                segments);
-    }
-
-    private static int trackedDurationMinutes(
-            List<SalesWorkAttendanceRepository.LocationPointRow> points) {
-        if (points.size() < 2) return 0;
-        return (int)
-                Math.max(
-                        0,
-                        Duration.between(
-                                        points.getFirst().serverReceivedAt(),
-                                        points.getLast().serverReceivedAt())
-                                .toMinutes());
-    }
-
-    private static int pathDistance(List<SalesWorkAttendanceRepository.LocationPointRow> points) {
-        double distance = 0;
-        for (int index = 1; index < points.size(); index++) {
-            var previous = points.get(index - 1);
-            var current = points.get(index);
-            distance +=
-                    distanceMeters(
-                            previous.longitude(),
-                            previous.latitude(),
-                            current.longitude(),
-                            current.latitude());
-        }
-        return (int) Math.round(distance);
+                segments, metrics.available(), metrics.rejected(), metrics.legs(), metrics.gaps());
     }
 
     private static List<TrackTravelSegmentView> travelSegments(
             List<VisitSnapshot> visits,
             Map<UUID, VisitTargetSnapshot> targets,
-            List<SalesWorkAttendanceRepository.LocationPointRow> points) {
+            List<SalesWorkAttendanceRepository.LocationPointRow> points, int expectedIntervalMinutes) {
         List<TrackTravelSegmentView> segments = new ArrayList<>();
         for (int index = 1; index < visits.size(); index++) {
             VisitSnapshot fromVisit = visits.get(index - 1);
@@ -702,22 +708,7 @@ public class SalesWorkAttendanceService {
                                             !pointTime(point).isBefore(from)
                                                     && !pointTime(point).isAfter(to))
                             .toList();
-            List<Coordinate> coordinates = new ArrayList<>();
-            coordinates.add(new Coordinate(fromTarget.longitude(), fromTarget.latitude()));
-            segmentPoints.forEach(
-                    point -> coordinates.add(new Coordinate(point.longitude(), point.latitude())));
-            coordinates.add(new Coordinate(toTarget.longitude(), toTarget.latitude()));
-            double distance = 0;
-            for (int pointIndex = 1; pointIndex < coordinates.size(); pointIndex++) {
-                Coordinate previous = coordinates.get(pointIndex - 1);
-                Coordinate current = coordinates.get(pointIndex);
-                distance +=
-                        distanceMeters(
-                                previous.longitude(),
-                                previous.latitude(),
-                                current.longitude(),
-                                current.latitude());
-            }
+            var measured = SalesTrackMetrics.calculate(segmentPoints, expectedIntervalMinutes);
             segments.add(
                     new TrackTravelSegmentView(
                             fromVisit.id(),
@@ -726,9 +717,9 @@ public class SalesWorkAttendanceService {
                             index + 1,
                             fromTarget.storeName(),
                             toTarget.storeName(),
-                            (int) Math.round(distance),
+                            measured.distanceMeters(),
                             (int) Math.max(0, Duration.between(from, to).toMinutes()),
-                            segmentPoints.isEmpty() ? "STRAIGHT_LINE" : "TRACK"));
+                            measured.available() ? "OBSERVED_ESTIMATE" : "UNAVAILABLE"));
         }
         return List.copyOf(segments);
     }
@@ -1052,6 +1043,11 @@ public class SalesWorkAttendanceService {
         required(point.deviceEventId(), "deviceEventId", 128);
         validateCoordinates(point.longitude(), point.latitude(), point.accuracyMeters());
         required(point.source(), "source", 24);
+        if (point.rawLongitude()!=null || point.rawLatitude()!=null || point.rawCoordinateSystem()!=null) {
+            validateCoordinates(point.rawLongitude(),point.rawLatitude(),point.accuracyMeters());
+            if (!Set.of("WGS84","GCJ02").contains(point.rawCoordinateSystem()==null?"":point.rawCoordinateSystem()))
+                throw badRequest("原始定位坐标系无效");
+        }
     }
 
     private static void validateInterruptionCommand(UUID workDayId, InterruptionCommand command) {

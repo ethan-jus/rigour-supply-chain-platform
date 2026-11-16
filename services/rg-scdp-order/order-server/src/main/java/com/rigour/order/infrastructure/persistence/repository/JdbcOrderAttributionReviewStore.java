@@ -19,6 +19,9 @@ import java.util.*;
 /** 只改变经复核的归属，不修改交易金额、订单状态或库存；前后证据永久留存。 */
 @Repository
 public class JdbcOrderAttributionReviewStore implements OrderAttributionReviewStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private final JdbcTemplate jdbc;
     private final OrderDataScope scopes;
     private final HrEmployeeDisplayClient employees;
@@ -101,6 +104,7 @@ public class JdbcOrderAttributionReviewStore implements OrderAttributionReviewSt
 
     @Transactional
     public Adjustment propose(long id, Propose c) {
+        queryCache.changed(com.rigour.shared.context.AuthorizationContext.requireCurrent().tenantId().toString());
         var a = actor("order:attribution:propose");
         String t = a.tenantId().toString();
         var old = current(t, id, true);
@@ -140,6 +144,7 @@ public class JdbcOrderAttributionReviewStore implements OrderAttributionReviewSt
 
     @Transactional
     public Adjustment decide(long id, String reviewId, Review c) {
+        queryCache.changed(com.rigour.shared.context.AuthorizationContext.requireCurrent().tenantId().toString());
         var a = actor("order:attribution:approve");
         String t = a.tenantId().toString();
         var old = current(t, id, true);

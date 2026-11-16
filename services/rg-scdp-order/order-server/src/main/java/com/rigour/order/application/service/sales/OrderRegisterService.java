@@ -282,9 +282,9 @@ public class OrderRegisterService {
                         text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds, Set.of(), Map.of());
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         var page = withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
-        var numbers = store.voucherTransactionNos(actor.tenantId().toString(), page.items().stream().map(OrderRegisterPaymentView::id).toList());
+        var numbers = store.voucherTransactionNos(actor.tenantId().toString(), page.items().stream().map(OrderRegisterPaymentView::id).filter(java.util.Objects::nonNull).toList());
         return new OrderRegisterPage<>(page.total(), page.begin(), page.step(),
-                page.items().stream().map(item -> item.withVoucherTransactionNos(numbers.getOrDefault(item.id(), List.of()))).toList(),
+                page.items().stream().map(item -> item.withVoucherTransactionNos(item.id()==null?List.of():numbers.getOrDefault(item.id(), List.of()))).toList(),
                 page.totals(), page.coverage());
     }
 

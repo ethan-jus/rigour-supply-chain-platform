@@ -14,6 +14,10 @@ public final class SalesWorkApiModels {
     private SalesWorkApiModels() {
     }
 
+    public record AttendanceContextView(LocalDate businessDate, Instant captureUntil, Instant serverTime,
+                                        boolean locationEnabled, int locationIntervalMinutes,
+                                        int offlineUploadDeadlineMinutes, WorkDayView workDay) {}
+
     public record FieldPolicyView(
             UUID id, String policyCode, String policyName, int versionNo, String publishStatus,
             String timezoneId, LocalTime businessDayCutoff,
@@ -58,10 +62,18 @@ public final class SalesWorkApiModels {
 
     public record LocationPointCommand(
             String deviceEventId, BigDecimal longitude, BigDecimal latitude,
-            BigDecimal accuracyMeters, Instant clientOccurredAt, String source) {
+            BigDecimal accuracyMeters, Instant clientOccurredAt, String source,
+            BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem) {
+        public LocationPointCommand(String deviceEventId, BigDecimal longitude, BigDecimal latitude,
+                BigDecimal accuracyMeters, Instant clientOccurredAt, String source) {
+            this(deviceEventId, longitude, latitude, accuracyMeters, clientOccurredAt, source, null, null, null);
+        }
     }
 
-    public record LocationBatchCommand(String idempotencyKey, List<LocationPointCommand> points) {
+    public record LocationBatchCommand(String idempotencyKey, List<LocationPointCommand> points, UUID locationSessionId) {
+        public LocationBatchCommand(String idempotencyKey, List<LocationPointCommand> points) {
+            this(idempotencyKey, points, null);
+        }
         public LocationBatchCommand {
             points = points == null ? List.of() : List.copyOf(points);
         }
@@ -145,6 +157,9 @@ public final class SalesWorkApiModels {
             String idempotencyKey, Instant clientOccurredAt, LocationEvidence location,
             String deviceEventId) {
     }
+
+    public record AutoDepartureContext(boolean enabled, String status, int radiusMeters,
+            Integer maximumLocationAccuracyMeters, BigDecimal longitude, BigDecimal latitude) {}
 
     public record VisitTargetSnapshotView(
             String targetType, UUID customerId, UUID storeId, String customerName,
@@ -252,23 +267,38 @@ public final class SalesWorkApiModels {
             String visitType, String reviewStatus) {
     }
 
-    /** 相邻两次拜访之间的行程；优先按定位轨迹累计，无定位点时降级为直线距离。 */
+    /** 相邻两次拜访之间的行程；仅累计连续可靠采样，不补门店之间的直线距离。 */
     public record TrackTravelSegmentView(
             UUID fromVisitId, UUID toVisitId, int fromSequence, int toSequence,
             String fromStoreName, String toStoreName, int distanceMeters,
             int durationMinutes, String distanceSource) {
     }
 
+    public record TrackLegView(int distanceMeters, List<TrackPointView> points) {
+        public TrackLegView { points = List.copyOf(points); }
+    }
+    public record TrackGapView(Instant from, Instant to, String reason) {}
+
     public record WorkDayTrackView(
             UUID workDayId, LocalDate businessDate, String status,
             int totalDistanceMeters, int trackedDurationMinutes,
             List<TrackPointView> points, List<TrackPunchView> punches,
-            List<TrackVisitView> visits, List<TrackTravelSegmentView> segments) {
+            List<TrackVisitView> visits, List<TrackTravelSegmentView> segments,
+            boolean distanceAvailable, int rejectedPointCount,
+            List<TrackLegView> legs, List<TrackGapView> gaps) {
+        public WorkDayTrackView(UUID workDayId, LocalDate businessDate, String status,
+                int totalDistanceMeters, int trackedDurationMinutes, List<TrackPointView> points,
+                List<TrackPunchView> punches, List<TrackVisitView> visits, List<TrackTravelSegmentView> segments) {
+            this(workDayId, businessDate, status, totalDistanceMeters, trackedDurationMinutes,
+                    points, punches, visits, segments, false, 0, List.of(), List.of());
+        }
         public WorkDayTrackView {
             points = points == null ? List.of() : List.copyOf(points);
             punches = punches == null ? List.of() : List.copyOf(punches);
             visits = visits == null ? List.of() : List.copyOf(visits);
             segments = segments == null ? List.of() : List.copyOf(segments);
+            legs = legs == null ? List.of() : List.copyOf(legs);
+            gaps = gaps == null ? List.of() : List.copyOf(gaps);
         }
     }
 }

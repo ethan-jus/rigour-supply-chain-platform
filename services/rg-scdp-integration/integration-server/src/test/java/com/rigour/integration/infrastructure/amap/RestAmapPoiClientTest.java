@@ -22,6 +22,20 @@ class RestAmapPoiClientTest {
 
     private final AmapProperties properties = properties();
 
+    @Test void convertsGpsWithExplicitCoordinateSystemAndRejectsMalformedResult() {
+        var builder=RestClient.builder();var server=MockRestServiceServer.bindTo(builder).build();
+        var client=new RestAmapPoiClient(builder.build(),properties,JsonMapper.builder().build());
+        server.expect(requestTo(containsString("/assistant/coordinate/convert")))
+                .andExpect(queryParam("coordsys","gps")).andExpect(queryParam("locations","120.100000,30.200000"))
+                .andRespond(withSuccess("{\"status\":\"1\",\"locations\":\"120.1045,30.1976\"}",MediaType.APPLICATION_JSON));
+        server.expect(requestTo(containsString("/assistant/coordinate/convert")))
+                .andRespond(withSuccess("{\"status\":\"1\",\"locations\":\"invalid\"}",MediaType.APPLICATION_JSON));
+        var point=client.convertGps(new BigDecimal("120.1"),new BigDecimal("30.2"));
+        assertThat(point.coordinateSystem()).isEqualTo("GCJ02");assertThat(point.longitude()).isEqualByComparingTo("120.1045");
+        assertThatThrownBy(()->client.convertGps(BigDecimal.ONE,BigDecimal.ONE)).isInstanceOf(AmapPoiException.class);
+        server.verify();
+    }
+
     @Test void ipWhitelistRejectionHasSafeStableReasonForSearchAndDetail() {
         RestClient.Builder builder=RestClient.builder();
         MockRestServiceServer server=MockRestServiceServer.bindTo(builder).build();

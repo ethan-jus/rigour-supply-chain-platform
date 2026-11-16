@@ -20,6 +20,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 @Service
 public class PaymentRiskService {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     public static final int MAX_LINES = 50_000;
     private static final Set<String> LEVELS = Set.of("LOW", "MEDIUM", "HIGH", "SEVERE", "UNKNOWN");
     private final PaymentRiskStore store;
@@ -44,6 +47,14 @@ public class PaymentRiskService {
             throw bad("产品分类标识必须大于0");
         var scope = scopes.resolve(region, owner);
         String tenant = caller.tenantId().toString();
+        return queryCache.read(tenant, "payment-risk", Arrays.asList(from, to, scope.regionCode(), scope.ownerStaffCode(),
+                categoryIds == null ? List.of() : categoryIds.stream().sorted().toList(), riskLevel,
+                clock.instant().atZone(BiBusinessTime.ZONE).toLocalDate()), 30,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadRisk(tenant, from, to, scope.regionCode(), scope.ownerStaffCode(), categoryIds, riskLevel));
+    }
+
+    private PaymentRiskView loadRisk(String tenant, Instant from, Instant to, String region, String owner,
+            List<Long> categoryIds, String riskLevel) {
         var generatedAt = clock.instant();
         var categories = store.categories(tenant);
         var catalog = categories.stream().collect(Collectors.toMap(Category::id, Function.identity()));
@@ -52,7 +63,7 @@ public class PaymentRiskService {
         if (!catalog.keySet().containsAll(selected)) throw bad("所选分类不存在或尚未同步");
         Instant end = to.isAfter(generatedAt) ? generatedAt : to;
         var facts = from.isAfter(end) ? List.<PaymentRiskStore.Fact>of()
-                : store.load(tenant, from, end, scope.regionCode(), scope.ownerStaffCode(), MAX_LINES + 1);
+                : store.load(tenant, from, end, region, owner, MAX_LINES + 1);
         if (facts.size() > MAX_LINES) throw bad("未回款明细超过50000行，请缩小订单日期或城市范围；未返回部分统计");
         var today = generatedAt.atZone(BiBusinessTime.ZONE).toLocalDate();
         var grouped = facts.stream().collect(Collectors.groupingBy(PaymentRiskStore.Fact::orderId,
@@ -92,7 +103,7 @@ public class PaymentRiskService {
         Instant updated = facts.stream().map(PaymentRiskStore.Fact::syncedAt).filter(Objects::nonNull)
                 .max(Instant::compareTo).orElse(null);
         return new PaymentRiskView(generatedAt, updated, categories, List.copyOf(orders), store.regions(tenant));
-    }
+        }
 
     private static int severity(String level) {
         return switch (level) {

@@ -170,7 +170,8 @@ public class JdbcAppMemberStore implements AppMemberStore {
     }
 
     @Override
-    public Page members(Actor a, String keyword, int page, int size, Long departmentId) {
+    public Page members(Actor a, String keyword, int page, int size, Long departmentId,
+            UUID roleId, String employeeName, String positionName) {
         settings.requirePermission(a, "supply:user:read");
         if (page < 1 || size < 1 || size > 100 || page > 100000)
             throw new RequestValidationException("分页参数无效");
@@ -178,11 +179,23 @@ public class JdbcAppMemberStore implements AppMemberStore {
         if (filter.length() > 128) throw new RequestValidationException("搜索词过长");
         String suffix = " AND (u.username LIKE ? OR b.employee_code LIKE ?)";
         String pattern = "%" + filter + "%";
-        if (departmentId != null) {
-            if (departmentId <= 0) throw new RequestValidationException("部门 ID 无效");
-            // 只读取账号和 HR 身份元数据；先按当前主部门及祖先筛选，再计数和分页。
+        String name = employeeName == null ? "" : employeeName.strip();
+        String position = positionName == null ? "" : positionName.strip();
+        if (name.length() > 128 || position.length() > 128)
+            throw new RequestValidationException("搜索词过长");
+        if (departmentId != null && departmentId <= 0)
+            throw new RequestValidationException("部门 ID 无效");
+        List<Object> args = new ArrayList<>(List.of(pattern, pattern));
+        if (roleId != null) {
+            suffix += " AND EXISTS (SELECT 1 FROM iam_app_member_role mr"
+                    + " WHERE mr.tenant_id=m.tenant_id AND mr.application_id=m.application_id"
+                    + " AND mr.user_id=m.user_id AND mr.role_id=?)";
+            args.add(bin(roleId));
+        }
+        if (departmentId != null || !name.isEmpty() || !position.isEmpty()) {
+            // HR owns current employee metadata; apply all identity filters before count/pagination.
             List<Raw> candidates =
-                    raw(a, suffix + " ORDER BY m.created_at DESC,m.user_id", pattern, pattern);
+                    raw(a, suffix + " ORDER BY m.created_at DESC,m.user_id", args.toArray());
             List<Raw> matched = new ArrayList<>();
             Map<String, Employee> identities = new HashMap<>();
             for (int start = 0; start < candidates.size(); start += 100) {
@@ -197,11 +210,18 @@ public class JdbcAppMemberStore implements AppMemberStore {
                 for (var row : batch) {
                     var employee =
                             row.employeeCode() == null ? null : found.get(row.employeeCode());
-                    if (employee != null
+                    String displayedName = employee == null ? row.globalName() : employee.employeeName();
+                    boolean departmentMatches = departmentId == null || (employee != null
                             && (departmentId.equals(employee.departmentId())
-                                    || employee.departmentAncestorIds().contains(departmentId))) {
+                                || employee.departmentAncestorIds().contains(departmentId)));
+                    boolean nameMatches = name.isEmpty() || (displayedName != null
+                            && displayedName.toLowerCase(Locale.ROOT).contains(name.toLowerCase(Locale.ROOT)));
+                    boolean positionMatches = position.isEmpty() || (employee != null
+                            && employee.positionName() != null
+                            && employee.positionName().toLowerCase(Locale.ROOT).contains(position.toLowerCase(Locale.ROOT)));
+                    if (departmentMatches && nameMatches && positionMatches) {
                         matched.add(row);
-                        identities.put(row.employeeCode(), employee);
+                        if (employee != null) identities.put(row.employeeCode(), employee);
                     }
                 }
             }
@@ -215,25 +235,18 @@ public class JdbcAppMemberStore implements AppMemberStore {
                     page,
                     size);
         }
-        List<Raw> rows =
-                raw(
-                        a,
-                        suffix + " ORDER BY m.created_at DESC,m.user_id LIMIT ? OFFSET ?",
-                        pattern,
-                        pattern,
-                        size,
-                        (page - 1) * size);
+        List<Object> pageArgs = new ArrayList<>(args);
+        pageArgs.add(size);
+        pageArgs.add((page - 1) * size);
+        List<Raw> rows = raw(a, suffix + " ORDER BY m.created_at DESC,m.user_id LIMIT ? OFFSET ?",
+                pageArgs.toArray());
         List<String> codes =
                 rows.stream().map(Raw::employeeCode).filter(Objects::nonNull).distinct().toList();
         Map<String, Employee> identities = employees.employees(a.tenantId(), codes);
-        long total =
-                jdbc.queryForObject(
-                        "SELECT COUNT(*) FROM (" + SELECT + suffix + ") AS members",
-                        Long.class,
-                        tenant(a),
-                        app(),
-                        pattern,
-                        pattern);
+        List<Object> countArgs = new ArrayList<>(List.of(tenant(a), app()));
+        countArgs.addAll(args);
+        long total = jdbc.queryForObject("SELECT COUNT(*) FROM (" + SELECT + suffix + ") AS members",
+                Long.class, countArgs.toArray());
         return new Page(
                 rows.stream()
                         .map(

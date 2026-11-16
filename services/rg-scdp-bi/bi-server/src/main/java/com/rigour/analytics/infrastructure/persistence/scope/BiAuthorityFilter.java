@@ -35,8 +35,10 @@ public final class BiAuthorityFilter extends OncePerRequestFilter {
                 .orElse(false)) {
             try {
                 // 读取的 ALL 范围不依赖部门、主责人或拜访投影；写操作仍按实际动作校验归属。
-                boolean allDataRead =
-                        "GET".equals(request.getMethod())
+                boolean readRequest = "GET".equals(request.getMethod())
+                        || ("POST".equals(request.getMethod()) && request.getRequestURI().equals(
+                                "/api/v1/analytics/supply/dashboard/sales-analysis/summary"));
+                boolean allDataRead = readRequest
                                 && BiScopePredicates.unrestricted(
                                         SupplyAuthorizationContext.requireAction(
                                                 "analytics:dashboard:read"));

@@ -71,6 +71,39 @@ class JdbcOrderRegisterStoreMySqlTest {
         fixture();
     }
 
+    private static PaymentCriteria cancelledCriteria(String orderNo,String customerName) {
+        return new PaymentCriteria(orderNo,null,customerName,null,null,null,null,null,null,null,null,null,
+                "CANCELLED",null,null,null,null,null,null,null,null,null,Map.of());
+    }
+
+    @Test
+    void cancelledSourceReceiptsAreQueryableWithoutCreatingPaymentsOrCountingMoney() {
+        String tenant=UUID.randomUUID().toString(),connector=UUID.randomUUID().toString();
+        long orderId=order(tenant,"EXISTING",1L,"C1","来源客户","HZ","E1","创建人","2026-09-01T00:00:00Z",100,0);
+        insertPayment(tenant,"REAL-CANCELLED",orderId,"2026-09-02T00:00:00Z",10,"CANCELLED",null);
+        for (String no:List.of("VOID-A","VOID-B","REAL-CANCELLED")) {
+            jdbc.update("INSERT INTO order_sync_receipt(tenant_id,connector_id,receipt_no,source_order_no,customer_id,amount,occurred_at,source_status,checksum,state) VALUES(?,?,?,?,1,78,'2026-08-20','CANCELLED',?,'CANCELLED')",
+                    tenant,connector,no,"MISSING-"+no,no);
+        }
+        jdbc.update("UPDATE order_payment_record SET connector_id=?,source_document_no='REAL-CANCELLED' WHERE tenant_id=?",connector,tenant);
+        var page=store.payments(tenant,0,20,cancelledCriteria(null,null));
+        assertThat(page.total()).isEqualTo(3);
+        assertThat(page.items()).extracting(r->r.paymentNo()).containsExactly("REAL-CANCELLED","VOID-A","VOID-B");
+        assertThat(page.items().get(1).id()).isNull();
+        assertThat(page.items().get(1).orderId()).isNull();
+        assertThat(page.items().get(1).paidAmount()).isEqualByComparingTo("78");
+        assertThat(page.totals().get("receivedAmount")).isZero();
+        assertThat(page.totals().get("checkedAmount")).isZero();
+        assertThat(store.payments(tenant,1,1,cancelledCriteria(null,null)).items()).extracting(r->r.paymentNo()).containsExactly("VOID-A");
+        assertThat(store.payments(tenant,0,20,cancelledCriteria("MISSING-VOID-B","来源客户")).total()).isEqualTo(1);
+        assertThat(store.payments(UUID.randomUUID().toString(),0,20,cancelledCriteria(null,null)).total()).isZero();
+        var restricted=org.mockito.Mockito.mock(OrderDataScope.class);
+        org.mockito.Mockito.when(restricted.predicate(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.eq("o."),org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(new OrderDataScope.Predicate("o.owner_employee_code=?",List.of("E1")));
+        assertThat(new JdbcOrderRegisterStore(jdbc,restricted).payments(tenant,0,20,cancelledCriteria(null,null)).total()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE tenant_id=?",Integer.class,tenant)).isEqualTo(1);
+    }
+
     @Test
     void orderAndLineSearchUseDistinctPaymentOwnersWithoutMultiplyingTotals() {
         String tenant=UUID.randomUUID().toString();
@@ -1694,6 +1727,49 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(after.items().getFirst().attachments()).containsExactly(manual);
         assertThat(after.totals()).isEqualTo(before.totals());
         assertThat(after.items().getFirst().paymentTime()).isEqualTo(before.items().getFirst().paymentTime());
+    }
+
+    @Test void pageCacheKeepsExactTotalsSharesThemAcrossPagesAndFollowsCommittedWrites() {
+        String tenant=UUID.randomUUID().toString();
+        long first=order(tenant,"CACHE-A",1L,"C1","客户甲","HZ","E1","业务员","2026-09-01T00:00:00Z",100,0);
+        long second=order(tenant,"CACHE-B",2L,"C2","客户乙","HZ","E1","业务员","2026-09-02T00:00:00Z",200,0);
+        insertLine(tenant,first,1,"商品甲","100");
+        insertLine(tenant,second,1,"商品乙","200");
+        var observed=org.mockito.Mockito.spy(new JdbcTemplate(jdbc.getDataSource()));
+        var cached=new JdbcOrderRegisterStore(observed,new OrderDataScope(null,jdbc));
+        var values=new java.util.concurrent.ConcurrentHashMap<String,byte[]>();
+        var backend=new com.rigour.shared.cache.CacheStore(){
+            public java.util.Optional<byte[]> get(String t,String k){return java.util.Optional.ofNullable(values.get(t+k));}
+            public void put(String t,String k,byte[] v,java.time.Duration ttl){values.put(t+k,v);}
+            public void evict(String t,String k){values.remove(t+k);}
+            public boolean tryLock(String t,String k,String token,java.time.Duration ttl){return true;}
+            public void unlock(String t,String k,String token){}
+        };
+        var cache=new com.rigour.shared.cache.QueryCache(backend,
+                new com.rigour.order.infrastructure.cache.JdbcCacheVersions(jdbc),
+                ()->"verified-test-actor",()->false,null,"order-test",2097152,4);
+        org.springframework.test.util.ReflectionTestUtils.setField(cached,"queryCache",cache);
+        var tx=new org.springframework.transaction.support.TransactionTemplate(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        var criteria=new OrderCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null);
+        var page=tx.execute(s->cached.orders(tenant,0,1,criteria));
+        assertThat(page.total()).isEqualTo(2);
+        assertThat(page.totals().get("payableAmount")).isEqualByComparingTo("300");
+        org.mockito.Mockito.clearInvocations(observed);
+        var hit=tx.execute(s->cached.orders(tenant,0,1,criteria));
+        assertThat(hit).isEqualTo(page);
+        org.mockito.Mockito.verifyNoInteractions(observed);
+        var next=tx.execute(s->cached.orders(tenant,1,1,criteria));
+        assertThat(next.items().getFirst().id()).isNotEqualTo(page.items().getFirst().id());
+        assertThat(next.totals()).isEqualTo(page.totals());
+        assertThat(org.mockito.Mockito.mockingDetails(observed).getInvocations().stream()
+                .filter(call->call.getArguments().length>0&&call.getArguments()[0] instanceof String sql
+                        &&(sql.startsWith("SELECT COUNT(*)")||sql.startsWith("SELECT COALESCE(SUM")))).isEmpty();
+        tx.executeWithoutResult(s->{
+            jdbc.update("UPDATE order_sales_order SET payable_amount=150,unpaid_amount=150 WHERE tenant_id=? AND id=?",tenant,first);
+            cache.changed(tenant);
+        });
+        assertThat(tx.execute(s->cached.orders(tenant,0,1,criteria)).totals().get("payableAmount")).isEqualByComparingTo("350");
     }
 
     @Test void zeroPayableProjectsNotRequiredWithoutChangingStoredStatusOrTotals() {

@@ -8,7 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.rigour.sales.infrastructure.storage.CosRecordingFileStorage;
-import com.rigour.sales.temporarycheckin.TemporaryCheckinAiClient.AsrState;
+import com.rigour.sales.application.port.out.SalesAudioAiClient.AsrState;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.MediaReference;
 import com.rigour.sales.temporarycheckin.TemporaryCheckinRepository.TranscriptionJob;
 import java.math.BigDecimal;

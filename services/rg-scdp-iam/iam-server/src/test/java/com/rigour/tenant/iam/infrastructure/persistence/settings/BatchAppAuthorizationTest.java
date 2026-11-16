@@ -10,7 +10,7 @@ import com.rigour.shared.context.CallerIdentity;
 import com.rigour.tenant.iam.application.port.out.AppEmployeeClient;
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
 import com.rigour.tenant.iam.application.service.settings.AppAccessModels.*;
-import com.rigour.tenant.iam.application.service.settings.AppMemberModels.Assignment;
+import com.rigour.tenant.iam.application.model.settings.AppAuthorizationRole;
 import com.rigour.tenant.iam.application.service.settings.AppSettingsModels.Context;
 
 import org.junit.jupiter.api.*;
@@ -31,10 +31,9 @@ class BatchAppAuthorizationTest {
     JdbcTemplate jdbc;
     JdbcAppSettingsStore settings;
     JdbcAppRoleStore roles;
-    JdbcAppMemberStore members;
     JdbcAppAuthorizationStore store;
     Map<Actor, Context> contexts = new HashMap<>();
-    Role self, department, unassigned;
+    Role self, department;
 
     @BeforeEach
     void setup() {
@@ -53,7 +52,6 @@ class BatchAppAuthorizationTest {
                     + " BINARY(16),security_version BIGINT)");
         settings = mock(JdbcAppSettingsStore.class);
         roles = mock(JdbcAppRoleStore.class);
-        members = mock(JdbcAppMemberStore.class);
         when(settings.authorizationRead(any()))
                 .thenAnswer(i -> ((Supplier<?>) i.getArgument(0)).get());
         when(settings.count(anyString(), any(Object[].class))).thenReturn(1);
@@ -65,19 +63,15 @@ class BatchAppAuthorizationTest {
         when(settings.enabledActionNodes(any(), eq(dashboard))).thenReturn(Set.of(dashboardNode));
         self = role("SELF", Set.of(expenseNode));
         department = role("DEPARTMENT", Set.of(dashboardNode));
-        unassigned = role("ALL", Set.of(expenseNode, dashboardNode));
         addActor(actor, "E1", 42L);
-        when(roles.all(actor)).thenReturn(List.of(self, department, unassigned));
-        when(members.assignments(actor, user))
-                .thenReturn(
-                        List.of(
-                                new Assignment(self.id(), Map.of()),
-                                new Assignment(department.id(), Map.of())));
+        when(roles.authorizationRoles(actor)).thenReturn(List.of(definition(self), definition(department)));
         store =
                 new JdbcAppAuthorizationStore(
-                        jdbc, settings, roles, members, mock(AppEmployeeClient.class));
+                        jdbc, settings, roles, mock(AppEmployeeClient.class));
         clearInvocations(jdbc);
     }
+
+    AppAuthorizationRole definition(Role role) { return new AppAuthorizationRole(role.id(), role.status(), role.menuNodeIds(), role.dataScope()); }
 
     Role role(String scope, Set<UUID> nodes) {
         return new Role(
@@ -146,14 +140,14 @@ class BatchAppAuthorizationTest {
         var c = caller(actor);
         var actions = List.of(expense, dashboard, denied);
         var expected = actions.stream().map(action -> store.authorization(c, action)).toList();
-        clearInvocations(jdbc, settings, roles, members);
+        clearInvocations(jdbc, settings, roles);
         var batch = store.authorizations(c, actions);
         assertThat(batch).isEqualTo(expected);
         verify(settings, times(1)).context(actor);
         verify(settings, times(1)).authorizationEmployee(actor, "E1");
         verify(settings, times(1)).count(anyString(), any(Object[].class));
-        verify(roles, times(1)).all(actor);
-        verify(members, times(1)).assignments(actor, user);
+        verify(roles, times(1)).authorizationRoles(actor);
+        verify(roles, never()).all(any());
         assertThat(batch.get(0).clauses())
                 .singleElement()
                 .satisfies(
@@ -176,9 +170,7 @@ class BatchAppAuthorizationTest {
         var other = new Actor("TENANT", UUID.randomUUID(), UUID.randomUUID());
         addActor(other, "E2", 99L);
         var only = role("DEPARTMENT", Set.of(expenseNode));
-        when(members.assignments(other, other.principalId()))
-                .thenReturn(List.of(new Assignment(only.id(), Map.of())));
-        when(roles.all(other)).thenReturn(List.of(only, self, department));
+        when(roles.authorizationRoles(other)).thenReturn(List.of(definition(only)));
         var first = store.authorizations(caller(actor), List.of(expense)).getFirst();
         var second = store.authorizations(caller(other), List.of(expense)).getFirst();
         assertThat(first.tenantId()).isEqualTo(tenant);
@@ -218,7 +210,7 @@ class BatchAppAuthorizationTest {
                 .isInstanceOf(RuntimeException.class);
         assertThatThrownBy(() -> store.authorizations(caller(actor), List.of("invalid")))
                 .isInstanceOf(RuntimeException.class);
-        verifyNoInteractions(roles, members);
+        verifyNoInteractions(roles);
         assertThat(store.authorizations(caller(actor), List.of(expense, expense))).hasSize(1);
     }
 
@@ -227,6 +219,6 @@ class BatchAppAuthorizationTest {
         assertThatThrownBy(() -> store.authorizations(null, List.of(expense)))
                 .isInstanceOf(AccessDeniedException.class);
         verify(settings, never()).context(any());
-        verifyNoInteractions(roles, members);
+        verifyNoInteractions(roles);
     }
 }

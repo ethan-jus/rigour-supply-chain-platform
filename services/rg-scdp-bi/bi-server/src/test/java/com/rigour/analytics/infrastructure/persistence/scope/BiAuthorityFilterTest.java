@@ -62,6 +62,21 @@ class BiAuthorityFilterTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = {"ALL", "SELF"})
+    void salesSummaryPostIsAReadAndKeepsRestrictedScopeChecks(String mode) throws Exception {
+        role(mode, Set.of("analytics:dashboard:read"));
+        var request = new MockHttpServletRequest("POST", "/api/v1/analytics/supply/dashboard/sales-analysis/summary");
+        var response = new MockHttpServletResponse();
+        filter.doFilter(request, response, chain);
+        verify(chain).doFilter(request, response);
+        if (mode.equals("ALL")) verifyNoInteractions(authority,people);
+        else {
+            verify(authority).refresh(TENANT);
+            verify(people).refreshOrganization(TENANT);
+        }
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"DEPARTMENT", "SELF"})
     void restrictedReadsStillDenyWhenOwnershipCannotBeVerified(String mode) throws Exception {
         role(mode, Set.of("analytics:dashboard:read"));

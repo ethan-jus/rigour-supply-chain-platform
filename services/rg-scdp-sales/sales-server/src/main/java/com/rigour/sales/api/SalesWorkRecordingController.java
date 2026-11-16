@@ -36,13 +36,14 @@ public final class SalesWorkRecordingController {
             @PathVariable("visitId") UUID visitId,
             @RequestPart("file") MultipartFile file,
             @RequestParam("clientClipId") String clientClipId,
-            @RequestParam("durationMs") Long durationMs,
-            @RequestParam("recordedFrom")
+            @RequestParam(value="durationMs",required=false) Long durationMs,
+            @RequestParam(value="recordedFrom",required=false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant recordedFrom,
-            @RequestParam("recordedTo")
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant recordedTo) {
+            @RequestParam(value="recordedTo",required=false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) Instant recordedTo,
+            @RequestParam(value="captureSource",required=false) String captureSource) {
         return ApiResponse.success(service.uploadClip(
-                visitId, file, clientClipId, durationMs, recordedFrom, recordedTo));
+                visitId, file, clientClipId, durationMs, recordedFrom, recordedTo,captureSource));
     }
 
     @PostMapping(SalesWorkApi.VISIT_RECORDINGS_PATH + "/discarded-clips")
@@ -50,6 +51,15 @@ public final class SalesWorkRecordingController {
             @PathVariable("visitId") UUID visitId,
             @RequestBody DiscardRecordingClipCommand command) {
         return ApiResponse.success(service.discardClip(visitId, command));
+    }
+
+    @GetMapping(SalesWorkApi.VISIT_RECORDINGS_PATH + "/clips/{clipId}/content")
+    public org.springframework.http.ResponseEntity<byte[]> playOwnClip(@PathVariable("visitId") UUID visitId,
+            @PathVariable("clipId") UUID clipId) {
+        var content=service.playOwnClip(visitId,clipId);
+        return org.springframework.http.ResponseEntity.ok().contentType(MediaType.parseMediaType(content.mediaType()))
+                .contentLength(content.bytes().length).header("Cache-Control","no-store")
+                .header("Content-Disposition","inline; filename=\"recording-"+clipId+"\"").body(content.bytes());
     }
 
     @GetMapping(SalesWorkApi.VISIT_RECORDINGS_PATH)

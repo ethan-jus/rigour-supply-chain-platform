@@ -49,7 +49,16 @@ public final class SalesWorkAdminApiModels {
             int requiredPhotoCount, boolean recordingEnabled, int minimumRecordingSeconds,
             int maximumClipGapSeconds, boolean aiAsrEnabled, boolean aiRelevanceEnabled,
             boolean aiDuplicateEnabled, BigDecimal aiAutoConfirmThreshold,
-            String scopeType, UUID scopeId, boolean publish) {
+            String scopeType, UUID scopeId, boolean publish,
+            SalesVisitPolicyModels.CaptureRules captureRules,Integer expectedVersion) {
+        public VisitPolicyCommand(String policyCode,String policyName,boolean requireAssignedTarget,boolean allowProspectTarget,
+                int checkInRadiusMeters,int minimumDwellMinutes,int requiredPhotoCount,boolean recordingEnabled,
+                int minimumRecordingSeconds,int maximumClipGapSeconds,boolean aiAsrEnabled,boolean aiRelevanceEnabled,
+                boolean aiDuplicateEnabled,BigDecimal aiAutoConfirmThreshold,String scopeType,UUID scopeId,boolean publish) {
+            this(policyCode,policyName,requireAssignedTarget,allowProspectTarget,checkInRadiusMeters,minimumDwellMinutes,
+                requiredPhotoCount,recordingEnabled,minimumRecordingSeconds,maximumClipGapSeconds,aiAsrEnabled,
+                aiRelevanceEnabled,aiDuplicateEnabled,aiAutoConfirmThreshold,scopeType,scopeId,publish,null,null);
+        }
     }
 
     public record PolicyVersionView(

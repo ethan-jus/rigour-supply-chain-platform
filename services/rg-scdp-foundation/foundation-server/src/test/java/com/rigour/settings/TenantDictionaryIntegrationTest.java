@@ -76,6 +76,25 @@ class TenantDictionaryIntegrationTest {
     }
 
     @Test
+    void normalizedDhbOrderStatesResolveWithoutDuplicatingStandardOptions() {
+        actor(tenant,"SERVICE");
+        var result=service.syncItems(new DictSyncCommand("DHB_ORDER_STATUS",List.of(
+                new DictSourceValue("PENDING_PRICING","待核价"),
+                new DictSourceValue("PENDING_REVIEW","待审核"),
+                new DictSourceValue("FORCE_COMPLETED","强制完成"),
+                new DictSourceValue("DELETED","已删除"))));
+        assertThat(result.blocked()).isZero();
+        assertThat(result.existing()).isEqualTo(4);
+        var options=service.effective("DHB_ORDER_STATUS").items();
+        assertThat(options).extracting(DictItemView::dictionaryItemCode)
+                .contains("PRICING","PENDING","FORCEDONE","DELETED")
+                .doesNotContain("PENDING_PRICING","PENDING_REVIEW","FORCE_COMPLETED");
+        assertThat(service.resolve("SALES_ORDER_STATUS").items())
+                .extracting(DictItemView::dictionaryItemCode)
+                .doesNotContain("PENDING_PRICING","PENDING_REVIEW","FORCE_COMPLETED");
+    }
+
+    @Test
     void storeBusinessStatesKeepCodesWhileAllowingTenantLabelsAndOrdering() {
         var dictionary=service.resolve("CRM_STORE_BUSINESS_STATUS");
         assertThat(dictionary.dictionary().allowNewItems()).isFalse();

@@ -419,8 +419,17 @@ class SalesWorkMigrationTests {
                 """, Integer.class);
         assertThat(evidenceColumns).isEqualTo(12);
         assertThat(evidenceUniqueColumns).isEqualTo(7);
-        assertThat(migrationCount).isEqualTo(30);
-        assertThat(tableCount).isEqualTo(53);
+        assertThat(migrationCount).isEqualTo(36);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE()
+                 AND ((table_name='sales_visit_policy_version' AND column_name='capture_rules_json' AND data_type='json')
+                   OR (table_name='sales_recording_clip' AND column_name='capture_source' AND collation_name='utf8mb4_general_ci'))
+                """, Integer.class)).isEqualTo(2);
+        assertThat(tableCount).isEqualTo(57);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE()
+                  AND table_name='sales_location_point' AND column_name IN ('raw_longitude','raw_latitude','raw_coordinate_system')
+                """,Integer.class)).isEqualTo(3);
         assertThat(editableStoreTableCount).isZero();
         assertThat(storefrontEvidenceColumnCount).isEqualTo(10);
         assertThat(visitPlanExecutionConstraintCount).isEqualTo(3);

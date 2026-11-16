@@ -29,7 +29,7 @@ import org.springframework.util.StringUtils;
 /** 腾讯云 COS 录音对象存储；凭据只从部署 Secret 注入，不进入日志、Nacos 或业务表。 */
 @Component
 @ConditionalOnProperty(prefix = "sales.recording", name = "storage-type", havingValue = "cos")
-public class CosRecordingFileStorage implements FileStorage {
+public class CosRecordingFileStorage implements FileStorage, com.rigour.sales.application.port.out.SalesAudioSource {
 
     private static final Duration PRESIGNED_GET_TTL = Duration.ofMinutes(30);
 
@@ -109,6 +109,11 @@ public class CosRecordingFileStorage implements FileStorage {
         } catch (RuntimeException error) {
             throw storageFailure("录音对象访问地址生成失败", error);
         }
+    }
+
+    @Override
+    public java.net.URI temporaryUrl(java.util.UUID tenantId, String objectKey) {
+        return java.net.URI.create(generatePresignedGetUrl(tenantId.toString(), objectKey).toExternalForm());
     }
 
     @PreDestroy

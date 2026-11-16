@@ -72,6 +72,25 @@ class BiSupplyScopeIntegrationTest {
     CallerIdentity actor;
 
     @Test
+    void searchedSalesSummaryCannotExpandAuthorizedScope() {
+        fact(1,"A","HZ",10,11,100);
+        fact(2,"B","HZ",20,11,900);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_status_code='CONFIRMED',customer_id=order_id WHERE tenant_id=?",tenant);
+        var self=policy(List.of(clause("SELF",none(),all(),none())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(self);
+        var repository=new com.rigour.analytics.infrastructure.persistence.repository.JdbcSalesDashboardStore(
+                jdbc.getDataSource(),mock(com.rigour.analytics.infrastructure.persistence.repository.HrDashboardTargets.class));
+        var filter=new com.rigour.analytics.application.model.SupplyDashboardFilter(
+                java.time.Instant.parse("2020-01-01T00:00:00Z"),java.time.Instant.parse("2030-01-01T00:00:00Z"),null,null,null,null,null);
+        try(var context=SupplyAuthorizationContext.open(iam,actor,self)) {
+            var selected=repository.summary(tenant,filter,List.of("A","B"));
+            assertThat(selected.sales()).isEqualByComparingTo("100");
+            assertThat(selected.customers()).isEqualTo(1);
+            assertThat(repository.summary(tenant,filter,List.of("B")).sales()).isZero();
+        }
+    }
+
+    @Test
     void inactiveSourceOrdersAndUnchangedPaymentsAreExcludedFromBiFacts() {
         var from = java.time.LocalDateTime.parse("2026-11-01T00:00:00");
         var to = java.time.LocalDateTime.parse("2026-11-05T00:00:00");

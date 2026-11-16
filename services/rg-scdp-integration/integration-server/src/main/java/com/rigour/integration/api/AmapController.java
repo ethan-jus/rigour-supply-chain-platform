@@ -49,6 +49,10 @@ public class AmapController {
         authorize(); coordinates(longitude,latitude);
         return ApiResponse.success(geocoder.resolve(longitude,latitude));
     }
+    @GetMapping("/coordinates/gps")
+    public ApiResponse<AmapPoiClient.Coordinates> convertGps(@RequestParam BigDecimal longitude,@RequestParam BigDecimal latitude) {
+        authorize(); coordinates(longitude,latitude);return call(()->pois.convertGps(longitude,latitude));
+    }
     private static void authorize() {
         var caller=AuthorizationContext.requireCurrent();
         if(!"SERVICE".equals(caller.principalScope()) || caller.tenantId()==null)

@@ -72,6 +72,116 @@ class SalesWorkReopenAndTrackIntegrationTests {
     @Autowired
     private SalesWorkAttendanceService attendanceService;
 
+    @Autowired private com.rigour.sales.application.port.out.SalesFieldworkRepository fieldwork;
+    @Autowired private com.rigour.sales.application.service.SalesFieldworkMetricsWorker metricsWorker;
+    @Autowired private com.rigour.sales.application.port.out.SalesFieldworkEvidenceRepository fieldEvidence;
+    @Autowired private com.rigour.sales.application.port.out.SalesFieldworkReviewRepository reviewCases;
+    @Autowired private com.rigour.sales.application.port.out.SalesWorkAttendanceRepository workDays;
+    @Autowired private org.springframework.transaction.PlatformTransactionManager transactions;
+
+    @Test
+    void manualReviewIsIdempotentAndPreservesExistingAutomaticEvidence() {
+        var location=new LocationEvidence(new BigDecimal("120.1"),new BigDecimal("30.2"),new BigDecimal("15"),"APP_NATIVE");
+        var day=attendanceService.checkIn(new CheckInCommand("review-in","client",Instant.now(),location,null,"ONLINE"));
+        reviewCases.detect(tenantId,profileId,day.id(),null,"automatic-device","DEVICE","原自动线索","{}",Instant.now());
+        var access=org.mockito.Mockito.mock(com.rigour.sales.application.service.SalesFieldworkService.class);
+        var review=new com.rigour.sales.application.service.SalesFieldworkReviewService(reviewCases,workDays,null,access,
+                org.mockito.Mockito.mock(com.rigour.shared.audit.AuditSink.class),java.time.Clock.systemUTC());
+        var tx=new org.springframework.transaction.support.TransactionTemplate(transactions);
+        var command=new com.rigour.sales.api.v1.model.SalesFieldworkEvidenceModels.StartReview("manual-1","DEVICE","请说明设备变更原因");
+        var created=tx.execute(status->review.start(profileId,day.id(),command));
+        var replay=tx.execute(status->review.start(profileId,day.id(),command));
+        assertThat(replay.id()).isEqualTo(created.id());
+        assertThat(replay.version()).isEqualTo(1);assertThat(replay.events()).hasSize(1);
+        assertThat(replay.status()).isEqualTo("AWAITING_STATEMENT");
+        assertThat(reviewCases.findEvidence(tenantId,"automatic-device").orElseThrow().version()).isZero();
+        assertThatThrownBy(()->tx.execute(status->review.start(profileId,day.id(),
+                new com.rigour.sales.api.v1.model.SalesFieldworkEvidenceModels.StartReview("manual-2","DEVICE","另一条说明"))))
+                .hasMessageContaining("已有核查事项");
+        assertThatThrownBy(()->tx.execute(status->review.start(profileId,day.id(),
+                new com.rigour.sales.api.v1.model.SalesFieldworkEvidenceModels.StartReview("manual-1","DEVICE","另一条说明"))))
+                .hasMessageContaining("请求标识已用于不同内容");
+        org.mockito.Mockito.doThrow(new com.rigour.shared.context.AuthorizationDeniedException("sales:location:sensitive:read"))
+                .when(access).requireProfile(profileId,"sales:location:sensitive:read");
+        assertThatThrownBy(()->tx.execute(status->review.start(profileId,day.id(),
+                new com.rigour.sales.api.v1.model.SalesFieldworkEvidenceModels.StartReview("manual-location","LOCATION","核实出发地点"))))
+                .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        assertThat(reviewCases.byDay(tenantId,day.id())).hasSize(2);
+        assertThat(reviewCases.findEvidence(UUID.randomUUID(),"manual:"+day.id()+":DEVICE")).isEmpty();
+    }
+
+    @Test
+    void nameRiskAndPendingFiltersUseIdenticalRowsAndTotals() {
+        var location=new LocationEvidence(new BigDecimal("120.1"),new BigDecimal("30.2"),new BigDecimal("15"),"APP_NATIVE");
+        var day=attendanceService.checkIn(new CheckInCommand("filter-in","client",Instant.now(),location,null,"ONLINE"));
+        jdbc.update("UPDATE sales_profile SET employee_id=NULL,platform_user_id=?,hr_employee_id=100,hr_employee_code='MATCHED' WHERE id=?",bin(userId),bin(profileId));
+        reviewCases.detect(tenantId,profileId,day.id(),null,"filter-device","DEVICE","设备待核查","{}",Instant.now());
+        var scope=new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of("MATCHED"));
+        var search=new com.rigour.sales.application.port.out.SalesFieldworkRepository.Search(null,"员工姓名",Set.of("MATCHED"),true,"DEVICE");
+        assertThat(fieldwork.page(tenantId,day.businessDate(),scope,search,10,0)).hasSize(1);
+        assertThat(fieldwork.totals(tenantId,day.businessDate(),scope,search).total()).isEqualTo(1);
+        var wrongKind=new com.rigour.sales.application.port.out.SalesFieldworkRepository.Search(null,null,Set.of(),true,"LOCATION");
+        assertThat(fieldwork.page(tenantId,day.businessDate(),scope,wrongKind,10,0)).isEmpty();
+        assertThat(fieldwork.totals(tenantId,day.businessDate(),scope,wrongKind).total()).isZero();
+        var item=reviewCases.findEvidence(tenantId,"filter-device").orElseThrow();
+        reviewCases.append(tenantId,item.id(),userId,"resolve","REVIEW","CLEARED","已核实","RESOLVED",Instant.now());
+        assertThat(fieldwork.page(tenantId,day.businessDate(),scope,search,10,0)).isEmpty();
+        assertThat(fieldwork.totals(tenantId,day.businessDate(),scope,search).total()).isZero();
+    }
+
+    @Test
+    void deviceEvidenceKeepsInstallationChangesAndTenantBoundaries() {
+        var location=new LocationEvidence(new BigDecimal("120.1"),new BigDecimal("30.2"),new BigDecimal("15"),"FEISHU");
+        var day=attendanceService.checkIn(new CheckInCommand("device-in","client",Instant.now(),location,"installation-a","ONLINE"));
+        attendanceService.checkOut(day.id(),new CheckOutCommand("device-out",Instant.now(),location,"installation-b","ONLINE"));
+        var events=fieldEvidence.devices(tenantId,profileId,day.id());
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0).installationReference()).hasSize(16).isNotEqualTo(events.get(1).installationReference());
+        assertThat(events.get(0).firstSeenAt()).isEqualTo(events.get(0).receivedAt());
+        assertThat(fieldEvidence.devices(UUID.randomUUID(),profileId,day.id())).isEmpty();
+        assertThat(fieldEvidence.devices(tenantId,UUID.randomUUID(),day.id())).isEmpty();
+    }
+
+    @Test
+    void historyCountsDaysSeparatelyAndNeverJoinsUnmappedStoresOrOtherScopes() {
+        UUID other=UUID.randomUUID(),visitPolicy=UUID.randomUUID(),visitVersion=UUID.randomUUID();
+        jdbc.update("UPDATE sales_profile SET employee_id=NULL,platform_user_id=?,hr_employee_id=100,hr_employee_code='SELF' WHERE id=?",bin(userId),bin(profileId));
+        jdbc.update("INSERT INTO sales_profile(id,tenant_id,employee_id,platform_user_id,hr_employee_id,hr_employee_code,sales_no,status,effective_from,source_version,version,created_at,updated_at) VALUES(?,?,NULL,?,101,'OTHER','S-OTHER','ACTIVE',UTC_TIMESTAMP(6),1,0,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",bin(other),bin(tenantId),bin(UUID.randomUUID()));
+        jdbc.update("INSERT INTO sales_visit_policy(id,tenant_id,policy_code,policy_name,status,created_at,updated_at) VALUES(?,?,'EVIDENCE','证据测试','ACTIVE',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",bin(visitPolicy),bin(tenantId));
+        jdbc.update("INSERT INTO sales_visit_policy_version(id,tenant_id,policy_id,version_no,publish_status,check_in_radius_meters,minimum_dwell_minutes,required_photo_count,created_by,created_at) VALUES(?,?,?,1,'PUBLISHED',100,0,1,?,UTC_TIMESTAMP(6))",bin(visitVersion),bin(tenantId),bin(visitPolicy),bin(userId));
+        LocalDate date=LocalDate.of(2026,11,13);
+        UUID current=historyCapture(profileId,100,date,77L,"10:00:00",visitVersion);
+        historyCapture(profileId,100,date,77L,"08:00:00",visitVersion);
+        historyCapture(profileId,100,date,77L,"09:00:00",visitVersion);
+        historyCapture(profileId,100,date.minusDays(7),77L,"09:00:00",visitVersion);
+        historyCapture(profileId,100,date.minusDays(30),77L,"09:00:00",visitVersion);
+        historyCapture(profileId,100,date,null,"07:00:00",visitVersion);
+        historyCapture(profileId,100,date,78L,"07:00:00",visitVersion);
+        historyCapture(profileId,100,date,77L,"11:00:00",visitVersion);
+        historyCapture(other,101,date,77L,"07:00:00",visitVersion);
+        var capture=fieldEvidence.capture(tenantId,current).orElseThrow();
+        var own=fieldEvidence.history(tenantId,capture,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of("SELF")),1,2);
+        assertThat(own.ownVisits7()).isEqualTo(2);assertThat(own.ownDays7()).isEqualTo(1);
+        assertThat(own.ownVisits30()).isEqualTo(3);assertThat(own.ownDays30()).isEqualTo(2);
+        assertThat(own.total()).isEqualTo(3);assertThat(own.items()).hasSize(2).allMatch(v->v.salesProfileId().equals(profileId));
+        var all=fieldEvidence.history(tenantId,capture,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(true,Set.of()),1,10);
+        assertThat(all.visibleVisits30()).isEqualTo(4);assertThat(all.ownVisits30()).isEqualTo(3);
+        assertThat(fieldEvidence.history(tenantId,capture,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of()),1,10).total()).isZero();
+        assertThat(fieldEvidence.capture(UUID.randomUUID(),current)).isEmpty();
+    }
+
+    private UUID historyCapture(UUID profile,long hrId,LocalDate date,Long store,String time,UUID policy) {
+        var dayIds=jdbc.query("SELECT id FROM sales_work_day WHERE tenant_id=? AND sales_profile_id=? AND business_date=?",(r,n)->r.getBytes(1),bin(tenantId),bin(profile),date);
+        byte[] day;
+        if(dayIds.isEmpty()) {
+            day=bin(UUID.randomUUID());
+            jdbc.update("INSERT INTO sales_work_day(id,tenant_id,employee_id,hr_employee_id,sales_profile_id,business_date,timezone_id,field_policy_version_id,status,created_at,updated_at) VALUES(?,?,NULL,?,?,?,'Asia/Shanghai',?,'FINISHED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",day,bin(tenantId),hrId,bin(profile),date,bin(policyVersionId));
+        } else day=dayIds.getFirst();
+        UUID visit=UUID.randomUUID();
+        jdbc.update("INSERT INTO sales_visit(id,tenant_id,work_day_id,sales_profile_id,target_type,crm_store_id,visit_policy_version_id,status,checked_in_at,result_note,created_at,updated_at) VALUES(?,?,?,?,'STORE',?,?,'CHECKED_OUT',?,'原始拜访说明',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",bin(visit),bin(tenantId),day,bin(profile),store,bin(policy),Timestamp.valueOf(date+" "+time));
+        return visit;
+    }
+
     @BeforeEach
     void seedSalesProjection() {
         Instant now = Instant.now();
@@ -173,7 +283,9 @@ class SalesWorkReopenAndTrackIntegrationTests {
         WorkDayTrackView track = attendanceService.track(businessDate);
         assertThat(track.workDayId()).isEqualTo(first.id());
         assertThat(track.points()).hasSize(2);
-        assertThat(track.totalDistanceMeters()).isGreaterThan(0);
+        // One point per session cannot establish either route; never join off-work time.
+        assertThat(track.totalDistanceMeters()).isZero();
+        assertThat(track.distanceAvailable()).isFalse();
         assertThat(track.visits()).isEmpty();
         assertThat(track.segments()).isEmpty();
         assertThat(track.punches()).hasSize(4);
@@ -188,6 +300,41 @@ class SalesWorkReopenAndTrackIntegrationTests {
                 "SELECT COUNT(*) FROM sales_location_session WHERE tenant_id=? AND work_day_id=? AND status='CLOSED'",
                 Integer.class, bin(tenantId), bin(first.id()));
         assertThat(closedSessions).isEqualTo(2);
+    }
+
+    @Test
+    void closedSessionAcceptsItsOwnLatePointsWithoutRelabelingReopenedSession() {
+        var location = new LocationEvidence(new BigDecimal("120.1"), new BigDecimal("30.2"), new BigDecimal("10"), "APP_NATIVE");
+        var first = attendanceService.checkIn(new CheckInCommand("late-in", "client", Instant.now(), location, null, null));
+        var observed = Instant.now();
+        attendanceService.checkOut(first.id(), new CheckOutCommand("late-out", Instant.now(), location, null, null));
+        var batch = new LocationBatchCommand("late-points", List.of(new LocationPointCommand("late-event", location.longitude(), location.latitude(), location.accuracyMeters(), observed, "APP_NATIVE", new BigDecimal("120.095"), new BigDecimal("30.202"), "WGS84")), first.locationSessionId());
+        assertThat(attendanceService.uploadLocationPoints(first.id(), batch).acceptedCount()).isEqualTo(1);
+        var original=jdbc.queryForMap("SELECT raw_longitude,raw_latitude,raw_coordinate_system FROM sales_location_point WHERE tenant_id=? AND device_event_id='late-event'",bin(tenantId));
+        assertThat((BigDecimal)original.get("raw_longitude")).isEqualByComparingTo("120.095");
+        assertThat(original.get("raw_coordinate_system")).isEqualTo("WGS84");
+        assertThat(attendanceService.uploadLocationPoints(first.id(), batch).acceptedCount()).isEqualTo(1);
+        var reopened = attendanceService.checkIn(new CheckInCommand("late-reopen", "client", Instant.now(), location, null, null));
+        assertThat(reopened.locationSessionId()).isNotEqualTo(first.locationSessionId());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM sales_location_point WHERE tenant_id=? AND location_session_id=?", Integer.class, bin(tenantId), bin(first.locationSessionId()))).isEqualTo(1);
+        var invalid = new LocationBatchCommand("late-invalid", List.of(new LocationPointCommand("outside", location.longitude(), location.latitude(), location.accuracyMeters(), observed.plusSeconds(3600), "APP_NATIVE")), first.locationSessionId());
+        assertThatThrownBy(() -> attendanceService.uploadLocationPoints(first.id(), invalid)).hasMessageContaining("不在原作业时段");
+    }
+
+    @Test
+    void dailyReadModelIsVersionedAndUsesTheSameScopeForRowsAndCounts() {
+        var location = new LocationEvidence(new BigDecimal("120.1"),new BigDecimal("30.2"),new BigDecimal("10"),"APP_NATIVE");
+        var day = attendanceService.checkIn(new CheckInCommand("metrics-in","client",Instant.now(),location,null,null));
+        var all = new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(true,Set.of());
+        assertThat(fieldwork.page(tenantId,day.businessDate(),all,null,null,20,0)).hasSize(1);
+        assertThat(fieldwork.page(tenantId,day.businessDate(),all,null,null,20,0).getFirst().summaryPending()).isTrue();
+        metricsWorker.refresh();
+        var row=fieldwork.page(tenantId,day.businessDate(),all,null,null,20,0).getFirst();
+        assertThat(row.summaryPending()).isFalse();assertThat(row.distanceMeters()).isNull();
+        var none = new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of("another-department"));
+        assertThat(fieldwork.totals(tenantId,day.businessDate(),none,null,null).total()).isZero();
+        assertThat(fieldwork.page(tenantId,day.businessDate(),none,null,null,20,0)).isEmpty();
+        assertThat(fieldwork.totals(tenantId,day.businessDate(),all,"NOT_STARTED",null).total()).isZero();
     }
 
     @Test

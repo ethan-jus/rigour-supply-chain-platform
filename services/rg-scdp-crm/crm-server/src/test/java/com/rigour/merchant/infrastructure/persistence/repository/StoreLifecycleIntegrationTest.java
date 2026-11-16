@@ -157,4 +157,13 @@ class StoreLifecycleIntegrationTest {
         assertThat(lifecycle.current(tenant,store).deadline()).isEqualTo(v.visitedAt().plusSeconds(7*86400));
     }
 
+    @Test void outsideRadiusRejectsWithoutCreatingVisitAndAllowsFreshLocationRetry(){
+        var actor=scope("crm:store:visit-write","1");
+        var policy=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",500);
+        String request=UUID.randomUUID().toString();
+        assertThatThrownBy(()->transaction(()->visits.checkIn(actor,store,new CheckIn(request,ownership,new BigDecimal("121.1"),new BigDecimal("31.1"),"GCJ02",BigDecimal.ONE),policy,t.plusSeconds(600))))
+            .isInstanceOfSatisfying(com.rigour.shared.core.exception.BusinessException.class,e->assertThat(e.getErrorCode()).isEqualTo(com.rigour.shared.core.api.ErrorCode.CRM_STORE_VISIT_OUTSIDE_RADIUS));
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND request_id=?",Long.class,tenant,request)).isZero();
+        assertThat(transaction(()->visits.checkIn(actor,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",BigDecimal.ONE),policy,t.plusSeconds(601))).id()).isNotBlank();
+    }
 }

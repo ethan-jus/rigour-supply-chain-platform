@@ -10,10 +10,25 @@ public final class StoreVisitCaptureModels {
     public record Policy(String id, int radiusMeters, int minimumDwellMinutes, int requiredPhotoCount,
             boolean recordingEnabled, int minimumRecordingSeconds, int maximumClipGapSeconds,
             boolean aiAsrEnabled, boolean aiRelevanceEnabled, boolean aiDuplicateEnabled,
-            BigDecimal aiAutoConfirmThreshold) {
+            BigDecimal aiAutoConfirmThreshold, CaptureRules captureRules) {
+        public Policy { if (captureRules == null) captureRules = CaptureRules.legacy(); }
+        public Policy(String id, int radiusMeters, int minimumDwellMinutes, int requiredPhotoCount,
+                boolean recordingEnabled, int minimumRecordingSeconds, int maximumClipGapSeconds,
+                boolean aiAsrEnabled, boolean aiRelevanceEnabled, boolean aiDuplicateEnabled, BigDecimal aiAutoConfirmThreshold) {
+            this(id,radiusMeters,minimumDwellMinutes,requiredPhotoCount,recordingEnabled,minimumRecordingSeconds,maximumClipGapSeconds,aiAsrEnabled,aiRelevanceEnabled,aiDuplicateEnabled,aiAutoConfirmThreshold,CaptureRules.legacy());
+        }
         public Policy(String id,int radiusMeters) {
             this(id,radiusMeters,0,1,false,0,30,false,false,false,null);
         }
+    }
+    public record CaptureRules(boolean requireLocationOnOpen, Integer maximumLocationAccuracyMeters,
+            boolean automaticRecording, boolean allowPhotoImport, boolean allowRecordingImport, Boolean automaticCheckout) {
+        public CaptureRules { if (automaticCheckout == null) automaticCheckout = false; }
+        public CaptureRules(boolean requireLocationOnOpen,Integer maximumLocationAccuracyMeters,
+                boolean automaticRecording,boolean allowPhotoImport,boolean allowRecordingImport) {
+            this(requireLocationOnOpen,maximumLocationAccuracyMeters,automaticRecording,allowPhotoImport,allowRecordingImport,false);
+        }
+        public static CaptureRules legacy() { return new CaptureRules(false,null,false,false,false); }
     }
     public record Context(String visitId,String storeId,String ownershipId,String employeeCode,
             String captureRef,String policyId,Instant checkedInAt,String storeName,String address,

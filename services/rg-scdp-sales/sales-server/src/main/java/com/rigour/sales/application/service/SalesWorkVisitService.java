@@ -252,13 +252,38 @@ public class SalesWorkVisitService {
 
     @Transactional
     public VisitView checkOutVisit(UUID visitId, CheckOutVisitCommand command) {
+        return checkOutVisit(visitId,command,false);
+    }
+
+    @Transactional
+    public VisitView autoCheckOutVisit(UUID visitId, CheckOutVisitCommand command) {
+        return checkOutVisit(visitId,command,true);
+    }
+
+    public com.rigour.sales.api.v1.model.SalesWorkApiModels.AutoDepartureContext autoDepartureContext(UUID visitId) {
+        CallerIdentity caller=requireCaller("sales:visit:own:read");
+        var identity=contextService.resolveIdentity(caller,clock.instant());
+        var visit=visitRepository.findVisit(caller.tenantId(),identity.profile().id(),visitId)
+                .orElseThrow(()->new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
+        var policy=queryRepository.findVisitPolicy(caller.tenantId(),visit.visitPolicyVersionId())
+                .orElseThrow(()->new BusinessException(ErrorCode.SALES_VISIT_POLICY_NOT_FOUND));
+        var target=visitRepository.findTargetSnapshot(caller.tenantId(),visitId)
+                .orElseThrow(()->new BusinessException(ErrorCode.SALES_VISIT_TARGET_INVALID));
+        var rules=policy.captureRules();
+        return new com.rigour.sales.api.v1.model.SalesWorkApiModels.AutoDepartureContext(
+                rules!=null && rules.automaticCheckout(),visit.status(),policy.checkInRadiusMeters(),
+                rules==null ? null : rules.maximumLocationAccuracyMeters(),target.longitude(),target.latitude());
+    }
+
+    private VisitView checkOutVisit(UUID visitId, CheckOutVisitCommand command, boolean automatic) {
         CallerIdentity caller = requireCaller("sales:visit:own:write");
         validateCheckOutCommand(visitId, command);
         Instant receivedAt = clock.instant();
         SalesWorkContextService.SalesIdentity identity = contextService.resolveIdentity(caller, receivedAt);
 
         String key = key(command.idempotencyKey());
-        Reservation reservation = reserve(caller, "VISIT_CHECK_OUT", key, command);
+        String operation=automatic ? "VISIT_AUTO_CHECK_OUT" : "VISIT_CHECK_OUT";
+        Reservation reservation = reserve(caller, operation, key, command);
         if (reservation.status() == Status.COMPLETED) {
             return replayVisit(caller, identity.profile().id(), reservation);
         }
@@ -272,29 +297,42 @@ public class SalesWorkVisitService {
         VisitPolicy policy = queryRepository.findVisitPolicy(caller.tenantId(), visit.visitPolicyVersionId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_POLICY_NOT_FOUND));
         long dwellMinutes = Duration.between(visit.checkedInAt(), receivedAt).toMinutes();
-        if (visit.resultSubmittedAt() == null) {
+        if (automatic && (policy.captureRules()==null || !policy.captureRules().automaticCheckout())) {
+            throw badRequest("本次拜访未启用自动离店");
+        }
+        if (!automatic && visit.resultSubmittedAt() == null) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE,
                     "请先填写并保存拜访结果", List.of());
         }
         // 停留和录音时长是有效拜访核验条件，不是限制销售离店的状态机门槛。
         // 关门、KP不在、拒绝接待等真实场景必须允许保存结果后立即签退，后续进入待复核。
         validateLocation(command.location());
+        SalesCapturePolicyChecks.location(policy,command.location().accuracyMeters());
         VisitTargetSnapshot target = visitRepository.findTargetSnapshot(caller.tenantId(), visitId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_TARGET_INVALID));
         double distance = distanceMeters(command.location().longitude(), command.location().latitude(),
                 target.longitude(), target.latitude());
-        if (BigDecimal.valueOf(distance)
+        if (automatic) {
+            if (!"APP_NATIVE".equals(command.location().source()) || command.location().accuracyMeters()==null
+                    || command.location().accuracyMeters().signum()<=0) throw new BusinessException(ErrorCode.SALES_LOCATION_INVALID);
+            if (distance-command.location().accuracyMeters().doubleValue()<=policy.checkInRadiusMeters())
+                throw new BusinessException(ErrorCode.SALES_VISIT_OUTSIDE_RADIUS,"尚未确认离开门店范围",List.of());
+            if (command.clientOccurredAt().isBefore(visit.checkedInAt()) || command.clientOccurredAt().isAfter(receivedAt.plusSeconds(60)))
+                throw badRequest("自动离店时间不在本次拜访范围内");
+        } else if (BigDecimal.valueOf(distance)
                 .compareTo(BigDecimal.valueOf(policy.checkInRadiusMeters())) > 0) {
             throw new BusinessException(ErrorCode.SALES_VISIT_OUTSIDE_RADIUS,
                     "当前位置距离目标 " + Math.round(distance) + " 米，超过规则允许的 "
                             + policy.checkInRadiusMeters() + " 米", List.of());
         }
 
-        if (visitRepository.checkOutVisit(caller.tenantId(), identity.profile().id(), visitId, receivedAt) != 1) {
+        Instant checkedOutAt=automatic && command.clientOccurredAt().isBefore(receivedAt) ? command.clientOccurredAt() : receivedAt;
+        dwellMinutes=Duration.between(visit.checkedInAt(),checkedOutAt).toMinutes();
+        if (visitRepository.checkOutVisit(caller.tenantId(), identity.profile().id(), visitId, checkedOutAt) != 1) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE);
         }
         visitRepository.insertCheckpoint(UUID.randomUUID(), caller.tenantId(), visitId, "CHECK_OUT",
-                deviceEventKey("visit-check-out", key), command.clientOccurredAt(), receivedAt,
+                deviceEventKey(automatic ? "visit-auto-check-out" : "visit-check-out", key), command.clientOccurredAt(), receivedAt,
                 command.location().longitude(), command.location().latitude(),
                 command.location().accuracyMeters(), BigDecimal.valueOf(distance), "RECEIVED");
         UUID completedPlanId = planRepository.findPlanIdByVisit(caller.tenantId(), visitId).orElse(null);
@@ -309,14 +347,14 @@ public class SalesWorkVisitService {
         Map<String, Object> checkedOutPayload = new LinkedHashMap<>(Map.of(
                 "visitId", visitId.toString(),
                 "workDayId", visit.workDayId().toString(),
-                "checkedOutAt", receivedAt.toString(),
+                "checkedOutAt", checkedOutAt.toString(),
                 "dwellMinutes", dwellMinutes));
         if (completedPlanId != null) checkedOutPayload.put("visitPlanId", completedPlanId.toString());
         appendOutbox(caller, visitId, "SalesVisitCheckedOut", checkedOutPayload);
-        appendAudit(caller, "SALES_VISIT_CHECK_OUT", visitId, Map.of(
-                "dwellMinutes", Long.toString(dwellMinutes)));
+        appendAudit(caller, automatic ? "SALES_VISIT_AUTO_CHECK_OUT" : "SALES_VISIT_CHECK_OUT", visitId, Map.of(
+                "dwellMinutes", Long.toString(dwellMinutes),"reason",automatic ? "OUTSIDE_STORE_RADIUS" : "MANUAL"));
         assessmentService.assess(caller, visitId);
-        complete(caller, "VISIT_CHECK_OUT", key, visitId.toString());
+        complete(caller, operation, key, visitId.toString());
         return visitView(caller.tenantId(), identity.profile().id(), visitId);
     }
 
@@ -348,6 +386,26 @@ public class SalesWorkVisitService {
                         : visitRepository.countVisits(caller.tenantId(), identity.profile().id(), date));
     }
 
+    public VisitPageView activityVisits(LocalDate from, LocalDate to, String kind, int page, int pageSize) {
+        CallerIdentity caller = requireCaller("sales:visit:own:read");
+        validatePage(page, pageSize);
+        if (from == null || to == null || from.isAfter(to)
+                || java.time.temporal.ChronoUnit.DAYS.between(from, to) > 366
+                || !java.util.Set.of("all", "effective", "first").contains(kind)) {
+            throw targetInvalid("日期范围或拜访筛选无效");
+        }
+        var identity = contextService.resolveIdentity(caller, clock.instant());
+        var visits = visitRepository.findActivityVisits(caller.tenantId(), identity.profile().id(),
+                from, to, kind, pageSize, Math.multiplyExact(page - 1, pageSize));
+        var snapshots = visitRepository.findTargetSnapshots(caller.tenantId(), visits.stream().map(VisitSnapshot::id).toList());
+        Map<UUID, VisitTargetSnapshot> byVisit = new java.util.HashMap<>();
+        for (var snapshot : snapshots) byVisit.put(snapshot.visitId(), snapshot);
+        var items = visits.stream().map(visit -> view(visit, byVisit.get(visit.id()), List.of(),
+                visitType(caller.tenantId(), identity.profile().id(), visit), reviewStatus(visit))).toList();
+        return new VisitPageView(items, page, pageSize, visitRepository.countActivityVisits(
+                caller.tenantId(), identity.profile().id(), from, to, kind));
+    }
+
     public VisitActivitySummaryView activitySummary(LocalDate from, LocalDate to) {
         CallerIdentity caller = requireCaller("sales:visit:own:read");
         if (from == null || to == null || from.isAfter(to)) {
@@ -372,6 +430,16 @@ public class SalesWorkVisitService {
         return visitView(caller.tenantId(), identity.profile().id(), visitId);
     }
 
+    public com.rigour.sales.api.v1.model.SalesVisitPolicyModels.CaptureRules captureRules(UUID visitId) {
+        CallerIdentity caller=requireCaller("sales:visit:own:read");
+        var identity=contextService.resolveIdentity(caller,clock.instant());
+        var visit=visitRepository.findVisit(caller.tenantId(),identity.profile().id(),visitId)
+            .orElseThrow(()->new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
+        var rules=queryRepository.findVisitPolicy(caller.tenantId(),visit.visitPolicyVersionId())
+            .orElseThrow(()->new BusinessException(ErrorCode.SALES_VISIT_POLICY_NOT_FOUND)).captureRules();
+        return rules==null ? com.rigour.sales.api.v1.model.SalesVisitPolicyModels.CaptureRules.legacy() : rules;
+    }
+
     /** 拜访结果采集：实际接触与未接触场景采用不同校验；进行中或已签退均可补录。 */
     @Transactional
     public VisitView submitVisitResult(UUID visitId, VisitResultCommand command) {
@@ -385,8 +453,11 @@ public class SalesWorkVisitService {
             throw targetInvalid("contactOutcome不支持当前值");
         }
         boolean contacted = "CONTACTED".equals(contactOutcome);
-        String kpName = contacted ? required(command.kpName(), "kpName", 128) : null;
-        String kpPhone = contacted ? required(command.kpPhone(), "kpPhone", 32) : null;
+        boolean crmVisit = crmCapture.isCapture(caller.tenantId(),visitId);
+        // CRM keeps formal contacts separately. An actual visit remains recordable
+        // when the receptionist declines to share a name or phone number.
+        String kpName = contacted ? (crmVisit ? bounded(command.kpName(),128) : required(command.kpName(), "kpName", 128)) : null;
+        String kpPhone = contacted ? (crmVisit ? bounded(command.kpPhone(),32) : required(command.kpPhone(), "kpPhone", 32)) : null;
         String intention = contacted
                 ? required(command.intentionLevel(), "intentionLevel", 24).toUpperCase(Locale.ROOT)
                 : null;
@@ -394,8 +465,8 @@ public class SalesWorkVisitService {
             throw targetInvalid("intentionLevel仅支持HIGH/MEDIUM/LOW/NONE");
         }
         String resultNote = bounded(command.resultNote(), 1024);
-        if (!contacted && !StringUtils.hasText(resultNote)) {
-            throw targetInvalid("未接触KP时必须填写现场说明");
+        if ((!contacted || crmVisit) && !StringUtils.hasText(resultNote)) {
+            throw targetInvalid("请填写本次拜访的现场说明");
         }
         Instant receivedAt = clock.instant();
         SalesWorkContextService.SalesIdentity identity = contextService.resolveIdentity(caller, receivedAt);
@@ -412,7 +483,7 @@ public class SalesWorkVisitService {
                 "contactOutcome", contactOutcome,
                 "hasKp", Boolean.toString(contacted),
                 "intentionLevel", intention == null ? "" : intention));
-        if ("CHECKED_OUT".equals(visit.status()) || crmCapture.isCapture(caller.tenantId(),visitId))
+        if ("CHECKED_OUT".equals(visit.status()) || crmVisit)
             assessmentService.assess(caller, visitId);
         return visitView(caller.tenantId(), identity.profile().id(), visitId);
     }

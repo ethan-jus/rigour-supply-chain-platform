@@ -54,7 +54,6 @@ import org.springframework.web.multipart.MultipartFile;
 public class SalesWorkEvidenceService {
 
     private static final Logger log = LoggerFactory.getLogger(SalesWorkEvidenceService.class);
-    private static final Set<String> ALLOWED_CAMERA_SOURCES = Set.of("APP_CAMERA", "FEISHU_CAMERA");
     private static final Set<String> SUPPORTED_IMAGE_TYPES = Set.of("image/jpeg", "image/png");
 
     private final SalesWorkEvidenceRepository evidenceRepository;
@@ -94,9 +93,6 @@ public class SalesWorkEvidenceService {
             Instant capturedAt, BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters) {
         CallerIdentity caller = requireCaller("sales:evidence:own:write");
         String normalizedClientId = required(clientEvidenceId, "clientEvidenceId", 128);
-        if (!ALLOWED_CAMERA_SOURCES.contains(captureSource)) {
-            throw invalid("门头照只允许通过App原生相机现场拍摄");
-        }
         if (visitId == null || file == null || file.isEmpty()) throw invalid("门头照片不能为空");
         if (properties.getMaxPhotoBytes() <= 0 || file.getSize() > properties.getMaxPhotoBytes()) {
             throw invalid("门头照片超过大小限制 " + properties.getMaxPhotoBytes() + " 字节");
@@ -110,11 +106,14 @@ public class SalesWorkEvidenceService {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE,
                     "当前拜访状态不允许拍摄门头照", List.of());
         }
-        validateCaptureTime(visit, capturedAt, receivedAt);
+        if (!"FILE_IMPORT".equals(captureSource)) validateCaptureTime(visit, capturedAt, receivedAt);
+        else if(capturedAt!=null) throw invalid("相册导入不能声明现场拍摄时间");
         VisitTargetSnapshot target = visitRepository.findTargetSnapshot(caller.tenantId(), visitId)
                 .orElseThrow(() -> invalid("拜访目标快照不存在"));
         var policy = queryRepository.findVisitPolicy(caller.tenantId(), visit.visitPolicyVersionId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_POLICY_NOT_FOUND));
+        SalesCapturePolicyChecks.photo(policy,captureSource);
+        SalesCapturePolicyChecks.location(policy,accuracyMeters);
         double distance = distanceMeters(longitude, latitude, target.longitude(), target.latitude());
         if (distance > policy.checkInRadiusMeters()) {
             throw new BusinessException(ErrorCode.SALES_VISIT_OUTSIDE_RADIUS,

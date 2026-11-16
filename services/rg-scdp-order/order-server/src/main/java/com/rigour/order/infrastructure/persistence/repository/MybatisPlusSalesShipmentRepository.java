@@ -38,6 +38,9 @@ import java.util.UUID;
 public class MybatisPlusSalesShipmentRepository
         extends ServiceImpl<InternalSalesShipmentMapper, InternalSalesShipmentEntity>
         implements OrderSalesShipmentStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private static final String SYSTEM_ACTOR = "SYSTEM";
 
     private final InternalSalesShipmentLineMapper lineMapper;
@@ -104,6 +107,7 @@ public class MybatisPlusSalesShipmentRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesShipmentDetailView create(
             String tenantId, String shipmentNo, SalesShipmentWrite command, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireRelatedOrder(tenantId, command.salesOrderId(), "order:shipment:create");
         command = bindFulfillment(tenantId, command);
         LocalDateTime now = now();
@@ -122,6 +126,7 @@ public class MybatisPlusSalesShipmentRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesShipmentDetailView update(
             String tenantId, Long id, SalesShipmentWrite command, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireRelated(tenantId, id, "order:shipment:update", "order_sales_shipment");
         scopes.requireRelatedOrder(tenantId, command.salesOrderId(), "order:shipment:update");
         InternalSalesShipmentEntity existing =
@@ -224,6 +229,7 @@ public class MybatisPlusSalesShipmentRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(String tenantId, Long id, int revision, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireRelated(tenantId, id, "order:shipment:delete", "order_sales_shipment");
         InternalSalesShipmentEntity existing =
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售发货单不存在"));

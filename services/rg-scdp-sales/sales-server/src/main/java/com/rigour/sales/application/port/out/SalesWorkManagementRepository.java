@@ -1,5 +1,6 @@
 package com.rigour.sales.application.port.out;
 
+import com.rigour.sales.application.port.out.SalesManagementDirectory.Access;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -10,14 +11,14 @@ import java.util.UUID;
 public interface SalesWorkManagementRepository {
     boolean isCrmCapture(UUID tenantId,UUID visitId);
 
-    ManagementTotalsRow totals(UUID tenantId, LocalDate from, LocalDate to);
+    ManagementTotalsRow totals(UUID tenantId, LocalDate from, LocalDate to, Access scope);
 
-    List<SalesPersonActivityRow> people(UUID tenantId, LocalDate from, LocalDate to);
+    List<SalesPersonActivityRow> people(UUID tenantId, LocalDate from, LocalDate to, Access scope);
 
-    List<VisitReviewRow> reviewQueue(UUID tenantId, LocalDate from, LocalDate to,
+    List<VisitReviewRow> reviewQueue(UUID tenantId, LocalDate from, LocalDate to, Access scope,
                                      int limit, int offset);
 
-    long countReviewQueue(UUID tenantId, LocalDate from, LocalDate to);
+    long countReviewQueue(UUID tenantId, LocalDate from, LocalDate to, Access scope);
 
     java.util.Optional<ReviewTargetRow> findReviewTarget(UUID tenantId, UUID visitId, boolean lock);
 

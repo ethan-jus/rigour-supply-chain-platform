@@ -46,6 +46,9 @@ import java.util.UUID;
 public class MybatisPlusSalesPaymentRecordRepository
         extends ServiceImpl<InternalSalesPaymentRecordMapper, InternalSalesPaymentRecordEntity>
         implements OrderSalesPaymentRecordStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private static final ObjectMapper JSON = JsonMapper.builder().build();
     private static final TypeReference<List<String>> STRING_LIST_TYPE = new TypeReference<>() {};
     private static final String SOURCE_SYSTEM_FEISHU = "FEISHU";
@@ -153,6 +156,7 @@ public class MybatisPlusSalesPaymentRecordRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesPaymentRecordDetailView create(
             String tenantId, String paymentNo, SalesPaymentWrite command, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireRelatedOrder(tenantId, command.orderId(), "order:payment:create");
         requireOrder(tenantId, command.orderId());
         LocalDateTime now = now();
@@ -172,6 +176,7 @@ public class MybatisPlusSalesPaymentRecordRepository
     @Transactional(rollbackFor = Exception.class)
     public SalesPaymentRecordDetailView update(
             String tenantId, Long id, SalesPaymentWrite command, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireRelated(tenantId, id, "order:payment:update", "order_payment_record");
         scopes.requireRelatedOrder(tenantId, command.orderId(), "order:payment:update");
         InternalSalesPaymentRecordEntity existing =
@@ -298,6 +303,7 @@ public class MybatisPlusSalesPaymentRecordRepository
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(String tenantId, Long id, int revision, String actorId) {
+        queryCache.changed(tenantId);
         scopes.requireRelated(tenantId, id, "order:payment:delete", "order_payment_record");
         InternalSalesPaymentRecordEntity existing =
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售回款记录不存在"));

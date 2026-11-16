@@ -29,15 +29,15 @@ SELECT %s id,d.id order_id,l.id line_id,d.tenant_id,d.procurement_no,d.source_sy
   p.id product_id,COALESCE(p.product_name,l.product_name_snapshot,l.product_code) product_name,
   v.id variant_id,v.specification_snapshot specification,l.unit_code,l.quantity,l.unit_price,l.line_amount
 FROM erp_procurement_order d
-JOIN erp_procurement_order_line l ON l.tenant_id=d.tenant_id AND l.procurement_no=d.procurement_no AND l.deleted=0
+JOIN erp_procurement_order_line l ON l.tenant_id=d.tenant_id AND l.procurement_no COLLATE utf8mb4_general_ci=d.procurement_no AND l.deleted=0
 JOIN (SELECT tenant_id,procurement_no,SUM(line_amount) goods_amount,
   SUM(CASE WHEN unit_price IS NULL OR unit_price=0 THEN 1 ELSE 0 END) unknown_prices,COUNT(*) line_count
   FROM erp_procurement_order_line WHERE deleted=0 GROUP BY tenant_id,procurement_no) g
-  ON g.tenant_id=d.tenant_id AND g.procurement_no=d.procurement_no
+  ON g.tenant_id=d.tenant_id AND g.procurement_no COLLATE utf8mb4_general_ci=d.procurement_no
 JOIN erp_inventory_warehouse w ON w.tenant_id COLLATE utf8mb4_general_ci=d.tenant_id AND w.deleted=0
   AND (w.warehouse_code COLLATE utf8mb4_general_ci=d.target_warehouse_code OR (d.target_warehouse_code IS NULL AND w.id=d.target_warehouse_id))
 LEFT JOIN erp_supplier_profile s ON s.tenant_id=d.tenant_id AND s.deleted=0
-  AND (s.supplier_code=d.supplier_code OR (d.supplier_code IS NULL AND s.id=d.supplier_id))
+  AND (s.supplier_code COLLATE utf8mb4_general_ci=d.supplier_code OR (d.supplier_code IS NULL AND s.id=d.supplier_id))
 LEFT JOIN erp_product p ON p.tenant_id COLLATE utf8mb4_general_ci=l.tenant_id AND p.deleted=0
   AND (p.product_code COLLATE utf8mb4_general_ci=l.product_code OR (l.product_code IS NULL AND p.id=l.product_id))
 LEFT JOIN erp_product_variant v ON v.tenant_id COLLATE utf8mb4_general_ci=l.tenant_id AND v.deleted=0
@@ -61,11 +61,11 @@ FROM erp_procurement_order d
 LEFT JOIN (SELECT tenant_id,procurement_no,SUM(line_amount) goods_amount,
   SUM(CASE WHEN unit_price IS NULL OR unit_price=0 THEN 1 ELSE 0 END) unknown_prices,COUNT(*) line_count
   FROM erp_procurement_order_line WHERE deleted=0 GROUP BY tenant_id,procurement_no) g
-  ON g.tenant_id=d.tenant_id AND g.procurement_no=d.procurement_no
+  ON g.tenant_id=d.tenant_id AND g.procurement_no COLLATE utf8mb4_general_ci=d.procurement_no
 JOIN erp_inventory_warehouse w ON w.tenant_id COLLATE utf8mb4_general_ci=d.tenant_id AND w.deleted=0
   AND (w.warehouse_code COLLATE utf8mb4_general_ci=d.target_warehouse_code OR (d.target_warehouse_code IS NULL AND w.id=d.target_warehouse_id))
 LEFT JOIN erp_supplier_profile s ON s.tenant_id=d.tenant_id AND s.deleted=0
-  AND (s.supplier_code=d.supplier_code OR (d.supplier_code IS NULL AND s.id=d.supplier_id))
+  AND (s.supplier_code COLLATE utf8mb4_general_ci=d.supplier_code OR (d.supplier_code IS NULL AND s.id=d.supplier_id))
 WHERE d.tenant_id=? AND d.deleted=0 AND d.confirmation_status_code='CONFIRMED' AND d.status_code<>'CANCELLED'
 """
                     .formatted(ORDER_ID);

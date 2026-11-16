@@ -21,6 +21,9 @@ import java.util.*;
 /** 门店关联与回款接续均在Order本域事务中完成；无法证明的归属保留待核对。 */
 @Repository
 public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     private final JdbcTemplate jdbc;
     private static final JsonMapper JSON = JsonMapper.builder().build();
     private final com.rigour.order.application.port.out.OrderAttributionClient owners;
@@ -63,6 +66,12 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 if (receipt == null) receipt = text(p,"source_record_id");
                 if (receipt != null) {
                     var source = jdbc.queryForList("SELECT source_order_no FROM order_sync_receipt WHERE tenant_id=? AND connector_id=? AND receipt_no=?",tenant,connector,receipt);
+                    // 历史拆分单的 document_no 带内部后缀，record_id 保留真实来源收款单号。
+                    String record = text(p,"source_record_id");
+                    if (source.isEmpty() && record != null && !record.equals(receipt)) {
+                        var original = jdbc.queryForList("SELECT source_order_no FROM order_sync_receipt WHERE tenant_id=? AND connector_id=? AND receipt_no=?",tenant,connector,record);
+                        if (!original.isEmpty()) { receipt = record; source = original; }
+                    }
                     String order = source.isEmpty() ? text(p,"sales_order_no_snapshot") : text(source.getFirst(),"source_order_no");
                     refs.add(new VoucherReceiptReference(receipt,order));
                 }
@@ -89,8 +98,12 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     @Override
     @Transactional
     public Intake receiptVouchers(String tenant, String actor, ReceiptVouchers c) {
+        queryCache.changed(tenant);
         require(c != null && c.connectorId() != null, "凭证来源连接不能为空");
         id(c.sourcePaymentNo());
+        var protectedResult = new ManualOrderSyncGuard(jdbc).check(tenant, c.connectorId(), c.sourceOrderNo(),
+                c.receiptNo(), c.sourcePaymentNo(), "VOUCHER", c);
+        if (protectedResult != null) return protectedResult;
         require(Set.of("CONFIRMED", "PENDING", "CANCELLED").contains(c.sourceStatus()), "凭证来源状态未知");
         String connector = c.connectorId().toString();
         boolean cancelled = "CANCELLED".equals(c.sourceStatus());
@@ -402,8 +415,11 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     /** 保留来源失效订单供查询，金额和回款证据不删除，统计按主状态排除。 */
     @Transactional
     public Intake cancelSourceOrder(String t, String actor, CancelSourceOrder c) {
+        queryCache.changed(t);
         require(c != null && c.connectorId() != null, "来源连接器缺失");
         id(c.sourceNo());
+        var protectedResult = new ManualOrderSyncGuard(jdbc).check(t, c.connectorId(), c.sourceNo(), null, null, "LIFECYCLE", c);
+        if (protectedResult != null) return protectedResult;
         String status = c.orderStatusCode() == null ? "CANCELLED" : c.orderStatusCode();
         require(Set.of("CANCELLED", "DELETED").contains(status), "来源失效状态无效");
         require(jdbc.queryForObject(
@@ -502,6 +518,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Intake sourceOrder(String t, SourceOrder c) {
+        queryCache.changed(t);
         require(
                 c != null
                         && c.connectorId() != null
@@ -510,6 +527,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 "来源订单必须先完成精确客户映射");
         id(c.sourceNo());
         id(c.checksum());
+        var protectedResult = new ManualOrderSyncGuard(jdbc).check(t, c.connectorId(), c.sourceNo(), null, null, "ORDER", c);
+        if (protectedResult != null) return protectedResult;
         var amount = HistorySyncRules.money(c.amount());
         require(
                 jdbc.queryForObject(
@@ -684,6 +703,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void confirmNew(String t, String actor, NewOrder c) {
+        queryCache.changed(t);
         require(c != null && c.source() != null, "请选择待确认来源订单");
         HistorySyncRules.evidence(c.evidence());
         var ref = c.source();
@@ -716,6 +736,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void confirmHistoricalNew(String t, String actor, NewOrder c) {
+        queryCache.changed(t);
         require(c != null && c.source() != null, "请选择待确认历史来源订单");
         HistorySyncRules.evidence(c.evidence());
         var ref = c.source();
@@ -736,6 +757,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     /** 已批准的历史清理：保留行和原业务字段，只打删除标记；任何回款或关联均阻止删除。 */
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void deleteUnlinkedHistory(String t, String actor, DeleteUnlinkedHistory c) {
+        queryCache.changed(t);
         require(c != null && c.orderId() > 0 && c.revision() >= 0, "历史订单或版本无效");
         HistorySyncRules.evidence(c.evidence());
         var o = order(t, c.orderId());
@@ -771,6 +793,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     /** 每个旧组独立原子迁移；回款按明确拆分计划守恒，所有原值进入本域审计。 */
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Map<String, Long> normalizeGroup(String t, String actor, NormalizeGroup c) {
+        queryCache.changed(t);
         require(c != null && c.operationId() != null && c.connectorId() != null, "对齐操作身份缺失");
         HistorySyncRules.evidence(c.evidence());
         String request = JSON.writeValueAsString(c);
@@ -925,6 +948,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public String bind(String t, String actor, Bind c) {
+        queryCache.changed(t);
         require(
                 c != null && c.customerId() > 0 && !c.sources().isEmpty() && !c.orders().isEmpty(),
                 "请选择同一门店两边的订单");
@@ -1119,9 +1143,12 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     /** 历史保护冻结业务事实，不冻结后来发生的确认/撤销。只更新已证明关联的现有款。 */
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Intake historicalReceiptStatus(String t, Receipt c) {
+        queryCache.changed(t);
         require(c != null && c.connectorId() != null, "收款来源连接器缺失");
         id(c.receiptNo());
         id(c.checksum());
+        var protectedResult = new ManualOrderSyncGuard(jdbc).check(t, c.connectorId(), c.sourceOrderNo(), c.receiptNo(), null, "RECEIPT", c);
+        if (protectedResult != null) return protectedResult;
         HistorySyncRules.money(c.amount());
         require(c.occurredAt() != null && c.occurredAt().isBefore(HistorySyncRules.CUTOVER),
                 "仅允许历史回款状态接续");
@@ -1182,9 +1209,12 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public Intake receipt(String t, Receipt c) {
+        queryCache.changed(t);
         require(c != null && c.connectorId() != null, "收款来源连接器缺失");
         id(c.receiptNo());
         id(c.checksum());
+        var protectedResult = new ManualOrderSyncGuard(jdbc).check(t, c.connectorId(), c.sourceOrderNo(), c.receiptNo(), null, "RECEIPT", c);
+        if (protectedResult != null) return protectedResult;
         HistorySyncRules.money(c.amount());
         require(
                 jdbc.queryForObject(
@@ -1574,6 +1604,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void allocate(String t, String actor, Allocate c) {
+        queryCache.changed(t);
         HistorySyncRules.evidence(c.evidence());
         tryAllocate(t, actor, c);
     }
@@ -1807,6 +1838,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     /** 产品核销必须对应已确认订单核销，按每个原订单分别守恒，不推测合单款用途。 */
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void allocateProducts(String t, String actor, AllocateProducts c) {
+        queryCache.changed(t);
         HistorySyncRules.evidence(c.evidence());
         require(c.connectorId() != null && !c.allocations().isEmpty(), "请选择回款产品明细");
         var receipt =
@@ -2040,6 +2072,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public void confirmOwner(String t, String actor, OwnerReview c) {
+        queryCache.changed(t);
         HistorySyncRules.evidence(c.evidence());
         id(c.employeeCode());
         require(c.employeeCode().length() <= 50 && !Set.of("UNKNOWN","MULTI").contains(c.employeeCode().trim().toUpperCase(java.util.Locale.ROOT)), "请选择明确的回款归属员工");

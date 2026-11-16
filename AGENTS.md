@@ -18,6 +18,8 @@
 
 `audit/idempotency/outbox/cache/file` 是按需引入的可选库。具体持久化和中间件适配归使用它们的领域服务所有。
 
+规则、查询与缓存变更应按正式上线链路拉通领域归属、调用端、版本、库表/索引、写入与失效路径；优先复用现有 `shared-cache`，不为单次操作建立另一套独立规则或局部缓存。区分可缓存的版本内容与必须及时核验的权限、适用范围和业务状态，并验证发布、事务回滚及跨租户隔离。Sales 拜访规则的跨端合同见 [拜访入口与统一规则缓存](../rigour-sales-workbench/docs/app-visit-entry-performance.md)。
+
 ## 服务内分层
 
 - `interfaces` 依赖 `application`；

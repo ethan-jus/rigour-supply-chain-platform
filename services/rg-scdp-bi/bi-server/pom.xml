@@ -8,6 +8,8 @@
     <name>bi-server</name>
     <description>Analytics BI业务实现和启动应用</description>
     <dependencies>
+        <dependency><groupId>com.rigour</groupId><artifactId>shared-cache</artifactId></dependency>
+        <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-redis</artifactId></dependency>
         <dependency><groupId>com.rigour</groupId><artifactId>iam-client</artifactId></dependency>
         <dependency><groupId>org.testcontainers</groupId><artifactId>testcontainers-mysql</artifactId><version>${testcontainers.version}</version><scope>test</scope></dependency>
         <dependency><groupId>org.testcontainers</groupId><artifactId>testcontainers-junit-jupiter</artifactId><version>${testcontainers.version}</version><scope>test</scope></dependency>
