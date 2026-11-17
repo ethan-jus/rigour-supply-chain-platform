@@ -50,6 +50,30 @@ public class TransportRecordController {
         return ApiResponse.success(evidence.downloadUrl(id, file));
     }
 
+    @GetMapping("/{id}/attachments/{file}/content")
+    public org.springframework.http.ResponseEntity<byte[]> attachmentContent(
+            @PathVariable String id, @PathVariable String file) {
+        return fileResponse(evidence.downloadContent(id, file));
+    }
+
+    @GetMapping("/{id}/vouchers/{voucherId}/content")
+    public org.springframework.http.ResponseEntity<byte[]> voucherContent(
+            @PathVariable String id, @PathVariable String voucherId) {
+        return fileResponse(service.voucherContent(id, voucherId));
+    }
+
+    private org.springframework.http.ResponseEntity<byte[]> fileResponse(
+            CostAttachmentService.FileContent file) {
+        return org.springframework.http.ResponseEntity.ok()
+                .contentType(org.springframework.http.MediaType.APPLICATION_OCTET_STREAM)
+                .header("Cache-Control", "no-store")
+                .header("X-Content-Type-Options", "nosniff")
+                .header("Content-Disposition", org.springframework.http.ContentDisposition.attachment()
+                        .filename(file.fileName(), java.nio.charset.StandardCharsets.UTF_8)
+                        .build().toString())
+                .body(file.bytes());
+    }
+
     private List<TransportSubmissionService.Content> contents(List<MultipartFile> files)
             throws java.io.IOException {
         if (files == null) return List.of();

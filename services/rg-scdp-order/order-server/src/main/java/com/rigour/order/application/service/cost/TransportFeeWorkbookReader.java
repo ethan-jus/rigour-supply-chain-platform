@@ -146,7 +146,7 @@ public final class TransportFeeWorkbookReader {
                 if (cells.values().stream().anyMatch(Cell::formula)) problem = "不支持公式，请粘贴为文本或数值";
                 else if (no.value().isEmpty()
                         || no.value().length() > 80
-                        || no.value().matches(".*[eE][+-]?[0-9]+$")
+                        || no.value().matches("[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)[eE][+-]?[0-9]+")
                         || (no.type() == null || "n".equals(no.type()))
                                 && !no.value().matches("[0-9]{1,15}"))
                     problem = "请填写完整文本快递单号；长单号不能使用数字格式";

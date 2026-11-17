@@ -16,6 +16,26 @@ import java.util.List;
 
 class TransportSubmissionBindingTest {
     @Test
+    void manualAndPlatformDownloadsReturnBinaryWithoutCosRedirect() throws Exception {
+        var service = mock(TransportRecordService.class);
+        var files = mock(CostAttachmentService.class);
+        var content = new CostAttachmentService.FileContent("回单.png", new byte[] {1, 2});
+        when(service.voucherContent("C1", "P1")).thenReturn(content);
+        when(files.downloadContent("C1", "F1")).thenReturn(content);
+        var mvc = MockMvcBuilders.standaloneSetup(new TransportRecordController(
+                service, mock(TransportSubmissionService.class), files)).build();
+        for (String path : List.of("attachments/F1", "vouchers/P1")) {
+            var result = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                            "/api/v1/orders/transport-records/C1/" + path + "/content"))
+                    .andExpect(status().isOk()).andReturn().getResponse();
+            assertThat(result.getContentAsByteArray()).containsExactly(1, 2);
+            assertThat(result.getHeader("Cache-Control")).isEqualTo("no-store");
+            assertThat(result.getHeader("Content-Disposition")).startsWith("attachment;");
+            assertThat(result.getHeader("Location")).isNull();
+        }
+    }
+
+    @Test
     void pdfPreviewReturnsPrivateBinaryWithoutCacheOrRedirect() throws Exception {
         var service = mock(CostAttachmentService.class);
         when(service.previewPdf("C1", "F1")).thenReturn("%PDF-1.7".getBytes());

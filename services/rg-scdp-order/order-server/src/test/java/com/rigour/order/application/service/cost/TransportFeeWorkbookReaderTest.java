@@ -108,6 +108,21 @@ class TransportFeeWorkbookReaderTest {
     }
 
     @Test
+    void distinguishesTextTrackingNumbersFromScientificNotation() {
+        var rows =
+                TransportFeeWorkbookReader.read(
+                        workbook(
+                                row(2, "SF-QA-FEE-20261117", "12.34", "")
+                                        + row(3, "E123456789", "1.00", "")
+                                        + row(4, "3.62772657063236E+18", "1.00", "")
+                                        + row(5, "36277e18", "1.00", "")));
+        assertThat(rows.subList(0, 2))
+                .allSatisfy(r -> assertThat(r.problem()).isNull());
+        assertThat(rows.subList(2, 4))
+                .allSatisfy(r -> assertThat(r.problem()).contains("完整文本快递单号"));
+    }
+
+    @Test
     void perRecordEvidenceContainsOnlyItsRowAndIsReadableXlsx() {
         var row =
                 new TransportFeeWorkbookReader.Row(

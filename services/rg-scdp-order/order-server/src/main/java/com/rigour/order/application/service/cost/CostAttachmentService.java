@@ -16,6 +16,8 @@ import java.util.*;
 
 @Service
 public class CostAttachmentService {
+    public record FileContent(String fileName, byte[] bytes) {}
+
     private final OrderLogisticsCostStore costs;
     private final CostAttachmentStore files;
     private final CostAttachmentStorage storage;
@@ -57,6 +59,14 @@ public class CostAttachmentService {
                         .findFirst()
                         .orElseThrow(() -> bad("附件不存在"));
         return storage.downloadUrl(files.fileKey(tenant, entry, id), file.fileName());
+    }
+
+    public FileContent downloadContent(String entry, String id) {
+        String tenant = authorize("logistics", entry, "read");
+        var file = files.list(tenant, entry).stream()
+                .filter(f -> f.id().equals(id))
+                .findFirst().orElseThrow(() -> bad("附件不存在"));
+        return new FileContent(file.fileName(), storage.read(files.fileKey(tenant, entry, id)));
     }
 
     /** 同源读取已授权的 PDF，浏览器无需开放私有桶跨域访问。 */

@@ -331,12 +331,19 @@ class TransportRecordServiceTest {
         assertThat(service.voucher("C1", "P1")).isEqualTo("https://own-cos/preview");
         assertThat(service.voucher("C1", "P1", true)).isEqualTo("https://own-cos/download");
         verify(files).downloadUrl(tenant + "/integration-huolala-vouchers/C/O/P1.jpg", "装货照片.jpg");
+        when(files.read(tenant + "/integration-huolala-vouchers/C/O/P1.jpg"))
+                .thenReturn(new byte[] {1, 2});
+        var content = service.voucherContent("C1", "P1");
+        assertThat(content.fileName()).isEqualTo("装货照片.jpg");
+        assertThat(content.bytes()).containsExactly(1, 2);
         ((tools.jackson.databind.node.ObjectNode)
                         tree.at("/source/order/facts/stopPhotos/0/vouchers/0"))
                 .put("fileKey", UUID.randomUUID() + "/integration-huolala-vouchers/C/O/P1.jpg");
         when(platform.detail(any(), any()))
                 .thenReturn(json.treeToValue(tree, PlatformRecord.class));
         assertThatThrownBy(() -> service.voucher("C1", "P1", true)).hasMessageContaining("稍后重试");
+        assertThatThrownBy(() -> service.voucherContent("C1", "P1")).hasMessageContaining("稍后重试");
+        verify(files, times(1)).read(anyString());
         verify(costs, never()).save(any(), any(), any());
     }
 }

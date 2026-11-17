@@ -96,6 +96,17 @@ public class TransportRecordService {
     }
 
     public String voucher(String id, String voucherId, boolean download) {
+        var v = authorizedVoucher(id, voucherId);
+        return download ? attachments.downloadUrl(v.fileKey(), v.name()) : attachments.url(v.fileKey());
+    }
+
+    public CostAttachmentService.FileContent voucherContent(String id, String voucherId) {
+        var v = authorizedVoucher(id, voucherId);
+        return new CostAttachmentService.FileContent(v.name(), attachments.read(v.fileKey()));
+    }
+
+    private com.rigour.order.api.v1.model.LogisticsImportModels.Voucher authorizedVoucher(
+            String id, String voucherId) {
         var d = detail(id);
         if (d.platform() == null) throw bad("平台凭证不存在");
         var source = d.platform().source();
@@ -114,9 +125,7 @@ public class TransportRecordService {
                     && v.fileKey() != null
                     && v.fileKey().startsWith(tenant() + "/integration-huolala-vouchers/")
                     && !v.fileKey().contains(".."))
-                return download
-                        ? attachments.downloadUrl(v.fileKey(), v.name())
-                        : attachments.url(v.fileKey());
+                return v;
         throw bad("凭证正在获取，请稍后重试");
     }
 

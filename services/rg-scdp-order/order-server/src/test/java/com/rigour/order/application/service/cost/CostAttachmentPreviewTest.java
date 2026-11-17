@@ -82,4 +82,19 @@ class CostAttachmentPreviewTest {
         assertThatThrownBy(() -> service.previewPdf("C1", "F1")).hasMessageContaining("不是PDF");
         verifyNoInteractions(storage);
     }
+
+    @Test
+    void downloadReadsOnlyTheFileBelongingToTheAuthorizedRecord() {
+        when(storage.read("tenant/order-cost-attachments/file.pdf")).thenReturn(new byte[] {1, 2});
+        var file = service.downloadContent("C1", "F1");
+        assertThat(file.fileName()).isEqualTo("回单.pdf");
+        assertThat(file.bytes()).containsExactly(1, 2);
+        assertThatThrownBy(() -> service.downloadContent("C1", "unknown"))
+                .hasMessageContaining("附件不存在");
+        when(costs.entry(tenant.toString(), "LOGISTICS", "C2", "order:logistics-cost:read"))
+                .thenThrow(new AuthorizationDeniedException("order:logistics-cost:read"));
+        assertThatThrownBy(() -> service.downloadContent("C2", "F1"))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        verify(storage, times(1)).read(anyString());
+    }
 }
