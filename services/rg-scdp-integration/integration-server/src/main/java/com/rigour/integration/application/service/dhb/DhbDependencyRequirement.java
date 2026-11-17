@@ -36,7 +36,7 @@ record DhbDependencyRequirement(String type, String sourceId, String salesOrderN
                 ids.stream()
                         .filter(Objects::nonNull)
                         .map(Object::toString)
-                        .filter(s -> !s.isBlank())
+                        .filter(s -> !s.isBlank() && !"0".equals(s))
                         .toList();
         String key =
                 "PRODUCT_SKU".equals(type)

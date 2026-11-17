@@ -1534,6 +1534,21 @@ public final class DhbIntegrationService {
         int cappedLimit = limit(limit, 500);
         List<DhbSyncExceptionView> exceptions =
                 store.syncExceptions(caller.tenantId(), "OPEN", cappedLimit);
+        return groupedIssues(caller, exceptions);
+    }
+
+    public com.rigour.integration.api.v1.model.DhbShipmentIssuesPageView shipmentIssues(UUID connector, int offset, int limit) {
+        CallerIdentity caller = requireReadCaller();
+        if (connector == null || offset < 0 || limit < 1 || limit > 100)
+            throw new IllegalArgumentException("请选择同步来源及有效页码");
+        var exceptions = store.shipmentExceptions(caller.tenantId(), connector, limit, offset);
+        var items = groupedIssues(caller, exceptions).stream().flatMap(g -> g.items().stream())
+                .sorted(Comparator.comparing(DhbSyncOpenIssueItemView::updatedAt, Comparator.nullsLast(Comparator.reverseOrder()))
+                        .thenComparing(DhbSyncOpenIssueItemView::sourceId)).toList();
+        return new com.rigour.integration.api.v1.model.DhbShipmentIssuesPageView(store.shipmentExceptionCount(caller.tenantId(), connector), items);
+    }
+
+    private List<DhbSyncOpenIssueGroupView> groupedIssues(CallerIdentity caller, List<DhbSyncExceptionView> exceptions) {
         if (exceptions.isEmpty()) return List.of();
         Map<IssueSourceKey, DhbSyncReconciliationCaseView> reconciliations =
                 latestOpenErrorReconciliations(caller.tenantId(), exceptions);

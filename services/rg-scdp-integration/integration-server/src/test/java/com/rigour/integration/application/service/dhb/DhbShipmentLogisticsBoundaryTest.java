@@ -388,21 +388,17 @@ class DhbShipmentLogisticsBoundaryTest {
     }
 
     @Test
-    void shipmentWindowReadsCurrentFactsWithoutReplayingHistoricalDependenciesFirst() {
+    void shipmentWindowReadsCurrentFactsBeforeReviewingHistoricalDependencies() {
         mappedSalesOrder();
         var work = mock(DhbIncrementalWorkStore.class);
         org.springframework.test.util.ReflectionTestUtils.setField(
                 service, "incrementalWork", work);
-        var item =
-                new DhbIncrementalWorkStore.Item(
-                        "FH-OUTSIDE",
-                        "queued",
-                        json.writeValueAsString(shipment("DH001")),
-                        from.minusSeconds(60));
         when(work.pending(eq(tenant), eq(connector), eq("SHIPMENT"), eq(100), any()))
-                .thenReturn(List.of(item));
+                .thenReturn(List.of());
         run();
-        verify(work, never()).pending(any(), any(), eq("SHIPMENT"), anyInt(), any());
+        var sequence = inOrder(client, work);
+        sequence.verify(client).getShipmentContent(any(), eq("FH001"));
+        sequence.verify(work).pending(eq(tenant), eq(connector), eq("SHIPMENT"), eq(100), any());
         verify(client, never()).getShipmentContent(any(), eq("FH-OUTSIDE"));
         verify(client).getShipmentContent(any(), eq("FH001"));
         verify(order).syncShipmentTransport(any(), any());
@@ -468,6 +464,27 @@ class DhbShipmentLogisticsBoundaryTest {
     }
 
     @Test
+    void sourceShippingUnitWinsOverSalesPackagingUnitWithoutChangingShippingQuantity() {
+        for (var m : List.of(
+                new DhbSyncStore.ExternalObjectMapping(UUID.randomUUID(),"PRODUCT_SPU","G1","G1","ERP","PRODUCT",7L,"G1","ACTIVE",null),
+                new DhbSyncStore.ExternalObjectMapping(UUID.randomUUID(),"PRODUCT_SKU","G1::0","G1::0","ERP","PRODUCT_VARIANT",8L,"SKU8","ACTIVE",null)))
+            when(store.findActiveMapping(tenant,connector,m.sourceObjectType(),m.sourceObjectId())).thenReturn(m);
+        var original = json.readValue("""
+                {"id":11,"lines":[{"id":31,"productId":7,"productVariantId":8,"productNameSnapshot":"面","unitCode":"CASE"}]}
+                """, SalesOrderDetailView.class);
+        List<com.rigour.order.api.v1.model.SalesShipmentLineCommand> lines =
+                org.springframework.test.util.ReflectionTestUtils.invokeMethod(service, "shipmentLines", tenant,connector,"FH001",
+                        Map.of("list",List.of(Map.of("goods_num","G1","options_id","0","ships_number",36,
+                                "ships_units_name","桶","order_units_name","箱","base_units_name","桶",
+                                "orders_units","container_units","conversion_number",12))),original);
+        assertThat(lines).singleElement().satisfies(line -> {
+            assertThat(line.unitCode()).isEqualTo("BUCKET");
+            assertThat(line.shippedQuantity()).isEqualByComparingTo("36");
+            assertThat(line.salesOrderLineId()).isEqualTo(31L);
+        });
+    }
+
+    @Test
     void freshDetailShippingTimeTakesPrecedenceOverOlderListSummary() {
         mappedSalesOrder();
         when(client.getShipmentContent(any(), eq("FH001")))
@@ -496,6 +513,11 @@ class DhbShipmentLogisticsBoundaryTest {
     @Test
     void singleReplayWithOnlyLowercaseDetailCompletesNativeShipmentAndPreservesShippingFields() {
         mappedSalesOrder();
+        var work = mock(DhbIncrementalWorkStore.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "incrementalWork", work);
+        var pendingItem = new DhbIncrementalWorkStore.Item("FH001", "original-version", "{}", from);
+        when(work.find(tenant, connector, "SHIPMENT", "FH001")).thenReturn(pendingItem);
+        when(work.awaitingManual(eq(tenant), eq(connector), eq("SHIPMENT"), anySet())).thenReturn(Set.of("FH001"));
         when(order.salesOrder(any(), eq(11L)))
                 .thenReturn(
                         json.readValue(
@@ -598,6 +620,8 @@ class DhbShipmentLogisticsBoundaryTest {
                         100,
                         x -> {});
         assertThat(result.status()).isEqualTo("SUCCEEDED");
+        verify(work).complete(eq(tenant), eq(connector), eq("SHIPMENT"), eq(pendingItem), eq(true), any());
+        verify(work, never()).waitForManual(any(), any(), any(), any(), any());
         verify(order)
                 .createSalesShipment(
                         any(),
@@ -714,6 +738,8 @@ class DhbShipmentLogisticsBoundaryTest {
         when(work.awaitingManual(eq(tenant), eq(connector), eq("SHIPMENT"), anySet()))
                 .thenReturn(Set.of("FH001"));
         when(work.pendingCount(tenant, connector, "SHIPMENT")).thenReturn(1L);
+        var recovery = mock(DhbShipmentRecoveryReview.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "shipmentRecoveryReview", recovery);
         var result = run();
         assertThat(result.status()).isEqualTo("PARTIAL");
         assertThat(result.duplicateCount()).isZero();
@@ -722,6 +748,7 @@ class DhbShipmentLogisticsBoundaryTest {
         verify(client, never()).getOrderContent(any(), any());
         verify(order, never()).syncShipmentTransport(any(), any());
         verifyNoInteractions(erp);
+        verify(recovery).reconsider(eq(tenant), eq(connector), any());
     }
 
     @Test

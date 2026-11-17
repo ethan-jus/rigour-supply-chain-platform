@@ -169,6 +169,32 @@ public class JdbcDhbIncrementalWorkStore implements DhbIncrementalWorkStore {
                 type);
     }
 
+    @Override
+    public List<Item> manualShipments(UUID tenant, UUID connector, int limit, Instant now) {
+        return jdbc.query("SELECT source_id,fingerprint,payload,source_updated_at FROM integration_dhb_incremental_work"
+                + " WHERE tenant_id=? AND connector_id=? AND object_type='SHIPMENT' AND applied=0"
+                + " AND retry_policy='MANUAL' AND retry_at<=? ORDER BY retry_at,source_id LIMIT ?",
+                (r, i) -> new Item(r.getString(1), r.getString(2), r.getString(3),
+                        instant(r.getObject(4, LocalDateTime.class))),
+                tenant.toString(), connector.toString(), utc(now), Math.max(1, Math.min(1000, limit)));
+    }
+
+    @Override
+    public boolean resumeShipment(UUID tenant, UUID connector, Item item, Instant now) {
+        return jdbc.update("UPDATE integration_dhb_incremental_work SET retry_policy='AUTO',retry_at=?"
+                + " WHERE tenant_id=? AND connector_id=? AND object_type='SHIPMENT' AND source_id=?"
+                + " AND fingerprint=? AND applied=0 AND retry_policy='MANUAL'",
+                utc(now), tenant.toString(), connector.toString(), item.id(), item.fingerprint()) == 1;
+    }
+
+    @Override
+    public void deferShipmentReview(UUID tenant, UUID connector, Item item, Instant nextReview) {
+        jdbc.update("UPDATE integration_dhb_incremental_work SET retry_at=?"
+                + " WHERE tenant_id=? AND connector_id=? AND object_type='SHIPMENT' AND source_id=?"
+                + " AND fingerprint=? AND applied=0 AND retry_policy='MANUAL'",
+                utc(nextReview), tenant.toString(), connector.toString(), item.id(), item.fingerprint());
+    }
+
     private static LocalDateTime utc(Instant value) {
         return value == null ? null : LocalDateTime.ofInstant(value, ZoneOffset.UTC);
     }

@@ -80,17 +80,49 @@ public final class CrmMasterDataSyncService {
         this.employeeDirectory = employeeDirectory;
     }
 
+    public List<com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Review> customerReviews(CallerIdentity caller, UUID connector) {
+        requireCustomerReviewCaller(caller, "crm:customer:read");
+        if (!reviewPermission(caller, "integration:dhb:read")) throw new AuthorizationDeniedException("integration:dhb:read");
+        // Historical business reviews remain accessible even while a sync task is paused.
+        return store.customerReviews(caller.tenantId(), connector);
+    }
+
+    public void decideCustomer(CallerIdentity caller, com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Decision c) {
+        requireCustomerReviewCaller(caller, "crm:customer:write");
+        if (!reviewPermission(caller, "integration:dhb:write")) throw new AuthorizationDeniedException("integration:dhb:write");
+        if (c == null || c.connectorId() == null || c.sourceId() == null || c.sourceId().isBlank()
+                || c.sourceId().length() > 128 || c.revision() < 0 || c.reason() == null || c.reason().isBlank()
+                || c.reason().length() > 1000 || c.independent() == (c.customerId() != null))
+            throw new IllegalArgumentException("请选择关联客户或独立建档，并填写核对说明");
+        if (c.independent()) confirmIndependentCustomer(caller, c.connectorId(), c.sourceId(), c.revision(), false, c.reason());
+        else {
+            if (c.customerId() <= 0) throw new IllegalArgumentException("请选择本系统客户");
+            store.linkReviewedCustomer(caller.tenantId(), c.connectorId(), c.sourceId(), c.revision(), c.customerId(), c.reason(), caller.userId());
+        }
+    }
+
+    private static void requireCustomerReviewCaller(CallerIdentity caller, String permission) {
+        if (caller == null || !"TENANT".equals(caller.principalScope()) || caller.tenantId() == null || caller.userId() == null)
+            throw new AuthorizationDeniedException("tenant-user-caller");
+        if (!reviewPermission(caller, permission)) throw new AuthorizationDeniedException(permission);
+    }
+
     public void confirmIndependentCustomer(CallerIdentity caller, UUID connectorId, String sourceId,
             long revision, boolean allowUnmappedOwner, String evidence) {
         if (caller == null || !"TENANT".equals(caller.principalScope())
                 || caller.tenantId() == null || caller.userId() == null)
             throw new AuthorizationDeniedException("tenant-user-caller");
-        if (!caller.permissions().contains("integration:dhb:write"))
+        if (!reviewPermission(caller, "integration:dhb:write"))
             throw new AuthorizationDeniedException("integration:dhb:write");
-        if (!caller.permissions().contains("crm:customer:create"))
+        if (!reviewPermission(caller, "crm:customer:create"))
             throw new AuthorizationDeniedException("crm:customer:create");
         store.confirmIndependentCustomer(caller.tenantId(), connectorId, sourceId, revision,
                 allowUnmappedOwner, evidence, caller.userId());
+    }
+
+    private static boolean reviewPermission(CallerIdentity caller, String permission) {
+        // Verified application scopes have already removed the global wildcard before this call.
+        return caller.permissions().contains(permission) || caller.permissions().contains("*:*:*");
     }
 
     public SyncResult run(SyncCommand command) {

@@ -47,6 +47,32 @@ class CrmMasterDataSyncServiceTest {
     private static final UUID TASK_ID = UUID.fromString("019fb600-0000-7000-8000-000000000003");
 
     @Test
+    void customerReviewRequiresBusinessDecisionAndNeverAllowsBothOrNeitherDestinations() {
+        var store = mock(CrmMasterDataStore.class);
+        var service = syncService(mock(DhbCrmMasterDataClient.class), mock(DhbCrmSyncTargetDiscoveryClient.class), store, mock(CrmDictionaryCoverageService.class), passthroughLease());
+        var actor = UUID.randomUUID();
+        var caller = new CallerIdentity("TENANT", actor, TENANT_ID, actor, null, actor, 0,0,0,Set.of(),Set.of("crm:customer:write","integration:dhb:write","crm:customer:create"));
+        var c = new com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Decision(CONNECTOR_ID,"SECOND",7,15L,false,"已核对相同门店");
+        service.decideCustomer(caller,c);
+        verify(store).linkReviewedCustomer(TENANT_ID,CONNECTOR_ID,"SECOND",7,15L,"已核对相同门店",actor);
+        for (var invalid : List.of(
+                new com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Decision(CONNECTOR_ID,"SECOND",7,15L,true,"说明"),
+                new com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Decision(CONNECTOR_ID,"SECOND",7,null,false,"说明"),
+                new com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Decision(CONNECTOR_ID,"SECOND",7,15L,false,"")))
+            assertThatThrownBy(()->service.decideCustomer(caller,invalid)).isInstanceOf(IllegalArgumentException.class);
+        service.decideCustomer(caller,new com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Decision(CONNECTOR_ID,"THIRD",3,null,true,"不同门店"));
+        verify(store).confirmIndependentCustomer(TENANT_ID,CONNECTOR_ID,"THIRD",3,false,"不同门店",actor);
+        var admin = new CallerIdentity("TENANT",actor,TENANT_ID,actor,null,actor,0,0,0,Set.of(),Set.of("*:*:*"));
+        service.customerReviews(admin, CONNECTOR_ID);
+        verify(store).customerReviews(TENANT_ID, CONNECTOR_ID);
+        service.customerReviews(admin, null);
+        verify(store).customerReviews(TENANT_ID, null);
+        var denied = new CallerIdentity("SERVICE",actor,TENANT_ID,null,null,actor,0,0,0,Set.of(),caller.permissions());
+        assertThatThrownBy(()->service.decideCustomer(denied,c)).isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        assertThatThrownBy(()->service.customerReviews(caller,CONNECTOR_ID)).isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+    }
+
+    @Test
     void independentCustomerConfirmationRecordsAuthorizedTenantUser() {
         CrmMasterDataStore store = mock(CrmMasterDataStore.class);
         CrmMasterDataSyncService service = syncService(mock(DhbCrmMasterDataClient.class),

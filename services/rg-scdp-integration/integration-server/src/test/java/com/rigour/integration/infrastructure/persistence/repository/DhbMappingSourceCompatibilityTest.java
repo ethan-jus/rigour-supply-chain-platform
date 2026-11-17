@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.*;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
 import com.rigour.integration.infrastructure.persistence.IntegrationUuidCodec;
 import com.rigour.integration.infrastructure.persistence.entity.ExternalObjectMappingEntity;
 import com.rigour.integration.infrastructure.persistence.mapper.ExternalObjectMappingMapper;
@@ -18,6 +19,8 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.LocalDateTime;
+import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 /** 真实MyBatis查询核对历史来源码，防止已同步仓库被误判缺失或跨企业串用。 */
@@ -26,6 +29,7 @@ class DhbMappingSourceCompatibilityTest {
     SqlSession session;
     ExternalObjectMappingMapper mapper;
     MybatisPlusDhbSyncStore store;
+    MybatisPlusDhbIntegrationStore mappingWriter;
 
     @BeforeEach
     void setup() throws Exception {
@@ -55,6 +59,9 @@ deleted_at TIMESTAMP, deleted_by BINARY(16), delete_reason VARCHAR(512))
         factory.setConfiguration(config);
         session = factory.getObject().openSession(true);
         mapper = session.getMapper(ExternalObjectMappingMapper.class);
+        mappingWriter = new MybatisPlusDhbIntegrationStore(null, null, null, null, null,
+                mapper, null, null, null, null, null, new DataSourceTransactionManager(ds),
+                JsonMapper.builder().build());
         store =
                 new MybatisPlusDhbSyncStore(
                         null,
@@ -135,6 +142,37 @@ deleted_at TIMESTAMP, deleted_by BINARY(16), delete_reason VARCHAR(512))
         row(tenant, connector, "DINGHUOBAO", "W1", "01", 3L, "CONFLICT");
         assertThat(store.dependencyAutoSyncBlocked(tenant,connector,java.util.List.of("WAREHOUSE"),java.util.List.of("01"))).isTrue();
         assertThat(store.dependencyAutoSyncBlocked(UUID.randomUUID(),connector,java.util.List.of("WAREHOUSE"),java.util.List.of("W1"))).isFalse();
+    }
+
+    @Test
+    void domainReviewRecoversOriginalMappingAndRepeatedPublishingKeepsIdentity() {
+        UUID actor = UUID.randomUUID();
+        var original = row(tenant, connector, "DINGHUOBAO", "C1", "301", null, "CONFLICT");
+        original.sourceObjectType = "CUSTOMER";
+        original.internalDomain = "CRM";
+        original.internalObjectType = "CUSTOMER";
+        original.internalObjectNo = "";
+        original.createdBy = original.updatedBy = IntegrationUuidCodec.encode(actor);
+        original.lastSeenRunId = IntegrationUuidCodec.encode(UUID.randomUUID());
+        original.lastSeenAt = LocalDateTime.of(2026, 11, 16, 0, 0);
+        original.conflictReason = "客户待核对";
+        mapper.updateById(original);
+        var command = new ExternalObjectMappingCommand(connector, "DINGHUOBAO", "CUSTOMER",
+                "C1", "301", "CRM", "CUSTOMER", 2019L, "CUS-2019", "ACTIVE",
+                UUID.randomUUID(), Instant.parse("2026-11-17T00:00:00Z"), null, null, null, null);
+
+        mappingWriter.saveExternalObjectMappings(tenant, actor, List.of(command), true);
+        mappingWriter.saveExternalObjectMappings(tenant, actor, List.of(command), true);
+
+        var persisted = mapper.selectById(original.id);
+        assertThat(persisted.mappingStatus).isEqualTo("ACTIVE");
+        assertThat(persisted.internalObjectId).isEqualTo(2019L);
+        assertThat(persisted.conflictReason).isNull();
+        assertThat(mapper.selectCount(null)).isEqualTo(1);
+        assertThat(store.findActiveMapping(tenant, connector, "CUSTOMER", "301").internalObjectId())
+                .isEqualTo(2019L);
+        assertThat(store.dependencyAutoSyncBlocked(tenant, connector, List.of("CUSTOMER"), List.of("301")))
+                .isFalse();
     }
 
     private ExternalObjectMappingEntity row(

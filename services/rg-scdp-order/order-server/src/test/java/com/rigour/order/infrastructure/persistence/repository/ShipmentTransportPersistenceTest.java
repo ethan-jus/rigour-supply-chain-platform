@@ -313,12 +313,30 @@ class ShipmentTransportPersistenceTest {
                                                 first.costId()))
                                 .isEmpty())
                 .isTrue();
+        var entered = (tools.jackson.databind.node.ObjectNode) json.readTree(
+                db.queryForObject("SELECT data_json FROM order_logistics_cost WHERE id=?", String.class, first.costId()));
+        entered.put("amount", new java.math.BigDecimal("64.00"));
+        entered.put("paymentStatusCode", "PAID");
+        entered.put("remark", "业务补录运费与凭证后关联原销售单");
+        var ledger = (tools.jackson.databind.node.ObjectNode) entered.path("ledger");
+        ledger.set("manualBillItems", json.readTree("[{\"name\":\"基础运费\",\"amount\":54},{\"name\":\"装卸费\",\"amount\":10}]"));
+        var fee = (tools.jackson.databind.node.ObjectNode) ledger.path("feeItems").get(0);
+        fee.put("feeAmount",64); fee.put("ourAmount",64);
+        db.update("UPDATE order_logistics_cost SET amount=64,payment_status_code='PAID',data_json=? WHERE id=?",json.writeValueAsString(entered),first.costId());
         var source =
                 json.readValue(
                         "{\"documentNo\":\"SO001\",\"documentAmount\":100,\"employeeCode\":\"EMP1\",\"departmentId\":7}",
                         LogisticsCostSourceView.class);
         var next = store.sync("T", "U", command("receivedin", 2), transport(), source, null);
         assertThat(next.costId()).isEqualTo(first.costId());
+        assertThat(store.sync("T", "U", command("receivedin", 2), transport(), source, null).costId()).isEqualTo(first.costId());
+        assertThat(store.sync("T", "U", command("receivedin", 3), transport(), source, null).costId()).isEqualTo(first.costId());
+        var saved = json.readValue(db.queryForObject("SELECT data_json FROM order_logistics_cost WHERE id=?",String.class,first.costId()),LogisticsCostCommand.class);
+        assertThat(saved.amount()).isEqualByComparingTo("64");
+        assertThat(saved.paymentStatusCode()).isEqualTo("PAID");
+        assertThat(saved.remark()).isEqualTo("业务补录运费与凭证后关联原销售单");
+        assertThat(saved.ledger().manualBillItems()).hasSize(2);
+        assertThat(saved.ledger().sources().getFirst().allocations().stream().map(LogisticsCostLedger.Allocation::amount).reduce(java.math.BigDecimal.ZERO,java.math.BigDecimal::add)).isEqualByComparingTo("64");
         assertThat(db.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class))
                 .isEqualTo(1);
         assertThat(

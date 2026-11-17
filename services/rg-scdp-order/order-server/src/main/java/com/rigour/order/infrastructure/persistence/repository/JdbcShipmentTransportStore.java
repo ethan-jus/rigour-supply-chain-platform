@@ -269,9 +269,10 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                                     prior.reason(),
                                     nextLedger);
                     if (linkedNow)
+                        // 金额未变也须为新关联生成分摊；不能命中 reprice 的同额直接返回。
                         data =
                                 com.rigour.order.application.service.cost.TransportAllocationPlan
-                                        .reprice(data, prior.amount());
+                                        .reprice(data.withLedger(data.ledger(), null), prior.amount());
                     if (factsChanged) {
                         jdbc.update(
                                 "UPDATE order_logistics_cost SET"

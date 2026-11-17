@@ -24,5 +24,16 @@ public interface DhbIncrementalWorkStore {
         return Set.of();
     }
 
+    default List<Item> manualShipments(UUID tenant, UUID connector, int limit, Instant now) {
+        return List.of();
+    }
+
+    /** 仅改变处理队列，不创建业务单据；指纹防止复核期间的新来源被旧结果恢复。 */
+    default boolean resumeShipment(UUID tenant, UUID connector, Item item, Instant now) {
+        return false;
+    }
+
+    default void deferShipmentReview(UUID tenant, UUID connector, Item item, Instant nextReview) {}
+
     long pendingCount(UUID tenant, UUID connector, String type);
 }

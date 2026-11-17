@@ -119,7 +119,15 @@ public final class TransportAllocationPlan {
         var result = new ArrayList<LogisticsCostLedger.Source>();
         for (int i = 0; i < links.size(); i++) {
             var s = links.get(i);
-            var a = s.allocations().getFirst();
+            LogisticsCostLedger.Allocation a;
+            if (s.allocations().isEmpty()) {
+                if (ledger.receivingPoints() == null || ledger.receivingPoints().size() != 1)
+                    throw bad("请先完善关联订单的收货点分摊");
+                var point = ledger.receivingPoints().getFirst();
+                a = new LogisticsCostLedger.Allocation(ledger.feeItems().getFirst().feeKey(),
+                        point.pointCode(), point.cityCode() == null ? command.cityCode() : point.cityCode(),
+                        BigDecimal.ONE, BigDecimal.ZERO);
+            } else a = s.allocations().getFirst();
             result.add(
                     new LogisticsCostLedger.Source(
                             s.orderTypeCode(),

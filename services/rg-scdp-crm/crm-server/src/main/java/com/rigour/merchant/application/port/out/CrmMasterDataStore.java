@@ -8,6 +8,10 @@ import java.util.UUID;
 
 /** CRM 主数据同步持久化端口；实现必须在 SQL 条件中绑定 tenant_id。 */
 public interface CrmMasterDataStore {
+    default List<com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Review> customerReviews(UUID tenant, UUID connector) { return List.of(); }
+    default void linkReviewedCustomer(UUID tenant, UUID connector, String sourceId, long revision,
+            long customerId, String reason, UUID actor) { throw new UnsupportedOperationException("客户关联尚未实现"); }
+
     default void confirmIndependentCustomer(UUID tenantId, UUID connectorId, String sourceId,
             long revision, boolean allowUnmappedOwner, String evidence, UUID actorId) {
         throw new UnsupportedOperationException("独立来源客户确认尚未实现");

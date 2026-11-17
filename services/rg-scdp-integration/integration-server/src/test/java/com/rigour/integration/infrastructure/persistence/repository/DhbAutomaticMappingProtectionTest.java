@@ -9,9 +9,14 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.nio.ByteBuffer;
+import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.*;
 
 class DhbAutomaticMappingProtectionTest {
+    private final UUID serviceActor = UUID.randomUUID();
+
     ExternalObjectMappingCommand command(Long id) {
         return new ExternalObjectMappingCommand(
                 UUID.randomUUID(),
@@ -44,7 +49,7 @@ class DhbAutomaticMappingProtectionTest {
     @ParameterizedTest
     @ValueSource(strings = {"REMOVED", "CONFLICT", "IGNORED"})
     void automatedCatalogueRefreshKeepsHumanDecision(String status) {
-        assertThat(MybatisPlusDhbIntegrationStore.preserveExistingMapping(row(status), command(3L)))
+        assertThat(MybatisPlusDhbIntegrationStore.preserveExistingMapping(row(status), command(3L), serviceActor))
                 .isTrue();
     }
 
@@ -52,13 +57,85 @@ class DhbAutomaticMappingProtectionTest {
     void activeIdentityCanRefreshButCannotBeReboundToDifferentTarget() {
         assertThat(
                         MybatisPlusDhbIntegrationStore.preserveExistingMapping(
-                                row("ACTIVE"), command(3L)))
+                                row("ACTIVE"), command(3L), serviceActor))
                 .isFalse();
         assertThat(
                         MybatisPlusDhbIntegrationStore.preserveExistingMapping(
-                                row("ACTIVE"), command(4L)))
+                                row("ACTIVE"), command(4L), serviceActor))
                 .isTrue();
-        assertThat(MybatisPlusDhbIntegrationStore.preserveExistingMapping(null, command(3L)))
+        assertThat(MybatisPlusDhbIntegrationStore.preserveExistingMapping(null, command(3L), serviceActor))
                 .isFalse();
+    }
+
+    @Test
+    void owningDomainCanRecoverItsUnboundConflictAfterReview() {
+        var row = ownedConflict();
+        row.internalObjectId = null;
+        assertThat(preserve(row, reviewed(3L))).isFalse();
+        assertThat(preserve(ownedConflict(), reviewed(3L))).isFalse();
+        assertThat(preserve(ownedConflict(), reviewed(4L))).isTrue();
+    }
+
+    @Test
+    void manualDecisionAndDifferentDomainCannotBeOverwrittenByRecovery() {
+        var row = ownedConflict();
+        row.updatedBy = binary(UUID.randomUUID());
+        assertThat(preserve(row, reviewed(3L))).isTrue();
+        row = ownedConflict();
+        row.createdBy = binary(UUID.randomUUID());
+        assertThat(preserve(row, reviewed(3L))).isTrue();
+        row = ownedConflict();
+        row.internalDomain = "CRM";
+        assertThat(preserve(row, reviewed(3L))).isTrue();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"REMOVED", "IGNORED"})
+    void automaticRecoveryNeverRestoresDisabledMappings(String status) {
+        var row = ownedConflict();
+        row.mappingStatus = status;
+        assertThat(preserve(row, reviewed(3L))).isTrue();
+    }
+
+    @Test
+    void deletedSourceOrStaleReviewCannotRestoreConflict() {
+        var row = ownedConflict();
+        row.deletedAt = LocalDateTime.of(2026, 11, 17, 0, 0);
+        assertThat(preserve(row, reviewed(3L))).isTrue();
+        row = ownedConflict();
+        row.sourceDeletedAt = LocalDateTime.of(2026, 11, 17, 0, 0);
+        assertThat(preserve(row, reviewed(3L))).isTrue();
+        row = ownedConflict();
+        row.lastSeenAt = LocalDateTime.of(2026, 11, 18, 0, 0);
+        assertThat(preserve(row, reviewed(3L))).isTrue();
+        row = ownedConflict();
+        row.lastSeenRunId = null;
+        assertThat(preserve(row, reviewed(3L))).isTrue();
+        assertThat(preserve(ownedConflict(), command(3L))).isTrue();
+    }
+
+    private boolean preserve(ExternalObjectMappingEntity row, ExternalObjectMappingCommand command) {
+        return MybatisPlusDhbIntegrationStore.preserveExistingMapping(row, command, serviceActor);
+    }
+
+    private ExternalObjectMappingEntity ownedConflict() {
+        var row = row("CONFLICT");
+        row.createdBy = binary(serviceActor);
+        row.updatedBy = binary(serviceActor);
+        row.lastSeenRunId = binary(UUID.randomUUID());
+        row.lastSeenAt = LocalDateTime.of(2026, 11, 16, 0, 0);
+        return row;
+    }
+
+    private ExternalObjectMappingCommand reviewed(Long target) {
+        var original = command(target);
+        return new ExternalObjectMappingCommand(original.connectorId(), original.sourceSystem(),
+                original.sourceObjectType(), original.sourceObjectId(), original.sourceObjectNo(),
+                original.internalDomain(), original.internalObjectType(), target, original.internalObjectNo(),
+                "ACTIVE", UUID.randomUUID(), Instant.parse("2026-11-17T00:00:00Z"), null, null, null, null);
+    }
+
+    private static byte[] binary(UUID id) {
+        return ByteBuffer.allocate(16).putLong(id.getMostSignificantBits()).putLong(id.getLeastSignificantBits()).array();
     }
 }

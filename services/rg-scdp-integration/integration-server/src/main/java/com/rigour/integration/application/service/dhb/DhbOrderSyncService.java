@@ -287,6 +287,9 @@ public final class DhbOrderSyncService {
     @org.springframework.beans.factory.annotation.Autowired
     private DhbShipmentDependencyRepair shipmentDependencyRepair;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private DhbShipmentRecoveryReview shipmentRecoveryReview;
+
     private static final InheritableThreadLocal<DhbShipmentDependencyRepair.Session>
             SHIPMENT_DEPENDENCIES = new InheritableThreadLocal<>();
 
@@ -516,7 +519,7 @@ public final class DhbOrderSyncService {
             if (replayTarget == null) {
                 if (incrementalWork != null
                         // 发货页按所选窗口先留存来源事实，不能先扫描窗口外历史失败项。
-                        // 历史待补资料仍保留单笔重试入口；窗口内失败项随来源查询重试。
+                        // 当前窗口保存后再自动复核历史依赖；仍缺资料的原工作项继续保留。
                         && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT")
                                 .contains(selectedScope == null ? "" : selectedScope))
                     retriedShipments =
@@ -625,6 +628,13 @@ public final class DhbOrderSyncService {
                             detailExecutor,
                             retriedShipments,
                             progress);
+                if (incrementalWork != null && (selectedScope == null || "SHIPMENT".equals(selectedScope))) {
+                    progress.accept("正在自动复核已补齐资料的历史发货单");
+                    if (shipmentRecoveryReview != null)
+                        shipmentRecoveryReview.reconsider(caller.tenantId(), task.connectorId(), Instant.now());
+                    retryPending(caller, task, started.runId(), "SHIPMENT", null, counts, progress,
+                            employeeCache, customerRegionCache, sourceOrderLocks);
+                }
                 if (selectedScope == null || "RECEIPT".equals(selectedScope))
                     syncReceipts(
                             caller,
@@ -954,6 +964,8 @@ public final class DhbOrderSyncService {
                 new DhbPageProgress(
                         progress, "单笔重试（" + type + "）", 1, pending.size(), 0, pending.size());
         for (var item : pending) {
+            if ("SHIPMENT".equals(type) && MANUAL_SHIPMENT_IDS.get() != null)
+                MANUAL_SHIPMENT_IDS.get().remove(item.id());
             var outcome =
                     applyWork(
                             caller,
@@ -2069,14 +2081,6 @@ public final class DhbOrderSyncService {
                 counts.fetched += unique.size();
                 var items = workItems(unique);
                 var skip = stageWork(caller, task, "SHIPMENT", items);
-                var manual =
-                        incrementalWork == null
-                                ? Set.<String>of()
-                                : incrementalWork.awaitingManual(
-                                        caller.tenantId(),
-                                        task.connectorId(),
-                                        "SHIPMENT",
-                                        items.keySet());
                 counts.duplicate +=
                         unique.stream().filter(row -> skip.contains(workId(row))).count();
                 counts.addAll(
@@ -2327,7 +2331,7 @@ public final class DhbOrderSyncService {
                                             facts.logisticsCompany()),
                                     payload);
             }
-            if (incrementalWork != null
+            if (replaySourceObjectType == null && incrementalWork != null
                     && "SALES".equals(stockOutTypeCode)
                     && incrementalWork
                             .awaitingManual(
@@ -6391,21 +6395,11 @@ public final class DhbOrderSyncService {
                             skuCandidates,
                             sourceShipmentNo,
                             "商品规格");
-            BigDecimal quantity =
-                    orderUnitQuantity(
-                            row,
-                            decimal(
-                                    firstObject(
-                                            row,
-                                            "ShipsNumber",
-                                            "ships_number",
-                                            "OutNumber",
-                                            "outNumber",
-                                            "ContentNumber",
-                                            "Number",
-                                            "Quantity",
-                                            "quantity",
-                                            "GoodsNumber")));
+            BigDecimal sourceQuantity = decimal(firstObject(row,
+                    "ShipsNumber", "ships_number", "OutNumber", "outNumber", "ContentNumber",
+                    "Number", "Quantity", "quantity", "GoodsNumber"));
+            BigDecimal quantity = blank(first(row, "ships_units_name"))
+                    ? orderUnitQuantity(row, sourceQuantity) : sourceQuantity;
             if (quantity == null || quantity.compareTo(BigDecimal.ZERO) <= 0) {
                 throw new ProjectionRejected(
                         "DHB_SHIPMENT_LINE_QUANTITY_INVALID",
@@ -6438,7 +6432,8 @@ public final class DhbOrderSyncService {
             }
             Long resolvedProductId = orderLine == null ? productId : orderLine.productId();
             Long resolvedVariantId = orderLine == null ? variantId : orderLine.productVariantId();
-            String sourceUnit = first(row, SOURCE_UNIT_FIELD_NAMES);
+            // 发货数量以实际发货单位计量，不能配上原销售单的包装单位。
+            String sourceUnit = firstNonBlank(first(row, "ships_units_name"), first(row, SOURCE_UNIT_FIELD_NAMES));
             String lineUnitCode =
                     sourceUnit == null
                             ? orderLine == null ? null : orderLine.unitCode()
@@ -7070,7 +7065,7 @@ public final class DhbOrderSyncService {
                     "DHB_DEPENDENCY_IDENTITY_CONFLICT",
                     "单据 " + sourceNo + " 的来源关联已被移除、忽略或存在冲突，请核对后恢复；系统不会自动改绑",
                     "MAPPING",
-                    Map.of("required", "有效来源关联"),
+                    Map.of("required", "有效来源关联", "objectTypes", objectTypes),
                     Map.of("sourceIds", sourceIds));
     }
 

@@ -27,6 +27,28 @@ public interface IntegrationDeadLetterMapper extends BaseMapper<IntegrationDeadL
             @Param("type") String type,
             @Param("sourceId") String sourceId);
 
+    @Select("""
+            SELECT x.*
+            FROM (SELECT d.*, ROW_NUMBER() OVER(PARTITION BY d.source_id ORDER BY d.updated_at DESC,d.created_at DESC,d.id DESC) AS rn
+              FROM integration_dead_letter d
+              JOIN integration_sync_run r ON r.tenant_id=d.tenant_id AND r.id=d.run_id
+              JOIN integration_sync_task t ON t.tenant_id=r.tenant_id AND t.id=r.task_id
+              WHERE d.tenant_id=#{tenant} AND t.connector_id=#{connector} AND d.status='OPEN'
+                AND d.source_object_type='SALES_SHIPMENT') x
+            WHERE x.rn=1 ORDER BY x.updated_at DESC,x.source_id LIMIT #{limit} OFFSET #{offset}
+            """)
+    java.util.List<IntegrationDeadLetterEntity> shipmentIssues(@Param("tenant") byte[] tenant,
+            @Param("connector") byte[] connector, @Param("limit") int limit, @Param("offset") int offset);
+
+    @Select("""
+            SELECT COUNT(DISTINCT d.source_id) FROM integration_dead_letter d
+            JOIN integration_sync_run r ON r.tenant_id=d.tenant_id AND r.id=d.run_id
+            JOIN integration_sync_task t ON t.tenant_id=r.tenant_id AND t.id=r.task_id
+            WHERE d.tenant_id=#{tenant} AND t.connector_id=#{connector} AND d.status='OPEN'
+              AND d.source_object_type='SALES_SHIPMENT'
+            """)
+    long shipmentIssueCount(@Param("tenant") byte[] tenant, @Param("connector") byte[] connector);
+
     @Update(
             """
             <script>

@@ -460,7 +460,9 @@ public class MybatisPlusSalesShipmentRepository
                         .eq(InternalSalesShipmentEntity::getTenantId, tenantId)
                         .eq(InternalSalesShipmentEntity::getDeleted, 0);
         if (criteria.shipmentNo() != null)
-            query.like(InternalSalesShipmentEntity::getShipmentNo, criteria.shipmentNo());
+            query.and(
+                    q -> q.like(InternalSalesShipmentEntity::getShipmentNo, criteria.shipmentNo())
+                            .or().like(InternalSalesShipmentEntity::getSourceDocumentNo, criteria.shipmentNo()));
         if (criteria.salesOrderNo() != null)
             query.like(
                     InternalSalesShipmentEntity::getSalesOrderNoSnapshot, criteria.salesOrderNo());
@@ -551,6 +553,16 @@ public class MybatisPlusSalesShipmentRepository
 
     private void logicDeleteLines(
             String tenantId, Long shipmentId, String actorId, LocalDateTime now) {
+        // 单头已在同一事务内更新并锁定。按已存在的主键更新，避免空明细按单头索引范围
+        // 加间隙锁；多个来源占位发货单并行补明细时，该锁会与后续插入互相等待。
+        List<Long> ids = lineMapper.selectList(
+                Wrappers.<InternalSalesShipmentLineEntity>lambdaQuery()
+                        .select(InternalSalesShipmentLineEntity::getId)
+                        .eq(InternalSalesShipmentLineEntity::getTenantId, tenantId)
+                        .eq(InternalSalesShipmentLineEntity::getShipmentId, shipmentId)
+                        .eq(InternalSalesShipmentLineEntity::getDeleted, 0))
+                .stream().map(InternalSalesShipmentLineEntity::getId).sorted().toList();
+        if (ids.isEmpty()) return;
         lineMapper.update(
                 null,
                 Wrappers.<InternalSalesShipmentLineEntity>lambdaUpdate()
@@ -559,7 +571,7 @@ public class MybatisPlusSalesShipmentRepository
                         .set(InternalSalesShipmentLineEntity::getUpdatedBy, auditActor(actorId))
                         .set(InternalSalesShipmentLineEntity::getUpdatedTime, now)
                         .eq(InternalSalesShipmentLineEntity::getTenantId, tenantId)
-                        .eq(InternalSalesShipmentLineEntity::getShipmentId, shipmentId)
+                        .in(InternalSalesShipmentLineEntity::getId, ids)
                         .eq(InternalSalesShipmentLineEntity::getDeleted, 0));
     }
 

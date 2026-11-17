@@ -154,6 +154,13 @@ public final class DhbIntegrationController implements DhbIntegrationApi {
         dependencyRecovery.link(command);
     }
 
+    @GetMapping("/sync-center/shipment-issues")
+    public com.rigour.integration.api.v1.model.DhbShipmentIssuesPageView shipmentIssues(
+            @RequestParam UUID connectorId, @RequestParam(defaultValue="0") int offset,
+            @RequestParam(defaultValue="20") int limit) {
+        return service.shipmentIssues(connectorId, offset, limit);
+    }
+
     @GetMapping("/sync-center/open-issues")
     public List<DhbSyncOpenIssueGroupView> openIssues(
             @RequestParam(name = "limit", defaultValue = "500") int limit) {

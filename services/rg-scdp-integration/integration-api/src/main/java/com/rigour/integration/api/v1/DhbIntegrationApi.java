@@ -115,6 +115,11 @@ public interface DhbIntegrationApi {
     @PostMapping(SYNC_CENTER_PATH + "/dependency-recoveries")
     void recoverDependency(@RequestBody com.rigour.integration.api.v1.model.DhbDependencyRecoveryCommand command);
 
+    @GetMapping(SYNC_CENTER_PATH + "/shipment-issues")
+    com.rigour.integration.api.v1.model.DhbShipmentIssuesPageView shipmentIssues(
+            @RequestParam UUID connectorId, @RequestParam(defaultValue="0") int offset,
+            @RequestParam(defaultValue="20") int limit);
+
     @GetMapping(SYNC_CENTER_PATH + "/open-issues")
     List<DhbSyncOpenIssueGroupView> openIssues(
             @RequestParam(name = "limit", defaultValue = "500") int limit);

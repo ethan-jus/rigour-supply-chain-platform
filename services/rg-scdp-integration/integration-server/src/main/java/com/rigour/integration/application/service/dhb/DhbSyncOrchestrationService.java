@@ -275,7 +275,7 @@ public final class DhbSyncOrchestrationService {
                                 break;
                             }
                             if (!refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, true)) break;
-                            runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true);
+                            runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true, true);
                         }
                         case VOUCHER_BACKFILL -> {
                             if(bucket.orderTarget==null) throw new IllegalArgumentException("未配置订单同步任务");
@@ -830,6 +830,13 @@ public final class DhbSyncOrchestrationService {
     private void runIncrementalOrderPackageSteps(CallerIdentity caller, TargetBucket bucket,
                                                  int pages, List<DhbSyncOrchestrationStepView> steps,
                                                  java.util.function.Consumer<String> progress, boolean background) {
+        runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, background, false);
+    }
+
+    private void runIncrementalOrderPackageSteps(CallerIdentity caller, TargetBucket bucket,
+                                                 int pages, List<DhbSyncOrchestrationStepView> steps,
+                                                 java.util.function.Consumer<String> progress, boolean background,
+                                                 boolean includeShipments) {
         // 页面与定时增量都可能读取近期修改的历史单据，统一保留切换日前的历史校准。
         var protectedCaller = new CallerIdentity(caller.principalScope(), caller.principalId(),
                 caller.tenantId(), null, null, caller.sessionId(), 0, 0, 0,
@@ -838,7 +845,11 @@ public final class DhbSyncOrchestrationService {
         if (bootstrap.isBefore(Instant.parse("2026-09-03T16:00:00Z")))
             bootstrap = Instant.parse("2026-09-03T16:00:00Z");
         Instant end = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
-        for (String type : List.of("SALES_ORDER", "RECEIPT", "PAYMENT")) {
+        // 定时业务链在原销售单之后处理发货，也复核已补齐资料的历史待处理项。
+        // 单独的订单/回款页面仍保持原有对象范围，避免顺带触发发货。
+        var scopes = includeShipments ? List.of("SALES_ORDER", "SHIPMENT", "RECEIPT", "PAYMENT")
+                : List.of("SALES_ORDER", "RECEIPT", "PAYMENT");
+        for (String type : scopes) {
             Instant cursor = objectCheckpoints.successfulTo(
                     caller.tenantId(), bucket.key.connectorId(), type);
             Instant from = cursor == null ? bootstrap : cursor.minus(INCREMENTAL_OVERLAP);
@@ -878,7 +889,7 @@ public final class DhbSyncOrchestrationService {
         for (int slice = 0; (background || slice < MAX_INCREMENTAL_SLICES) && windowFrom.isBefore(end); slice++) {
             Instant windowTo = windowFrom.plus(sliceWindow);
             if (windowTo.isAfter(end)) windowTo = end;
-            String label = switch (type) { case "SALES_ORDER" -> "订单及明细"; case "RECEIPT" -> "收款"; default -> "付款"; };
+            String label = switch (type) { case "SALES_ORDER" -> "订单及明细"; case "SHIPMENT" -> "发货及物流"; case "RECEIPT" -> "收款"; default -> "付款"; };
             progress.accept("正在同步" + label + "：" + incrementalWindowText(windowFrom) + " 至 "
                     + incrementalWindowText(windowTo) + "；本阶段已核对 " + totals.fetched + " 条");
             SyncRunView result;

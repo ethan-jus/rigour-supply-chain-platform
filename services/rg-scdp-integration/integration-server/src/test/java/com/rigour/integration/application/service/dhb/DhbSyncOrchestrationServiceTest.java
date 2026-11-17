@@ -175,6 +175,29 @@ class DhbSyncOrchestrationServiceTest {
     }
 
     @Test
+    void scheduledChainIncludesShipmentWindowAfterSalesAndContinuesWhenBusinessRowsArePending() {
+        service = serviceWithIncrementalWindow(null, Instant.parse("2026-11-17T07:00:00Z"));
+        var end = Instant.parse("2026-11-17T06:58:00Z");
+        var cursor = Instant.parse("2026-11-17T06:00:00Z");
+        when(objectCheckpoints.successfulTo(any(), any(), any())).thenReturn(cursor);
+        when(crmClient.syncLatestCustomersInBackground(any(),any(),any(),anyInt(),any(),any())).thenReturn(crmResult());
+        var pending = new SyncRunView(UUID.randomUUID(), ORDER_TASK_ID, "PARTIAL", null, null,
+                1, 0, 0, 1, 0, 0, 0, "DHB_DURABLE_PROJECTION_PENDING", "原发货仍有资料待完善");
+        when(orderSyncService.runOrderPull(any(), any(), any(), anyInt(), any())).thenAnswer(call ->
+                "SHIPMENT".equals(((SyncRunCommand) call.getArgument(2)).syncScope()) ? pending : orderResult());
+        var result = service.runScheduledChain(TENANT_ID, CONNECTOR_ID, ignored -> {});
+        var commands = org.mockito.ArgumentCaptor.forClass(SyncRunCommand.class);
+        verify(orderSyncService, org.mockito.Mockito.times(4)).runOrderPull(any(), eq(ORDER_TASK_ID), commands.capture(), anyInt(), any());
+        assertThat(commands.getAllValues()).extracting(SyncRunCommand::syncScope)
+                .containsExactly("SALES_ORDER", "SHIPMENT", "RECEIPT", "PAYMENT");
+        var shipment = commands.getAllValues().get(1);
+        assertThat(shipment.from()).isEqualTo(cursor.minusSeconds(900));
+        assertThat(shipment.to()).isEqualTo(end);
+        assertThat(result.status()).isEqualTo("PARTIAL");
+        verify(objectCheckpoints).completed(TENANT_ID, CONNECTOR_ID, "SHIPMENT", end, pending.runId());
+    }
+
+    @Test
     void scheduledBusinessChainOrdersDependenciesAndProtectsHistoricalWindow() {
         service=serviceWithIncrementalWindow("2026-08-01T00:00:00+08:00",Instant.parse("2026-09-23T08:00:00Z"));
         when(crmClient.syncLatestCustomersInBackground(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any(),any())).thenReturn(crmResult());
@@ -679,23 +702,23 @@ class DhbSyncOrchestrationServiceTest {
         var warning=new com.rigour.merchant.api.v1.model.SyncObjectResult(UUID.randomUUID(),"CUSTOMER","SUCCEEDED_WITH_WARNINGS",50,3,1,0,0,0,0,1,Instant.now(),46,Map.of());
         when(crmClient.syncLatestCustomers(any(),any(),any(),anyInt(),any()))
                 .thenReturn(new SyncResult(UUID.randomUUID(),"SUCCEEDED_WITH_WARNINGS",List.of(warning)));
-        when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10))).thenReturn(orderResult());
+        when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10),any())).thenReturn(orderResult());
         var result=service.runPage(manualCaller(),new DhbPageSyncCommand(DhbPageSyncCommand.Scope.RECEIPT,CONNECTOR_ID,Instant.parse("2026-08-01T00:00:00Z"),Instant.parse("2026-08-02T00:00:00Z"),10));
-        verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10));
+        verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10),any());
         assertThat(result.tenants().getFirst().steps()).noneMatch(step -> "SKIPPED".equals(step.status()));
     }
 
     @Test
     void receiptPageRefreshesCustomersBeforeReceipt() {
         var from=Instant.parse("2026-08-01T00:00:00Z");var to=Instant.parse("2026-08-20T00:00:00Z");
-        when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),argThat(c->"RECEIPT".equals(c.syncScope())&&from.equals(c.from())&&to.equals(c.to())),eq(10))).thenReturn(orderResult());
+        when(orderSyncService.runOrderPull(any(),eq(ORDER_TASK_ID),argThat(c->"RECEIPT".equals(c.syncScope())&&from.equals(c.from())&&to.equals(c.to())),eq(10),any())).thenReturn(orderResult());
         var result=service.runPage(manualCaller(),new com.rigour.integration.api.v1.model.DhbPageSyncCommand(com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.RECEIPT,CONNECTOR_ID,from,to,10));
         assertThat(result.tenants().getFirst().steps()).extracting("objectType").containsExactly("CRM_MASTER_DATA", "RECEIPT");
         org.mockito.Mockito.verifyNoInteractions(erpClient,hrEmployeeClient,dhbClient,dictionaryClient);
         var ordered = org.mockito.Mockito.inOrder(crmClient, orderSyncService);
         ordered.verify(crmClient).syncLatestCustomers(any(),eq(CONNECTOR_ID),eq(CRM_TASK_ID),eq(10),any());
-        ordered.verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10));
-        org.mockito.Mockito.verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10));
+        ordered.verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10),any());
+        org.mockito.Mockito.verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10),any());
         org.mockito.Mockito.verifyNoMoreInteractions(orderSyncService);
     }
 

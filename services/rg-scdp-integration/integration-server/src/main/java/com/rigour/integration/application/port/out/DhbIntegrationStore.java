@@ -128,6 +128,9 @@ public interface DhbIntegrationStore {
 
     List<DhbSyncExceptionView> syncExceptions(UUID tenantId, String status, int limit);
 
+    default List<DhbSyncExceptionView> shipmentExceptions(UUID tenant, UUID connector, int limit, int offset) { return List.of(); }
+    default long shipmentExceptionCount(UUID tenant, UUID connector) { return 0; }
+
     DhbSyncExceptionView openException(
             UUID tenantId, UUID connectorId, String type, String sourceId);
 

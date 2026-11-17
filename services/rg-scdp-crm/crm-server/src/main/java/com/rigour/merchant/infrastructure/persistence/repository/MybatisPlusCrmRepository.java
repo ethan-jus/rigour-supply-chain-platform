@@ -165,6 +165,84 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
     }
 
     @Override
+    public List<com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Review> customerReviews(UUID tenant, UUID connector) {
+        var rows = bindingMapper.selectList(Wrappers.<SourceBindingEntity>query()
+                .eq("tenant_id", bytes(tenant)).eq(connector != null, "connector_id", connector == null ? null : bytes(connector))
+                .eq("source_system", SOURCE_SYSTEM).eq("source_object_type", "CUSTOMER")
+                .eq("source_presence", "PRESENT").eq("deleted", 0).orderByDesc("updated_time"));
+        var parties = new LinkedHashSet<UUID>();
+        for (var row : rows) if (row.targetId != null) parties.add(uuid(row.targetId));
+        var customers = internalCustomersByPartyId(tenant, parties);
+        var result = new ArrayList<com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Review>();
+        for (var row : rows) {
+            var customer = row.targetId == null ? null : customers.get(uuid(row.targetId));
+            String problem = customerMappingProblem(row, customer);
+            if (problem == null) continue;
+            problem = switch (Objects.toString(row.resolutionErrorCode, "")) {
+                case "CUSTOMER_EMPLOYEE_MAPPING_REQUIRED" -> "业务员尚未关联本系统员工";
+                case "CUSTOMER_AREA_MAPPING_REQUIRED" -> "归属地区尚未关联本系统地区";
+                case "CUSTOMER_IDENTITY_REVIEW_REQUIRED" -> "存在同名客户，请核对是否同一客户";
+                default -> problem;
+            };
+            var fields = jsonMap(row.sourceFieldsJson);
+            boolean absentOwner = "CUSTOMER_EMPLOYEE_MAPPING_REQUIRED".equals(row.resolutionErrorCode)
+                    && (clean(value(fields, "staffID")) == null || "0".equals(value(fields, "staffID")));
+            if (absentOwner) problem = "订货宝客户未填写业务员，请在订货宝完善后同步客户";
+            result.add(new com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Review(uuid(row.connectorId),
+                    row.sourceObjectId, first(row.sourceCode, row.sourceObjectId), row.sourceName,
+                    value(fields, "staffName"), first(value(fields,"clientAreaName"), value(fields,"clientCity")),
+                    absentOwner ? "CUSTOMER_OWNER_REQUIRED" : Boolean.TRUE.equals(row.independentConfirmed) && "UNRESOLVED".equals(row.bindingStatus) ? "CUSTOMER_REVIEW_SAVED" : first(row.resolutionErrorCode, "CUSTOMER_PROFILE_INCOMPLETE"),
+                    problem, row.revision == null ? 0 : row.revision));
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional
+    public void linkReviewedCustomer(UUID tenant, UUID connector, String sourceId, long revision,
+            long customerId, String reason, UUID actor) {
+        identities.lock(tenant.toString());
+        var source = binding(tenant, connector, CrmMasterDataObjectType.CUSTOMER, sourceId, true);
+        if (source == null || Integer.valueOf(1).equals(source.deleted) || !Objects.equals(source.revision, revision))
+            throw new BusinessException(ErrorCode.CONFLICT, "客户资料已变化，请刷新后重新核对", List.of());
+        if (!"UNRESOLVED".equals(source.bindingStatus) || !"CUSTOMER_IDENTITY_REVIEW_REQUIRED".equals(source.resolutionErrorCode)
+                || clean(source.primaryCustomerSourceId) != null || Boolean.TRUE.equals(source.independentConfirmed))
+            throw new BusinessException(ErrorCode.CONFLICT, "该客户不能直接改绑，请刷新并按当前问题处理", List.of());
+        scopes.requireCustomer(tenant.toString(), customerId, "crm:customer:write");
+        var customer = internalCustomerMapper.selectOne(Wrappers.<InternalCustomerEntity>query()
+                .eq("tenant_id", tenant.toString()).eq("id", customerId).eq("deleted", 0));
+        if (customer == null || customer.getPartyId() == null || !"ACTIVE".equals(customer.getStatusCode()))
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "请选择有效的本系统客户", List.of());
+        var primaryRows = bindingMapper.selectList(Wrappers.<SourceBindingEntity>query()
+                .eq("tenant_id", bytes(tenant)).eq("connector_id", bytes(connector)).eq("source_system", SOURCE_SYSTEM)
+                .eq("source_object_type", "CUSTOMER").eq("target_id", customer.getPartyId())
+                .eq("binding_status", "RESOLVED").isNull("primary_customer_source_id")
+                .eq("source_presence", "PRESENT").eq("deleted", 0));
+        if (primaryRows.size() != 1 || sourceId.equals(primaryRows.getFirst().sourceObjectId))
+            throw new BusinessException(ErrorCode.CONFLICT, "所选客户尚无唯一有效的订货宝关联，请重新核对", List.of());
+        if (bindingMapper.update(null, Wrappers.<SourceBindingEntity>update()
+                .eq("tenant_id", bytes(tenant)).eq("connector_id", bytes(connector)).eq("id", source.id)
+                .eq("revision", revision).eq("deleted", 0).eq("binding_status", "UNRESOLVED")
+                .set("target_type", "PARTY").set("target_id", customer.getPartyId())
+                .set("primary_customer_source_id", primaryRows.getFirst().sourceObjectId)
+                .set("binding_status", "UNRESOLVED").set("resolution_error_code", "CUSTOMER_REVIEW_SAVED")
+                .set("resolution_error_message", "核对结果已保存，等待系统复核")
+                .set("independence_evidence", reason).set("independence_actor", actor.toString())
+                .set("independence_previous_target_id", source.targetId).set("independence_confirmed_at", now())
+                .set("updated_by", actor.toString()).set("updated_time", now()).setSql("revision=revision+1")) != 1)
+            throw new BusinessException(ErrorCode.CONFLICT, "客户资料已变化，请刷新后重新核对", List.of());
+    }
+
+    private String customerMappingProblem(SourceBindingEntity binding, InternalCustomerEntity customer) {
+        if (!"RESOLVED".equals(binding.bindingStatus)) return first(binding.resolutionErrorMessage, "客户资料待核对");
+        if (customer == null) return "客户档案尚未建立";
+        var missing = new ArrayList<String>();
+        if (clean(customer.getRegionCode()) == null) missing.add("归属地区");
+        if (clean(customer.getOwnerEmployeeCode()) == null || clean(customer.getOwnerEmployeeNameSnapshot()) == null) missing.add("所属业务员");
+        return missing.isEmpty() ? null : "客户档案待补齐：" + String.join("、", missing);
+    }
+
+    @Override
     @Transactional
     public void confirmIndependentCustomer(UUID tenantId, UUID connectorId, String sourceId,
             long revision, boolean allowUnmappedOwner, String evidence, UUID actorId) {
@@ -189,6 +267,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 .set("independent_confirmed", true).set("unresolved_owner_allowed", allowUnmappedOwner)
                 .set("independence_evidence", evidence).set("independence_actor", actorId.toString())
                 .set("independence_previous_target_id", source.targetId).set("target_id", null)
+                .set("resolution_error_code", "CUSTOMER_REVIEW_SAVED")
+                .set("resolution_error_message", "核对结果已保存，等待系统复核")
                 .set("independence_confirmed_at", now()).set("updated_by", actorId.toString())
                 .set("updated_time", now()).setSql("revision=revision+1")) != 1)
             throw new BusinessException(ErrorCode.CONFLICT, "来源客户版本已变化", List.of());
@@ -2595,10 +2675,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             if (customer == null) {
                 customer = customersByCode.get(seed.sourceObjectNo());
             }
-            boolean resolved = "RESOLVED".equals(binding.bindingStatus) && customer != null
-                    && clean(customer.getRegionCode()) != null
-                    && clean(customer.getOwnerEmployeeCode()) != null
-                    && clean(customer.getOwnerEmployeeNameSnapshot()) != null;
+            String problem = customerMappingProblem(binding, customer);
+            boolean resolved = problem == null;
             result.add(
                     new ExternalObjectMappingCommand(
                             connectorId,
@@ -2615,7 +2693,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                             instant(binding.syncedAt),
                             null,
                             binding.sourcePayloadHash,
-                            null,
+                            problem,
                             resolved ? "CRM订货宝客户同步映射" : "客户关联待处理，相关订单暂缓；修复后自动恢复"));
         }
         return result;

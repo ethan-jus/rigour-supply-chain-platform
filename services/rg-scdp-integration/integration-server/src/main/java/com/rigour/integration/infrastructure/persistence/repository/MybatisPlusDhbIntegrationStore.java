@@ -639,6 +639,16 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
     }
 
     @Override
+    public List<DhbSyncExceptionView> shipmentExceptions(UUID tenant, UUID connector, int limit, int offset) {
+        return deadLetterMapper.shipmentIssues(bin(tenant), bin(connector), Math.min(100, Math.max(1, limit)), Math.max(0, offset))
+                .stream().map(MybatisPlusDhbIntegrationStore::syncException).toList();
+    }
+    @Override
+    public long shipmentExceptionCount(UUID tenant, UUID connector) {
+        return deadLetterMapper.shipmentIssueCount(bin(tenant), bin(connector));
+    }
+
+    @Override
     public List<DhbSyncExceptionView> syncExceptions(UUID tenantId, String status, int limit) {
         String normalizedStatus = optionalCode(status);
         return deadLetterMapper
@@ -963,7 +973,7 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
                             tenantId, connectorId, sourceSystem, sourceType, sourceId);
         }
         // 服务同步接受该项但保留人工决定；后续依赖检查会给具体发货单保留待核对原因。
-        if (preserveManual && preserveExistingMapping(row, command)) return;
+        if (preserveManual && preserveExistingMapping(row, command, actorId)) return;
         if (row == null) {
             row = new ExternalObjectMappingEntity();
             row.id = bin(UUID.randomUUID());
@@ -991,6 +1001,7 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
                             .set("deleted_at", null)
                             .set("deleted_by", null)
                             .set("delete_reason", null)
+                            .set("conflict_reason", row.conflictReason)
                             .eq("tenant_id", bin(tenantId))
                             .eq("id", row.id));
         }
@@ -1059,8 +1070,10 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
             UUID connectorId, String sourceSystem, String sourceType, String sourceId) {}
 
     static boolean preserveExistingMapping(
-            ExternalObjectMappingEntity row, ExternalObjectMappingCommand command) {
+            ExternalObjectMappingEntity row, ExternalObjectMappingCommand command, UUID actorId) {
         if (row == null) return false;
+        // 领域服务可恢复自己生成的待核对项；人工停用、删除及不同目标仍必须由业务处理。
+        if (canRecoverOwnedConflict(row, command, actorId)) return false;
         if (row.deletedAt != null || !"ACTIVE".equals(row.mappingStatus)) return true;
         if (!"ACTIVE".equals(command.mappingStatus() == null ? "ACTIVE" : command.mappingStatus()))
             return false;
@@ -1069,6 +1082,28 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
                 || !Objects.equals(row.internalObjectId, command.internalObjectId())
                 || row.internalObjectId == null
                         && !Objects.equals(row.internalObjectNo, command.internalObjectNo());
+    }
+
+    private static boolean canRecoverOwnedConflict(
+            ExternalObjectMappingEntity row, ExternalObjectMappingCommand command, UUID actorId) {
+        if (actorId == null
+                || !"CONFLICT".equals(row.mappingStatus)
+                || !"ACTIVE".equals(command.mappingStatus())
+                || row.deletedAt != null
+                || row.sourceDeletedAt != null
+                || command.sourceDeletedAt() != null
+                || row.lastSeenRunId == null
+                || command.lastSeenRunId() == null
+                || command.lastSeenAt() == null
+                || row.lastSeenAt != null && dateTime(command.lastSeenAt()).isBefore(row.lastSeenAt)
+                || !java.util.Arrays.equals(row.createdBy, bin(actorId))
+                || !java.util.Arrays.equals(row.updatedBy, bin(actorId))
+                || !Objects.equals(row.internalDomain, command.internalDomain())
+                || !Objects.equals(row.internalObjectType, command.internalObjectType())) return false;
+        if (row.internalObjectId != null)
+            return Objects.equals(row.internalObjectId, command.internalObjectId());
+        return row.internalObjectNo == null || row.internalObjectNo.isBlank()
+                || Objects.equals(row.internalObjectNo, command.internalObjectNo());
     }
 
     private static void applyExternalObjectMapping(
