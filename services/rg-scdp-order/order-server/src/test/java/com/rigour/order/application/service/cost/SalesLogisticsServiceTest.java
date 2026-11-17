@@ -77,7 +77,7 @@ class SalesLogisticsServiceTest {
 
     @Test
     void reselectingAnAlreadyLinkedConfirmedRecordDoesNotWriteOrDuplicateCost() {
-        var old = row("CONFIRMED", true);
+        var old = row("ACTIVE", true);
         when(transports.detail("C1")).thenReturn(old);
         assertThat(service.link(11L, new Link("C1", 1, null))).isSameAs(old);
         verify(transports, never()).saveWithPendingEvidence(any(), any());
@@ -86,10 +86,10 @@ class SalesLogisticsServiceTest {
 
     @Test
     void confirmedOrStaleUnlinkedRecordCannotReceiveAnotherSalesRelation() {
-        when(transports.detail("C1")).thenReturn(row("CONFIRMED", false));
+        when(transports.detail("C1")).thenReturn(row("VOID", false));
         assertThatThrownBy(() -> service.link(11L, new Link("C1", 3, null)))
-                .hasMessageContaining("不是待确认");
-        when(transports.detail("C1")).thenReturn(row("DRAFT", false));
+                .hasMessageContaining("已作废");
+        when(transports.detail("C1")).thenReturn(row("ACTIVE", false));
         assertThatThrownBy(() -> service.link(11L, new Link("C1", 2, null)))
                 .hasMessageContaining("记录已变化");
         verify(transports, never()).saveWithPendingEvidence(any(), any());
@@ -124,8 +124,8 @@ class SalesLogisticsServiceTest {
     void choosingCompletedPlatformOrderKeepsSameCostIdentityAndFixesSalesPurpose() {
         var old =
                 json.readValue(
-                        """
-{"record":{"id":"C1","revision":3,"statusCode":"DRAFT","data":{"typeCode":null,"paymentStatusCode":"PAID"},"sources":[]},
+"""
+{"record":{"id":"C1","revision":3,"statusCode":"ACTIVE","data":{"typeCode":null,"amount":137.64,"paymentStatusCode":"PAID"},"sources":[]},
  "platform":{"source":{"revision":1,"sourceDifference":false,"sourceChannel":"API","order":{"line":0,"orderNo":"HL001","status":"已完成","useTime":"2026-11-13 09:00:00","raw":{},"facts":{"billAmount":35}}},"draft":{"orderCodes":[]}}}
 """,
                         Detail.class);
@@ -138,7 +138,7 @@ class SalesLogisticsServiceTest {
         assertThat(saved.getValue().orderCodes()).containsExactly("SO001");
         assertThat(saved.getValue().platformOrderNo()).isEqualTo("HL001");
         assertThat(saved.getValue().paymentStatusCode()).isEqualTo("PAID");
-        assertThat(saved.getValue().amount()).isEqualByComparingTo("35");
+        assertThat(saved.getValue().amount()).isEqualByComparingTo("137.64");
         verifyNoInteractions(costs);
     }
 }

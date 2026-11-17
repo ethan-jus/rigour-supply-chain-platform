@@ -1,44 +1,5 @@
 package com.rigour.integration.application.service.dhb;
 
-import com.rigour.integration.application.port.out.DhbIntegrationStore;
-import com.rigour.integration.application.port.out.DhbIntegrationStore.RawLanding;
-import com.rigour.integration.application.port.out.DhbClient;
-import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
-import com.rigour.integration.application.port.out.DhbClient.Customer;
-import com.rigour.integration.application.port.out.DhbClient.CustomerArea;
-import com.rigour.integration.application.port.out.DhbClient.CustomerQuery;
-import com.rigour.integration.application.port.out.DhbClient.CustomerType;
-import com.rigour.integration.application.port.out.DhbClient.OrderDetail;
-import com.rigour.integration.application.port.out.DhbClient.OrderQuery;
-import com.rigour.integration.application.port.out.DhbClient.OrderSummary;
-import com.rigour.integration.application.port.out.DhbClient.Payment;
-import com.rigour.integration.application.port.out.DhbClient.PaymentQuery;
-import com.rigour.integration.application.port.out.DhbClient.Page;
-import com.rigour.integration.application.port.out.DhbClient.PageRequest;
-import com.rigour.integration.application.port.out.DhbClient.Product;
-import com.rigour.integration.application.port.out.DhbClient.ProductBrand;
-import com.rigour.integration.application.port.out.DhbClient.ProductCategory;
-import com.rigour.integration.application.port.out.DhbClient.ProductQuery;
-import com.rigour.integration.application.port.out.DhbClient.ProductSpecification;
-import com.rigour.integration.application.port.out.DhbClient.ProductTag;
-import com.rigour.integration.application.port.out.ProductMediaStorage;
-import com.rigour.integration.application.port.out.ProductMediaSyncStore;
-import com.rigour.integration.application.port.out.ProductMediaSyncStore.MediaItem;
-import com.rigour.integration.application.port.out.ProductMediaSyncStore.ReusableMedia;
-import com.rigour.integration.application.port.out.DhbClient.Receipt;
-import com.rigour.integration.application.port.out.DhbClient.ReceiptQuery;
-import com.rigour.integration.application.port.out.DhbClient.ReturnDetail;
-import com.rigour.integration.application.port.out.DhbClient.ReturnQuery;
-import com.rigour.integration.application.port.out.DhbClient.ReturnSummary;
-import com.rigour.integration.application.port.out.DhbClient.Shipment;
-import com.rigour.integration.application.port.out.DhbClient.ShipmentQuery;
-import com.rigour.integration.application.port.out.DhbClient.ShippingAddress;
-import com.rigour.integration.application.port.out.DhbClient.ShippingAddressQuery;
-import com.rigour.integration.application.port.out.DhbClient.Staff;
-import com.rigour.integration.application.port.out.DhbClient.StaffQuery;
-import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
-import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
-import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
 import com.rigour.integration.api.v1.model.CustomerAreaListView;
 import com.rigour.integration.api.v1.model.CustomerAreaView;
 import com.rigour.integration.api.v1.model.CustomerPageView;
@@ -46,16 +7,12 @@ import com.rigour.integration.api.v1.model.CustomerQueryCommand;
 import com.rigour.integration.api.v1.model.CustomerTypeListView;
 import com.rigour.integration.api.v1.model.CustomerTypeView;
 import com.rigour.integration.api.v1.model.CustomerView;
-import com.rigour.integration.api.v1.model.ShippingAddressPageView;
-import com.rigour.integration.api.v1.model.ShippingAddressQueryCommand;
-import com.rigour.integration.api.v1.model.ShippingAddressView;
-import com.rigour.integration.api.v1.model.StaffPageView;
-import com.rigour.integration.api.v1.model.StaffQueryCommand;
-import com.rigour.integration.api.v1.model.StaffView;
-import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
-import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBatchCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingBatchResult;
+import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
@@ -65,15 +22,15 @@ import com.rigour.integration.api.v1.model.DhbApiModels.OrderView;
 import com.rigour.integration.api.v1.model.DhbApiModels.PaymentPageView;
 import com.rigour.integration.api.v1.model.DhbApiModels.PaymentQueryCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.PaymentView;
-import com.rigour.integration.api.v1.model.DhbApiModels.ProductPageView;
-import com.rigour.integration.api.v1.model.DhbApiModels.ProductMediaSyncView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductBrandListView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductBrandView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductCategoryListView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductCategoryView;
-import com.rigour.integration.api.v1.model.DhbApiModels.ProductMasterDataQueryCommand;
-import com.rigour.integration.api.v1.model.DhbApiModels.ProductQueryCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductImageView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ProductMasterDataQueryCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.ProductMediaSyncView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ProductPageView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ProductQueryCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductSkuView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductSpecificationPageView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductSpecificationValueView;
@@ -81,10 +38,6 @@ import com.rigour.integration.api.v1.model.DhbApiModels.ProductSpecificationView
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductTagPageView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductTagView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ProductView;
-import com.rigour.integration.api.v1.model.DhbApiModels.ShipmentContentView;
-import com.rigour.integration.api.v1.model.DhbApiModels.ShipmentPageView;
-import com.rigour.integration.api.v1.model.DhbApiModels.ShipmentQueryCommand;
-import com.rigour.integration.api.v1.model.DhbApiModels.ShipmentView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ReceiptPageView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ReceiptQueryCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.ReceiptView;
@@ -93,12 +46,16 @@ import com.rigour.integration.api.v1.model.DhbApiModels.ReturnLineView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ReturnPageView;
 import com.rigour.integration.api.v1.model.DhbApiModels.ReturnQueryCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.ReturnView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ShipmentContentView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ShipmentPageView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ShipmentQueryCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.ShipmentView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncLogView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
-import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitShipView;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitShipsView;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitStockView;
@@ -113,8 +70,54 @@ import com.rigour.integration.api.v1.model.DhbSyncOpenIssueGroupView;
 import com.rigour.integration.api.v1.model.DhbSyncOpenIssueItemView;
 import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
 import com.rigour.integration.api.v1.model.DhbSyncRunAuditView;
+import com.rigour.integration.api.v1.model.ShippingAddressPageView;
+import com.rigour.integration.api.v1.model.ShippingAddressQueryCommand;
+import com.rigour.integration.api.v1.model.ShippingAddressView;
+import com.rigour.integration.api.v1.model.StaffPageView;
+import com.rigour.integration.api.v1.model.StaffQueryCommand;
+import com.rigour.integration.api.v1.model.StaffView;
+import com.rigour.integration.application.port.out.DhbClient;
+import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
+import com.rigour.integration.application.port.out.DhbClient.Customer;
+import com.rigour.integration.application.port.out.DhbClient.CustomerArea;
+import com.rigour.integration.application.port.out.DhbClient.CustomerQuery;
+import com.rigour.integration.application.port.out.DhbClient.CustomerType;
+import com.rigour.integration.application.port.out.DhbClient.OrderDetail;
+import com.rigour.integration.application.port.out.DhbClient.OrderQuery;
+import com.rigour.integration.application.port.out.DhbClient.OrderSummary;
+import com.rigour.integration.application.port.out.DhbClient.Page;
+import com.rigour.integration.application.port.out.DhbClient.PageRequest;
+import com.rigour.integration.application.port.out.DhbClient.Payment;
+import com.rigour.integration.application.port.out.DhbClient.PaymentQuery;
+import com.rigour.integration.application.port.out.DhbClient.Product;
+import com.rigour.integration.application.port.out.DhbClient.ProductBrand;
+import com.rigour.integration.application.port.out.DhbClient.ProductCategory;
+import com.rigour.integration.application.port.out.DhbClient.ProductQuery;
+import com.rigour.integration.application.port.out.DhbClient.ProductSpecification;
+import com.rigour.integration.application.port.out.DhbClient.ProductTag;
+import com.rigour.integration.application.port.out.DhbClient.Receipt;
+import com.rigour.integration.application.port.out.DhbClient.ReceiptQuery;
+import com.rigour.integration.application.port.out.DhbClient.ReturnDetail;
+import com.rigour.integration.application.port.out.DhbClient.ReturnQuery;
+import com.rigour.integration.application.port.out.DhbClient.ReturnSummary;
+import com.rigour.integration.application.port.out.DhbClient.Shipment;
+import com.rigour.integration.application.port.out.DhbClient.ShipmentQuery;
+import com.rigour.integration.application.port.out.DhbClient.ShippingAddress;
+import com.rigour.integration.application.port.out.DhbClient.ShippingAddressQuery;
+import com.rigour.integration.application.port.out.DhbClient.Staff;
+import com.rigour.integration.application.port.out.DhbClient.StaffQuery;
+import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
+import com.rigour.integration.application.port.out.DhbIntegrationStore;
+import com.rigour.integration.application.port.out.DhbIntegrationStore.RawLanding;
+import com.rigour.integration.application.port.out.ProductMediaStorage;
+import com.rigour.integration.application.port.out.ProductMediaSyncStore;
+import com.rigour.integration.application.port.out.ProductMediaSyncStore.MediaItem;
+import com.rigour.integration.application.port.out.ProductMediaSyncStore.ReusableMedia;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
+
+import tools.jackson.databind.ObjectMapper;
+
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -124,47 +127,120 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
-import tools.jackson.databind.ObjectMapper;
 
 /** 订货宝数据同步用例；租户和权限只取Gateway签名上下文，不接受客户端传入。 */
 public final class DhbIntegrationService {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
-    private static final List<DhbSyncFieldDescriptionView> SYNC_CENTER_FIELDS = List.of(
-            field("MAPPING", "sourceObjectType", "外部对象类型",
-                    "订货宝来源对象分类，用于区分商品、客户、销售订单、采购单和字典等同步对象。", "PRODUCT", false),
-            field("MAPPING", "sourceObjectId", "外部对象ID",
-                    "订货宝返回的稳定主键或可组合主键，是来源侧幂等判断依据。", "125801", false),
-            field("MAPPING", "sourceObjectNo", "外部对象编号",
-                    "订货宝业务编号，给开发和运维人工核对使用，不参与我方业务编号生成。", "JH.20260814.0010", false),
-            field("MAPPING", "internalDomain", "内部业务域",
-                    "映射后的我方业务归属域，只允许ERP、CRM、ORDER、DICTIONARY等内部域。", "ERP", false),
-            field("MAPPING", "internalObjectType", "内部对象类型",
-                    "映射后的我方业务对象类型，例如PRODUCT、CUSTOMER、SALES_ORDER。", "PRODUCT", false),
-            field("MAPPING", "internalObjectNo", "内部业务编号",
-                    "我方新业务表生成的业务编号，业务人员日常使用这个编号。", "SPU202608210001", false),
-            field("MAPPING", "payloadChecksum", "来源摘要",
-                    "最近一次完整来源业务数据摘要；订货宝订单详情未变化时据此跳过重复投影。", "sha256:...", false),
-            field("MAPPING", "lastSeenRunId", "最近同步批次",
-                    "最近观察到该来源对象的同步批次，用于把映射、日志、Raw和对账串起来。", "019fb7...", false),
-            field("MAPPING", "mappingStatus", "映射状态",
-                    "ACTIVE为正常映射；REMOVED表示来源不可见；CONFLICT表示需人工排查；IGNORED表示明确忽略。", "ACTIVE", false),
-            field("RUN", "fetchedCount", "拉取数量",
-                    "本次从订货宝接口读取到的记录数量，不等于最终业务表新增数量。", "100", false),
-            field("RUN", "acceptedCount", "接收数量",
-                    "本次通过基础校验并进入Raw或后续映射流程的数量。", "98", false),
-            field("RUN", "duplicateCount", "未变化跳过数量",
-                    "来源摘要未变化且业务投影完整时跳过的数量，用于判断同步是否幂等；不是重复写入数量。", "80", false),
-            field("RUN", "rejectedCount", "拒绝数量",
-                    "缺少必要字段、非法状态或无法归一化而拒绝处理的数量。", "2", false),
-            field("LOG", "message", "日志消息",
-                    "同步过程说明或错误摘要，禁止输出订货宝账号、密码、Token和Raw明文。", "商品图片COS已复用", true),
-            field("EXCEPTION", "lastErrorMessage", "错误消息",
-                    "最近一次异常描述，已过滤凭据和完整Raw Payload。", "来源商品缺少商品名称", true),
-            field("RECONCILIATION", "businessKey", "核对键",
-                    "对账时用于定位来源对象或内部对象的业务键。", "SALES_ORDER:SO202608210001", false),
-            field("RECONCILIATION", "checkType", "核对类型",
-                    "COUNT、DETAIL、HASH等核对方式，用于区分数量、明细和摘要差异。", "COUNT", false));
+    private static final List<DhbSyncFieldDescriptionView> SYNC_CENTER_FIELDS =
+            List.of(
+                    field(
+                            "MAPPING",
+                            "sourceObjectType",
+                            "外部对象类型",
+                            "订货宝来源对象分类，用于区分商品、客户、销售订单、采购单和字典等同步对象。",
+                            "PRODUCT",
+                            false),
+                    field(
+                            "MAPPING",
+                            "sourceObjectId",
+                            "外部对象ID",
+                            "订货宝返回的稳定主键或可组合主键，是来源侧幂等判断依据。",
+                            "125801",
+                            false),
+                    field(
+                            "MAPPING",
+                            "sourceObjectNo",
+                            "外部对象编号",
+                            "订货宝业务编号，给开发和运维人工核对使用，不参与我方业务编号生成。",
+                            "JH.20260814.0010",
+                            false),
+                    field(
+                            "MAPPING",
+                            "internalDomain",
+                            "内部业务域",
+                            "映射后的我方业务归属域，只允许ERP、CRM、ORDER、DICTIONARY等内部域。",
+                            "ERP",
+                            false),
+                    field(
+                            "MAPPING",
+                            "internalObjectType",
+                            "内部对象类型",
+                            "映射后的我方业务对象类型，例如PRODUCT、CUSTOMER、SALES_ORDER。",
+                            "PRODUCT",
+                            false),
+                    field(
+                            "MAPPING",
+                            "internalObjectNo",
+                            "内部业务编号",
+                            "我方新业务表生成的业务编号，业务人员日常使用这个编号。",
+                            "SPU202608210001",
+                            false),
+                    field(
+                            "MAPPING",
+                            "payloadChecksum",
+                            "来源摘要",
+                            "最近一次完整来源业务数据摘要；订货宝订单详情未变化时据此跳过重复投影。",
+                            "sha256:...",
+                            false),
+                    field(
+                            "MAPPING",
+                            "lastSeenRunId",
+                            "最近同步批次",
+                            "最近观察到该来源对象的同步批次，用于把映射、日志、Raw和对账串起来。",
+                            "019fb7...",
+                            false),
+                    field(
+                            "MAPPING",
+                            "mappingStatus",
+                            "映射状态",
+                            "ACTIVE为正常映射；REMOVED表示来源不可见；CONFLICT表示需人工排查；IGNORED表示明确忽略。",
+                            "ACTIVE",
+                            false),
+                    field(
+                            "RUN",
+                            "fetchedCount",
+                            "拉取数量",
+                            "本次从订货宝接口读取到的记录数量，不等于最终业务表新增数量。",
+                            "100",
+                            false),
+                    field("RUN", "acceptedCount", "接收数量", "本次通过基础校验并进入Raw或后续映射流程的数量。", "98", false),
+                    field(
+                            "RUN",
+                            "duplicateCount",
+                            "未变化跳过数量",
+                            "来源摘要未变化且业务投影完整时跳过的数量，用于判断同步是否幂等；不是重复写入数量。",
+                            "80",
+                            false),
+                    field("RUN", "rejectedCount", "拒绝数量", "缺少必要字段、非法状态或无法归一化而拒绝处理的数量。", "2", false),
+                    field(
+                            "LOG",
+                            "message",
+                            "日志消息",
+                            "同步过程说明或错误摘要，禁止输出订货宝账号、密码、Token和Raw明文。",
+                            "商品图片COS已复用",
+                            true),
+                    field(
+                            "EXCEPTION",
+                            "lastErrorMessage",
+                            "错误消息",
+                            "最近一次异常描述，已过滤凭据和完整Raw Payload。",
+                            "来源商品缺少商品名称",
+                            true),
+                    field(
+                            "RECONCILIATION",
+                            "businessKey",
+                            "核对键",
+                            "对账时用于定位来源对象或内部对象的业务键。",
+                            "SALES_ORDER:SO202608210001",
+                            false),
+                    field(
+                            "RECONCILIATION",
+                            "checkType",
+                            "核对类型",
+                            "COUNT、DETAIL、HASH等核对方式，用于区分数量、明细和摘要差异。",
+                            "COUNT",
+                            false));
 
     private final DhbIntegrationStore store;
     private final DhbClient client;
@@ -173,20 +249,26 @@ public final class DhbIntegrationService {
     private final ProductImageObjectKeyFactory productImageObjectKeyFactory;
     private final ProductMediaSyncStore productMediaSyncStore;
 
-    public DhbIntegrationService(DhbIntegrationStore store, DhbClient client,
-                                 DhbSyncOrchestrationService orderSyncService,
-                                 ProductMediaStorage productMediaStorage,
-                                 ProductImageObjectKeyFactory productImageObjectKeyFactory,
-                                 ProductMediaSyncStore productMediaSyncStore) {
+    public DhbIntegrationService(
+            DhbIntegrationStore store,
+            DhbClient client,
+            DhbSyncOrchestrationService orderSyncService,
+            ProductMediaStorage productMediaStorage,
+            ProductImageObjectKeyFactory productImageObjectKeyFactory,
+            ProductMediaSyncStore productMediaSyncStore) {
         this.store = Objects.requireNonNull(store, "store cannot be null");
         this.client = Objects.requireNonNull(client, "client cannot be null");
-        this.orderSyncService = Objects.requireNonNull(orderSyncService, "orderSyncService cannot be null");
-        this.productMediaStorage = Objects.requireNonNull(productMediaStorage,
-                "productMediaStorage cannot be null");
-        this.productImageObjectKeyFactory = Objects.requireNonNull(productImageObjectKeyFactory,
-                "productImageObjectKeyFactory cannot be null");
-        this.productMediaSyncStore = Objects.requireNonNull(productMediaSyncStore,
-                "productMediaSyncStore cannot be null");
+        this.orderSyncService =
+                Objects.requireNonNull(orderSyncService, "orderSyncService cannot be null");
+        this.productMediaStorage =
+                Objects.requireNonNull(productMediaStorage, "productMediaStorage cannot be null");
+        this.productImageObjectKeyFactory =
+                Objects.requireNonNull(
+                        productImageObjectKeyFactory,
+                        "productImageObjectKeyFactory cannot be null");
+        this.productMediaSyncStore =
+                Objects.requireNonNull(
+                        productMediaSyncStore, "productMediaSyncStore cannot be null");
     }
 
     public List<ConnectorView> connectors() {
@@ -203,11 +285,16 @@ public final class DhbIntegrationService {
     public DhbConnectionTestResult testConnection(UUID connectorId) {
         CallerIdentity caller = requireWriteCaller();
         ConnectorView connector = store.connector(caller.tenantId(), connectorId);
-        ConnectionTestResult result = client.testConnection(new DhbClient.Connector(
-                connector.tenantId(), connector.id(), connector.baseUrl(), connector.authSecretRef()));
+        ConnectionTestResult result =
+                client.testConnection(
+                        new DhbClient.Connector(
+                                connector.tenantId(),
+                                connector.id(),
+                                connector.baseUrl(),
+                                connector.authSecretRef()));
         store.recordConnectionTest(caller.tenantId(), caller.userId(), connectorId, result);
-        return new DhbConnectionTestResult(result.success(), result.code(), result.message(),
-                result.tokenExpiresAt());
+        return new DhbConnectionTestResult(
+                result.success(), result.code(), result.message(), result.tokenExpiresAt());
     }
 
     public ConnectorView updateConnector(UUID id, ConnectorCommand command) {
@@ -218,44 +305,85 @@ public final class DhbIntegrationService {
     /** 查询订货宝商品；认证、分页和字段兼容由 Integration 适配器处理。 */
     public ProductPageView products(UUID connectorId, ProductQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        ProductQuery query = command == null
-                ? new ProductQuery(PageRequest.first(100), null, null, null, null, null, null)
-                : productQuery(command);
+        ProductQuery query =
+                command == null
+                        ? new ProductQuery(
+                                PageRequest.first(100), null, null, null, null, null, null)
+                        : productQuery(command);
         DhbClient.Connector connector = connector(caller, connectorId);
         UUID mediaJobId = command == null ? null : command.mediaJobId();
         if (mediaJobId != null) {
-            ProductMediaSyncView mediaStatus = productMediaSyncStore.status(
-                    caller.tenantId(), connectorId, mediaJobId);
+            ProductMediaSyncView mediaStatus =
+                    productMediaSyncStore.status(caller.tenantId(), connectorId, mediaJobId);
             if (!"SUCCEEDED".equals(mediaStatus.status()) || mediaStatus.failedImages() > 0) {
-                throw new IllegalStateException("商品图片异步任务尚未成功完成 jobId=" + mediaJobId
-                        + " status=" + mediaStatus.status() + " failedImages=" + mediaStatus.failedImages());
+                throw new IllegalStateException(
+                        "商品图片异步任务尚未成功完成 jobId="
+                                + mediaJobId
+                                + " status="
+                                + mediaStatus.status()
+                                + " failedImages="
+                                + mediaStatus.failedImages());
             }
         }
         Page<Product> page = client.getProducts(connector, query);
-        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "PRODUCT_SPU", item.sourceId(), null, item.attributes()));
-        return new ProductPageView(page.total(), page.items().stream()
-                .map(item -> productView(caller.tenantId().toString(), connector, item, mediaJobId))
-                .toList());
+        page.items()
+                .forEach(
+                        item ->
+                                store.persistRawLanding(
+                                        caller.tenantId(),
+                                        connectorId,
+                                        "PRODUCT_SPU",
+                                        item.sourceId(),
+                                        null,
+                                        item.attributes()));
+        return new ProductPageView(
+                page.total(),
+                page.items().stream()
+                        .map(
+                                item ->
+                                        productView(
+                                                caller.tenantId().toString(),
+                                                connector,
+                                                item,
+                                                mediaJobId))
+                        .toList());
     }
 
     /** 先拉取商品图片清单，图片字节由后台任务受控并发上传。 */
-    public ProductMediaSyncView startProductMediaSync(UUID connectorId, ProductQueryCommand command) {
+    public ProductMediaSyncView startProductMediaSync(
+            UUID connectorId, ProductQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
         if (command != null && command.mediaJobId() != null) {
             throw new IllegalArgumentException("创建商品图片任务时不能传入 mediaJobId");
         }
         DhbClient.Connector connector = connector(caller, connectorId);
-        Page<Product> page = client.getProducts(connector, command == null
-                ? new ProductQuery(PageRequest.first(100), null, null, null, null, null, null)
-                : productQuery(command));
-        List<MediaItem> items = page.items().stream()
-                .flatMap(product -> product.images().stream()
-                        .filter(image -> image.sourceUrl() != null && !image.sourceUrl().isBlank())
-                        .map(image -> mediaItem(caller.tenantId(), connectorId, product.sourceId(), image)))
-                .toList();
-        return productMediaSyncStore.create(caller.tenantId(), caller.userId(), connectorId,
-                items.size(), items);
+        Page<Product> page =
+                client.getProducts(
+                        connector,
+                        command == null
+                                ? new ProductQuery(
+                                        PageRequest.first(100), null, null, null, null, null, null)
+                                : productQuery(command));
+        List<MediaItem> items =
+                page.items().stream()
+                        .flatMap(
+                                product ->
+                                        product.images().stream()
+                                                .filter(
+                                                        image ->
+                                                                image.sourceUrl() != null
+                                                                        && !image.sourceUrl()
+                                                                                .isBlank())
+                                                .map(
+                                                        image ->
+                                                                mediaItem(
+                                                                        caller.tenantId(),
+                                                                        connectorId,
+                                                                        product.sourceId(),
+                                                                        image)))
+                        .toList();
+        return productMediaSyncStore.create(
+                caller.tenantId(), caller.userId(), connectorId, items.size(), items);
     }
 
     public ProductMediaSyncView productMediaSyncStatus(UUID connectorId, UUID jobId) {
@@ -263,97 +391,201 @@ public final class DhbIntegrationService {
         return productMediaSyncStore.status(caller.tenantId(), connectorId, jobId);
     }
 
-    private ProductView productView(String tenantId, DhbClient.Connector connector, Product item,
-                                    UUID mediaJobId) {
-        List<ProductImageView> images = item.images().stream()
-                .map(image -> mediaJobId == null
-                        ? uploadImage(tenantId, connector, item.sourceId(), image)
-                        : completedImage(tenantId, connector, mediaJobId, item.sourceId(), image))
-                .filter(Objects::nonNull)
-                .toList();
-        String mainImageKey = images.stream().findFirst().map(ProductImageView::objectKey).orElse(null);
-        return new ProductView(item.sourceId(), item.code(), item.name(), item.putaway(),
-                        item.sourceLifecycle(),
-                        item.barcode(), item.unit(), item.categorySourceId(), item.brandSourceId(),
-                        item.model(), item.subtitle(), item.keywords(), item.allocation(),
-                        mainImageKey, item.multiId(), item.orderPrice(), item.marketPrice(),
-                        item.purchasePrice(), item.price4(), item.middleUnit(), item.bigUnit(),
-                        item.middleBarcode(), item.bigBarcode(), item.conversionBarcode(),
-                        item.baseToMiddleRate(), item.baseToBigRate(), item.minimumOrder(),
-                        item.minimumOrderUnit(), item.inventoryLower(), item.inventoryUpper(),
-                        item.safetyInventory(), item.middleOrderPrice(), item.bigOrderPrice(),
-                        images, item.customFields(),
-                        item.skus().stream().map(sku -> new ProductSkuView(
-                                normalizedSkuSourceId(item.sourceId(), sku.sourceId()), sku.code(),
-                                sku.barcode(), sku.firstSpecificationValueSourceId(),
-                                sku.secondSpecificationValueSourceId(), sku.specificationName(),
-                                sku.optionsId(), sku.orderPrice(), sku.marketPrice(), sku.purchasePrice(),
-                                sku.middleOrderPrice(), sku.bigOrderPrice(), sku.middleBarcode(),
-                                sku.bigBarcode(), sku.attributes())).toList(), item.attributes());
+    private ProductView productView(
+            String tenantId, DhbClient.Connector connector, Product item, UUID mediaJobId) {
+        List<ProductImageView> images =
+                item.images().stream()
+                        .map(
+                                image ->
+                                        mediaJobId == null
+                                                ? uploadImage(
+                                                        tenantId, connector, item.sourceId(), image)
+                                                : completedImage(
+                                                        tenantId,
+                                                        connector,
+                                                        mediaJobId,
+                                                        item.sourceId(),
+                                                        image))
+                        .filter(Objects::nonNull)
+                        .toList();
+        String mainImageKey =
+                images.stream().findFirst().map(ProductImageView::objectKey).orElse(null);
+        return new ProductView(
+                item.sourceId(),
+                item.code(),
+                item.name(),
+                item.putaway(),
+                item.sourceLifecycle(),
+                item.barcode(),
+                item.unit(),
+                item.categorySourceId(),
+                item.brandSourceId(),
+                item.model(),
+                item.subtitle(),
+                item.keywords(),
+                item.allocation(),
+                mainImageKey,
+                item.multiId(),
+                item.orderPrice(),
+                item.marketPrice(),
+                item.purchasePrice(),
+                item.price4(),
+                item.middleUnit(),
+                item.bigUnit(),
+                item.middleBarcode(),
+                item.bigBarcode(),
+                item.conversionBarcode(),
+                item.baseToMiddleRate(),
+                item.baseToBigRate(),
+                item.minimumOrder(),
+                item.minimumOrderUnit(),
+                item.inventoryLower(),
+                item.inventoryUpper(),
+                item.safetyInventory(),
+                item.middleOrderPrice(),
+                item.bigOrderPrice(),
+                images,
+                item.customFields(),
+                item.skus().stream()
+                        .map(
+                                sku ->
+                                        new ProductSkuView(
+                                                normalizedSkuSourceId(
+                                                        item.sourceId(), sku.sourceId()),
+                                                sku.code(),
+                                                sku.barcode(),
+                                                sku.firstSpecificationValueSourceId(),
+                                                sku.secondSpecificationValueSourceId(),
+                                                sku.specificationName(),
+                                                sku.optionsId(),
+                                                sku.orderPrice(),
+                                                sku.marketPrice(),
+                                                sku.purchasePrice(),
+                                                sku.middleOrderPrice(),
+                                                sku.bigOrderPrice(),
+                                                sku.middleBarcode(),
+                                                sku.bigBarcode(),
+                                                sku.attributes()))
+                        .toList(),
+                item.attributes());
     }
 
     /** 订货宝 options_id 可能在不同商品下重复，SKU 来源键必须带上所属商品。 */
     static String normalizedSkuSourceId(String productSourceId, String skuSourceId) {
-        if (productSourceId == null || productSourceId.isBlank()
-                || skuSourceId == null || skuSourceId.isBlank()) {
+        if (productSourceId == null
+                || productSourceId.isBlank()
+                || skuSourceId == null
+                || skuSourceId.isBlank()) {
             throw new IllegalArgumentException("订货宝商品或SKU来源ID不能为空");
         }
         return productSourceId.strip() + "::" + skuSourceId.strip();
     }
 
-    private ProductImageView uploadImage(String tenantId, DhbClient.Connector connector,
-                                         String sourceProductId,
-                                         com.rigour.integration.application.port.out.DhbClient.ProductImage image) {
+    private ProductImageView uploadImage(
+            String tenantId,
+            DhbClient.Connector connector,
+            String sourceProductId,
+            com.rigour.integration.application.port.out.DhbClient.ProductImage image) {
         if (image.sourceUrl() == null || image.sourceUrl().isBlank()) {
             return null;
         }
-        ReusableMedia reusable = reusableMedia(UUID.fromString(tenantId), connector.connectorId(),
-                sourceProductId, image);
+        ReusableMedia reusable =
+                reusableMedia(
+                        UUID.fromString(tenantId), connector.connectorId(), sourceProductId, image);
         if (reusable != null) {
-            return new ProductImageView(image.sourceResourceId(), image.sourceGoodsId(), image.originalName(),
-                    image.fileName(), image.sortOrder(), reusable.objectKey());
+            return new ProductImageView(
+                    image.sourceResourceId(),
+                    image.sourceGoodsId(),
+                    image.originalName(),
+                    image.fileName(),
+                    image.sortOrder(),
+                    reusable.objectKey());
         }
-        DhbClient.DownloadedImage downloaded = client.downloadProductImage(connector, image.sourceUrl());
-        String objectKey = productImageObjectKeyFactory.generate(tenantId, sourceProductId,
-                image.sourceResourceId(), image.sortOrder(), downloaded.content(), image.fileName(),
-                downloaded.contentType());
-        productMediaStorage.put(tenantId, objectKey, image.originalName(), downloaded.contentType(),
+        DhbClient.DownloadedImage downloaded =
+                client.downloadProductImage(connector, image.sourceUrl());
+        String objectKey =
+                productImageObjectKeyFactory.generate(
+                        tenantId,
+                        sourceProductId,
+                        image.sourceResourceId(),
+                        image.sortOrder(),
+                        downloaded.content(),
+                        image.fileName(),
+                        downloaded.contentType());
+        productMediaStorage.put(
+                tenantId,
+                objectKey,
+                image.originalName(),
+                downloaded.contentType(),
                 downloaded.content());
-        return new ProductImageView(image.sourceResourceId(), image.sourceGoodsId(), image.originalName(),
-                image.fileName(), image.sortOrder(), objectKey);
+        return new ProductImageView(
+                image.sourceResourceId(),
+                image.sourceGoodsId(),
+                image.originalName(),
+                image.fileName(),
+                image.sortOrder(),
+                objectKey);
     }
 
-    private MediaItem mediaItem(UUID tenantId, UUID connectorId, String sourceProductId,
-                                com.rigour.integration.application.port.out.DhbClient.ProductImage image) {
+    private MediaItem mediaItem(
+            UUID tenantId,
+            UUID connectorId,
+            String sourceProductId,
+            com.rigour.integration.application.port.out.DhbClient.ProductImage image) {
         ReusableMedia reusable = reusableMedia(tenantId, connectorId, sourceProductId, image);
         return reusable == null
                 ? new MediaItem(sourceProductId, image)
-                : new MediaItem(sourceProductId, image, reusable.objectKey(), reusable.contentType());
+                : new MediaItem(
+                        sourceProductId, image, reusable.objectKey(), reusable.contentType());
     }
 
-    private ReusableMedia reusableMedia(UUID tenantId, UUID connectorId, String sourceProductId,
-                                        com.rigour.integration.application.port.out.DhbClient.ProductImage image) {
-        ReusableMedia reusable = productMediaSyncStore.findReusable(tenantId, connectorId,
-                sourceProductId, image);
-        if (reusable == null || !productMediaStorage.exists(tenantId.toString(), reusable.objectKey())) {
+    private ReusableMedia reusableMedia(
+            UUID tenantId,
+            UUID connectorId,
+            String sourceProductId,
+            com.rigour.integration.application.port.out.DhbClient.ProductImage image) {
+        ReusableMedia reusable =
+                productMediaSyncStore.findReusable(tenantId, connectorId, sourceProductId, image);
+        if (reusable == null
+                || !productMediaStorage.exists(tenantId.toString(), reusable.objectKey())) {
             return null;
         }
         return reusable;
     }
 
-    private ProductImageView completedImage(String tenantId, DhbClient.Connector connector,
-                                            UUID mediaJobId, String sourceProductId,
-                                            com.rigour.integration.application.port.out.DhbClient.ProductImage image) {
-        String objectKey = productMediaSyncStore.completedObjectKey(
-                UUID.fromString(tenantId), connector.connectorId(), mediaJobId,
-                sourceProductId, image.sourceResourceId(), image.sortOrder());
-        return objectKey == null ? null : new ProductImageView(image.sourceResourceId(),
-                image.sourceGoodsId(), image.originalName(), image.fileName(), image.sortOrder(), objectKey);
+    private ProductImageView completedImage(
+            String tenantId,
+            DhbClient.Connector connector,
+            UUID mediaJobId,
+            String sourceProductId,
+            com.rigour.integration.application.port.out.DhbClient.ProductImage image) {
+        String objectKey =
+                productMediaSyncStore.completedObjectKey(
+                        UUID.fromString(tenantId),
+                        connector.connectorId(),
+                        mediaJobId,
+                        sourceProductId,
+                        image.sourceResourceId(),
+                        image.sortOrder());
+        return objectKey == null
+                ? null
+                : new ProductImageView(
+                        image.sourceResourceId(),
+                        image.sourceGoodsId(),
+                        image.originalName(),
+                        image.fileName(),
+                        image.sortOrder(),
+                        objectKey);
     }
 
     private static ProductQuery productQuery(ProductQueryCommand command) {
-        return new ProductQuery(page(command.begin(), command.step()), command.status(),
-                command.putaway(), command.goodsCode(), command.barcode(), command.updatedFrom(),
+        return new ProductQuery(
+                page(command.begin(), command.step()),
+                command.status(),
+                command.putaway(),
+                command.goodsCode(),
+                command.barcode(),
+                command.updatedFrom(),
                 command.updatedTo());
     }
 
@@ -361,222 +593,493 @@ public final class DhbIntegrationService {
     public ProductCategoryListView productCategories(UUID connectorId) {
         CallerIdentity caller = requireReadCaller();
         List<ProductCategory> items = client.getProductCategories(connector(caller, connectorId));
-        items.forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "CATEGORY", item.sourceId(), null, item.attributes()));
-        return new ProductCategoryListView(items.stream()
-                .map(item -> new ProductCategoryView(item.sourceId(), item.externalReferenceId(),
-                        item.name(), item.categoryNumber(), item.parentSourceId(), item.defaultCategory(),
-                        item.attributes())).toList());
+        items.forEach(
+                item ->
+                        store.persistRawLanding(
+                                caller.tenantId(),
+                                connectorId,
+                                "CATEGORY",
+                                item.sourceId(),
+                                null,
+                                item.attributes()));
+        return new ProductCategoryListView(
+                items.stream()
+                        .map(
+                                item ->
+                                        new ProductCategoryView(
+                                                item.sourceId(),
+                                                item.externalReferenceId(),
+                                                item.name(),
+                                                item.categoryNumber(),
+                                                item.parentSourceId(),
+                                                item.defaultCategory(),
+                                                item.attributes()))
+                        .toList());
     }
 
     /** getBrands 是全量接口；保留品牌编码、排序和说明字段。 */
     public ProductBrandListView productBrands(UUID connectorId) {
         CallerIdentity caller = requireReadCaller();
         List<ProductBrand> items = client.getProductBrands(connector(caller, connectorId));
-        items.forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "BRAND", item.sourceId(), null, item.attributes()));
-        return new ProductBrandListView(items.stream()
-                .map(item -> new ProductBrandView(item.sourceId(), item.externalReferenceId(),
-                        item.name(), item.brandNumber(), item.sortOrder(), item.description(),
-                        item.attributes())).toList());
+        items.forEach(
+                item ->
+                        store.persistRawLanding(
+                                caller.tenantId(),
+                                connectorId,
+                                "BRAND",
+                                item.sourceId(),
+                                null,
+                                item.attributes()));
+        return new ProductBrandListView(
+                items.stream()
+                        .map(
+                                item ->
+                                        new ProductBrandView(
+                                                item.sourceId(),
+                                                item.externalReferenceId(),
+                                                item.name(),
+                                                item.brandNumber(),
+                                                item.sortOrder(),
+                                                item.description(),
+                                                item.attributes()))
+                        .toList());
     }
 
     public ProductSpecificationPageView productSpecifications(
             UUID connectorId, ProductMasterDataQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        PageRequest request = page(command == null ? null : command.begin(),
-                command == null ? null : command.step());
-        Page<ProductSpecification> page = client.getProductSpecifications(
-                connector(caller, connectorId), request);
-        page.items().forEach(item -> {
-            store.persistRawLanding(caller.tenantId(), connectorId, "SPECIFICATION",
-                    item.sourceId(), null, item.attributes());
-            item.values().forEach(value -> store.persistRawLanding(caller.tenantId(), connectorId,
-                    "SPECIFICATION_VALUE", value.sourceId(), null, value.attributes()));
-        });
-        return new ProductSpecificationPageView(page.total(), page.items().stream()
-                .map(item -> new ProductSpecificationView(item.sourceId(), item.code(), item.name(),
-                        item.parentSourceId(), item.values().stream().map(value -> new ProductSpecificationValueView(
-                                value.sourceId(), value.code(), value.name(), value.parentSourceId(),
-                                value.attributes())).toList(), item.attributes())).toList());
+        PageRequest request =
+                page(
+                        command == null ? null : command.begin(),
+                        command == null ? null : command.step());
+        Page<ProductSpecification> page =
+                client.getProductSpecifications(connector(caller, connectorId), request);
+        page.items()
+                .forEach(
+                        item -> {
+                            store.persistRawLanding(
+                                    caller.tenantId(),
+                                    connectorId,
+                                    "SPECIFICATION",
+                                    item.sourceId(),
+                                    null,
+                                    item.attributes());
+                            item.values()
+                                    .forEach(
+                                            value ->
+                                                    store.persistRawLanding(
+                                                            caller.tenantId(),
+                                                            connectorId,
+                                                            "SPECIFICATION_VALUE",
+                                                            value.sourceId(),
+                                                            null,
+                                                            value.attributes()));
+                        });
+        return new ProductSpecificationPageView(
+                page.total(),
+                page.items().stream()
+                        .map(
+                                item ->
+                                        new ProductSpecificationView(
+                                                item.sourceId(),
+                                                item.code(),
+                                                item.name(),
+                                                item.parentSourceId(),
+                                                item.values().stream()
+                                                        .map(
+                                                                value ->
+                                                                        new ProductSpecificationValueView(
+                                                                                value.sourceId(),
+                                                                                value.code(),
+                                                                                value.name(),
+                                                                                value
+                                                                                        .parentSourceId(),
+                                                                                value.attributes()))
+                                                        .toList(),
+                                                item.attributes()))
+                        .toList());
     }
 
     /** getGoodsTag 返回分页对象；Integration 不把 rData 分页对象误当成数组。 */
     public ProductTagPageView productTags(UUID connectorId, ProductMasterDataQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        PageRequest request = page(command == null ? null : command.begin(),
-                command == null ? null : command.step());
+        PageRequest request =
+                page(
+                        command == null ? null : command.begin(),
+                        command == null ? null : command.step());
         Page<ProductTag> page = client.getProductTags(connector(caller, connectorId), request);
-        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "TAG", item.sourceId(), null, item.attributes()));
-        return new ProductTagPageView(page.total(), page.items().stream()
-                .map(item -> new ProductTagView(item.sourceId(), item.code(), item.name(),
-                        item.sortOrder(), item.relationCount(), item.createdAt(), item.updatedAt(),
-                        item.groupSourceId(), item.groupName(), item.attributes())).toList());
+        page.items()
+                .forEach(
+                        item ->
+                                store.persistRawLanding(
+                                        caller.tenantId(),
+                                        connectorId,
+                                        "TAG",
+                                        item.sourceId(),
+                                        null,
+                                        item.attributes()));
+        return new ProductTagPageView(
+                page.total(),
+                page.items().stream()
+                        .map(
+                                item ->
+                                        new ProductTagView(
+                                                item.sourceId(),
+                                                item.code(),
+                                                item.name(),
+                                                item.sortOrder(),
+                                                item.relationCount(),
+                                                item.createdAt(),
+                                                item.updatedAt(),
+                                                item.groupSourceId(),
+                                                item.groupName(),
+                                                item.attributes()))
+                        .toList());
     }
 
     /** 查询订货宝客户；联系方式等来源字段仅在调用方已有 Integration 权限时返回。 */
     public com.rigour.integration.api.v1.model.DhbApiModels.CustomerPageView customers(
-            UUID connectorId, com.rigour.integration.api.v1.model.DhbApiModels.CustomerQueryCommand command) {
+            UUID connectorId,
+            com.rigour.integration.api.v1.model.DhbApiModels.CustomerQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        CustomerQuery query = command == null
-                ? new CustomerQuery(PageRequest.first(100), 3, 3, null, null, null, null, null)
-                : new CustomerQuery(page(command.begin(), command.step()),
-                command.status() == null ? 3 : command.status(),
-                command.dataType() == null ? 3 : command.dataType(), command.timeType(), window("客户时间",
-                command.updatedFrom(), command.updatedTo()), command.clientNo(), command.clientArea(),
-                command.typeId());
+        CustomerQuery query =
+                command == null
+                        ? new CustomerQuery(
+                                PageRequest.first(100), 3, 3, null, null, null, null, null)
+                        : new CustomerQuery(
+                                page(command.begin(), command.step()),
+                                command.status() == null ? 3 : command.status(),
+                                command.dataType() == null ? 3 : command.dataType(),
+                                command.timeType(),
+                                window("客户时间", command.updatedFrom(), command.updatedTo()),
+                                command.clientNo(),
+                                command.clientArea(),
+                                command.typeId());
         Page<Customer> page = client.getCustomers(connector(caller, connectorId), query);
-        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "CUSTOMER", firstNonBlank(item.sourceId(), item.number(), item.account()),
-                item.updatedAt(), item.attributes()));
-        return new com.rigour.integration.api.v1.model.DhbApiModels.CustomerPageView(page.total(), page.items().stream()
-                .map(item -> new com.rigour.integration.api.v1.model.DhbApiModels.CustomerView(
-                        item.sourceId(), item.account(), item.number(), item.name(),
-                        item.status(), item.createdAt(), item.updatedAt(), item.attributes()))
-                .toList());
+        page.items()
+                .forEach(
+                        item ->
+                                store.persistRawLanding(
+                                        caller.tenantId(),
+                                        connectorId,
+                                        "CUSTOMER",
+                                        firstNonBlank(
+                                                item.sourceId(), item.number(), item.account()),
+                                        item.updatedAt(),
+                                        item.attributes()));
+        return new com.rigour.integration.api.v1.model.DhbApiModels.CustomerPageView(
+                page.total(),
+                page.items().stream()
+                        .map(
+                                item ->
+                                        new com.rigour.integration.api.v1.model.DhbApiModels
+                                                .CustomerView(
+                                                item.sourceId(),
+                                                item.account(),
+                                                item.number(),
+                                                item.name(),
+                                                item.status(),
+                                                item.createdAt(),
+                                                item.updatedAt(),
+                                                item.attributes()))
+                        .toList());
     }
 
     public CustomerTypeListView customerTypes(UUID connectorId) {
         CallerIdentity caller = requireReadCaller();
         List<CustomerType> items = client.getCustomerTypes(connector(caller, connectorId));
-        store.persistRawLandings(caller.tenantId(), connectorId, items.stream().map(item -> new RawLanding(
-                "CUSTOMER_TYPE", firstNonBlank(item.sourceId(), item.erpId(), item.name()),
-                null, item.attributes())).toList());
-        return new CustomerTypeListView(items.stream()
-                .map(item -> new CustomerTypeView(item.sourceId(), item.name(),
-                        item.erpId(), item.attributes())).toList());
+        store.persistRawLandings(
+                caller.tenantId(),
+                connectorId,
+                items.stream()
+                        .map(
+                                item ->
+                                        new RawLanding(
+                                                "CUSTOMER_TYPE",
+                                                firstNonBlank(
+                                                        item.sourceId(), item.erpId(), item.name()),
+                                                null,
+                                                item.attributes()))
+                        .toList());
+        return new CustomerTypeListView(
+                items.stream()
+                        .map(
+                                item ->
+                                        new CustomerTypeView(
+                                                item.sourceId(),
+                                                item.name(),
+                                                item.erpId(),
+                                                item.attributes()))
+                        .toList());
     }
 
     public CustomerAreaListView customerAreas(UUID connectorId) {
         CallerIdentity caller = requireReadCaller();
         List<CustomerArea> items = client.getCustomerAreas(connector(caller, connectorId));
-        store.persistRawLandings(caller.tenantId(), connectorId, items.stream().map(item -> new RawLanding(
-                "CUSTOMER_AREA", firstNonBlank(item.sourceId(), item.erpId(), item.name()),
-                null, item.attributes())).toList());
-        return new CustomerAreaListView(items.stream()
-                .map(item -> new CustomerAreaView(item.sourceId(), item.name(),
-                        item.erpId(), item.parentSourceId(), item.attributes())).toList());
+        store.persistRawLandings(
+                caller.tenantId(),
+                connectorId,
+                items.stream()
+                        .map(
+                                item ->
+                                        new RawLanding(
+                                                "CUSTOMER_AREA",
+                                                firstNonBlank(
+                                                        item.sourceId(), item.erpId(), item.name()),
+                                                null,
+                                                item.attributes()))
+                        .toList());
+        return new CustomerAreaListView(
+                items.stream()
+                        .map(
+                                item ->
+                                        new CustomerAreaView(
+                                                item.sourceId(),
+                                                item.name(),
+                                                item.erpId(),
+                                                item.parentSourceId(),
+                                                item.attributes()))
+                        .toList());
     }
 
     public CustomerPageView crmCustomers(UUID connectorId, CustomerQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        CustomerQuery query = command == null
-                ? new CustomerQuery(PageRequest.first(100), 3, 3, null, null, null, null, null)
-                : new CustomerQuery(page(command.begin(), command.step()),
-                command.status() == null ? 3 : command.status(),
-                command.dataType() == null ? 3 : command.dataType(), command.timeType(),
-                window("客户时间", command.from(), command.to()), command.clientNo(),
-                command.clientArea(), command.typeId());
+        CustomerQuery query =
+                command == null
+                        ? new CustomerQuery(
+                                PageRequest.first(100), 3, 3, null, null, null, null, null)
+                        : new CustomerQuery(
+                                page(command.begin(), command.step()),
+                                command.status() == null ? 3 : command.status(),
+                                command.dataType() == null ? 3 : command.dataType(),
+                                command.timeType(),
+                                window("客户时间", command.from(), command.to()),
+                                command.clientNo(),
+                                command.clientArea(),
+                                command.typeId());
         Page<Customer> result = client.getCustomers(connector(caller, connectorId), query);
-        store.persistRawLandings(caller.tenantId(), connectorId, result.items().stream().map(item -> new RawLanding(
-                "CUSTOMER", firstNonBlank(item.sourceId(), item.number(), item.account()),
-                item.updatedAt(), item.attributes())).toList());
-        return new CustomerPageView(result.total(), result.items().stream()
-                .map(DhbIntegrationService::crmCustomer).toList());
+        store.persistRawLandings(
+                caller.tenantId(),
+                connectorId,
+                result.items().stream()
+                        .map(
+                                item ->
+                                        new RawLanding(
+                                                "CUSTOMER",
+                                                firstNonBlank(
+                                                        item.sourceId(),
+                                                        item.number(),
+                                                        item.account()),
+                                                item.updatedAt(),
+                                                item.attributes()))
+                        .toList());
+        return new CustomerPageView(
+                result.total(),
+                result.items().stream().map(DhbIntegrationService::crmCustomer).toList());
     }
 
     public ShippingAddressPageView shippingAddresses(
             UUID connectorId, ShippingAddressQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        ShippingAddressQuery query = command == null
-                ? new ShippingAddressQuery(PageRequest.first(100), null, null, null, null)
-                : new ShippingAddressQuery(page(command.begin(), command.step()),
-                command.addressAbout(), command.clientGuid(), command.isDefault(),
-                window("收货地址更新时间", command.updatedFrom(), command.updatedTo()));
-        Page<ShippingAddress> result = client.getShippingAddresses(
-                connector(caller, connectorId), query);
-        store.persistRawLandings(caller.tenantId(), connectorId, result.items().stream().map(item -> new RawLanding(
-                "CUSTOMER_ADDRESS", firstNonBlank(item.sourceId(), item.addressGuid(), item.addressId()),
-                item.updatedAt(), item.attributes())).toList());
-        return new ShippingAddressPageView(result.total(), result.items().stream()
-                .map(DhbIntegrationService::shippingAddressView).toList());
+        ShippingAddressQuery query =
+                command == null
+                        ? new ShippingAddressQuery(PageRequest.first(100), null, null, null, null)
+                        : new ShippingAddressQuery(
+                                page(command.begin(), command.step()),
+                                command.addressAbout(),
+                                command.clientGuid(),
+                                command.isDefault(),
+                                window("收货地址更新时间", command.updatedFrom(), command.updatedTo()));
+        Page<ShippingAddress> result =
+                client.getShippingAddresses(connector(caller, connectorId), query);
+        store.persistRawLandings(
+                caller.tenantId(),
+                connectorId,
+                result.items().stream()
+                        .map(
+                                item ->
+                                        new RawLanding(
+                                                "CUSTOMER_ADDRESS",
+                                                firstNonBlank(
+                                                        item.sourceId(),
+                                                        item.addressGuid(),
+                                                        item.addressId()),
+                                                item.updatedAt(),
+                                                item.attributes()))
+                        .toList());
+        return new ShippingAddressPageView(
+                result.total(),
+                result.items().stream().map(DhbIntegrationService::shippingAddressView).toList());
     }
 
     public StaffPageView staff(UUID connectorId, StaffQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        StaffQuery query = command == null
-                ? new StaffQuery(PageRequest.first(100), null, null, null, null, null)
-                : new StaffQuery(page(command.begin(), command.step()), command.staffType(),
-                command.status(), command.keywords(),
-                window("员工创建时间", command.createdFrom(), command.createdTo()),
-                window("员工更新时间", command.updatedFrom(), command.updatedTo()));
+        StaffQuery query =
+                command == null
+                        ? new StaffQuery(PageRequest.first(100), null, null, null, null, null)
+                        : new StaffQuery(
+                                page(command.begin(), command.step()),
+                                command.staffType(),
+                                command.status(),
+                                command.keywords(),
+                                window("员工创建时间", command.createdFrom(), command.createdTo()),
+                                window("员工更新时间", command.updatedFrom(), command.updatedTo()));
         Page<Staff> result = client.getStaff(connector(caller, connectorId), query);
-        store.persistRawLandings(caller.tenantId(), connectorId, result.items().stream().map(item -> new RawLanding(
-                "STAFF", firstNonBlank(item.sourceId(), item.staffId(), item.accountId()),
-                item.updatedAt(), item.attributes())).toList());
-        return new StaffPageView(result.total(), result.items().stream()
-                .map(DhbIntegrationService::staffView).toList());
+        store.persistRawLandings(
+                caller.tenantId(),
+                connectorId,
+                result.items().stream()
+                        .map(
+                                item ->
+                                        new RawLanding(
+                                                "STAFF",
+                                                firstNonBlank(
+                                                        item.sourceId(),
+                                                        item.staffId(),
+                                                        item.accountId()),
+                                                item.updatedAt(),
+                                                item.attributes()))
+                        .toList());
+        return new StaffPageView(
+                result.total(),
+                result.items().stream().map(DhbIntegrationService::staffView).toList());
     }
 
     public StaffView staffInfo(UUID connectorId, String accountId) {
         CallerIdentity caller = requireReadCaller();
         Staff item = client.getStaffInfo(connector(caller, connectorId), accountId);
-        store.persistRawLanding(caller.tenantId(), connectorId, "STAFF_DETAIL",
+        store.persistRawLanding(
+                caller.tenantId(),
+                connectorId,
+                "STAFF_DETAIL",
                 firstNonBlank(item.accountId(), item.sourceId(), item.staffId()),
-                item.updatedAt(), item.attributes());
+                item.updatedAt(),
+                item.attributes());
         return staffView(item);
     }
 
     /** 查询订货宝订单摘要；调用 getOrderList，不会调用订单明细副作用接口。 */
     public OrderPageView orders(UUID connectorId, OrderQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        OrderQuery query = command == null
-                ? new OrderQuery(PageRequest.first(100), "all", null, null, "all", "all", null, null)
-                : new OrderQuery(page(command.begin(), command.step()),
-                command.orderStatus() == null ? "all" : command.orderStatus(),
-                window("订单创建时间", command.createdFrom(), command.createdTo()),
-                window("订单更新时间", command.updatedFrom(), command.updatedTo()),
-                command.exceptionStatus() == null ? "all" : command.exceptionStatus(),
-                command.apiStatus() == null ? "all" : command.apiStatus(),
-                command.payStatus(), command.splitType());
+        OrderQuery query =
+                command == null
+                        ? new OrderQuery(
+                                PageRequest.first(100), "all", null, null, "all", "all", null, null)
+                        : new OrderQuery(
+                                page(command.begin(), command.step()),
+                                command.orderStatus() == null ? "all" : command.orderStatus(),
+                                window("订单创建时间", command.createdFrom(), command.createdTo()),
+                                window("订单更新时间", command.updatedFrom(), command.updatedTo()),
+                                command.exceptionStatus() == null
+                                        ? "all"
+                                        : command.exceptionStatus(),
+                                command.apiStatus() == null ? "all" : command.apiStatus(),
+                                command.payStatus(),
+                                command.splitType());
         Page<OrderSummary> page = client.getOrders(connector(caller, connectorId), query);
-        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "ORDER_LIST", firstNonBlank(item.orderNumber(), item.sourceId()),
-                item.updatedAt(), item.attributes()));
-        return new OrderPageView(page.total(), page.items().stream()
-                .map(item -> new OrderView(item.sourceId(), item.orderNumber(), item.status(), item.amount(),
-                        item.createdAt(), item.updatedAt(), item.customerNumber(), item.paymentStatus(),
-                        item.attributes()))
-                .toList());
+        page.items()
+                .forEach(
+                        item ->
+                                store.persistRawLanding(
+                                        caller.tenantId(),
+                                        connectorId,
+                                        "ORDER_LIST",
+                                        firstNonBlank(item.orderNumber(), item.sourceId()),
+                                        item.updatedAt(),
+                                        item.attributes()));
+        return new OrderPageView(
+                page.total(),
+                page.items().stream()
+                        .map(
+                                item ->
+                                        new OrderView(
+                                                item.sourceId(),
+                                                item.orderNumber(),
+                                                item.status(),
+                                                item.amount(),
+                                                item.createdAt(),
+                                                item.updatedAt(),
+                                                item.customerNumber(),
+                                                item.paymentStatus(),
+                                                item.attributes()))
+                        .toList());
     }
 
-    /**
-     * 获取订单明细。订货宝文档中的自动下载标记和自动审核开关在本系统中强制关闭，
-     * 历史请求体仅为兼容旧调用保留，不再触发第三方状态变更。
-     */
-    public OrderContentView orderContent(UUID connectorId, String orderNumber,
-                                         OrderContentCommand command) {
+    /** 获取订单明细。订货宝文档中的自动下载标记和自动审核开关在本系统中强制关闭， 历史请求体仅为兼容旧调用保留，不再触发第三方状态变更。 */
+    public OrderContentView orderContent(
+            UUID connectorId, String orderNumber, OrderContentCommand command) {
         CallerIdentity caller = requireReadCaller();
         if (orderNumber == null || orderNumber.isBlank()) {
             throw new IllegalArgumentException("orderNumber is required");
         }
         OrderDetail detail = client.getOrderContent(connector(caller, connectorId), orderNumber);
-        store.persistRawLanding(caller.tenantId(), connectorId, "ORDER_DETAIL",
-                firstNonBlank(detail.orderNumber(), orderNumber), null, detail.attributes());
-        return new OrderContentView(detail.orderNumber(), detail.status(), detail.amount(), detail.attributes());
+        store.persistRawLanding(
+                caller.tenantId(),
+                connectorId,
+                "ORDER_DETAIL",
+                firstNonBlank(detail.orderNumber(), orderNumber),
+                null,
+                detail.attributes());
+        return new OrderContentView(
+                detail.orderNumber(), detail.status(), detail.amount(), detail.attributes());
     }
 
     /** 查询订货宝出库/发货单列表；对应 getShipsList，返回字段不包含凭据。 */
     public ShipmentPageView shipments(UUID connectorId, ShipmentQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        ShipmentQuery query = command == null
-                ? ShipmentQuery.first(100, null, null)
-                : new ShipmentQuery(page(command.begin(), command.step()), command.status(), command.isApi(),
-                command.typeId(), window("出库单创建时间", command.createdFrom(), command.createdTo()),
-                window("出库单更新时间", command.updatedFrom(), command.updatedTo()),
-                command.clientNumber(), command.stockId(), command.stockNumber());
+        ShipmentQuery query =
+                command == null
+                        ? ShipmentQuery.first(100, null, null)
+                        : new ShipmentQuery(
+                                page(command.begin(), command.step()),
+                                command.status(),
+                                command.isApi(),
+                                command.typeId(),
+                                window("出库单创建时间", command.createdFrom(), command.createdTo()),
+                                window("出库单更新时间", command.updatedFrom(), command.updatedTo()),
+                                command.clientNumber(),
+                                command.stockId(),
+                                command.stockNumber());
         Page<Shipment> page = client.getShipments(connector(caller, connectorId), query);
-        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "SHIPMENT", item.shipmentNumber() == null ? item.sourceId() : item.shipmentNumber(),
-                item.updatedAt(), item.attributes()));
-        return new ShipmentPageView(page.total(), page.items().stream()
-                .map(item -> new ShipmentView(item.sourceId(), item.shipmentNumber(), item.orderNumber(),
-                        item.status(), item.statusName(), item.typeId(), item.typeName(), item.customerNumber(),
-                        item.customerName(), item.customerGuid(), item.warehouseNumber(), item.warehouseName(),
-                        item.warehouseGuid(), item.shipmentAt(), item.logisticsName(), item.trackingNumber(),
-                        item.remark(), item.createdAt(), item.updatedAt(), item.attributes()))
-                .toList());
+        page.items()
+                .forEach(
+                        item ->
+                                store.persistRawLanding(
+                                        caller.tenantId(),
+                                        connectorId,
+                                        "SHIPMENT",
+                                        item.shipmentNumber() == null
+                                                ? item.sourceId()
+                                                : item.shipmentNumber(),
+                                        item.updatedAt(),
+                                        item.attributes()));
+        return new ShipmentPageView(
+                page.total(),
+                page.items().stream()
+                        .map(
+                                item ->
+                                        new ShipmentView(
+                                                item.sourceId(),
+                                                item.shipmentNumber(),
+                                                item.orderNumber(),
+                                                item.status(),
+                                                item.statusName(),
+                                                item.typeId(),
+                                                item.typeName(),
+                                                item.customerNumber(),
+                                                item.customerName(),
+                                                item.customerGuid(),
+                                                item.warehouseNumber(),
+                                                item.warehouseName(),
+                                                item.warehouseGuid(),
+                                                item.shipmentAt(),
+                                                item.logisticsName(),
+                                                item.trackingNumber(),
+                                                item.remark(),
+                                                item.createdAt(),
+                                                item.updatedAt(),
+                                                item.attributes()))
+                        .toList());
     }
 
     /** 查询订货宝出库/发货单详情；对应 getShipsContent，ships_num为必填业务键。 */
@@ -587,8 +1090,12 @@ public final class DhbIntegrationService {
         }
         com.rigour.integration.application.port.out.DhbClient.ShipmentDetail detail =
                 client.getShipmentContent(connector(caller, connectorId), shipmentNumber);
-        store.persistRawLanding(caller.tenantId(), connectorId, "SHIPMENT_CONTENT",
-                detail.shipmentNumber() == null ? shipmentNumber : detail.shipmentNumber(), null,
+        store.persistRawLanding(
+                caller.tenantId(),
+                connectorId,
+                "SHIPMENT_CONTENT",
+                detail.shipmentNumber() == null ? shipmentNumber : detail.shipmentNumber(),
+                null,
                 detail.attributes());
         return new ShipmentContentView(detail.shipmentNumber(), detail.attributes());
     }
@@ -596,48 +1103,120 @@ public final class DhbIntegrationService {
     /**
      * 查询指定订货单的出库/发货物流；对应订货宝getWaitShips。
      *
-     * <p>返回业务视图前先将完整来源回执写入 Raw Landing；写入失败时不向
-     * Order Center 返回伪成功，从而保证后续核对账中“来源已拉取”与“Raw 已落地”不会分裂。</p>
+     * <p>返回业务视图前先将完整来源回执写入 Raw Landing；写入失败时不向 Order Center 返回伪成功，从而保证后续核对账中“来源已拉取”与“Raw 已落地”不会分裂。
      */
     public WaitShipsView waitShips(UUID connectorId, String orderNumber) {
         CallerIdentity caller = requireReadCaller();
         if (orderNumber == null || orderNumber.isBlank()) {
             throw new IllegalArgumentException("orderNumber is required");
         }
-        DhbClient.WaitShips result = client.getWaitShips(connector(caller, connectorId), orderNumber);
-        store.persistRawLanding(caller.tenantId(), connectorId, "WAIT_SHIPS",
-                firstNonBlank(result.orderNumber(), orderNumber), null, result.attributes());
-        return new WaitShipsView(result.orderNumber(), result.shipped().stream()
-                .map(item -> new WaitShipView(item.sourceId(), item.shipmentNo(), item.status(),
-                        item.logisticsName(), item.logisticsCode(), item.trackingNo(), item.shipmentAt(),
-                        item.stockUpAt(), item.warehouseNo(), item.warehouseName(), item.lines().stream()
-                                .map(line -> new com.rigour.integration.api.v1.model.DhbApiModels.WaitShipLineView(
-                                        line.sourceLineId(), line.orderLineId(), line.productId(), line.skuNo(),
-                                        line.listType(), line.productCode(), line.productName(), line.specification(),
-                                        line.unit(), line.containerUnit(), line.conversionNumber(), line.quantity(),
-                                        line.remark(), line.attributes())).toList(), item.attributes()))
-                .toList(), result.waitStock().stream()
-                .map(item -> new WaitStockView(item.sourceLineId(), item.productId(), item.skuNo(), item.listType(),
-                        item.productCode(), item.productName(), item.specification(), item.unit(), item.containerUnit(),
-                        item.conversionNumber(), item.warehouseNo(), item.warehouseName(), item.orderedQuantity(),
-                        item.stockedQuantity(), item.realStock(), item.waitQuantity(), item.remark(), item.attributes()))
-                .toList(), result.attributes());
+        DhbClient.WaitShips result =
+                client.getWaitShips(connector(caller, connectorId), orderNumber);
+        store.persistRawLanding(
+                caller.tenantId(),
+                connectorId,
+                "WAIT_SHIPS",
+                firstNonBlank(result.orderNumber(), orderNumber),
+                null,
+                result.attributes());
+        return new WaitShipsView(
+                result.orderNumber(),
+                result.shipped().stream()
+                        .map(
+                                item ->
+                                        new WaitShipView(
+                                                item.sourceId(),
+                                                item.shipmentNo(),
+                                                item.status(),
+                                                item.logisticsName(),
+                                                item.logisticsCode(),
+                                                item.trackingNo(),
+                                                item.shipmentAt(),
+                                                item.stockUpAt(),
+                                                item.warehouseNo(),
+                                                item.warehouseName(),
+                                                item.lines().stream()
+                                                        .map(
+                                                                line ->
+                                                                        new com.rigour.integration
+                                                                                .api.v1.model
+                                                                                .DhbApiModels
+                                                                                .WaitShipLineView(
+                                                                                line.sourceLineId(),
+                                                                                line.orderLineId(),
+                                                                                line.productId(),
+                                                                                line.skuNo(),
+                                                                                line.listType(),
+                                                                                line.productCode(),
+                                                                                line.productName(),
+                                                                                line
+                                                                                        .specification(),
+                                                                                line.unit(),
+                                                                                line
+                                                                                        .containerUnit(),
+                                                                                line
+                                                                                        .conversionNumber(),
+                                                                                line.quantity(),
+                                                                                line.remark(),
+                                                                                line.attributes()))
+                                                        .toList(),
+                                                item.attributes()))
+                        .toList(),
+                result.waitStock().stream()
+                        .map(
+                                item ->
+                                        new WaitStockView(
+                                                item.sourceLineId(),
+                                                item.productId(),
+                                                item.skuNo(),
+                                                item.listType(),
+                                                item.productCode(),
+                                                item.productName(),
+                                                item.specification(),
+                                                item.unit(),
+                                                item.containerUnit(),
+                                                item.conversionNumber(),
+                                                item.warehouseNo(),
+                                                item.warehouseName(),
+                                                item.orderedQuantity(),
+                                                item.stockedQuantity(),
+                                                item.realStock(),
+                                                item.waitQuantity(),
+                                                item.remark(),
+                                                item.attributes()))
+                        .toList(),
+                result.attributes());
     }
 
     /** 查询订货宝退货单列表；读取成功后将技术原始字段落入 Integration Raw Landing。 */
     public ReturnPageView returns(UUID connectorId, ReturnQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        ReturnQuery query = command == null
-                ? ReturnQuery.first(100, null, null)
-                : new ReturnQuery(page(command.begin(), command.step()), command.status(), command.isApi(),
-                window("退货单创建时间", command.createdFrom(), command.createdTo()),
-                window("退货单更新时间", command.updatedFrom(), command.updatedTo()),
-                command.stockId(), command.stockNumber());
+        ReturnQuery query =
+                command == null
+                        ? ReturnQuery.first(100, null, null)
+                        : new ReturnQuery(
+                                page(command.begin(), command.step()),
+                                command.status(),
+                                command.isApi(),
+                                window("退货单创建时间", command.createdFrom(), command.createdTo()),
+                                window("退货单更新时间", command.updatedFrom(), command.updatedTo()),
+                                command.stockId(),
+                                command.stockNumber());
         Page<ReturnSummary> page = client.getReturns(connector(caller, connectorId), query);
-        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "RETURN", item.returnNumber() == null ? item.sourceId() : item.returnNumber(),
-                item.updatedAt(), item.attributes()));
-        return new ReturnPageView(page.total(), page.items().stream().map(this::returnView).toList());
+        page.items()
+                .forEach(
+                        item ->
+                                store.persistRawLanding(
+                                        caller.tenantId(),
+                                        connectorId,
+                                        "RETURN",
+                                        item.returnNumber() == null
+                                                ? item.sourceId()
+                                                : item.returnNumber(),
+                                        item.updatedAt(),
+                                        item.attributes()));
+        return new ReturnPageView(
+                page.total(), page.items().stream().map(this::returnView).toList());
     }
 
     /** 查询退货单明细；对应 getReturnsContent，结果同时保存到技术原始数据表。 */
@@ -647,82 +1226,203 @@ public final class DhbIntegrationService {
             throw new IllegalArgumentException("returnNumber is required");
         }
         ReturnDetail detail = client.getReturnContent(connector(caller, connectorId), returnNumber);
-        store.persistRawLanding(caller.tenantId(), connectorId, "RETURN_CONTENT",
+        store.persistRawLanding(
+                caller.tenantId(),
+                connectorId,
+                "RETURN_CONTENT",
                 detail.returnNumber() == null ? returnNumber : detail.returnNumber(),
-                detail.summary() == null ? null : detail.summary().updatedAt(), detail.attributes());
-        return new ReturnContentView(detail.returnNumber(), returnView(detail.summary()),
-                detail.lines().stream().map(item -> new ReturnLineView(item.sourceId(), item.productGuid(),
-                        item.skuNumber(), item.productCode(), item.productName(), item.quantity(),
-                        item.confirmedQuantity(), item.unitPrice(), item.confirmedPrice(), item.unit(),
-                        item.unitQuantity(), item.confirmedUnitQuantity(), item.conversionNumber(),
-                        item.remark(), item.warehouseNumber(), item.warehouseName(), item.warehouseGuid(),
-                        item.attributes())).toList(), detail.attributes());
+                detail.summary() == null ? null : detail.summary().updatedAt(),
+                detail.attributes());
+        return new ReturnContentView(
+                detail.returnNumber(),
+                returnView(detail.summary()),
+                detail.lines().stream()
+                        .map(
+                                item ->
+                                        new ReturnLineView(
+                                                item.sourceId(),
+                                                item.productGuid(),
+                                                item.skuNumber(),
+                                                item.productCode(),
+                                                item.productName(),
+                                                item.quantity(),
+                                                item.confirmedQuantity(),
+                                                item.unitPrice(),
+                                                item.confirmedPrice(),
+                                                item.unit(),
+                                                item.unitQuantity(),
+                                                item.confirmedUnitQuantity(),
+                                                item.conversionNumber(),
+                                                item.remark(),
+                                                item.warehouseNumber(),
+                                                item.warehouseName(),
+                                                item.warehouseGuid(),
+                                                item.attributes()))
+                        .toList(),
+                detail.attributes());
     }
 
     /** 查询订货宝收款单列表；对应 getReceiptsList，并保存技术原始字段。 */
     public ReceiptPageView receipts(UUID connectorId, ReceiptQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        ReceiptQuery query = command == null
-                ? ReceiptQuery.first(100)
-                : new ReceiptQuery(page(command.begin(), command.step()), command.orderNumber(),
-                window("收款单转账时间", command.createdFrom(), command.createdTo()),
-                command.updatedFrom(), command.status());
+        ReceiptQuery query =
+                command == null
+                        ? ReceiptQuery.first(100)
+                        : new ReceiptQuery(
+                                page(command.begin(), command.step()),
+                                command.orderNumber(),
+                                window("收款单转账时间", command.createdFrom(), command.createdTo()),
+                                command.updatedFrom(),
+                                command.status());
         Page<Receipt> page = client.getReceipts(connector(caller, connectorId), query);
-        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "RECEIPT", item.receiptNumber() == null ? item.sourceId() : item.receiptNumber(),
-                item.updatedAt() == null ? item.createdAt() : item.updatedAt(), item.attributes()));
-        return new ReceiptPageView(page.total(), page.items().stream().map(this::receiptView).toList());
+        page.items()
+                .forEach(
+                        item ->
+                                store.persistRawLanding(
+                                        caller.tenantId(),
+                                        connectorId,
+                                        "RECEIPT",
+                                        item.receiptNumber() == null
+                                                ? item.sourceId()
+                                                : item.receiptNumber(),
+                                        item.updatedAt() == null
+                                                ? item.createdAt()
+                                                : item.updatedAt(),
+                                        item.attributes()));
+        return new ReceiptPageView(
+                page.total(), page.items().stream().map(this::receiptView).toList());
     }
 
     /** 查询订货宝付款单列表；对应 getPaymentList，并保存技术原始字段。 */
     public PaymentPageView payments(UUID connectorId, PaymentQueryCommand command) {
         CallerIdentity caller = requireReadCaller();
-        PaymentQuery query = command == null
-                ? PaymentQuery.first(100)
-                : new PaymentQuery(page(command.begin(), command.step()), command.orderNumber(),
-                window("付款单转账时间", command.createdFrom(), command.createdTo()), command.status());
+        PaymentQuery query =
+                command == null
+                        ? PaymentQuery.first(100)
+                        : new PaymentQuery(
+                                page(command.begin(), command.step()),
+                                command.orderNumber(),
+                                window("付款单转账时间", command.createdFrom(), command.createdTo()),
+                                command.status());
         Page<Payment> page = client.getPayments(connector(caller, connectorId), query);
-        page.items().forEach(item -> store.persistRawLanding(caller.tenantId(), connectorId,
-                "PAYMENT", item.paymentNumber() == null ? item.sourceId() : item.paymentNumber(),
-                item.createdAt(), item.attributes()));
-        return new PaymentPageView(page.total(), page.items().stream().map(this::paymentView).toList());
+        page.items()
+                .forEach(
+                        item ->
+                                store.persistRawLanding(
+                                        caller.tenantId(),
+                                        connectorId,
+                                        "PAYMENT",
+                                        item.paymentNumber() == null
+                                                ? item.sourceId()
+                                                : item.paymentNumber(),
+                                        item.createdAt(),
+                                        item.attributes()));
+        return new PaymentPageView(
+                page.total(), page.items().stream().map(this::paymentView).toList());
     }
 
     private ReturnView returnView(ReturnSummary item) {
         if (item == null) {
             return null;
         }
-        return new ReturnView(item.sourceId(), item.returnNumber(), item.orderNumber(), item.status(),
-                item.staffName(), item.returnAmount(), item.settlementAmount(), item.returnedAt(),
-                item.updatedAt(), item.reason(), item.customerNumber(), item.customerGuid(), item.consignee(),
-                item.phone(), item.address(), item.logisticsCompany(), item.logisticsNumber(), item.returnType(),
-                item.deliveryMode(), item.attributes());
+        return new ReturnView(
+                item.sourceId(),
+                item.returnNumber(),
+                item.orderNumber(),
+                item.status(),
+                item.staffName(),
+                item.returnAmount(),
+                item.settlementAmount(),
+                item.returnedAt(),
+                item.updatedAt(),
+                item.reason(),
+                item.customerNumber(),
+                item.customerGuid(),
+                item.consignee(),
+                item.phone(),
+                item.address(),
+                item.logisticsCompany(),
+                item.logisticsNumber(),
+                item.returnType(),
+                item.deliveryMode(),
+                item.attributes());
     }
 
     private ReceiptView receiptView(Receipt item) {
-        return new ReceiptView(item.sourceId(), item.receiptNumber(), item.orderNumber(), item.customerNumber(),
-                item.customerGuid(), item.businessType(), item.paymentMethod(), item.amount(), item.status(),
-                item.transactionAt(), item.createdAt(), item.updatedAt(), item.serialNumber(), item.accountName(),
-                item.bankName(), item.accountNumber(), item.remark(), item.attributes());
+        return new ReceiptView(
+                item.sourceId(),
+                item.receiptNumber(),
+                item.orderNumber(),
+                item.customerNumber(),
+                item.customerGuid(),
+                item.businessType(),
+                item.paymentMethod(),
+                item.amount(),
+                item.status(),
+                item.transactionAt(),
+                item.createdAt(),
+                item.updatedAt(),
+                item.serialNumber(),
+                item.accountName(),
+                item.bankName(),
+                item.accountNumber(),
+                item.remark(),
+                item.attributes());
     }
 
     private PaymentView paymentView(Payment item) {
-        return new PaymentView(item.sourceId(), item.paymentNumber(), item.receiptNumber(), item.orderNumber(),
-                item.customerNumber(), item.customerGuid(), item.businessType(), item.paymentMethod(),
-                item.amount(), item.status(), item.transactionAt(), item.createdAt(), item.serialNumber(),
-                item.accountName(), item.bankName(), item.accountNumber(), item.remark(), item.attributes());
+        return new PaymentView(
+                item.sourceId(),
+                item.paymentNumber(),
+                item.receiptNumber(),
+                item.orderNumber(),
+                item.customerNumber(),
+                item.customerGuid(),
+                item.businessType(),
+                item.paymentMethod(),
+                item.amount(),
+                item.status(),
+                item.transactionAt(),
+                item.createdAt(),
+                item.serialNumber(),
+                item.accountName(),
+                item.bankName(),
+                item.accountNumber(),
+                item.remark(),
+                item.attributes());
     }
 
     public List<SyncTaskView> syncTasks() {
         CallerIdentity caller = requireReadCaller();
-        return store.syncTasks(caller.tenantId());
+        Map<UUID, ConnectorView> sources = new LinkedHashMap<>();
+        for (ConnectorView connector : store.connectors(caller.tenantId()))
+            sources.put(connector.id(), connector);
+        return store.syncTasks(caller.tenantId()).stream()
+                .map(
+                        task ->
+                                new SyncTaskView(
+                                        task.id(),
+                                        task.tenantId(),
+                                        task.connectorId(),
+                                        task.code(),
+                                        task.objectType(),
+                                        task.status(),
+                                        task.lastRunAt(),
+                                        task.nextRunAt(),
+                                        task.version(),
+                                        sources.containsKey(task.connectorId())
+                                                ? sources.get(task.connectorId()).name()
+                                                : null,
+                                        sources.containsKey(task.connectorId())
+                                                ? sources.get(task.connectorId()).status()
+                                                : null))
+                .toList();
     }
 
     /**
      * 返回供领域服务使用的全局订货宝同步目标。
      *
-     * <p>该用例只接受服务身份，避免把跨租户目标发现伪装成某个租户用户；具体租户的
-     * 后续查询由Order Center或ERP使用带tenantId的服务身份执行。</p>
+     * <p>该用例只接受服务身份，避免把跨租户目标发现伪装成某个租户用户；具体租户的 后续查询由Order Center或ERP使用带tenantId的服务身份执行。
      */
     public List<SyncTargetView> syncTargets(String objectType) {
         requireServiceCaller();
@@ -732,8 +1432,7 @@ public final class DhbIntegrationService {
     /**
      * 领域服务在同步完成后登记来源对象到新业务表对象的映射。
      *
-     * <p>该入口允许租户级服务身份调用，但仍要求 {@code integration:dhb:write} 权限；
-     * 普通控制面写接口仍保留 userId 校验。</p>
+     * <p>该入口允许租户级服务身份调用，但仍要求 {@code integration:dhb:write} 权限； 普通控制面写接口仍保留 userId 校验。
      */
     public ExternalObjectMappingBatchResult upsertObjectMappings(
             ExternalObjectMappingBatchCommand command) {
@@ -741,8 +1440,12 @@ public final class DhbIntegrationService {
         List<com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand> items =
                 command == null ? List.of() : command.items();
         UUID actorId = caller.userId() == null ? caller.principalId() : caller.userId();
-        int accepted = store.saveExternalObjectMappings(caller.tenantId(), actorId, items,
-                "SERVICE".equals(caller.principalScope()));
+        int accepted =
+                store.saveExternalObjectMappings(
+                        caller.tenantId(),
+                        actorId,
+                        items,
+                        "SERVICE".equals(caller.principalScope()));
         return new ExternalObjectMappingBatchResult(items.size(), accepted);
     }
 
@@ -764,8 +1467,8 @@ public final class DhbIntegrationService {
 
     public List<OrderMirrorView> orderMirrors(int limit, int offset) {
         CallerIdentity caller = requireReadCaller();
-        return store.orderMirrors(caller.tenantId(), Math.max(1, Math.min(limit, 200)),
-                Math.max(0, offset));
+        return store.orderMirrors(
+                caller.tenantId(), Math.max(1, Math.min(limit, 200)), Math.max(0, offset));
     }
 
     public List<SyncLogView> syncLogs(int limit) {
@@ -789,10 +1492,19 @@ public final class DhbIntegrationService {
     }
 
     public DhbExternalObjectMappingPageView externalObjectMappings(
-            String sourceObjectType, String internalDomain, String mappingStatus, int limit, int offset) {
+            String sourceObjectType,
+            String internalDomain,
+            String mappingStatus,
+            int limit,
+            int offset) {
         CallerIdentity caller = requireReadCaller();
-        return store.externalObjectMappings(caller.tenantId(), sourceObjectType, internalDomain,
-                mappingStatus, limit(limit, 200), Math.max(0, offset));
+        return store.externalObjectMappings(
+                caller.tenantId(),
+                sourceObjectType,
+                internalDomain,
+                mappingStatus,
+                limit(limit, 200),
+                Math.max(0, offset));
     }
 
     public List<DhbSyncRunAuditView> syncRuns(String objectType, String status, int limit) {
@@ -813,46 +1525,72 @@ public final class DhbIntegrationService {
     public List<DhbSyncReconciliationCaseView> syncReconciliationCases(
             String status, String severity, int limit) {
         CallerIdentity caller = requireReadCaller();
-        return store.syncReconciliationCases(caller.tenantId(), status, severity, limit(limit, 500));
+        return store.syncReconciliationCases(
+                caller.tenantId(), status, severity, limit(limit, 500));
     }
 
     public List<DhbSyncOpenIssueGroupView> openIssues(int limit) {
         CallerIdentity caller = requireReadCaller();
         int cappedLimit = limit(limit, 500);
-        List<DhbSyncExceptionView> exceptions = store.syncExceptions(caller.tenantId(), "OPEN", cappedLimit);
+        List<DhbSyncExceptionView> exceptions =
+                store.syncExceptions(caller.tenantId(), "OPEN", cappedLimit);
+        if (exceptions.isEmpty()) return List.of();
         Map<IssueSourceKey, DhbSyncReconciliationCaseView> reconciliations =
-                latestOpenErrorReconciliations(caller.tenantId(), cappedLimit);
-        Map<UUID, DhbSyncRunAuditView> runsById = latestRunsById(caller.tenantId(), cappedLimit);
+                latestOpenErrorReconciliations(caller.tenantId(), exceptions);
+        Map<UUID, DhbSyncRunAuditView> runsById = latestRunsById(caller.tenantId(), exceptions);
         Map<IssueGroupKey, IssueGroupAccumulator> groups = new LinkedHashMap<>();
         for (DhbSyncExceptionView exception : exceptions) {
-            IssueSourceKey sourceKey = new IssueSourceKey(
-                    exception.sourceObjectType(), exception.sourceId());
+            IssueSourceKey sourceKey =
+                    new IssueSourceKey(
+                            exception.runId(), exception.sourceObjectType(), exception.sourceId());
             DhbSyncReconciliationCaseView reconciliation = reconciliations.get(sourceKey);
-            List<String> candidateSourceIds = candidateReceipts(
-                    reconciliation == null ? null : reconciliation.actualValueJson());
-            OpenIssueClassification classification = classifyOpenIssue(
-                    exception.sourceObjectType(), exception.lastErrorCode(), candidateSourceIds);
-            IssueGroupKey groupKey = new IssueGroupKey(classification.category(),
-                    exception.sourceObjectType(), exception.lastErrorCode());
-            IssueGroupAccumulator group = groups.computeIfAbsent(groupKey,
-                    ignored -> new IssueGroupAccumulator(classification, exception));
-            group.add(exception, reconciliation, runsById.get(exception.runId()), candidateSourceIds);
+            List<String> candidateSourceIds =
+                    candidateReceipts(
+                            reconciliation == null ? null : reconciliation.actualValueJson());
+            OpenIssueClassification classification =
+                    classifyOpenIssue(
+                            exception.sourceObjectType(),
+                            exception.lastErrorCode(),
+                            candidateSourceIds);
+            IssueGroupKey groupKey =
+                    new IssueGroupKey(
+                            classification.category(),
+                            exception.sourceObjectType(),
+                            exception.lastErrorCode());
+            IssueGroupAccumulator group =
+                    groups.computeIfAbsent(
+                            groupKey,
+                            ignored -> new IssueGroupAccumulator(classification, exception));
+            group.add(
+                    exception, reconciliation, runsById.get(exception.runId()), candidateSourceIds);
         }
         return groups.values().stream()
                 .map(IssueGroupAccumulator::view)
-                .sorted(Comparator
-                        .comparingInt((DhbSyncOpenIssueGroupView group) -> actionPriority(group.actionType()))
-                        .thenComparing(DhbSyncOpenIssueGroupView::sourceObjectType)
-                        .thenComparing(DhbSyncOpenIssueGroupView::errorCode,
-                                Comparator.nullsLast(String::compareTo)))
+                .sorted(
+                        Comparator.comparingInt(
+                                        (DhbSyncOpenIssueGroupView group) ->
+                                                actionPriority(group.actionType()))
+                                .thenComparing(DhbSyncOpenIssueGroupView::sourceObjectType)
+                                .thenComparing(
+                                        DhbSyncOpenIssueGroupView::errorCode,
+                                        Comparator.nullsLast(String::compareTo)))
                 .toList();
     }
 
     public List<DhbManualResolutionView> manualResolutions(
-            String resolutionType, String sourceObjectType, String sourceId, String status, int limit) {
+            String resolutionType,
+            String sourceObjectType,
+            String sourceId,
+            String status,
+            int limit) {
         CallerIdentity caller = requireReadCaller();
-        return store.manualResolutions(caller.tenantId(), resolutionType, sourceObjectType,
-                sourceId, status, limit(limit, 500));
+        return store.manualResolutions(
+                caller.tenantId(),
+                resolutionType,
+                sourceObjectType,
+                sourceId,
+                status,
+                limit(limit, 500));
     }
 
     public DhbManualResolutionView createManualResolution(DhbManualResolutionCommand command) {
@@ -861,19 +1599,24 @@ public final class DhbIntegrationService {
     }
 
     private Map<IssueSourceKey, DhbSyncReconciliationCaseView> latestOpenErrorReconciliations(
-            UUID tenantId, int limit) {
+            UUID tenantId, List<DhbSyncExceptionView> exceptions) {
         Map<IssueSourceKey, DhbSyncReconciliationCaseView> result = new LinkedHashMap<>();
-        for (DhbSyncReconciliationCaseView row
-                : store.syncReconciliationCases(tenantId, "OPEN", "ERROR", limit)) {
-            IssueSourceKey key = new IssueSourceKey(row.sourceObjectType(), row.businessKey());
+        for (DhbSyncReconciliationCaseView row : store.openReconciliations(tenantId, exceptions)) {
+            IssueSourceKey key =
+                    new IssueSourceKey(row.runId(), row.sourceObjectType(), row.businessKey());
             result.putIfAbsent(key, row);
         }
         return result;
     }
 
-    private Map<UUID, DhbSyncRunAuditView> latestRunsById(UUID tenantId, int limit) {
+    private Map<UUID, DhbSyncRunAuditView> latestRunsById(
+            UUID tenantId, List<DhbSyncExceptionView> exceptions) {
         Map<UUID, DhbSyncRunAuditView> result = new LinkedHashMap<>();
-        for (DhbSyncRunAuditView row : store.syncRuns(tenantId, null, null, limit)) {
+        Set<UUID> runIds = new LinkedHashSet<>();
+        for (DhbSyncExceptionView exception : exceptions) {
+            if (exception.runId() != null) runIds.add(exception.runId());
+        }
+        for (DhbSyncRunAuditView row : store.syncRunsByIds(tenantId, runIds)) {
             result.putIfAbsent(row.runId(), row);
         }
         return result;
@@ -884,8 +1627,8 @@ public final class DhbIntegrationService {
             return List.of();
         }
         try {
-            Object value = OBJECT_MAPPER.readValue(actualValueJson, Map.class)
-                    .get("candidateReceipts");
+            Object value =
+                    OBJECT_MAPPER.readValue(actualValueJson, Map.class).get("candidateReceipts");
             if (!(value instanceof List<?> rows)) {
                 return List.of();
             }
@@ -907,60 +1650,105 @@ public final class DhbIntegrationService {
         int candidateCount = candidateSourceIds == null ? 0 : candidateSourceIds.size();
         if ("DHB_TRANSFER_INBOUND_AMBIGUOUS".equals(normalizedCode)) {
             if (candidateCount > 1) {
-                return new OpenIssueClassification("MANUAL_TRANSFER_INBOUND",
-                        "调拨入库真歧义", "MANUAL_RESOLUTION",
+                return new OpenIssueClassification(
+                        "MANUAL_TRANSFER_INBOUND",
+                        "调拨入库真歧义",
+                        "MANUAL_RESOLUTION",
                         "从候选入库单中人工确认正确单据，保存裁决后单对象重放。",
-                        true, true, "WAREHOUSING_RECEIPT");
+                        true,
+                        true,
+                        "WAREHOUSING_RECEIPT");
             }
-            return new OpenIssueClassification("REPLAY_READY",
-                    "调拨候选已可确定", "REPLAY_AFTER_CODE_FIX",
+            return new OpenIssueClassification(
+                    "REPLAY_READY",
+                    "调拨候选已可确定",
+                    "REPLAY_AFTER_CODE_FIX",
                     "候选入库单已唯一，直接单对象重放收敛历史死信。",
-                    false, true, "WAREHOUSING_RECEIPT");
+                    false,
+                    true,
+                    "WAREHOUSING_RECEIPT");
         }
         if ("DHB_SHIPMENT_SOURCE_ORDER_UNAVAILABLE".equals(normalizedCode)
                 || "DHB_SHIPMENT_SOURCE_ORDER_MISMATCH".equals(normalizedCode)) {
-            return new OpenIssueClassification("SOURCE_ORDER_REQUIRED", "原销售单待核对", "REPLAY_AFTER_MAPPING",
-                    "按发货单中的原销售单号核对订货宝原单，资料补齐后只重试本发货单。", false, replaySupported(sourceObjectType), null);
+            return new OpenIssueClassification(
+                    "SOURCE_ORDER_REQUIRED",
+                    "原销售单待核对",
+                    "REPLAY_AFTER_MAPPING",
+                    "按发货单中的原销售单号核对订货宝原单，资料补齐后只重试本发货单。",
+                    false,
+                    replaySupported(sourceObjectType),
+                    null);
         }
         if ("DHB_ORDER_MAPPING_MISSING".equals(normalizedCode)) {
-            return new OpenIssueClassification("MAPPING_REQUIRED", "资料来源关联待补齐", "FIX_MAPPING",
+            return new OpenIssueClassification(
+                    "MAPPING_REQUIRED",
+                    "资料来源关联待补齐",
+                    "FIX_MAPPING",
                     "按原因中的资料名称和来源编码核对客户、仓库或商品档案；自动补同步仍未关联时处理冲突，再重试本单。",
-                    false, replaySupported(sourceObjectType), null);
+                    false,
+                    replaySupported(sourceObjectType),
+                    null);
         }
         if (normalizedCode.endsWith("IDENTITY_CONFLICT")) {
-            return new OpenIssueClassification("IDENTITY_CONFLICT", "资料来源关联冲突", "FIX_MAPPING",
-                    "同一来源资料指向多个本系统对象，须核对来源关联后重试，不能按名称自动改绑。", true, replaySupported(sourceObjectType), null);
+            return new OpenIssueClassification(
+                    "IDENTITY_CONFLICT",
+                    "资料来源关联冲突",
+                    "FIX_MAPPING",
+                    "同一来源资料指向多个本系统对象，须核对来源关联后重试，不能按名称自动改绑。",
+                    true,
+                    replaySupported(sourceObjectType),
+                    null);
         }
         if (normalizedCode.contains("WAREHOUSE_MAPPING_MISSING")) {
-            return new OpenIssueClassification("MAPPING_REQUIRED",
-                    "仓库映射缺失", "FIX_MAPPING",
+            return new OpenIssueClassification(
+                    "MAPPING_REQUIRED",
+                    "仓库映射缺失",
+                    "FIX_MAPPING",
                     "先补齐订货宝仓库到我方仓库映射，再按来源单号重放。",
-                    false, replaySupported(sourceObjectType), null);
+                    false,
+                    replaySupported(sourceObjectType),
+                    null);
         }
         if ("DHB_ORDER_BUSINESS_TIME_MISSING".equals(normalizedCode)) {
-            return new OpenIssueClassification("SOURCE_TIME_REQUIRED",
-                    "来源业务时间缺失", "FIX_SOURCE_TIME",
+            return new OpenIssueClassification(
+                    "SOURCE_TIME_REQUIRED",
+                    "来源业务时间缺失",
+                    "FIX_SOURCE_TIME",
                     "回查订货宝 Raw 或接口补稳定业务时间；不能用系统当前时间兜底。",
-                    false, replaySupported(sourceObjectType), null);
+                    false,
+                    replaySupported(sourceObjectType),
+                    null);
         }
         if ("DHB_SHIPMENT_ORDER_MAPPING_MISSING".equals(normalizedCode)
                 || "DHB_RECEIPT_ORDER_MAPPING_PENDING".equals(normalizedCode)) {
-            return new OpenIssueClassification("ORDER_MAPPING_REQUIRED",
-                    "订单映射待恢复", "REPLAY_AFTER_MAPPING",
+            return new OpenIssueClassification(
+                    "ORDER_MAPPING_REQUIRED",
+                    "订单映射待恢复",
+                    "REPLAY_AFTER_MAPPING",
                     "先恢复销售订单映射，再重放发货或回款以补齐业务关联。",
-                    false, replaySupported(sourceObjectType), null);
+                    false,
+                    replaySupported(sourceObjectType),
+                    null);
         }
         if ("DHB_SHIPMENT_ORDER_NO_MISSING".equals(normalizedCode)
                 || "DHB_SHIPMENT_PROJECTION_FAILED".equals(normalizedCode)) {
-            return new OpenIssueClassification("SOURCE_OR_CODE_REPAIR",
-                    "发货源字段或投影失败", "CODE_REPAIR",
+            return new OpenIssueClassification(
+                    "SOURCE_OR_CODE_REPAIR",
+                    "发货源字段或投影失败",
+                    "CODE_REPAIR",
                     "逐条核对 Raw 和目标服务校验；确认稳定字段后修解析或领域校验再重放。",
-                    false, replaySupported(sourceObjectType), null);
+                    false,
+                    replaySupported(sourceObjectType),
+                    null);
         }
-        return new OpenIssueClassification("UNKNOWN",
-                "待排查同步异常", "INVESTIGATE",
+        return new OpenIssueClassification(
+                "UNKNOWN",
+                "待排查同步异常",
+                "INVESTIGATE",
                 "先查看 Raw、对账差异和最近运行日志，确认归因后再处理。",
-                false, replaySupported(sourceObjectType), null);
+                false,
+                replaySupported(sourceObjectType),
+                null);
     }
 
     private static boolean replaySupported(String sourceObjectType) {
@@ -981,8 +1769,8 @@ public final class DhbIntegrationService {
 
     private DhbClient.Connector connector(CallerIdentity caller, UUID connectorId) {
         ConnectorView connector = store.connector(caller.tenantId(), connectorId);
-        return new DhbClient.Connector(caller.tenantId(), connector.id(), connector.baseUrl(),
-                connector.authSecretRef());
+        return new DhbClient.Connector(
+                caller.tenantId(), connector.id(), connector.baseUrl(), connector.authSecretRef());
     }
 
     private static PageRequest page(Integer begin, Integer step) {
@@ -994,10 +1782,14 @@ public final class DhbIntegrationService {
     }
 
     private static DhbSyncFieldDescriptionView field(
-            String groupCode, String fieldCode, String fieldName, String description,
-            String example, boolean sensitive) {
-        return new DhbSyncFieldDescriptionView(groupCode, fieldCode, fieldName,
-                description, example, sensitive);
+            String groupCode,
+            String fieldCode,
+            String fieldName,
+            String description,
+            String example,
+            boolean sensitive) {
+        return new DhbSyncFieldDescriptionView(
+                groupCode, fieldCode, fieldName, description, example, sensitive);
     }
 
     private static TimeWindow window(String field, java.time.Instant from, java.time.Instant to) {
@@ -1019,32 +1811,73 @@ public final class DhbIntegrationService {
 
     private static CustomerView crmCustomer(Customer item) {
         Map<String, Object> source = item.attributes();
-        return new CustomerView(item.sourceId(), sourceText(source, "clientGUID"),
-                item.account(), item.name(), item.number(), sourceText(source, "clientType"),
-                sourceText(source, "clientArea"), sourceText(source, "clientAreaGUID"),
-                sourceText(source, "clientAbout"), sourceText(source, "clientTrueName"),
-                sourceText(source, "clientEmail"), sourceText(source, "clientPhone"),
-                sourceText(source, "clientAdd"), sourceText(source, "staffName"),
-                sourceText(source, "clientTypeName"), sourceText(source, "clientAreaName"),
-                sourceText(source, "Inviter"), sourceText(source, "staffID"), item.createdAt(),
-                item.updatedAt(), item.status(), sourceText(source, "clientClearingForm"),
-                sourceText(source, "clientCity"), source);
+        return new CustomerView(
+                item.sourceId(),
+                sourceText(source, "clientGUID"),
+                item.account(),
+                item.name(),
+                item.number(),
+                sourceText(source, "clientType"),
+                sourceText(source, "clientArea"),
+                sourceText(source, "clientAreaGUID"),
+                sourceText(source, "clientAbout"),
+                sourceText(source, "clientTrueName"),
+                sourceText(source, "clientEmail"),
+                sourceText(source, "clientPhone"),
+                sourceText(source, "clientAdd"),
+                sourceText(source, "staffName"),
+                sourceText(source, "clientTypeName"),
+                sourceText(source, "clientAreaName"),
+                sourceText(source, "Inviter"),
+                sourceText(source, "staffID"),
+                item.createdAt(),
+                item.updatedAt(),
+                item.status(),
+                sourceText(source, "clientClearingForm"),
+                sourceText(source, "clientCity"),
+                source);
     }
 
     private static ShippingAddressView shippingAddressView(ShippingAddress item) {
-        return new ShippingAddressView(item.sourceId(), item.addressId(),
-                item.addressGuid(), item.clientId(), item.clientGuid(), item.clientNumber(),
-                item.consignee(), item.contact(), item.phone(), item.regionText(),
-                item.defaultAddress(), item.updatedAt(), item.addressDetail(), item.areaName(),
+        return new ShippingAddressView(
+                item.sourceId(),
+                item.addressId(),
+                item.addressGuid(),
+                item.clientId(),
+                item.clientGuid(),
+                item.clientNumber(),
+                item.consignee(),
+                item.contact(),
+                item.phone(),
+                item.regionText(),
+                item.defaultAddress(),
+                item.updatedAt(),
+                item.addressDetail(),
+                item.areaName(),
                 item.attributes());
     }
 
     private static StaffView staffView(Staff item) {
-        return new StaffView(item.sourceId(), item.staffId(), item.accountId(),
-                item.staffType(), item.accountName(), item.staffName(), item.title(),
-                item.branchName(), item.accountMobile(), item.remark(), item.roleName(),
-                item.inviteCode(), item.mobile(), item.email(), item.qq(), item.status(),
-                item.createdAt(), item.updatedAt(), item.attributes());
+        return new StaffView(
+                item.sourceId(),
+                item.staffId(),
+                item.accountId(),
+                item.staffType(),
+                item.accountName(),
+                item.staffName(),
+                item.title(),
+                item.branchName(),
+                item.accountMobile(),
+                item.remark(),
+                item.roleName(),
+                item.inviteCode(),
+                item.mobile(),
+                item.email(),
+                item.qq(),
+                item.status(),
+                item.createdAt(),
+                item.updatedAt(),
+                item.attributes());
     }
 
     private static String sourceText(Map<String, Object> values, String key) {
@@ -1055,16 +1888,17 @@ public final class DhbIntegrationService {
     }
 
     record OpenIssueClassification(
-            String category, String title, String actionType, String handlingAdvice,
-            boolean manualResolutionRequired, boolean replaySupported,
-            String candidateSourceObjectType) {
-    }
+            String category,
+            String title,
+            String actionType,
+            String handlingAdvice,
+            boolean manualResolutionRequired,
+            boolean replaySupported,
+            String candidateSourceObjectType) {}
 
-    private record IssueSourceKey(String sourceObjectType, String sourceId) {
-    }
+    private record IssueSourceKey(UUID runId, String sourceObjectType, String sourceId) {}
 
-    private record IssueGroupKey(String category, String sourceObjectType, String errorCode) {
-    }
+    private record IssueGroupKey(String category, String sourceObjectType, String errorCode) {}
 
     private static final class IssueGroupAccumulator {
         private final OpenIssueClassification classification;
@@ -1079,45 +1913,61 @@ public final class DhbIntegrationService {
             this.errorCode = first.lastErrorCode();
         }
 
-        void add(DhbSyncExceptionView exception, DhbSyncReconciliationCaseView reconciliation,
-                 DhbSyncRunAuditView run, List<String> candidateSourceIds) {
+        void add(
+                DhbSyncExceptionView exception,
+                DhbSyncReconciliationCaseView reconciliation,
+                DhbSyncRunAuditView run,
+                List<String> candidateSourceIds) {
             recordCount++;
             String sourceId = exception.sourceId();
-            if (items.containsKey(sourceId)) {
+            String itemKey = (run == null ? exception.runId() : run.connectorId()) + ":" + sourceId;
+            if (items.containsKey(itemKey)) {
                 return;
             }
-            var required = DhbDependencyRequirement.from(exception.lastErrorCode(),
-                    reconciliation == null ? null : reconciliation.expectedValueJson(),
-                    reconciliation == null ? null : reconciliation.actualValueJson());
-            items.put(sourceId, new DhbSyncOpenIssueItemView(
-                    exception.sourceObjectType(),
-                    sourceId,
-                    run == null ? null : run.connectorId(),
-                    exception.runId(),
-                    exception.lastErrorCode(),
-                    exception.lastErrorMessage(),
-                    reconciliation == null ? null : reconciliation.checkType(),
-                    classification.candidateSourceObjectType(),
-                    candidateSourceIds,
-                    classification.manualResolutionRequired(),
-                    classification.replaySupported(),
-                    classification.handlingAdvice(),
-                    exception.updatedAt(), required == null ? null : required.type(),
-                    required == null ? null : required.sourceId(), required == null ? null : required.salesOrderNo()));
+            var required =
+                    DhbDependencyRequirement.from(
+                            exception.lastErrorCode(),
+                            reconciliation == null ? null : reconciliation.expectedValueJson(),
+                            reconciliation == null ? null : reconciliation.actualValueJson());
+            items.put(
+                    itemKey,
+                    new DhbSyncOpenIssueItemView(
+                            exception.sourceObjectType(),
+                            sourceId,
+                            run == null ? null : run.connectorId(),
+                            exception.runId(),
+                            exception.lastErrorCode(),
+                            exception.lastErrorMessage(),
+                            reconciliation == null ? null : reconciliation.checkType(),
+                            classification.candidateSourceObjectType(),
+                            candidateSourceIds,
+                            classification.manualResolutionRequired(),
+                            classification.replaySupported(),
+                            classification.handlingAdvice(),
+                            exception.updatedAt(),
+                            required == null ? null : required.type(),
+                            required == null ? null : required.sourceId(),
+                            required == null ? null : required.salesOrderNo()));
         }
 
         DhbSyncOpenIssueGroupView view() {
             List<DhbSyncOpenIssueItemView> sortedItems = new ArrayList<>(items.values());
-            sortedItems.sort((left, right) -> {
-                if (left.updatedAt() == null && right.updatedAt() == null) return 0;
-                if (left.updatedAt() == null) return 1;
-                if (right.updatedAt() == null) return -1;
-                return right.updatedAt().compareTo(left.updatedAt());
-            });
+            sortedItems.sort(
+                    (left, right) -> {
+                        if (left.updatedAt() == null && right.updatedAt() == null) return 0;
+                        if (left.updatedAt() == null) return 1;
+                        if (right.updatedAt() == null) return -1;
+                        return right.updatedAt().compareTo(left.updatedAt());
+                    });
             return new DhbSyncOpenIssueGroupView(
-                    classification.category(), sourceObjectType, errorCode,
-                    classification.title(), classification.actionType(),
-                    recordCount, sortedItems.size(), classification.handlingAdvice(),
+                    classification.category(),
+                    sourceObjectType,
+                    errorCode,
+                    classification.title(),
+                    classification.actionType(),
+                    recordCount,
+                    sortedItems.size(),
+                    classification.handlingAdvice(),
                     sortedItems);
         }
     }
@@ -1155,10 +2005,14 @@ public final class DhbIntegrationService {
     }
 
     private static void requireTenant(CallerIdentity caller) {
-        boolean tenantCaller = "TENANT".equals(caller.principalScope())
-                && caller.tenantId() != null && caller.userId() != null;
-        boolean tenantScopedService = "SERVICE".equals(caller.principalScope())
-                && caller.tenantId() != null && caller.userId() == null;
+        boolean tenantCaller =
+                "TENANT".equals(caller.principalScope())
+                        && caller.tenantId() != null
+                        && caller.userId() != null;
+        boolean tenantScopedService =
+                "SERVICE".equals(caller.principalScope())
+                        && caller.tenantId() != null
+                        && caller.userId() == null;
         if (!tenantCaller && !tenantScopedService) {
             throw new com.rigour.shared.context.AuthorizationDeniedException("tenant-caller");
         }
@@ -1166,8 +2020,10 @@ public final class DhbIntegrationService {
 
     private static CallerIdentity requireServiceCaller() {
         CallerIdentity caller = AuthorizationContext.requireCurrent();
-        if (!"SERVICE".equals(caller.principalScope()) || caller.tenantId() != null
-                || caller.userId() != null || caller.platformUserId() != null) {
+        if (!"SERVICE".equals(caller.principalScope())
+                || caller.tenantId() != null
+                || caller.userId() != null
+                || caller.platformUserId() != null) {
             throw new com.rigour.shared.context.AuthorizationDeniedException("service-caller");
         }
         AuthorizationContext.requirePermission("integration:dhb:sync-discovery");

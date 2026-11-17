@@ -9,35 +9,42 @@ import java.util.List;
 
 class LogisticsCostRulesTest {
     @Test
-    void pendingAmountIsDifferentFromConfirmedZero() {
-        assertThatCode(() -> LogisticsCostRules.money(null, false)).doesNotThrowAnyException();
-        assertThatThrownBy(() -> LogisticsCostRules.transition("DRAFT", "CONFIRM", null, "已核对"))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(
-                        () ->
-                                LogisticsCostRules.transition(
-                                        "DRAFT", "CONFIRM", BigDecimal.ZERO, ""))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatCode(
-                        () ->
-                                LogisticsCostRules.transition(
-                                        "DRAFT", "CONFIRM", BigDecimal.ZERO, "供应商免运费"))
+    void savedRecordsAreEditableAndOldConfirmationActionsAreRejected() {
+        assertThatCode(() -> LogisticsCostRules.transition("ACTIVE", "UPDATE", BigDecimal.TEN, ""))
                 .doesNotThrowAnyException();
+        assertThatCode(() -> LogisticsCostRules.transition("ACTIVE", "UPDATE", null, ""))
+                .doesNotThrowAnyException();
+        for (String action : List.of("CONFIRM", "REVOKE"))
+            assertThatThrownBy(
+                            () ->
+                                    LogisticsCostRules.transition(
+                                            "ACTIVE", action, BigDecimal.TEN, "说明"))
+                    .hasMessageContaining("无需确认");
+        assertThatThrownBy(
+                        () -> LogisticsCostRules.transition("VOID", "UPDATE", BigDecimal.TEN, "说明"))
+                .hasMessageContaining("仅有效");
     }
 
     @Test
-    void confirmedEditsAndVoidsRequireReason() {
+    void voidAndDeleteStillRequireReasonsAndCorrectStates() {
+        assertThatThrownBy(
+                        () -> LogisticsCostRules.transition("ACTIVE", "VOID", BigDecimal.TEN, " "))
+                .hasMessageContaining("原因");
+        assertThatCode(
+                        () ->
+                                LogisticsCostRules.transition(
+                                        "ACTIVE", "VOID", BigDecimal.TEN, "重复登记"))
+                .doesNotThrowAnyException();
+        assertThatCode(
+                        () ->
+                                LogisticsCostRules.transition(
+                                        "VOID", "DELETE", BigDecimal.TEN, "清理作废单"))
+                .doesNotThrowAnyException();
         assertThatThrownBy(
                         () ->
                                 LogisticsCostRules.transition(
-                                        "CONFIRMED", "UPDATE", BigDecimal.TEN, ""))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(
-                        () -> LogisticsCostRules.transition("DRAFT", "VOID", BigDecimal.TEN, " "))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(
-                        () -> LogisticsCostRules.transition("VOID", "UPDATE", BigDecimal.TEN, "纠正"))
-                .isInstanceOf(IllegalArgumentException.class);
+                                        "ACTIVE", "DELETE", BigDecimal.TEN, "说明"))
+                .hasMessageContaining("仅已作废");
     }
 
     @Test

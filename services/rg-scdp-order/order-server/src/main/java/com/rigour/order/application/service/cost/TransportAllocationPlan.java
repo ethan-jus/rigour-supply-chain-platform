@@ -12,7 +12,7 @@ import com.rigour.shared.core.math.MoneyAllocation;
 import java.math.BigDecimal;
 import java.util.*;
 
-/** 同一运输只分配一次总额；默认建议、人工调整及确认使用同一份金额计划。 */
+/** 同一运输只分配一次总额；保存、修改及来源刷新使用同一份金额计划。 */
 public final class TransportAllocationPlan {
     private TransportAllocationPlan() {}
 
@@ -26,17 +26,17 @@ public final class TransportAllocationPlan {
         return new Detail(row, platform, shipments, savedShares(row, platform));
     }
 
-    /** 待确认平台记录从业务草稿读取分摊；已确认始终读取冻结的台账，不能跟随最新平台金额。 */
+    /** 已有台账始终读取保存的成本分摊；历史无台账的来源记录才从关联信息恢复。 */
     public static Map<String, BigDecimal> savedShares(
             LogisticsCostDetailView row, PlatformRecord platform) {
         var ledger = row.data().ledger();
-        if (platform != null && "DRAFT".equals(row.statusCode()) && platform.draft() != null) {
+        if (ledger == null && platform != null && platform.draft() != null) {
             var draft = platform.draft();
             var source =
                     platform.source().latestOrder() == null
                             ? platform.source().order()
                             : platform.source().latestOrder();
-            var amount = source.facts() == null ? null : source.facts().billAmount();
+            var amount = row.data().amount();
             var snapshots =
                     row.sources() == null ? List.<LogisticsCostSourceView>of() : row.sources();
             if ((snapshots.isEmpty() || snapshots.stream().anyMatch(s -> s.documentNo() == null))
@@ -90,6 +90,74 @@ public final class TransportAllocationPlan {
                                         .reduce(BigDecimal.ZERO, BigDecimal::add));
             }
         return Collections.unmodifiableMap(shares);
+    }
+
+    /** 平台自动金额变化仅适用于未人工干预的单项运费，按原业务金额基数重算并守恒。 */
+    public static com.rigour.order.api.v1.model.LogisticsCostCommand reprice(
+            com.rigour.order.api.v1.model.LogisticsCostCommand command, BigDecimal total) {
+        if (Objects.equals(command.amount(), total)) return command;
+        var ledger = command.ledger();
+        if (ledger == null) return command.withLedger(null, total);
+        if (complex(ledger)) throw bad("已有自定义费用分摊，来源同步不能重算成本");
+        var links =
+                ledger.sources().stream()
+                        .sorted(Comparator.comparing(LogisticsCostLedger.Source::orderCode))
+                        .toList();
+        boolean weighted =
+                links.size() > 1
+                        && links.stream()
+                                .allMatch(
+                                        s ->
+                                                s.documentAmount() != null
+                                                        && s.documentAmount().signum() > 0);
+        var weights =
+                links.stream().map(s -> weighted ? s.documentAmount() : BigDecimal.ONE).toList();
+        var values =
+                links.isEmpty() || total == null
+                        ? List.<BigDecimal>of()
+                        : MoneyAllocation.split(total, weights);
+        var result = new ArrayList<LogisticsCostLedger.Source>();
+        for (int i = 0; i < links.size(); i++) {
+            var s = links.get(i);
+            var a = s.allocations().getFirst();
+            result.add(
+                    new LogisticsCostLedger.Source(
+                            s.orderTypeCode(),
+                            s.orderCode(),
+                            s.linkRoleCode(),
+                            List.of(
+                                    new LogisticsCostLedger.Allocation(
+                                            a.feeKey(),
+                                            a.receivingPointCode(),
+                                            a.cityCode(),
+                                            weights.get(i),
+                                            total == null ? BigDecimal.ZERO : values.get(i))),
+                            s.noSourceReason(),
+                            s.employeeCode(),
+                            s.employeeName(),
+                            s.departmentId(),
+                            s.departmentName(),
+                            s.sourceWarehouseCode(),
+                            s.documentAmount(),
+                            s.documentDate(),
+                            s.linkedAt()));
+        }
+        var f = ledger.feeItems().getFirst();
+        return command.withLedger(
+                ledger.withSources(result)
+                        .withFeeItems(
+                                List.of(
+                                        new LogisticsCostLedger.Fee(
+                                                f.feeKey(),
+                                                f.feeTypeCode(),
+                                                total,
+                                                f.bearerCode(),
+                                                total,
+                                                weighted ? "AMOUNT" : "EQUAL",
+                                                f.zeroCostReason(),
+                                                f.remark(),
+                                                f.basisUnitCode()))),
+                total);
     }
 
     public static Plan calculate(

@@ -126,9 +126,11 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                                                 SALES_ORDER_PAGE_RESPONSE,
                                                 "Order销售订单来源查询"));
         OrderPageView<SalesOrderSummaryView> page = requiredSalesOrderPageResponse(response);
-        var matches = page.items().stream()
-                .filter(item -> sourceSystemCode.equalsIgnoreCase(item.sourceSystemCode()))
-                .filter(item -> sourceOrderNo.strip().equals(item.sourceOrderNo())).toList();
+        var matches =
+                page.items().stream()
+                        .filter(item -> sourceSystemCode.equalsIgnoreCase(item.sourceSystemCode()))
+                        .filter(item -> sourceOrderNo.strip().equals(item.sourceOrderNo()))
+                        .toList();
         if (matches.size() > 1 || page.total() > page.items().size())
             throw new IllegalStateException("来源销售单查询存在多笔或分页未完整，不能自动关联 " + sourceOrderNo);
         return matches.stream().findFirst().map(item -> salesOrder(caller, item.id()));
@@ -648,6 +650,37 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
                                                 "Order发货运输同步"));
         if (response == null || !"OK".equals(response.code()) || response.data() == null)
             throw new IllegalStateException("Order发货运输同步失败");
+        return response.data();
+    }
+
+    @Override
+    public Long saveShipmentSnapshot(
+            CallerIdentity caller,
+            com.rigour.order.api.v1.model.SalesShipmentSnapshotCommand command) {
+        requireCaller(caller);
+        URI uri =
+                UriComponentsBuilder.fromUri(baseUri)
+                        .path("/api/v1/orders/sales-shipment-source-snapshots")
+                        .build()
+                        .encode()
+                        .toUri();
+        ApiResponse<Long> response =
+                restClient
+                        .post()
+                        .uri(uri)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .headers(
+                                headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                        .header(RequestHeaders.REQUEST_ID, requestId())
+                        .body(command)
+                        .exchange(
+                                (request, httpResponse) ->
+                                        SignedDomainRequest.readResponse(
+                                                httpResponse,
+                                                new TypeReference<ApiResponse<Long>>() {},
+                                                "Order来源发货留存"));
+        if (response == null || response.data() == null)
+            throw new IllegalStateException("来源发货资料留存失败");
         return response.data();
     }
 

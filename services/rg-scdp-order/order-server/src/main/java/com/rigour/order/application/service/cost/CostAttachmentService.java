@@ -112,8 +112,8 @@ public class CostAttachmentService {
             throw bad("凭证归档位置无效");
         files.lock(tenant);
         var current = costs.entry(tenant, "LOGISTICS", entry, "order:logistics-cost:write");
-        if (!"DRAFT".equals(current.statusCode()) || current.revision() != revision)
-            throw bad("记录已变化或不是待确认，请刷新");
+        if (!"ACTIVE".equals(current.statusCode()) || current.revision() != revision)
+            throw bad("记录已变化或不是有效记录，请刷新");
         var existing = files.list(tenant, entry);
         if (replacing == null && existing.size() >= 20) throw bad("每条记录最多20个附件");
         var original =
@@ -207,8 +207,8 @@ public class CostAttachmentService {
         String action = "write";
         String permission = "order:logistics-cost:" + action;
         var current = costs.entry(tenant, c, entry, permission);
-        if (!"DRAFT".equals(current.statusCode()) || current.revision() != revision)
-            throw new BusinessException(ErrorCode.CONFLICT, "请刷新记录，仅待确认记录可以上传附件", List.of());
+        if (!"ACTIVE".equals(current.statusCode()) || current.revision() != revision)
+            throw new BusinessException(ErrorCode.CONFLICT, "请刷新记录，仅有效运输记录可以上传附件", List.of());
         if (replacing == null && files.list(tenant, entry).size() >= 20) throw bad("每条记录最多20个附件");
         if (name == null
                 || name.isBlank()
@@ -285,8 +285,8 @@ public class CostAttachmentService {
         String tenant = authorize(category, entry, "write");
         files.lock(tenant);
         var current = costs.entry(tenant, "LOGISTICS", entry, "order:logistics-cost:write");
-        if (!"DRAFT".equals(current.statusCode()) || current.revision() != revision)
-            throw bad("只有待确认费用可修改附件，请刷新");
+        if (!"ACTIVE".equals(current.statusCode()) || current.revision() != revision)
+            throw bad("只有有效运输记录可修改附件，请刷新");
         if (files.list(tenant, entry).size() <= 1) throw bad("至少保留一份业务凭证；更换最后一份凭证请使用更换操作");
         removeWithinSubmission(category, entry, id, revision);
     }
@@ -296,8 +296,8 @@ public class CostAttachmentService {
         files.lock(tenant);
         String c = "LOGISTICS", permission = "order:logistics-cost:write";
         var current = costs.entry(tenant, c, entry, permission);
-        if (!"DRAFT".equals(current.statusCode()) || current.revision() != revision)
-            throw new BusinessException(ErrorCode.CONFLICT, "只有待确认费用可修改附件，请刷新", List.of());
+        if (!"ACTIVE".equals(current.statusCode()) || current.revision() != revision)
+            throw new BusinessException(ErrorCode.CONFLICT, "只有有效运输记录可修改附件，请刷新", List.of());
         var original =
                 files.list(tenant, entry).stream()
                         .filter(file -> file.id().equals(id))

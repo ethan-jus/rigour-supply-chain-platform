@@ -18,6 +18,12 @@ import java.util.Optional;
 
 /** Integration向Order投影自研销售订单、发货、回款、退款和资金单据的出站端口；实现只能调用Order公开API。 */
 public interface OrderSalesOrderProjectionClient {
+    default Long saveShipmentSnapshot(
+            CallerIdentity caller,
+            com.rigour.order.api.v1.model.SalesShipmentSnapshotCommand command) {
+        throw new UnsupportedOperationException("来源发货事实接口尚未部署");
+    }
+
     default com.rigour.order.api.v1.model.ShipmentTransportModels.Source syncShipmentTransport(
             CallerIdentity caller,
             com.rigour.order.api.v1.model.ShipmentTransportModels.Command command) {

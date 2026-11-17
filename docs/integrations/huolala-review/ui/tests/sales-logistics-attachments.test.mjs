@@ -25,7 +25,8 @@ test("货拉拉资料分账单、回单和站点装卸，不混成一个空态",
     assert.equal(p.receiptInfo["回单类型"], "拍照回单");
 });
 test("失败文件补取结果不改确认费用，重复同步附件数量不增加", () => {
-    let s = transition(initialState(), "rh-h1", "确认");
+    let s = initialState();
+    s.records = s.records.map(r => r.id === "rh-h1" ? {...r, manuallyEdited: true} : r);
     const r = s.records.find((r) => r.sourceId === "h1"),
         p = s.platform.find((p) => p.id === "h1");
     const before = JSON.stringify(s);

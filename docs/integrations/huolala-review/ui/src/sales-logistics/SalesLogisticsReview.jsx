@@ -13,6 +13,8 @@ import {
     transition,
     syncCompleted,
     syncDhbExample,
+    transportTime,
+    transportStatus,
 } from "./model.mjs";
 import {
     dictionaryOptions,
@@ -27,7 +29,7 @@ function Tag({ children }) {
         <span
             className={
                 "sl-tag " +
-                (["有效", "已完成", "已确认", "已付款"].includes(children)
+                (["有效", "已完成", "已完善", "已确认", "已付款"].includes(children)
                     ? "green"
                     : ["已取消", "已作废"].includes(children)
                       ? "gray"
@@ -72,7 +74,7 @@ function Field({ name, children, required, wide }) {
                 {required && <b>* </b>}
                 {name}
                 {name === "运输费用（元）" && (
-                    <small className="sl-conditional">确认前必填</small>
+                    <small className="sl-conditional">保存金额后直接计入成本</small>
                 )}
             </span>
             {control}
@@ -165,7 +167,7 @@ export function SalesLogisticsReview() {
                 (!relation ||
                     (relation === "yes" ? r.links.length : !r.links.length)),
         )
-        .sort((a, b) => (b.time || "").localeCompare(a.time || ""));
+        .sort((a, b) => transportTime(b).localeCompare(transportTime(a)));
     const nav = (p) => {
         setPage(p);
         setQ("");
@@ -448,7 +450,7 @@ export function SalesLogisticsReview() {
                                             <th>快递单号</th>
                                             <th>物流公司</th>
                                             <th>车型</th>
-                                            <th>下单时间</th>
+                                            <th>下单／发货时间</th>
                                             <th>行驶路段</th>
                                             <th>收货点数</th>
                                             <th>运输类型</th>
@@ -479,7 +481,7 @@ export function SalesLogisticsReview() {
                                                 <td>{r.tracking || "-"}</td>
                                                 <td>{r.company}</td>
                                                 <td>{r.vehicle || "-"}</td>
-                                                <td>{r.time || "-"}</td>
+                                                <td>{transportTime(r) || "-"}</td>
                                                 <td>
                                                     <Route r={r} />
                                                 </td>
@@ -522,7 +524,7 @@ export function SalesLogisticsReview() {
                                                     )}
                                                 </td>
                                                 <td>
-                                                    <Tag>{r.status}</Tag>
+                                                    <Tag>{transportStatus(r)}</Tag>
                                                 </td>
                                                 <td>
                                                     {r.source === "手工录入"
@@ -539,65 +541,10 @@ export function SalesLogisticsReview() {
                                                         >
                                                             查看
                                                         </button>
-                                                        {r.status ===
-                                                        "待确认" ? (
-                                                            <>
-                                                                {!r.sourceId && (
-                                                                    <button
-                                                                        className="link"
-                                                                        onClick={() =>
-                                                                            setManual(
-                                                                                {
-                                                                                    record: r,
-                                                                                },
-                                                                            )
-                                                                        }
-                                                                    >
-                                                                        编辑
-                                                                    </button>
-                                                                )}
-                                                                <button
-                                                                    className="link"
-                                                                    onClick={() =>
-                                                                        operate(
-                                                                            r,
-                                                                            "确认",
-                                                                        )
-                                                                    }
-                                                                >
-                                                                    确认
-                                                                </button>
-                                                                <button
-                                                                    className="link danger"
-                                                                    onClick={() =>
-                                                                        operate(
-                                                                            r,
-                                                                            "作废",
-                                                                        )
-                                                                    }
-                                                                >
-                                                                    作废
-                                                                </button>
-                                                            </>
-                                                        ) : (
-                                                            <button
-                                                                className="link"
-                                                                onClick={() =>
-                                                                    operate(
-                                                                        r,
-                                                                        r.status ===
-                                                                            "已确认"
-                                                                            ? "撤销"
-                                                                            : "删除",
-                                                                    )
-                                                                }
-                                                            >
-                                                                {r.status ===
-                                                                "已确认"
-                                                                    ? "撤销"
-                                                                    : "删除"}
-                                                            </button>
-                                                        )}
+                                                        {r.status === "有效" ? <>
+                                                            <button className="link" onClick={() => setManual({record:r})}>编辑</button>
+                                                            <button className="link danger" onClick={() => operate(r, "作废")}>作废</button>
+                                                        </> : <button className="link" onClick={() => operate(r, "删除")}>删除</button>}
                                                     </div>
                                                 </td>
                                             </tr>
@@ -607,20 +554,20 @@ export function SalesLogisticsReview() {
                             </div>
                             <div className="sl-footer">
                                 <span>
-                                    已确认费用 ¥
+                                    计入运输费用 ¥
                                     {money(
                                         state.records
                                             .filter(
-                                                (r) => r.status === "已确认",
+                                                (r) => r.status === "有效",
                                             )
                                             .reduce((s, r) => s + r.amount, 0),
                                     )}
-                                    　未归属已确认费用 ¥
+                                    　待归属运输费用 ¥
                                     {money(
                                         state.records
                                             .filter(
                                                 (r) =>
-                                                    r.status === "已确认" &&
+                                                    r.status === "有效" &&
                                                     !r.links.length,
                                             )
                                             .reduce((s, r) => s + r.amount, 0),
@@ -633,7 +580,7 @@ export function SalesLogisticsReview() {
                 </main>
                 <div className="sl-evidence-note">
                     评审原型：同步入运输记录 → 销售单关联 →
-                    按运输记录确认成本；手工记录必须附凭证。
+                    按运输记录保存金额计算成本；手工记录必须附凭证。
                 </div>
             </div>
             {sale && (
@@ -689,12 +636,12 @@ export function SalesLogisticsReview() {
                             }
                         />
                         <Info
-                            name="已确认分摊成本（元）"
+                            name="计入分摊成本（元）"
                             value={money(
-                                !linked(sale).some((r) => r.status === "已确认")
+                                !linked(sale).some((r) => r.status === "有效")
                                     ? null
                                     : linked(sale)
-                                          .filter((r) => r.status === "已确认")
+                                          .filter((r) => r.status === "有效")
                                           .reduce(
                                               (s, r) =>
                                                   s +
@@ -733,7 +680,7 @@ export function SalesLogisticsReview() {
                                             {money(r.allocations[sale.id])}
                                         </td>
                                         <td>
-                                            <Tag>{r.status}</Tag>
+                                            <Tag>{transportStatus(r)}</Tag>
                                         </td>
                                         <td>
                                             <button
@@ -806,7 +753,7 @@ export function SalesLogisticsReview() {
                         if (manual.order) {
                             setSale(manual.order);
                             setNotice(
-                                "手工物流和凭证已保存，已关联当前销售订单，成本待确认",
+                                "手工物流和凭证已保存，已关联当前销售订单，保存金额直接计入成本",
                             );
                         } else {
                             setRecord(result.record);
@@ -839,7 +786,7 @@ export function SalesLogisticsReview() {
                             },
                         }));
                         setNotice(
-                            "示例文件重新获取完成，运输费用及已确认成本保持不变",
+                            "示例文件重新获取完成，运输费用及人工维护成本保持不变",
                         );
                     }}
                     onClose={() => setRecord(null)}
@@ -869,20 +816,15 @@ export function SalesLogisticsReview() {
                         {action.r.no}　运输费用：{money(action.r.amount)} 元
                     </p>
                     <p>
-                        {action.type === "确认"
-                            ? action.r.links.length
-                                ? "本笔运输费用确认一次，销售订单按关联比例分摊。"
-                                : "尚未关联销售订单，确认后费用保留在“待归属”，不能随意归到某个业务员。"
-                            : action.type === "撤销"
-                              ? "撤销后回到待确认，方可修改费用和关联关系。"
-                              : "请核对实际业务后继续。"}
+                        请核对实际业务后继续，操作原因会留存在记录中。
+
                     </p>
                     {error && (
                         <p role="alert" className="sl-error">
                             {error}
                         </p>
                     )}
-                    <Field name="操作说明" required={action.type !== "确认"}>
+                    <Field name="操作说明" required>
                         <textarea
                             aria-label="操作说明"
                             maxLength={500}
@@ -1061,7 +1003,7 @@ function LinkPicker({ state, order, onClose, onSave, onCreate, onView }) {
                         <div className="sl-manual-entry" key={row.id}>
                             <span>
                                 {row.company} · {row.tracking} ·{" "}
-                                <Tag>{row.status}</Tag>
+                                <Tag>{transportStatus(row)}</Tag>
                             </span>
                             <button onClick={() => onView(row)}>
                                 查看已关联物流
@@ -1195,6 +1137,7 @@ function LinkPicker({ state, order, onClose, onSave, onCreate, onView }) {
 }
 function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
     const original = order || orders.find((o) => r?.links?.includes(o.id));
+    const platformRecord = r?.source === "货拉拉同步";
     const [d, setD] = useState({
             editId: r?.id,
             transportType: r?.transportType || (order ? "销售订单配送" : ""),
@@ -1207,6 +1150,7 @@ function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
             shippingPhone: r?.shippingPhone || "",
             shippingAddress: r?.shippingAddress || "",
             date: r?.date || "2026-11-12",
+            shippingTime: r?.shippingTime || `${r?.date || "2026-11-12"}T00:00:00`,
             to: r?.to || original?.customer || "",
             contact: r?.contact || original?.contact || "",
             phone: r?.phone || original?.phone || "",
@@ -1217,7 +1161,7 @@ function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
             amount: r?.amount == null ? "" : String(r.amount / 100),
         }),
         [fees, setFees] = useState(
-            (r?.fees || []).map((f) => ({
+            (platformRecord ? [] : r?.fees || []).map((f) => ({
                 name: f.name,
                 value: String(f.amount / 100),
             })),
@@ -1227,7 +1171,7 @@ function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
         [error, setError] = useState(""),
         [fieldErrors, setFieldErrors] = useState({});
     const put = (k, v) => setD({ ...d, [k]: v }),
-        sourceReadOnly = r?.source === "订货宝同步";
+        sourceReadOnly = ["订货宝同步", "货拉拉同步"].includes(r?.source);
     const total = () => {
         try {
             return fees.length
@@ -1302,7 +1246,7 @@ function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
                     <>
                         <span className="sl-footer-context">
                             <b className="sl-required">* </b>
-                            为保存必填；运输费用在确认前必填。
+                            为保存必填；金额未知暂不计成本。
                             <br />
                             {order
                                 ? "保存运输记录并关联当前销售订单"
@@ -1433,7 +1377,7 @@ function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
                         <Field name="运输费用（元）">
                             <input
                                 aria-label="运输费用"
-                                placeholder="确认前必填；未知可暂存"
+                                placeholder="填写本次运输费用；未知可留空"
                                 readOnly={fees.length > 0}
                                 value={fees.length ? money(total()) : d.amount}
                                 onChange={(e) => put("amount", e.target.value)}
@@ -1454,6 +1398,7 @@ function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
                         <Field name="付款状态">
                             <select
                                 aria-label="付款状态"
+                                disabled={platformRecord}
                                 value={d.payment}
                                 onChange={(e) => put("payment", e.target.value)}
                             >
@@ -1469,8 +1414,9 @@ function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
                                 )}
                             </select>
                         </Field>
-                        <Info name="已确认运输成本（元）" value="-" />
+                        <Info name="计入运输成本（元）" value="-" />
                     </div>
+                    {!platformRecord && <>
                     <div className="sl-fee-heading">
                         <h4>
                             账单明细 <small>（选填）</small>
@@ -1559,6 +1505,7 @@ function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
                             </button>
                         </div>
                     ))}
+                    </>}
                 </section>
                 <section className="sl-section">
                     <h3>发货信息</h3>
@@ -1623,13 +1570,14 @@ function ManualForm({ existing: r, order, defaults, onClose, onSave }) {
                                 }
                             />
                         </Field>
-                        <Field name="发货日期" required>
+                        <Field name="发货时间" required>
                             <input
-                                aria-label="发货日期"
-                                type="date"
-                                value={d.date}
+                                aria-label="发货时间"
+                                type="datetime-local"
+                                step="1"
+                                value={d.shippingTime}
                                 readOnly={sourceReadOnly}
-                                onChange={(e) => put("date", e.target.value)}
+                                onChange={(e) => { put("shippingTime", e.target.value); put("date", e.target.value.slice(0,10)); }}
                             />
                         </Field>
                         <Field name="发货地址" required wide>
@@ -1805,31 +1753,18 @@ function RecordDetail({
             footer={
                 <>
                     <button onClick={onClose}>关闭</button>
-                    {r.status === "待确认" ? (
-                        <>
-                            {!p && (
-                                <button onClick={() => onEdit(r)}>编辑</button>
-                            )}
-                            <button
-                                className="primary"
-                                onClick={() => onAction(r, "确认")}
-                            >
-                                确认
-                            </button>
-                        </>
-                    ) : (
-                        r.status === "已确认" && (
-                            <button onClick={() => onAction(r, "撤销")}>
-                                撤销
-                            </button>
-                        )
-                    )}
+                    {r.status === "有效" && <>
+                        <button onClick={() => onEdit(r)}>编辑</button>
+                        <button onClick={() => onAction(r,"作废")}>作废</button>
+                    </>}
+                    {r.status === "已作废" && <button onClick={() => onAction(r,"删除")}>删除</button>}
+
                 </>
             }
         >
             <section className="sl-section">
                 <h3>
-                    基本信息 <Tag>{r.status}</Tag>
+                    基本信息 <Tag>{transportStatus(r)}</Tag>
                 </h3>
                 <div className="sl-grid">
                     <Info name="运输类型" value={r.transportType || "待分类"} />
@@ -1837,7 +1772,7 @@ function RecordDetail({
                     <Info name="物流公司" value={r.company} />
                     <Info name="快递单号" value={r.tracking} />
                     <Info name="车型" value={p?.vehicle || r.vehicle} />
-                    <Info name="下单时间" value={r.time} />
+                    <Info name={p ? "下单时间" : "发货时间"} value={transportTime(r)} />
                     {p && (
                         <>
                             <Info name="运输服务" value={p.service} />
@@ -1896,14 +1831,14 @@ function RecordDetail({
                     <Info name="费用负责人" value={r.owner} />
                     <Info name="付款状态" value={payment} />
                     <Info
-                        name="已确认运输成本（元）"
-                        value={r.status === "已确认" ? money(r.amount) : "-"}
+                        name="计入运输成本（元）"
+                        value={r.status === "有效" ? money(r.amount) : "-"}
                     />
                 </div>
                 {r.billChanged && (
                     <div className="sl-error">
                         平台账单已更新为 ¥{money(r.platformAmount)}
-                        ，已确认成本保持不变，请核对后撤销更正。
+                        ，本系统人工金额保持不变，可直接编辑核对。
                     </div>
                 )}
                 {p && (

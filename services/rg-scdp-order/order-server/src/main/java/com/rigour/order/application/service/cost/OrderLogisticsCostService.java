@@ -31,6 +31,16 @@ public final class OrderLogisticsCostService {
     private final OrderLogisticsCostStore store;
     private final OrderLogisticsReferences dictionary;
     private OrderLogisticsLedgerService ledgers;
+    private com.rigour.order.application.port.out.CostAttachmentStore files;
+    private com.rigour.order.application.port.out.PlatformTransportStore platform;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void apiStores(
+            com.rigour.order.application.port.out.CostAttachmentStore files,
+            com.rigour.order.application.port.out.PlatformTransportStore platform) {
+        this.files = files;
+        this.platform = platform;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     void ledgerService(OrderLogisticsLedgerService service) {
@@ -166,15 +176,55 @@ public final class OrderLogisticsCostService {
                                 q.contactPhone(),
                                 q.mappedEmployeeCode()),
                         p);
-        return page.items().stream().noneMatch(row -> row.data().ledger() != null)
-                ? page
-                : page.withItems(ledgers.enrich(page.items(), p));
+        var rows = withBusinessStatuses(page.items(), p);
+        return page.withItems(
+                rows.stream().noneMatch(row -> row.data().ledger() != null)
+                        ? rows
+                        : ledgers.enrich(rows, p));
     }
 
     public LogisticsCostDetailView entry(String value, String id) {
         String c = category(value), p = permission(c, "read");
         var row = store.entry(actor(p).tenantId().toString(), c, id, p);
+        row = withBusinessStatuses(List.of(row), p).getFirst();
         return row.data().ledger() == null ? row : row.withData(ledgers.enrich(row.data(), p));
+    }
+
+    /** 来源收发货资料只读时，金额维护不依赖重新查询原单或补造来源地址。 */
+    public LogisticsCostDetailView saveFinancialSnapshot(
+            LogisticsCostDetailView old, LogisticsCostCommand command, String employeeName) {
+        String p = permission("LOGISTICS", "write");
+        var caller = actor(p);
+        if (!"ACTIVE".equals(old.statusCode())) throw bad("已作废记录不可修改");
+        return store.save(
+                caller.tenantId().toString(),
+                "LOGISTICS",
+                old.id(),
+                command,
+                old.sources(),
+                old.warehouseName(),
+                employeeName,
+                caller.principalId().toString(),
+                p);
+    }
+
+    public List<LogisticsCostDetailView> withBusinessStatuses(
+            List<LogisticsCostDetailView> rows, String permission) {
+        var states =
+                store.businessStatuses(
+                        actor(permission).tenantId().toString(),
+                        rows.stream().map(LogisticsCostDetailView::id).toList(),
+                        permission);
+        return rows.stream()
+                .map(
+                        r ->
+                                r.withBusinessStatus(
+                                        states.getOrDefault(
+                                                r.id(),
+                                                "VOID".equals(r.statusCode())
+                                                        ? "VOID"
+                                                        : "INCOMPLETE")))
+                .toList();
     }
 
     public List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees() {
@@ -215,35 +265,24 @@ public final class OrderLogisticsCostService {
                 id == null ? "CREATE" : "UPDATE", id, () -> saveValidated(value, id, command));
     }
 
-    /** 平台确认在同一事务内固化只读账单和分摊，权限仍是确认，审计只记最终确认。 */
-    public LogisticsCostDetailView preparePlatformConfirmation(
-            String id, LogisticsCostCommand command) {
-        String permission = "order:logistics-cost:confirm";
+    /** 旧JSON入口不能绕过手工凭证整单保存；内部同步及已验证的multipart使用save。 */
+    public LogisticsCostDetailView saveApi(String id, LogisticsCostCommand command) {
+        String permission = "order:logistics-cost:write";
         var caller = actor(permission);
-        var old = store.entry(caller.tenantId().toString(), "LOGISTICS", id, permission);
-        if (!"DRAFT".equals(old.statusCode())
-                || command.revision() == null
-                || old.revision() != command.revision()) throw bad("记录已变化或不是待确认，请刷新");
-        dictionary.city(command.cityCode(), permission);
-        var checked = ledgers.normalize(command, permission, true);
-        return store.save(
-                caller.tenantId().toString(),
-                "LOGISTICS",
-                id,
-                checked,
-                List.of(),
-                null,
-                responsibleEmployee(checked, permission),
-                caller.principalId().toString(),
-                permission);
+        if (id == null) throw bad("请在运输记录页面连同业务凭证一起保存");
+        String tenant = caller.tenantId().toString();
+        store.entry(tenant, "LOGISTICS", id, permission);
+        if (!platform.byCosts(tenant, List.of(id)).containsKey(id)
+                && files.list(tenant, id).isEmpty()) throw bad("手工运输记录至少上传一份业务凭证，请连同凭证一起保存");
+        return save("logistics", id, command);
     }
 
     private LogisticsCostDetailView saveValidated(String value, String id, LogisticsCostCommand c) {
         String category = category(value), p = permission(category, "write");
         var a = actor(p);
         String t = a.tenantId().toString();
-        if (id != null && !"DRAFT".equals(store.entry(t, category, id, p).statusCode()))
-            throw bad("只有待确认费用可编辑，已确认费用请先撤销");
+        if (id != null && !"ACTIVE".equals(store.entry(t, category, id, p).statusCode()))
+            throw bad("作废记录不可修改");
         if (c == null) throw bad("请填写费用");
         if ("PURCHASE".equals(c.typeCode())
                 || c.logistics() != null && "PURCHASE".equals(c.logistics().legCode()))
@@ -310,6 +349,7 @@ public final class OrderLogisticsCostService {
 
     public LogisticsCostDetailView lifecycle(
             String value, String id, LogisticsCostActionCommand command, boolean delete) {
+        if (!delete) throw bad("运输记录保存即生效，无需撤销确认");
         String category = category(value), p = permission(category, delete ? "void" : "confirm");
         var caller = actor(p);
         if (command == null || command.revision() < 1) throw bad("缺少费用版本");
@@ -338,39 +378,11 @@ public final class OrderLogisticsCostService {
 
     private LogisticsCostDetailView actionValidated(
             String value, String id, LogisticsCostActionCommand c, boolean confirm) {
-        String category = category(value), p = permission(category, confirm ? "confirm" : "void");
+        if (confirm) throw bad("运输记录保存即生效，无需确认");
+        String category = category(value), p = permission(category, "void");
         var a = actor(p);
         if (c == null || c.revision() < 1) throw bad("缺少费用版本");
-        text(c.reason(), 500, "操作原因");
-        if (confirm) {
-            var current = store.entry(a.tenantId().toString(), category, id, p);
-            if ("PURCHASE".equals(current.data().typeCode())) throw bad("采购运费已归入采购成本，历史物流记录不再确认");
-            dictionary.city(current.data().cityCode(), p);
-            responsibleEmployee(current.data(), p);
-            if (current.data().ledger() != null) {
-                var checked = ledgers.normalize(current.data(), p, true);
-                if (!new java.util.HashSet<>(checked.ledger().scopeWarehouseIds())
-                                .equals(
-                                        new java.util.HashSet<>(
-                                                current.data().ledger().scopeWarehouseIds()))
-                        || !new java.util.HashSet<>(checked.ledger().scopeCityCodes())
-                                .equals(
-                                        new java.util.HashSet<>(
-                                                current.data().ledger().scopeCityCodes())))
-                    throw bad("来源单据范围已变更，请重新编辑费用后确认");
-                if ((c.reason() == null || c.reason().isBlank())
-                        && current.data().amount().signum() == 0)
-                    c =
-                            new LogisticsCostActionCommand(
-                                    c.revision(),
-                                    current.data().ledger().feeItems().stream()
-                                            .map(f -> f.zeroCostReason())
-                                            .filter(Objects::nonNull)
-                                            .collect(java.util.stream.Collectors.joining("；")));
-            } else
-                new LogisticsCostValidator(store, dictionary)
-                        .validate(a.tenantId().toString(), current.data(), p, true);
-        }
+        required(c.reason(), 500, "作废原因");
         return store.transition(
                 a.tenantId().toString(), category, id, c, a.principalId().toString(), p);
     }

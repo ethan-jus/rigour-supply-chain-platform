@@ -57,19 +57,25 @@ public class MybatisPlusCostAnalyticsSource {
     }
 
     public String version(String tenant) {
-        String base = mapper.analyticsVersion(tenant) + ":transport-types-v2";
+        String base = mapper.analyticsVersion(tenant) + ":transport-types-v4-complete-only";
         if (jdbc == null) return base;
         return base
+                + ":cost-revisions:"
+                + jdbc.queryForObject(
+                        "SELECT CONCAT(COUNT(*),':',COALESCE(SUM(revision),0)) FROM"
+                                + " order_logistics_cost WHERE tenant_id=?",
+                        String.class,
+                        tenant)
                 + ":sales-attribution-v1:"
                 + jdbc.queryForObject(
                         "SELECT CONCAT(COUNT(*),':',COALESCE(SUM(revision),0)) FROM"
-                            + " order_attribution_snapshot WHERE tenant_id=?",
+                                + " order_attribution_snapshot WHERE tenant_id=?",
                         String.class,
                         tenant)
                 + ":"
                 + jdbc.queryForObject(
                         "SELECT CONCAT(COUNT(*),':',COALESCE(SUM(revision),0)) FROM"
-                            + " order_sales_order WHERE tenant_id=?",
+                                + " order_sales_order WHERE tenant_id=?",
                         String.class,
                         tenant);
     }
@@ -83,7 +89,20 @@ public class MybatisPlusCostAnalyticsSource {
         String version = version(tenant);
         var query =
                 new QueryWrapper<OrderLogisticsCostEntity>()
-                        .select(COLUMNS.toArray(String[]::new))
+                        .select(
+                                COLUMNS.stream()
+                                        .map(
+                                                c ->
+                                                        "status_code".equals(c)
+                                                                ? "CASE WHEN status_code='VOID'"
+                                                                        + " THEN 'VOID' WHEN "
+                                                                        + MybatisPlusOrderLogisticsCostRepository
+                                                                                .completeBusinessSql()
+                                                                        + " THEN 'CONFIRMED' ELSE"
+                                                                        + " 'DRAFT' END AS"
+                                                                        + " status_code"
+                                                                : c)
+                                        .toArray(String[]::new))
                         .eq("tenant_id", tenant)
                         .eq("deleted", 0)
                         .gt(!cursor.isEmpty(), "id", cursor)
@@ -95,8 +114,117 @@ public class MybatisPlusCostAnalyticsSource {
             for (String column : COLUMNS) values.put(column, exact(row.get(column)));
             items.add(values);
         }
+        enrichSavedPlatformAllocations(tenant, items);
         enrichLegacyAttribution(tenant, items);
         return new Page(version, items);
+    }
+
+    /** 旧平台记录在确认前只存了业务关系；按保存金额投影，不能用最新平台账单重算历史成本。 */
+    void enrichSavedPlatformAllocations(String tenant, List<Map<String, String>> items) {
+        if (jdbc == null || items.isEmpty()) return;
+        var candidates =
+                items.stream()
+                        .filter(
+                                r ->
+                                        "HUOLALA".equals(r.get("source_system"))
+                                                && r.get("data_json") != null
+                                                && r.get("sources_json") != null
+                                                && !json.readTree(r.get("data_json"))
+                                                        .path("ledger")
+                                                        .isObject()
+                                                && !json.readTree(r.get("sources_json")).isEmpty())
+                        .toList();
+        if (candidates.isEmpty()) return;
+        var ids = candidates.stream().map(r -> r.get("id")).toList();
+        var args = new ArrayList<Object>();
+        args.add(tenant);
+        args.addAll(ids);
+        var business = new HashMap<String, tools.jackson.databind.JsonNode>();
+        for (var r :
+                jdbc.queryForList(
+                        "SELECT cost_id,business_json FROM order_logistics_import_order WHERE"
+                                + " tenant_id=? AND business_json IS NOT NULL AND cost_id IN ("
+                                + String.join(",", Collections.nCopies(ids.size(), "?"))
+                                + ")",
+                        args.toArray()))
+            business.put(
+                    r.get("cost_id").toString(), json.readTree(r.get("business_json").toString()));
+        for (var row : candidates) {
+            var draft = business.get(row.get("id"));
+            if (draft == null || !"DELIVERY".equals(draft.path("transportType").asText())) continue;
+            var links =
+                    Arrays.asList(
+                            json.readValue(
+                                    row.get("sources_json"),
+                                    com.rigour.order.api.v1.model.LogisticsCostSourceView[].class));
+            if (links.isEmpty()
+                    || links.stream()
+                            .anyMatch(
+                                    l ->
+                                            l.documentNo() == null
+                                                    || l.cityCode() == null
+                                                    || l.cityCode().isBlank())) continue;
+            var manual = new LinkedHashMap<String, java.math.BigDecimal>();
+            if (draft.path("orderAllocations").isObject())
+                draft.path("orderAllocations")
+                        .properties()
+                        .forEach(
+                                e ->
+                                        manual.put(
+                                                e.getKey(),
+                                                e.getValue().isNumber()
+                                                        ? e.getValue().decimalValue()
+                                                        : null));
+            var total =
+                    row.get("amount") == null ? null : new java.math.BigDecimal(row.get("amount"));
+            com.rigour.order.application.service.cost.TransportAllocationPlan.Plan plan;
+            try {
+                plan =
+                        com.rigour.order.application.service.cost.TransportAllocationPlan.calculate(
+                                total, links, manual);
+            } catch (com.rigour.shared.core.exception.BusinessException unresolved) {
+                // 旧分摊已不守恒时保留整笔待归属，不猜测归属或阻断其他有效成本。
+                continue;
+            }
+            var projected =
+                    new ArrayList<com.rigour.order.api.v1.model.LogisticsCostLedger.Source>();
+            for (int i = 0; i < links.size(); i++) {
+                var l = links.get(i);
+                projected.add(
+                        new com.rigour.order.api.v1.model.LogisticsCostLedger.Source(
+                                        l.sourceType(),
+                                        l.documentNo(),
+                                        "COST",
+                                        List.of(
+                                                new com.rigour.order.api.v1.model
+                                                        .LogisticsCostLedger.Allocation(
+                                                        "freight",
+                                                        "TO" + i,
+                                                        l.cityCode(),
+                                                        plan.bases().get(l.documentNo()),
+                                                        total == null
+                                                                ? java.math.BigDecimal.ZERO
+                                                                : plan.shares()
+                                                                        .get(l.documentNo()))),
+                                        null)
+                                .attributed(l));
+            }
+            var body = (tools.jackson.databind.node.ObjectNode) json.readTree(row.get("data_json"));
+            var ledger = body.putObject("ledger");
+            ledger.put("schemaVersion", 2);
+            ledger.put("transportPurposeCode", "DELIVERY");
+            ledger.put("carrierCode", "HLL");
+            ledger.put("deliveryModeCode", "THIRD_PARTY");
+            ledger.put("costMonth", row.get("cost_date").substring(0, 7));
+            var fee = ledger.putArray("feeItems").addObject();
+            fee.put("feeKey", "freight");
+            fee.put("feeTypeCode", "FREIGHT");
+            fee.put("bearerCode", "COMPANY");
+            fee.set("ourAmount", json.valueToTree(total));
+            fee.set("feeAmount", json.valueToTree(total));
+            row.put("data_json", json.writeValueAsString(body));
+            row.put("sources_json", json.writeValueAsString(projected));
+        }
     }
 
     private void enrichLegacyAttribution(String tenant, List<Map<String, String>> items) {

@@ -14,17 +14,17 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.*;
 
+@org.testcontainers.junit.jupiter.Testcontainers(disabledWithoutDocker = true)
 class CostAnalyticsSourceTest {
+    @org.testcontainers.junit.jupiter.Container
+    static final org.testcontainers.mysql.MySQLContainer MYSQL =
+            new org.testcontainers.mysql.MySQLContainer("mysql:8.4");
+
     @Test
     void reads1001RowsWithoutDuplicationAndVersionRollsBack() throws Exception {
         var ds =
                 new SingleConnectionDataSource(
-                        "jdbc:h2:mem:cost_"
-                                + UUID.randomUUID()
-                                + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE",
-                        "sa",
-                        "",
-                        true);
+                        MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword(), true);
         try {
             var jdbc = new JdbcTemplate(ds);
             jdbc.execute(
@@ -37,14 +37,23 @@ class CostAnalyticsSourceTest {
                                                             c
                                                                     + (c.equals("amount")
                                                                             ? " DECIMAL(18,2)"
-                                                                            : " VARCHAR(1000)"))
+                                                                            : " LONGTEXT"))
                                             .toList())
                             + ")");
             jdbc.execute(
                     "ALTER TABLE order_logistics_cost ADD COLUMN deleted INT NOT NULL DEFAULT 0");
             jdbc.execute(
-                    "CREATE TABLE order_logistics_cost_guard(tenant_id VARCHAR PRIMARY KEY,version"
-                            + " BIGINT)");
+                    "CREATE TABLE order_logistics_cost_guard(tenant_id VARCHAR(36) PRIMARY"
+                        + " KEY,version BIGINT)");
+            jdbc.execute(
+                    "CREATE TABLE order_logistics_import_order(tenant_id VARCHAR(36),cost_id"
+                        + " VARCHAR(36),source_channel VARCHAR(20))");
+            jdbc.execute(
+                    "CREATE TABLE order_transport_shipment_source(tenant_id VARCHAR(36),cost_id"
+                        + " VARCHAR(36))");
+            jdbc.execute(
+                    "CREATE TABLE order_logistics_cost_attachment(tenant_id VARCHAR(36),entry_id"
+                        + " VARCHAR(36),deleted INT)");
             jdbc.update("INSERT INTO order_logistics_cost_guard VALUES('tenant',1)");
             for (int n = 1; n <= 1001; n++)
                 jdbc.update(
@@ -56,7 +65,7 @@ class CostAnalyticsSourceTest {
                             + " VALUES('foreign','another',999)");
             jdbc.update(
                     "INSERT INTO order_logistics_cost(id,tenant_id,amount,deleted)"
-                        + " VALUES('removed','tenant',999,1)");
+                            + " VALUES('removed','tenant',999,1)");
             var config = new MybatisConfiguration();
             config.setMapUnderscoreToCamelCase(true);
             config.addMapper(OrderLogisticsCostMapper.class);
@@ -72,6 +81,8 @@ class CostAnalyticsSourceTest {
             assertThat(first.items().getFirst().get("amount")).isEqualTo("0.01");
             var second = source.page("tenant", first.items().getLast().get("id"));
             assertThat(second.items()).hasSize(1);
+            assertThat(first.items())
+                    .allSatisfy(r -> assertThat(r.get("status_code")).isEqualTo("DRAFT"));
             assertThat(second.items().getFirst().get("id")).endsWith("001001");
             assertThatThrownBy(() -> source.page("tenant", "bad cursor"))
                     .isInstanceOf(IllegalArgumentException.class);
@@ -80,10 +91,11 @@ class CostAnalyticsSourceTest {
                     status -> {
                         mapper.lock("tenant");
                         mapper.advanceAnalyticsVersion("tenant");
-                        assertThat(source.version("tenant")).isEqualTo("2:transport-types-v2");
+                        assertThat(source.version("tenant"))
+                                .isEqualTo("2:transport-types-v4-complete-only");
                         status.setRollbackOnly();
                     });
-            assertThat(source.version("tenant")).isEqualTo("1:transport-types-v2");
+            assertThat(source.version("tenant")).isEqualTo("1:transport-types-v4-complete-only");
         } finally {
             ds.destroy();
         }

@@ -2,14 +2,14 @@ package com.rigour.integration.application.port.out;
 
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
+import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
-import com.rigour.integration.api.v1.model.DhbApiModels.ExternalObjectMappingCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncLogView;
+import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTaskView;
-import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbExternalObjectMappingPageView;
 import com.rigour.integration.api.v1.model.DhbManualResolutionCommand;
 import com.rigour.integration.api.v1.model.DhbManualResolutionView;
@@ -18,6 +18,7 @@ import com.rigour.integration.api.v1.model.DhbSyncLogDetailView;
 import com.rigour.integration.api.v1.model.DhbSyncReconciliationCaseView;
 import com.rigour.integration.api.v1.model.DhbSyncRunAuditView;
 import com.rigour.integration.application.port.out.DhbClient.ConnectionTestResult;
+
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -26,12 +27,20 @@ import java.util.UUID;
 /** 订货宝同步持久化端口；实现必须在SQL层绑定已验签租户ID。 */
 public interface DhbIntegrationStore {
     List<ConnectorView> connectors(UUID tenantId);
+
     ConnectorView connector(UUID tenantId, UUID connectorId);
-    void recordConnectionTest(UUID tenantId, UUID actorId, UUID connectorId, ConnectionTestResult result);
+
+    void recordConnectionTest(
+            UUID tenantId, UUID actorId, UUID connectorId, ConnectionTestResult result);
+
     ConnectorView createConnector(UUID tenantId, UUID actorId, ConnectorCommand command);
+
     ConnectorView updateConnector(UUID tenantId, UUID actorId, UUID id, ConnectorCommand command);
+
     List<SyncTaskView> syncTasks(UUID tenantId);
+
     List<SyncTargetView> activeSyncTargets(String objectType);
+
     List<SyncTargetView> configuredSyncTargets(String objectType);
 
     default List<SyncTargetView> activeOrderSyncTargets() {
@@ -73,56 +82,105 @@ public interface DhbIntegrationStore {
     default List<SyncTargetView> configuredBusinessDictionarySyncTargets() {
         return configuredSyncTargets("BUSINESS_DICTIONARY");
     }
+
     SyncTaskView createSyncTask(UUID tenantId, UUID actorId, SyncTaskCommand command);
+
     SyncTaskView updateSyncTask(UUID tenantId, UUID actorId, UUID id, SyncTaskCommand command);
+
     List<OrderMirrorView> orderMirrors(UUID tenantId, int limit, int offset);
+
     List<SyncLogView> syncLogs(UUID tenantId, int limit);
+
     List<FieldMappingView> fieldMappings(UUID tenantId, UUID connectorId);
-    FieldMappingView saveFieldMapping(UUID tenantId, UUID actorId, UUID id, FieldMappingCommand command);
-    int saveExternalObjectMappings(UUID tenantId, UUID actorId,
-                                   List<ExternalObjectMappingCommand> commands);
-    default int saveExternalObjectMappings(UUID tenantId, UUID actorId,
-            List<ExternalObjectMappingCommand> commands, boolean preserveManual) {
+
+    FieldMappingView saveFieldMapping(
+            UUID tenantId, UUID actorId, UUID id, FieldMappingCommand command);
+
+    int saveExternalObjectMappings(
+            UUID tenantId, UUID actorId, List<ExternalObjectMappingCommand> commands);
+
+    default int saveExternalObjectMappings(
+            UUID tenantId,
+            UUID actorId,
+            List<ExternalObjectMappingCommand> commands,
+            boolean preserveManual) {
         return saveExternalObjectMappings(tenantId, actorId, commands);
     }
+
     DhbExternalObjectMappingPageView externalObjectMappings(
-            UUID tenantId, String sourceObjectType, String internalDomain, String mappingStatus,
-            int limit, int offset);
+            UUID tenantId,
+            String sourceObjectType,
+            String internalDomain,
+            String mappingStatus,
+            int limit,
+            int offset);
+
     List<DhbSyncRunAuditView> syncRuns(UUID tenantId, String objectType, String status, int limit);
+
+    /** 精确读取当前异常涉及的批次，不受全局最近批次条数影响。 */
+    List<DhbSyncRunAuditView> syncRunsByIds(UUID tenantId, java.util.Set<UUID> runIds);
+
+    /** 当前异常的原批次核对证据，按业务键批量读取。 */
+    List<DhbSyncReconciliationCaseView> openReconciliations(
+            UUID tenantId, List<DhbSyncExceptionView> exceptions);
+
     List<DhbSyncLogDetailView> syncLogDetails(UUID tenantId, UUID runId, String level, int limit);
+
     List<DhbSyncExceptionView> syncExceptions(UUID tenantId, String status, int limit);
-    default DhbSyncExceptionView openException(UUID tenantId, String type, String sourceId) {
-        return syncExceptions(tenantId, "OPEN", 500).stream().filter(r -> type.equals(r.sourceObjectType()) && sourceId.equals(r.sourceId())).findFirst().orElse(null);
-    }
-    default DhbSyncReconciliationCaseView openReconciliation(UUID tenantId, String type, String sourceId) {
-        return syncReconciliationCases(tenantId, "OPEN", "ERROR", 500).stream().filter(r -> type.equals(r.sourceObjectType()) && sourceId.equals(r.businessKey())).findFirst().orElse(null);
-    }
+
+    DhbSyncExceptionView openException(
+            UUID tenantId, UUID connectorId, String type, String sourceId);
+
+    DhbSyncReconciliationCaseView openReconciliation(
+            UUID tenantId, UUID runId, String type, String sourceId);
+
     default DhbSyncRunAuditView syncRun(UUID tenantId, UUID runId) {
-        return syncRuns(tenantId, null, null, 500).stream().filter(r -> runId.equals(r.runId())).findFirst().orElse(null);
+        return syncRuns(tenantId, null, null, 500).stream()
+                .filter(r -> runId.equals(r.runId()))
+                .findFirst()
+                .orElse(null);
     }
+
     List<DhbSyncReconciliationCaseView> syncReconciliationCases(
             UUID tenantId, String status, String severity, int limit);
+
     List<DhbManualResolutionView> manualResolutions(
-            UUID tenantId, String resolutionType, String sourceObjectType,
-            String sourceId, String status, int limit);
+            UUID tenantId,
+            String resolutionType,
+            String sourceObjectType,
+            String sourceId,
+            String status,
+            int limit);
+
     DhbManualResolutionView createManualResolution(
             UUID tenantId, UUID actorId, DhbManualResolutionCommand command);
 
     /** 保存订货宝技术原始业务字段；不得传入sKey、账号、密码或Token。 */
-    void persistRawLanding(UUID tenantId, UUID connectorId, String sourceObjectType,
-                           String sourceId, Instant sourceUpdatedAt, Map<String, Object> payload);
+    void persistRawLanding(
+            UUID tenantId,
+            UUID connectorId,
+            String sourceObjectType,
+            String sourceId,
+            Instant sourceUpdatedAt,
+            Map<String, Object> payload);
 
-    /**
-     * 按订货宝分页批量保存技术原始字段，避免每条记录单独开启事务。
-     * 默认实现保留其他适配器的兼容性；持久化实现可覆盖为单事务批量写入。
-     */
+    /** 按订货宝分页批量保存技术原始字段，避免每条记录单独开启事务。 默认实现保留其他适配器的兼容性；持久化实现可覆盖为单事务批量写入。 */
     default void persistRawLandings(UUID tenantId, UUID connectorId, List<RawLanding> values) {
         if (values == null) return;
-        values.forEach(value -> persistRawLanding(tenantId, connectorId,
-                value.sourceObjectType(), value.sourceId(), value.sourceUpdatedAt(), value.payload()));
+        values.forEach(
+                value ->
+                        persistRawLanding(
+                                tenantId,
+                                connectorId,
+                                value.sourceObjectType(),
+                                value.sourceId(),
+                                value.sourceUpdatedAt(),
+                                value.payload()));
     }
 
-    record RawLanding(String sourceObjectType, String sourceId, Instant sourceUpdatedAt,
-                      Map<String, Object> payload) {
-    }
+    record RawLanding(
+            String sourceObjectType,
+            String sourceId,
+            Instant sourceUpdatedAt,
+            Map<String, Object> payload) {}
 }

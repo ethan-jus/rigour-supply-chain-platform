@@ -105,8 +105,9 @@ public final class CostSourceNormalizer {
                         : new BigDecimal(r.get("amount"))
                                 .setScale(2, java.math.RoundingMode.UNNECESSARY);
         if (amount != null && amount.signum() < 0) throw new IllegalStateException("成本源金额为负，拒绝发布");
-        if (!Set.of("DRAFT", "CONFIRMED", "VOID").contains(r.get("status_code")))
-            throw new IllegalStateException("成本源确认状态无效");
+        if (!Set.of("DRAFT", "CONFIRMED", "VOID").contains(r.get("status_code"))
+                && !("ORDER".equals(source) && "ACTIVE".equals(r.get("status_code"))))
+            throw new IllegalStateException("成本源状态无效");
         if ("ORDER".equals(source) && !"COMPANY".equals(r.get("payer_code"))) return null;
         String category =
                 switch (source) {
@@ -468,7 +469,10 @@ public final class CostSourceNormalizer {
                 mapping,
                 LocalDate.parse(date),
                 amount,
-                r.get("status_code"),
+                // Order 源投影仅将已完善运输标为 CONFIRMED；旧 ACTIVE 快照不能计入。
+                "ORDER".equals(source) && "ACTIVE".equals(r.get("status_code"))
+                        ? "DRAFT"
+                        : r.get("status_code"),
                 Set.of("PAID", "UNPAID")
                                 .contains(Objects.toString(r.get("payment_status_code"), ""))
                         ? r.get("payment_status_code")

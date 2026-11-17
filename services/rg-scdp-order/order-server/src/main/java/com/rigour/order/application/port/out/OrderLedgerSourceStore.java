@@ -17,6 +17,15 @@ public interface OrderLedgerSourceStore {
     List<OrderDeliveryCostSourceView> sales(
             String tenant, LogisticsLedgerSourceQuery query, String action, Long warehouseId);
 
+    default List<OrderDeliveryCostSourceView> sales(
+            String tenant,
+            LogisticsLedgerSourceQuery query,
+            String action,
+            Long warehouseId,
+            java.util.Set<String> departmentEmployeeCodes) {
+        return sales(tenant, query, action, warehouseId);
+    }
+
     List<OrderDeliveryCostSourceView> salesByNos(
             String tenant, List<String> documentNos, String action, boolean historical);
 }

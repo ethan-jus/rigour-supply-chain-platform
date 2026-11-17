@@ -53,25 +53,32 @@ public class DhbPageSyncJobService {
         DhbSyncOrchestrationService.requireManualCaller(caller);
         if (requestId == null
                 || command == null
-                || !Boolean.TRUE.equals(command.incremental())
+                || (!Boolean.TRUE.equals(command.incremental())
+                        && command.scope() != DhbPageSyncCommand.Scope.SHIPMENT)
                 || !Set.of(
                                 DhbPageSyncCommand.Scope.CUSTOMER,
                                 DhbPageSyncCommand.Scope.SALESPERSON,
                                 DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE,
-                                DhbPageSyncCommand.Scope.VOUCHER_BACKFILL)
+                                DhbPageSyncCommand.Scope.VOUCHER_BACKFILL,
+                                DhbPageSyncCommand.Scope.SHIPMENT)
                         .contains(command.scope()))
-            throw new IllegalArgumentException("后台任务只支持客户、业务员、订单包或凭证补齐");
+            throw new IllegalArgumentException("请选择支持后台同步的业务对象");
         delegate.validatePageTarget(caller, command);
         return submit(caller, requestId, command, false);
     }
 
     public DhbPageSyncJob startScheduled(UUID tenant, UUID requestId, UUID connector) {
         delegate.validateBusinessChain(tenant, connector);
-        return submit(DhbSyncOrchestrationService.serviceCaller(tenant), requestId,
-                new DhbPageSyncCommand(DhbPageSyncCommand.Scope.BUSINESS_CHAIN, connector, null, null, null, true), true);
+        return submit(
+                DhbSyncOrchestrationService.serviceCaller(tenant),
+                requestId,
+                new DhbPageSyncCommand(
+                        DhbPageSyncCommand.Scope.BUSINESS_CHAIN, connector, null, null, null, true),
+                true);
     }
 
-    private DhbPageSyncJob submit(CallerIdentity caller, UUID requestId, DhbPageSyncCommand command, boolean scheduled) {
+    private DhbPageSyncJob submit(
+            CallerIdentity caller, UUID requestId, DhbPageSyncCommand command, boolean scheduled) {
         var job = store.reserve(caller.tenantId(), requestId, command, clock.instant());
         if (!job.jobId().equals(requestId)
                 || !store.claim(caller.tenantId(), requestId, clock.instant()))
@@ -83,22 +90,32 @@ public class DhbPageSyncJobService {
                     () -> {
                         try {
                             var result =
-                                    scheduled ? delegate.runScheduledChain(caller.tenantId(), command.connectorId(),
-                                            stage -> store.progress(key.tenant(), key.id(), stage, clock.instant())) : delegate.runPage(
-                                            caller,
-                                            command,
-                                            stage ->
-                                                    store.progress(
-                                                            key.tenant(),
-                                                            key.id(),
-                                                            stage,
-                                                            clock.instant()),
-                                            true);
+                                    scheduled
+                                            ? delegate.runScheduledChain(
+                                                    caller.tenantId(),
+                                                    command.connectorId(),
+                                                    stage ->
+                                                            store.progress(
+                                                                    key.tenant(),
+                                                                    key.id(),
+                                                                    stage,
+                                                                    clock.instant()))
+                                            : delegate.runPage(
+                                                    caller,
+                                                    command,
+                                                    stage ->
+                                                            store.progress(
+                                                                    key.tenant(),
+                                                                    key.id(),
+                                                                    stage,
+                                                                    clock.instant()),
+                                                    true);
                             store.finish(
                                     key.tenant(),
                                     key.id(),
                                     "FAILED".equals(result.status()) ? "FAILED" : "SUCCEEDED",
-                                    "SUCCEEDED".equals(result.status()) ? "同步结束，请查看各项结果"
+                                    "SUCCEEDED".equals(result.status())
+                                            ? "同步结束，请查看各项结果"
                                             : "扫描结束，仍有失败或待核对项，请查看各项结果；不代表全部更新成功",
                                     result,
                                     clock.instant());

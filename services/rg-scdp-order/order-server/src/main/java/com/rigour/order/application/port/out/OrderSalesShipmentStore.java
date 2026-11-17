@@ -3,6 +3,7 @@ package com.rigour.order.application.port.out;
 import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesShipmentDetailView;
 import com.rigour.order.api.v1.model.SalesShipmentSummaryView;
+
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
@@ -18,11 +19,11 @@ public interface OrderSalesShipmentStore {
 
     boolean existsByNo(String tenantId, String shipmentNo);
 
-    SalesShipmentDetailView create(String tenantId, String shipmentNo,
-                                   SalesShipmentWrite command, String actorId);
+    SalesShipmentDetailView create(
+            String tenantId, String shipmentNo, SalesShipmentWrite command, String actorId);
 
-    SalesShipmentDetailView update(String tenantId, Long id,
-                                   SalesShipmentWrite command, String actorId);
+    SalesShipmentDetailView update(
+            String tenantId, Long id, SalesShipmentWrite command, String actorId);
 
     void delete(String tenantId, Long id, int revision, String actorId);
 
@@ -33,8 +34,7 @@ public interface OrderSalesShipmentStore {
             String trackingNo,
             String shipmentStatusCode,
             Instant shipTimeFrom,
-            Instant shipTimeTo) {
-    }
+            Instant shipTimeTo) {}
 
     record SalesShipmentWrite(
             UUID connectorId,
@@ -63,6 +63,32 @@ public interface OrderSalesShipmentStore {
             lines = lines == null ? List.of() : List.copyOf(lines);
         }
 
+        public SalesShipmentWrite withRevision(int value) {
+            return new SalesShipmentWrite(
+                    connectorId,
+                    sourceSystemCode,
+                    sourceDocumentNo,
+                    salesOrderId,
+                    salesOrderNoSnapshot,
+                    customerId,
+                    customerCodeSnapshot,
+                    customerNameSnapshot,
+                    contactPhoneSnapshot,
+                    regionCode,
+                    ownerEmployeeCode,
+                    warehouseId,
+                    stockOutOrderId,
+                    stockOutNo,
+                    shipmentStatusCode,
+                    logisticsCompany,
+                    trackingNo,
+                    shipTime,
+                    totalQuantity,
+                    lines,
+                    remark,
+                    value);
+        }
+
         public SalesShipmentWrite(
                 Long salesOrderId,
                 String salesOrderNoSnapshot,
@@ -83,11 +109,29 @@ public interface OrderSalesShipmentStore {
                 List<SalesShipmentLineWrite> lines,
                 String remark,
                 Integer revision) {
-            this(null, null, null, salesOrderId, salesOrderNoSnapshot, customerId,
-                    customerCodeSnapshot, customerNameSnapshot, contactPhoneSnapshot,
-                    regionCode, ownerEmployeeCode, warehouseId, stockOutOrderId, stockOutNo,
-                    shipmentStatusCode, logisticsCompany, trackingNo, shipTime, totalQuantity,
-                    lines, remark, revision);
+            this(
+                    null,
+                    null,
+                    null,
+                    salesOrderId,
+                    salesOrderNoSnapshot,
+                    customerId,
+                    customerCodeSnapshot,
+                    customerNameSnapshot,
+                    contactPhoneSnapshot,
+                    regionCode,
+                    ownerEmployeeCode,
+                    warehouseId,
+                    stockOutOrderId,
+                    stockOutNo,
+                    shipmentStatusCode,
+                    logisticsCompany,
+                    trackingNo,
+                    shipTime,
+                    totalQuantity,
+                    lines,
+                    remark,
+                    revision);
         }
     }
 
@@ -102,6 +146,5 @@ public interface OrderSalesShipmentStore {
             String specificationSnapshot,
             String unitCode,
             BigDecimal shippedQuantity,
-            String remark) {
-    }
+            String remark) {}
 }

@@ -33,7 +33,61 @@ public final class TransportRecordModels {
             List<LogisticsCostLedger.ManualBillItem> manualBillItems,
             String deliveryModeCode,
             List<LogisticsCostLedger.Party> receivingPoints,
-            Map<String, BigDecimal> orderAllocations) {
+            Map<String, BigDecimal> orderAllocations,
+            java.time.LocalDateTime shippingTime) {
+        public Draft(
+                Integer revision,
+                String transportType,
+                LocalDate date,
+                String carrierCode,
+                String trackingNo,
+                String platformOrderNo,
+                String warehouseCode,
+                String senderName,
+                String senderContact,
+                String senderPhone,
+                String senderAddress,
+                String cityCode,
+                BigDecimal amount,
+                String ownerEmployeeCode,
+                String remark,
+                String reason,
+                String zeroReason,
+                List<String> orderCodes,
+                String requestId,
+                String paymentStatusCode,
+                List<LogisticsCostLedger.ManualBillItem> manualBillItems,
+                String deliveryModeCode,
+                List<LogisticsCostLedger.Party> receivingPoints,
+                Map<String, BigDecimal> orderAllocations) {
+            this(
+                    revision,
+                    transportType,
+                    date,
+                    carrierCode,
+                    trackingNo,
+                    platformOrderNo,
+                    warehouseCode,
+                    senderName,
+                    senderContact,
+                    senderPhone,
+                    senderAddress,
+                    cityCode,
+                    amount,
+                    ownerEmployeeCode,
+                    remark,
+                    reason,
+                    zeroReason,
+                    orderCodes,
+                    requestId,
+                    paymentStatusCode,
+                    manualBillItems,
+                    deliveryModeCode,
+                    receivingPoints,
+                    orderAllocations,
+                    null);
+        }
+
         public Draft(
                 Integer revision,
                 String transportType,
@@ -110,7 +164,8 @@ public final class TransportRecordModels {
                     manualBillItems,
                     deliveryModeCode,
                     receivingPoints,
-                    allocations);
+                    allocations,
+                    shippingTime);
         }
 
         public Draft(

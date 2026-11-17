@@ -25,7 +25,81 @@ public record LogisticsCostLedger(
         String driverName,
         String vehicleNo,
         String platformOrderNo,
-        List<ManualBillItem> manualBillItems) {
+        List<ManualBillItem> manualBillItems,
+        java.time.LocalDateTime shippingTime) {
+
+    public LogisticsCostLedger(
+            int schemaVersion,
+            String transportPurposeCode,
+            String deliveryModeCode,
+            String carrierCode,
+            String costMonth,
+            String trackingNo,
+            String transportMethodCode,
+            Party sender,
+            List<Party> receivingPoints,
+            List<Fee> feeItems,
+            List<Source> sources,
+            String nonSalesPurposeCode,
+            String noTrackingReason,
+            String noSourceReason,
+            List<Long> scopeWarehouseIds,
+            List<String> scopeCityCodes,
+            SourceSync sourceSync,
+            String driverName,
+            String vehicleNo,
+            String platformOrderNo,
+            List<ManualBillItem> manualBillItems) {
+        this(
+                schemaVersion,
+                transportPurposeCode,
+                deliveryModeCode,
+                carrierCode,
+                costMonth,
+                trackingNo,
+                transportMethodCode,
+                sender,
+                receivingPoints,
+                feeItems,
+                sources,
+                nonSalesPurposeCode,
+                noTrackingReason,
+                noSourceReason,
+                scopeWarehouseIds,
+                scopeCityCodes,
+                sourceSync,
+                driverName,
+                vehicleNo,
+                platformOrderNo,
+                manualBillItems,
+                null);
+    }
+
+    public LogisticsCostLedger withShippingTime(java.time.LocalDateTime value) {
+        return new LogisticsCostLedger(
+                schemaVersion,
+                transportPurposeCode,
+                deliveryModeCode,
+                carrierCode,
+                costMonth,
+                trackingNo,
+                transportMethodCode,
+                sender,
+                receivingPoints,
+                feeItems,
+                sources,
+                nonSalesPurposeCode,
+                noTrackingReason,
+                noSourceReason,
+                scopeWarehouseIds,
+                scopeCityCodes,
+                sourceSync,
+                driverName,
+                vehicleNo,
+                platformOrderNo,
+                manualBillItems,
+                value);
+    }
 
     public LogisticsCostLedger(
             int schemaVersion,
@@ -372,7 +446,34 @@ public record LogisticsCostLedger(
                 driverName,
                 vehicleNo,
                 platformOrderNo,
-                manualBillItems);
+                manualBillItems,
+                shippingTime);
+    }
+
+    public LogisticsCostLedger withFeeItems(List<Fee> value) {
+        return new LogisticsCostLedger(
+                schemaVersion,
+                transportPurposeCode,
+                deliveryModeCode,
+                carrierCode,
+                costMonth,
+                trackingNo,
+                transportMethodCode,
+                sender,
+                receivingPoints,
+                value,
+                sources,
+                nonSalesPurposeCode,
+                noTrackingReason,
+                noSourceReason,
+                scopeWarehouseIds,
+                scopeCityCodes,
+                sourceSync,
+                driverName,
+                vehicleNo,
+                platformOrderNo,
+                manualBillItems,
+                shippingTime);
     }
 
     public LogisticsCostLedger withSources(List<Source> value) {
@@ -397,7 +498,8 @@ public record LogisticsCostLedger(
                 driverName,
                 vehicleNo,
                 platformOrderNo,
-                manualBillItems);
+                manualBillItems,
+                shippingTime);
     }
 
     public LogisticsCostLedger withTransportType(String value) {
@@ -422,7 +524,8 @@ public record LogisticsCostLedger(
                 driverName,
                 vehicleNo,
                 platformOrderNo,
-                manualBillItems);
+                manualBillItems,
+                shippingTime);
     }
 
     public LogisticsCostLedger resolved(Party from, List<Party> points, List<Long> warehouses) {
@@ -447,7 +550,8 @@ public record LogisticsCostLedger(
                 driverName,
                 vehicleNo,
                 platformOrderNo,
-                manualBillItems);
+                manualBillItems,
+                shippingTime);
     }
 
     public LogisticsCostLedger withScopeCities(List<String> cities) {
@@ -472,7 +576,8 @@ public record LogisticsCostLedger(
                 driverName,
                 vehicleNo,
                 platformOrderNo,
-                manualBillItems);
+                manualBillItems,
+                shippingTime);
     }
 
     public LogisticsCostLedger withPlatformOrderNo(String value) {
@@ -497,7 +602,8 @@ public record LogisticsCostLedger(
                 driverName,
                 vehicleNo,
                 value,
-                manualBillItems);
+                manualBillItems,
+                shippingTime);
     }
 
     public LogisticsCostLedger withManualBillItems(List<ManualBillItem> value) {
@@ -522,6 +628,7 @@ public record LogisticsCostLedger(
                 driverName,
                 vehicleNo,
                 platformOrderNo,
-                value);
+                value,
+                shippingTime);
     }
 }

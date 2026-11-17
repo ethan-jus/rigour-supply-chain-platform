@@ -1,3 +1,16 @@
+/** 列表按实际业务时间：货拉拉下单，订货宝／手工发货。 */
+export const transportTime = (row) => {
+    const value = row.source === "货拉拉同步" ? row.time || "" : row.sourceShippedAt || row.shippingTime || row.date || "";
+    return value.length === 10 ? value + " 00:00:00" : value.replace("T", " ").slice(0,19);
+};
+export const transportStatus = (row) => {
+    if(row.status === "已作废") return "已作废";
+    const linked = orders.filter(o => row.links?.includes(o.id));
+    const complete = row.amount != null && linked.length > 0 && linked.every(o => o.sales && o.department)
+        && (row.source !== "手工录入" || row.vouchers?.length > 0);
+    return complete ? "已完善" : "待完善";
+};
+
 import {
     carrierCode,
     carrierEntryMode,
@@ -286,10 +299,10 @@ export function ingestCompleted(state, snapshots) {
                           ...x,
                           platformAmount: p.amount,
                           billChanged:
-                              x.status === "已确认" && x.amount !== p.amount,
-                          amount: x.status === "已确认" ? x.amount : p.amount,
+                              (x.manuallyEdited || x.status === "已作废") && x.amount !== p.amount,
+                          amount: x.manuallyEdited || x.status === "已作废" ? x.amount : p.amount,
                           allocations:
-                              x.status === "已确认"
+                              x.manuallyEdited || x.status === "已作废"
                                   ? x.allocations
                                   : allocate(
                                         p.amount,
@@ -305,7 +318,7 @@ export function ingestCompleted(state, snapshots) {
                           vehicle: p.vehicle,
                           logs: [
                               ...x.logs,
-                              "同步平台最新资料，保留业务关联和已确认成本",
+                              "同步平台最新资料，保留业务关联和人工维护成本",
                           ],
                       }
                     : x,
@@ -327,7 +340,7 @@ export function ingestCompleted(state, snapshots) {
                 vehicle: p.vehicle,
                 amount: p.amount,
                 platformAmount: p.amount,
-                status: "待确认",
+                status: "有效",
                 source: "货拉拉同步",
                 links: [],
                 allocations: {},
@@ -362,7 +375,7 @@ export function initialState() {
                     stops: 1,
                     vehicle: "-",
                     amount: null,
-                    status: "待确认",
+                    status: "有效",
                     source: "订货宝同步",
                     shipper: warehouses.find((w) => w.id === "w2").name,
                     shippingContact: warehouses.find((w) => w.id === "w2")
@@ -398,10 +411,17 @@ export function initialState() {
 }
 export function saveManual(state, draft) {
     const existing = state.records.find((r) => r.id === draft.editId);
-    if (existing?.status === "已确认")
-        throw Error("请先撤销已确认成本，再编辑");
-    if (existing?.source === "货拉拉同步")
-        throw Error("平台账单只读，不能手工覆盖");
+    if (existing?.status === "已作废") throw Error("作废记录不可编辑");
+    if (existing?.source === "货拉拉同步") {
+        const amount = draft.amount;
+        if (amount != null && (!Number.isSafeInteger(amount) || amount < 0)) throw Error("请填写有效运输费用");
+        if (amount === 0 && !draft.remark?.trim()) throw Error("零费用请说明原因");
+        const row = {...existing, amount, owner: draft.owner, remark: draft.remark,
+            status: "有效", manuallyEdited: true,
+            allocations: allocate(amount, orders.filter(o => existing.links.includes(o.id))),
+            logs: [...existing.logs, "修改本系统费用，平台账单保持只读"]};
+        return {state: {...state, records: state.records.map(r => r.id === row.id ? row : r)}, record: row};
+    }
     const warehouse = warehouses.find((w) => w.id === draft.warehouse);
     const shipping = {
         shipper: draft.shipper ?? warehouse?.name ?? "",
@@ -440,8 +460,9 @@ export function saveManual(state, draft) {
         stops: existing?.stops || 1,
         company: draft.mode === "自营配送" ? "自营" : draft.company,
         tracking: draft.mode === "自营配送" ? "" : draft.tracking.trim(),
-        status: "待确认",
-        time: existing?.time || new Date().toLocaleString("sv-SE"),
+        status: "有效",
+        manuallyEdited: true,
+        time: draft.date,
         links,
         allocations: allocate(
             amount,
@@ -510,8 +531,7 @@ export function linkTransport(state, recordId, orderId) {
     if (!o || o.status !== "有效") throw Error("请选择有效销售订单");
     if (!r || r.status === "已作废") throw Error("请选择有效运输记录");
     if (r.links.includes(orderId)) return { state, record: r, repeated: true };
-    if (r.status === "已确认")
-        throw Error("该运输成本已确认，请先撤销后调整订单关联及分摊");
+
     if (r.transportType && r.transportType !== "销售订单配送")
         throw Error("该记录不是销售配送，请核对运输类型");
     const links = [...r.links, orderId],
@@ -559,45 +579,14 @@ export function saveManualForOrder(state, draft, orderId) {
 export function transition(state, id, action, reason = "") {
     const r = state.records.find((x) => x.id === id);
     if (!r) throw Error("运输记录不存在");
-    const allowed = {
-        待确认: ["确认", "作废"],
-        已确认: ["撤销"],
-        已作废: ["删除"],
-    };
-    if (!allowed[r.status]?.includes(action))
-        throw Error("当前状态不支持该操作");
-    if (
-        action === "确认" &&
-        (r.amount == null ||
-            (r.links.length &&
-                r.links.reduce((s, id) => s + (r.allocations[id] ?? 0), 0) !==
-                    r.amount))
-    )
-        throw Error("请先补齐运输费用并核对分摊");
-    if (action === "确认" && !r.sourceId && !r.vouchers?.length)
-        throw Error("请先上传费用凭证");
-    if (action !== "确认" && !reason.trim()) throw Error("请填写操作原因");
-    if (reason.length > 500) throw Error("操作原因不能超过500个字符");
-    if (action === "删除")
-        return { ...state, records: state.records.filter((x) => x.id !== id) };
-    return {
-        ...state,
-        records: state.records.map((x) =>
-            x.id === id
-                ? {
-                      ...x,
-                      status:
-                          action === "确认"
-                              ? "已确认"
-                              : action === "撤销"
-                                ? "待确认"
-                                : "已作废",
-                      logs: [...x.logs, action + (reason ? "：" + reason : "")],
-                  }
-                : x,
-        ),
-    };
+    const allowed = {有效: ["作废"], 已作废: ["删除"]};
+    if (!allowed[r.status]?.includes(action)) throw Error("当前状态不支持该操作；运输保存即生效，无需确认或撤销");
+    if (!reason.trim() || reason.length > 500) throw Error("请填写不超过500字的原因");
+    if (action === "删除") return {...state, records: state.records.filter(x => x.id !== id)};
+    return {...state, records: state.records.map(x => x.id === id
+        ? {...x, status: "已作废", logs: [...x.logs, action + "：" + reason]} : x)};
 }
+
 export function syncCompleted(state) {
     return ingestCompleted(state, [
         ...platformExamples,

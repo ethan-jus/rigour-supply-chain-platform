@@ -64,6 +64,18 @@ class ManualLogisticsCostTest {
             ",\"externalDocuments\":[{\"sourceSystem\":\"DHB\",\"documentType\":\"DELIVERY\",\"documentNo\":\"DHB-ORDER-9\",\"documentDate\":\"2026-10-01\",\"senderName\":\"城市仓\",\"receiverName\":\"客户\"}]";
 
     @Test
+    void legacyJsonCannotCreateEffectiveManualCostsWithoutCosEvidence() {
+        var files = mock(CostAttachmentStore.class);
+        var platform = mock(PlatformTransportStore.class);
+        service.apiStores(files, platform);
+        assertThatThrownBy(() -> service.saveApi(null, command("MANUAL", "[]", dhb)))
+                .hasMessageContaining("连同业务凭证");
+        assertThatThrownBy(() -> service.saveApi("C1", command("MANUAL", "[]", dhb)))
+                .hasMessageContaining("至少上传一份");
+        verify(store, never()).save(any(), any(), any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
     void manualDhbSourceSavesWithoutLocalSalesOrderAndKeepsUnknownAmount() {
         var c = command("MANUAL", "[]", dhb);
         service.save("logistics", null, c);
@@ -144,9 +156,9 @@ class ManualLogisticsCostTest {
                                 .replace("城市仓", "供应商A")
                                 .replace("客户", "中心仓B"),
                         LogisticsCostCommand.class);
-        assertThatThrownBy(() -> service.save("logistics", null, c)).hasMessageContaining("采购运费已归入采购成本");
+        assertThatThrownBy(() -> service.save("logistics", null, c))
+                .hasMessageContaining("采购运费已归入采购成本");
         verifyNoInteractions(store);
-
     }
 
     @Test

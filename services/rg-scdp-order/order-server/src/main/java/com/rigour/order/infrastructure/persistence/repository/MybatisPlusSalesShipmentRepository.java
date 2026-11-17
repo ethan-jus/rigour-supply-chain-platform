@@ -39,7 +39,8 @@ public class MybatisPlusSalesShipmentRepository
         extends ServiceImpl<InternalSalesShipmentMapper, InternalSalesShipmentEntity>
         implements OrderSalesShipmentStore {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+    private com.rigour.shared.cache.QueryCache queryCache =
+            com.rigour.shared.cache.QueryCache.disabled();
 
     private static final String SYSTEM_ACTOR = "SYSTEM";
 
@@ -110,12 +111,41 @@ public class MybatisPlusSalesShipmentRepository
         queryCache.changed(tenantId);
         scopes.requireRelatedOrder(tenantId, command.salesOrderId(), "order:shipment:create");
         command = bindFulfillment(tenantId, command);
+        if (command.connectorId() != null && command.sourceSystemCode() != null) {
+            var existing =
+                    getBaseMapper()
+                            .selectList(
+                                    Wrappers.<InternalSalesShipmentEntity>lambdaQuery()
+                                            .eq(InternalSalesShipmentEntity::getTenantId, tenantId)
+                                            .eq(
+                                                    InternalSalesShipmentEntity::getConnectorId,
+                                                    command.connectorId().toString())
+                                            .eq(
+                                                    InternalSalesShipmentEntity
+                                                            ::getSourceSystemCode,
+                                                    command.sourceSystemCode())
+                                            .eq(
+                                                    InternalSalesShipmentEntity
+                                                            ::getSourceDocumentNo,
+                                                    command.sourceDocumentNo()));
+            if (!existing.isEmpty())
+                return update(
+                        tenantId,
+                        existing.getFirst().getId(),
+                        command.withRevision(existing.getFirst().getRevision()),
+                        actorId);
+        }
         LocalDateTime now = now();
         InternalSalesShipmentEntity entity = entity(tenantId, shipmentNo, command, actorId, now);
         try {
             getBaseMapper().insert(entity);
             insertLines(tenantId, entity.getId(), command.lines(), actorId, now);
-            refreshOrderShipmentTime(tenantId, command.salesOrderId(), actorId, now, command.sourceSystemCode() == null);
+            refreshOrderShipmentTime(
+                    tenantId,
+                    command.salesOrderId(),
+                    actorId,
+                    now,
+                    command.sourceSystemCode() == null);
         } catch (DataIntegrityViolationException exception) {
             throw conflict("销售发货单号已存在或销售发货单引用数据无效");
         }
@@ -133,6 +163,31 @@ public class MybatisPlusSalesShipmentRepository
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售发货单不存在"));
         scopes.requireStableAssociation(existing.getSalesOrderId(), command.salesOrderId());
         command = bindFulfillment(tenantId, command);
+        if (existing.getSourcePayloadJson() != null)
+            command =
+                    new SalesShipmentWrite(
+                            command.connectorId(),
+                            command.sourceSystemCode(),
+                            command.sourceDocumentNo(),
+                            command.salesOrderId(),
+                            existing.getSalesOrderNoSnapshot(),
+                            command.customerId(),
+                            existing.getCustomerCodeSnapshot(),
+                            existing.getCustomerNameSnapshot(),
+                            existing.getContactPhoneSnapshot(),
+                            command.regionCode(),
+                            command.ownerEmployeeCode(),
+                            command.warehouseId(),
+                            command.stockOutOrderId(),
+                            command.stockOutNo(),
+                            existing.getShipmentStatusCode(),
+                            existing.getLogisticsCompany(),
+                            existing.getTrackingNo(),
+                            instant(existing.getShipTime()),
+                            existing.getTotalQuantity(),
+                            command.lines(),
+                            command.remark(),
+                            command.revision());
         LocalDateTime now = now();
         int updated =
                 getBaseMapper()
@@ -219,9 +274,19 @@ public class MybatisPlusSalesShipmentRepository
         if (updated != 1) throw conflict("销售发货单已被其他人修改，请刷新后重试");
         logicDeleteLines(tenantId, id, actorId, now);
         insertLines(tenantId, id, command.lines(), actorId, now);
-        refreshOrderShipmentTime(tenantId, existing.getSalesOrderId(), actorId, now, existing.getSourceSystemCode() == null);
+        refreshOrderShipmentTime(
+                tenantId,
+                existing.getSalesOrderId(),
+                actorId,
+                now,
+                existing.getSourceSystemCode() == null);
         if (!java.util.Objects.equals(existing.getSalesOrderId(), command.salesOrderId())) {
-            refreshOrderShipmentTime(tenantId, command.salesOrderId(), actorId, now, command.sourceSystemCode() == null);
+            refreshOrderShipmentTime(
+                    tenantId,
+                    command.salesOrderId(),
+                    actorId,
+                    now,
+                    command.sourceSystemCode() == null);
         }
         return rawDetail(tenantId, id).orElseThrow(() -> notFound("销售发货单不存在"));
     }
@@ -251,7 +316,12 @@ public class MybatisPlusSalesShipmentRepository
                                         .eq(InternalSalesShipmentEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售发货单已被其他人修改，请刷新后重试");
         logicDeleteLines(tenantId, id, actorId, now);
-        refreshOrderShipmentTime(tenantId, existing.getSalesOrderId(), actorId, now, existing.getSourceSystemCode() == null);
+        refreshOrderShipmentTime(
+                tenantId,
+                existing.getSalesOrderId(),
+                actorId,
+                now,
+                existing.getSourceSystemCode() == null);
     }
 
     /** 租户录入的发货资料只能引用原订单的选仓和已完成回执；来源历史导入保留原始证据。 */
@@ -325,7 +395,11 @@ public class MybatisPlusSalesShipmentRepository
     }
 
     private void refreshOrderShipmentTime(
-            String tenantId, Long salesOrderId, String actorId, LocalDateTime now, boolean ownFulfillment) {
+            String tenantId,
+            Long salesOrderId,
+            String actorId,
+            LocalDateTime now,
+            boolean ownFulfillment) {
         if (salesOrderId == null) return;
         LocalDateTime shipmentTime =
                 getBaseMapper()
@@ -356,7 +430,8 @@ public class MybatisPlusSalesShipmentRepository
                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         // 自建订单按我方履约判断；同步订单由来源状态判断，补录发货不能倒改来源完成结论。
         if (!ownFulfillment) return;
-        jdbc.update("""
+        jdbc.update(
+                """
                 UPDATE order_sales_order o
                 SET order_status_code = CASE WHEN
                     o.data_quality_status_code='COMPLETE'
@@ -373,7 +448,9 @@ public class MybatisPlusSalesShipmentRepository
                     THEN 'COMPLETED' ELSE 'SUBMITTED' END
                 WHERE o.tenant_id=? AND o.id=? AND o.deleted=0 AND o.source_system_code IS NULL
                   AND o.order_status_code IN ('SUBMITTED','COMPLETED')
-                """, tenantId, salesOrderId);
+                """,
+                tenantId,
+                salesOrderId);
     }
 
     private LambdaQueryWrapper<InternalSalesShipmentEntity> query(
@@ -527,7 +604,9 @@ public class MybatisPlusSalesShipmentRepository
                 instant(entity.getShipTime()),
                 entity.getTotalQuantity(),
                 entity.getRevision(),
-                instant(entity.getUpdatedTime()));
+                instant(entity.getUpdatedTime()),
+                entity.getSourceWarehouseName(),
+                instant(entity.getStockOutTime()));
     }
 
     private static SalesShipmentDetailView detail(
@@ -560,7 +639,11 @@ public class MybatisPlusSalesShipmentRepository
                 instant(entity.getCreatedTime()),
                 entity.getUpdatedBy(),
                 instant(entity.getUpdatedTime()),
-                lines);
+                entity.getSourcePayloadJson() != null
+                        ? SalesShipmentSnapshotFacts.lines(entity.getSourcePayloadJson())
+                        : lines,
+                entity.getSourceWarehouseName(),
+                instant(entity.getStockOutTime()));
     }
 
     private static SalesShipmentLineView line(InternalSalesShipmentLineEntity entity) {

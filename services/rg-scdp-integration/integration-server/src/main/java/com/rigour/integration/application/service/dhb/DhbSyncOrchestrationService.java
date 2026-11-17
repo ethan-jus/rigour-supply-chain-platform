@@ -288,7 +288,7 @@ public final class DhbSyncOrchestrationService {
                             if (command.scope() == com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.RECEIPT
                                     && !refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, background)) break;
                             SyncRunView r=orderSyncService.runOrderPull(caller,bucket.orderTarget.taskId(),
-                                new SyncRunCommand(command.from(),command.to(),null,null,null,type),pages);
+                                new SyncRunCommand(command.from(),command.to(),null,null,null,type),pages,progress);
                             steps.add(orderPackageStep(type, r));
                         }
                         case ORDER_SALES_PACKAGE -> {

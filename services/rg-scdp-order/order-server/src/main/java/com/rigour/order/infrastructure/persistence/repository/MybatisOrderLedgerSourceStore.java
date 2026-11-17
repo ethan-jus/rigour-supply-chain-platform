@@ -44,6 +44,16 @@ public class MybatisOrderLedgerSourceStore implements OrderLedgerSourceStore {
 
     public List<OrderDeliveryCostSourceView> sales(
             String tenant, LogisticsLedgerSourceQuery f, String action, Long warehouseId) {
+        return sales(tenant, f, action, warehouseId, java.util.Set.of());
+    }
+
+    @Override
+    public List<OrderDeliveryCostSourceView> sales(
+            String tenant,
+            LogisticsLedgerSourceQuery f,
+            String action,
+            Long warehouseId,
+            java.util.Set<String> departmentEmployeeCodes) {
         var q =
                 new QueryWrapper<Object>()
                         .eq("o.tenant_id", tenant)
@@ -71,7 +81,22 @@ public class MybatisOrderLedgerSourceStore implements OrderLedgerSourceStore {
                     "LOCATE({0},COALESCE(snap.employee_name,o.owner_employee_name_snapshot,''))>0",
                     f.employeeName());
         if (text(f.departmentName()))
-            q.apply("LOCATE({0},COALESCE(snap.department_name,''))>0", f.departmentName());
+            q.and(
+                    w -> {
+                        w.apply(
+                                "LOCATE({0},COALESCE(snap.department_name,''))>0",
+                                f.departmentName());
+                        if (!departmentEmployeeCodes.isEmpty())
+                            w.or(
+                                    fallback ->
+                                            fallback.isNull("snap.department_id")
+                                                    .apply(
+                                                            "NULLIF(TRIM(snap.department_name),'')"
+                                                                + " IS NULL")
+                                                    .in(
+                                                            "COALESCE(NULLIF(snap.employee_code,''),o.owner_employee_code)",
+                                                            departmentEmployeeCodes));
+                    });
         q.like(text(f.partyName()), "o.customer_name_snapshot", f.partyName());
         q.ge(
                 f.dateFrom() != null,

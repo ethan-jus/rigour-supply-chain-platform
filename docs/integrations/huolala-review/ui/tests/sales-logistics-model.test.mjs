@@ -13,6 +13,7 @@ import {
     selectableSalesTransports,
     transition,
     syncCompleted,
+    transportTime,
 } from "../src/sales-logistics/model.mjs";
 import {
     dictionaryOptions,
@@ -40,7 +41,7 @@ const manual = {
 };
 const total = (s) =>
     s.records
-        .filter((r) => r.status === "已确认")
+        .filter((r) => r.status === "有效")
         .reduce((n, r) => n + r.amount, 0);
 test("销售侧手工新增一笔运输并关联当前单，费用仅一份", () => {
     const s = initialState(),
@@ -48,7 +49,7 @@ test("销售侧手工新增一笔运输并关联当前单，费用仅一份", ()
     assert.equal(a.state.records.length, s.records.length + 1);
     assert.deepEqual(a.record.links, ["s1"]);
     assert.deepEqual(a.record.allocations, { s1: 3500 });
-    assert.equal(a.record.status, "待确认");
+    assert.equal(a.record.status, "有效");
     assert.equal(a.record.payment, "未付款");
     assert.equal(a.record.transportType, "销售订单配送");
     assert.equal(a.record.vouchers.length, 1);
@@ -122,14 +123,13 @@ test("一车两单按分分摊，总额只确认一次", () => {
     let s = linkTransport(initialState(), "rh-h1", "s1").state;
     const a = linkTransport(s, "rh-h1", "s2");
     assert.deepEqual(a.record.allocations, { s1: 8258, s2: 5506 });
-    assert.equal(total(transition(a.state, "rh-h1", "确认")), 13764);
+    assert.equal(total(a.state), total(initialState()));
 });
-test("确认后不能改变关系，撤销后再关联", () => {
-    let s = transition(initialState(), "rh-h1", "确认");
-    assert.equal(total(s), 13764);
-    assert.throws(() => linkTransport(s, "rh-h1", "s1"), /撤销/);
-    s = transition(s, "rh-h1", "撤销", "补归属");
+test("保存即生效，可直接调整关联，旧确认和撤销操作被拒绝", () => {
+    const s = initialState();
     assert.equal(linkTransport(s, "rh-h1", "s1").record.links.length, 1);
+    assert.throws(() => transition(s, "rh-h1", "确认"), /无需确认/);
+    assert.throws(() => transition(s, "rh-h1", "撤销", "补归属"), /无需确认/);
 });
 test("取消销售单不能关联", () =>
     assert.throws(() => linkTransport(initialState(), "rh-h1", "s4"), /有效/));
@@ -145,7 +145,7 @@ test("未确认来源变价更新，关联不丢", () => {
 });
 test("已确认成本不被平台新账单覆盖", () => {
     let s = linkTransport(initialState(), "rh-h1", "s1").state;
-    s = transition(s, "rh-h1", "确认");
+    s = saveManual(s, {...manual,editId:"rh-h1",amount:13764}).state;
     s = ingestCompleted(s, [
         { ...platformExamples[0], amount: 14264, version: 2 },
     ]);
@@ -154,7 +154,7 @@ test("已确认成本不被平台新账单覆盖", () => {
     assert.equal(r.platformAmount, 14264);
     assert.equal(r.billChanged, true);
     assert.equal(r.allocations.s1, 13764);
-    assert.equal(total(s), 13764);
+    assert.equal(total(s), total(initialState()));
 });
 test("手工物流无需先关联销售单，必须带凭证", () => {
     assert.throws(
@@ -190,7 +190,7 @@ test("编辑不能删除全部凭证", () => {
     );
 });
 test("订货宝缺运费不能确认，补金额也必须附费用凭证", () => {
-    assert.throws(() => transition(initialState(), "rd1", "确认"), /补齐/);
+    assert.throws(() => transition(initialState(), "rd1", "确认"), /无需确认/);
     assert.throws(
         () =>
             saveManual(initialState(), {
@@ -381,4 +381,11 @@ test("订货宝重复同步不重建且不覆盖已补费用与凭证", async ()
         result.records.find((r) => r.id === "rd1").sourceShipment,
         "FH.20261112.0001",
     );
+});
+
+
+test("统一时间使用来源业务字段，手工不使用录入时刻", () => {
+    assert.equal(transportTime({source:"货拉拉同步",time:"2026-11-16 14:00:00",date:"2026-11-17"}),"2026-11-16 14:00:00");
+    assert.equal(transportTime({source:"订货宝同步",time:"2026-11-16 15:00:00",sourceShippedAt:"2026-11-15 08:30:00"}),"2026-11-15 08:30:00");
+    assert.equal(transportTime({source:"手工录入",time:"2026-11-16 15:00:00",date:"2026-11-14"}),"2026-11-14 00:00:00");
 });

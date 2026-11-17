@@ -58,11 +58,15 @@ public class DhbDependencyRecoveryService {
     }
 
     private void linkLocked(CallerIdentity actor, DhbDependencyRecoveryCommand c) {
-        var issue = store.openException(actor.tenantId(), c.sourceObjectType(), c.sourceId());
+        var issue =
+                store.openException(
+                        actor.tenantId(), c.connectorId(), c.sourceObjectType(), c.sourceId());
         var run = issue == null ? null : store.syncRun(actor.tenantId(), issue.runId());
         if (run == null || !c.connectorId().equals(run.connectorId()))
             throw bad("待处理记录已变化或不属于当前来源，请刷新");
-        var detail = store.openReconciliation(actor.tenantId(), c.sourceObjectType(), c.sourceId());
+        var detail =
+                store.openReconciliation(
+                        actor.tenantId(), issue.runId(), c.sourceObjectType(), c.sourceId());
         var needed =
                 DhbDependencyRequirement.from(
                         issue.lastErrorCode(),

@@ -37,12 +37,13 @@ class TransportRecordServiceTest {
                 "order:logistics-cost:confirm");
         record =
                 json.readValue(
-                        "{\"id\":\"C1\",\"revision\":1,\"statusCode\":\"DRAFT\",\"data\":{\"requestId\":\""
+                        "{\"id\":\"C1\",\"revision\":1,\"statusCode\":\"ACTIVE\",\"data\":{\"requestId\":\""
                                 + UUID.randomUUID()
                                 + "\",\"amount\":137.64},\"sources\":[]}",
                         LogisticsCostDetailView.class);
         when(costs.entry("logistics", "C1")).thenReturn(record);
         when(refs.city(any(), any())).thenReturn("武汉");
+        lenient().when(costs.save(any(), any(), any())).thenReturn(record);
         when(refs.validCodes(anyString(), eq("COST_DELIVERY_MODE")))
                 .thenReturn(Set.of("SELF", "THIRD_PARTY"));
     }
@@ -145,7 +146,7 @@ class TransportRecordServiceTest {
         var manual = Map.of("SO1", new BigDecimal("80"), "SO2", new BigDecimal("57.64"));
         service.saveWithPendingEvidence("C1", input.withAllocations(manual));
         var saved = org.mockito.ArgumentCaptor.forClass(Draft.class);
-        verify(platform).saveDraft(any(), eq("C1"), saved.capture(), any(), any());
+        verify(platform).saveAssociations(any(), eq("C1"), saved.capture(), any(), any());
         assertThat(saved.getValue().orderAllocations().get("SO1")).isEqualByComparingTo("80");
         clearInvocations(platform);
         assertThatThrownBy(
@@ -153,68 +154,31 @@ class TransportRecordServiceTest {
                                 service.saveWithPendingEvidence(
                                         "C1", input.withAllocations(Map.of("SO1", BigDecimal.ONE))))
                 .hasMessageContaining("全部关联");
-        verify(platform, never()).saveDraft(any(), any(), any(), any(), any());
+        verify(platform, never()).saveAssociations(any(), any(), any(), any(), any());
         when(platform.detail(any(), any())).thenReturn(source("null"));
         var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(input);
         node.putNull("amount");
         service.saveWithPendingEvidence("C1", json.treeToValue(node, Draft.class));
-        verify(platform).saveDraft(any(), eq("C1"), saved.capture(), any(), any());
+        verify(platform).saveAssociations(any(), eq("C1"), saved.capture(), any(), any());
         assertThat(saved.getValue().orderAllocations()).isNull();
     }
 
     @Test
-    void editedPlatformAmountIsRejectedAtTheServiceBoundary() {
-        when(platform.detail(any(), any())).thenReturn(source("137.64"));
-        assertThatThrownBy(() -> service.save("C1", draft("1.00", List.of())))
-                .hasMessageContaining("只读");
-        verify(platform, never()).saveDraft(any(), any(), any(), any(), any());
+    void businessCostMayBeEditedWithoutChangingThePlatformBill() {
+        var p = source("137.64");
+        when(platform.detail(any(), any())).thenReturn(p);
+        service.save("C1", draft("1.00", List.of()));
+        var captured = org.mockito.ArgumentCaptor.forClass(Draft.class);
+        verify(platform).saveDraft(any(), eq("C1"), captured.capture(), any(), any());
+        assertThat(captured.getValue().amount()).isEqualByComparingTo("1.00");
+        assertThat(p.source().order().facts().billAmount()).isEqualByComparingTo("137.64");
     }
 
     @Test
-    void confirmOnlyPermissionUsesLatestBillAndExactCentAllocationWithoutCallingEdit() {
-        actor("order:logistics-cost:read", "order:logistics-cost:confirm");
-        var p = source("142.64");
-        var previous = (tools.jackson.databind.node.ObjectNode) json.valueToTree(record);
-        previous.withObject("data")
-                .set(
-                        "ledger",
-                        json.readTree(
-                                "{\"schemaVersion\":2,\"feeItems\":[{\"feeKey\":\"freight\",\"bearerCode\":\"COMPANY\",\"allocationMethodCode\":\"EQUAL\"}],\"manualBillItems\":[{\"name\":\"原人工运费\",\"amount\":137.64}]}"));
-        record = json.treeToValue(previous, LogisticsCostDetailView.class);
-        when(costs.entry("logistics", "C1")).thenReturn(record);
-        var d = draft("137.64", List.of("SO002", "SO001", "SO003"));
-        when(platform.detail(any(), any()))
-                .thenReturn(new PlatformRecord(p.source(), d, List.of()));
-        when(ledgers.salesSources(anyList(), eq("order:logistics-cost:confirm"), eq(false)))
-                .thenAnswer(
-                        i -> {
-                            List<String> codes = i.getArgument(0);
-                            return codes.stream()
-                                    .map(
-                                            code ->
-                                                    json.readValue(
-                                                            "{\"documentNo\":\""
-                                                                    + code
-                                                                    + "\",\"sourceType\":\"SALES_ORDER\",\"cityCode\":\"WH\",\"receiverCode\":\"CUS1\",\"receiverName\":\"星河门店\",\"contactName\":\"王先生\",\"contactPhone\":\"13900000001\",\"destinationAddress\":\"沿江大道18号\"}",
-                                                            LogisticsCostSourceView.class))
-                                    .toList();
-                        });
-        when(costs.preparePlatformConfirmation(eq("C1"), any())).thenReturn(record);
-        service.confirm("C1", new LogisticsCostActionCommand(1, "已核对平台账单"));
-        var captured = org.mockito.ArgumentCaptor.forClass(LogisticsCostCommand.class);
-        verify(costs).preparePlatformConfirmation(eq("C1"), captured.capture());
-        var command = captured.getValue();
-        assertThat(command.amount()).isEqualByComparingTo("142.64");
-        assertThat(command.ledger().manualBillItems()).isEmpty();
-        assertThat(command.ledger().sender().address()).isEqualTo("武汉市仓储路18号");
-        assertThat(
-                        command.ledger().sources().stream()
-                                .map(s -> s.allocations().getFirst().amount())
-                                .reduce(BigDecimal.ZERO, BigDecimal::add))
-                .isEqualByComparingTo("142.64");
-        assertThat(command.ledger().sources().getFirst().orderCode()).isEqualTo("SO001");
-        verify(costs, never()).save(any(), any(), any());
-        verify(costs).action(eq("logistics"), eq("C1"), any(), eq(true));
+    void oldConfirmationEndpointCannotRestoreTheRemovedWorkflow() {
+        assertThatThrownBy(() -> service.confirm("C1", new LogisticsCostActionCommand(1, "")))
+                .hasMessageContaining("无需确认");
+        verify(costs, never()).action(any(), any(), any(), anyBoolean());
     }
 
     @Test
@@ -232,6 +196,7 @@ class TransportRecordServiceTest {
         var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(input);
         node.put("carrierCode", carrier);
         node.put("trackingNo", "WAYBILL-001");
+        node.put("shippingTime", "2026-11-10T10:22:33");
         node.put("paymentStatusCode", "PAID");
         node.set(
                 "manualBillItems",
@@ -279,6 +244,7 @@ class TransportRecordServiceTest {
         assertThat(command.paymentStatusCode()).isEqualTo("PAID");
         assertThat(command.amount()).isEqualByComparingTo("100.01");
         assertThat(ledger.manualBillItems()).hasSize(3);
+        assertThat(ledger.shippingTime()).isEqualTo(LocalDateTime.of(2026, 11, 10, 10, 22, 33));
         assertThat(ledger.trackingNo()).isEqualTo("WAYBILL-001");
         assertThat(ledger.carrierCode()).isEqualTo(carrier);
         assertThat(ledger.platformOrderNo()).isEqualTo("3624071813921329726");
@@ -294,6 +260,26 @@ class TransportRecordServiceTest {
                                 .map(a -> a.amount())
                                 .reduce(BigDecimal.ZERO, BigDecimal::add))
                 .isEqualByComparingTo("100.01");
+    }
+
+    @Test
+    void manualShippingTimeMustMatchItsBusinessDateAndHaveSecondPrecision() {
+        var node =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(draft("3", List.of("SO1")));
+        node.put("shippingTime", "2026-11-11T10:22:33");
+        assertThatThrownBy(
+                        () ->
+                                service.saveWithPendingEvidence(
+                                        null, json.treeToValue(node, Draft.class)))
+                .hasMessageContaining("发货时间");
+        node.put("shippingTime", "2026-11-10T10:22:33.123");
+        assertThatThrownBy(
+                        () ->
+                                service.saveWithPendingEvidence(
+                                        null, json.treeToValue(node, Draft.class)))
+                .hasMessageContaining("精确到秒");
+        verify(costs, never()).save(anyString(), any(), any());
     }
 
     @Test

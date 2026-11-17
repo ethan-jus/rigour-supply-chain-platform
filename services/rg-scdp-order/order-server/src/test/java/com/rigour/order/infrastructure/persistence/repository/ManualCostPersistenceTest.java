@@ -49,11 +49,17 @@ class ManualCostPersistenceTest {
                                 "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
                                 "")
                         .replace(" JSON ", " LONGTEXT ")
-                        .replace("'MARKETING','RENTAL'", "'MARKETING','RENTAL','PURCHASE','LOSS'");
+                        .replace("'MARKETING','RENTAL'", "'MARKETING','RENTAL','PURCHASE','LOSS'")
+                        .replace(
+                                "'DRAFT','CONFIRMED','VOID'",
+                                "'DRAFT','CONFIRMED','VOID','ACTIVE'");
         for (String sql : ddl.split(";")) if (!sql.isBlank()) jdbc.execute(sql);
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN deleted INT NOT NULL DEFAULT 0");
 
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN source_system VARCHAR(20)");
+        jdbc.execute(
+                "ALTER TABLE order_logistics_cost ADD COLUMN amount_manually_edited BOOLEAN NOT"
+                    + " NULL DEFAULT FALSE");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN attachment_save_id VARCHAR(36)");
         jdbc.execute(
                 "ALTER TABLE order_logistics_cost ADD COLUMN attachment_save_hash VARCHAR(64)");
@@ -205,61 +211,33 @@ class ManualCostPersistenceTest {
         assertThat(save(null, c).id()).isEqualTo(first.id());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class))
                 .isEqualTo(1);
+        assertThat(first.statusCode()).isEqualTo("ACTIVE");
+        var filled = save(first.id(), command(first.revision(), "123.45", ""));
+        assertThat(filled.revision()).isEqualTo(2);
+        var updated = save(first.id(), command(filled.revision(), "124", "补录更正"));
+        assertThat(updated.statusCode()).isEqualTo("ACTIVE");
         assertThatThrownBy(
                         () ->
                                 store.transition(
                                         "T1",
                                         "LOGISTICS",
                                         first.id(),
-                                        new LogisticsCostActionCommand(first.revision(), ""),
+                                        new LogisticsCostActionCommand(updated.revision(), ""),
                                         "U",
                                         "cost:confirm"))
-                .hasMessageContaining("金额");
-        var filled = save(first.id(), command(first.revision(), "123.45", ""));
-        assertThat(filled.revision()).isEqualTo(2);
-        var confirmed =
-                store.transition(
-                        "T1",
-                        "LOGISTICS",
-                        first.id(),
-                        new LogisticsCostActionCommand(2, ""),
-                        "U",
-                        "cost:confirm");
-        assertThat(confirmed.statusCode()).isEqualTo("CONFIRMED");
-        assertThatThrownBy(() -> save(first.id(), command(3, "124", "任意原因")))
-                .hasMessageContaining("撤销");
+                .hasMessageContaining("无需确认");
         assertThatThrownBy(
                         () ->
                                 store.lifecycle(
                                         "T1",
                                         "LOGISTICS",
                                         first.id(),
-                                        new LogisticsCostActionCommand(3, "不能删除"),
+                                        new LogisticsCostActionCommand(
+                                                updated.revision(), "不能直接删除"),
                                         "U",
                                         "cost:void",
                                         true))
                 .hasMessageContaining("作废");
-        var revoked =
-                store.lifecycle(
-                        "T1",
-                        "LOGISTICS",
-                        first.id(),
-                        new LogisticsCostActionCommand(3, "补录更正前撤销"),
-                        "U",
-                        "cost:confirm",
-                        false);
-        var updated = save(first.id(), command(revoked.revision(), "124", "补录更正"));
-        assertThat(updated.statusCode()).isEqualTo("DRAFT");
-        assertThatThrownBy(
-                        () ->
-                                store.transition(
-                                        "T1",
-                                        "LOGISTICS",
-                                        first.id(),
-                                        new LogisticsCostActionCommand(2, ""),
-                                        "U",
-                                        "cost:confirm"))
-                .hasMessageContaining("修改");
         var voided =
                 store.transition(
                         "T1",
@@ -270,7 +248,7 @@ class ManualCostPersistenceTest {
                         "cost:void");
         assertThat(voided.statusCode()).isEqualTo("VOID");
         assertThatThrownBy(() -> save(first.id(), command(voided.revision(), "124", "更正")))
-                .hasMessageContaining("待确认");
+                .hasMessageContaining("有效");
         assertThatThrownBy(
                         () ->
                                 store.lifecycle(
@@ -295,7 +273,8 @@ class ManualCostPersistenceTest {
                 .hasMessageContaining("不存在");
         assertThat(store.history("T1", first.id()))
                 .extracting(a -> a.action())
-                .contains("REVOKE", "DELETE");
+                .contains("CREATE", "UPDATE", "VOID", "DELETE")
+                .doesNotContain("REVOKE", "CONFIRM");
         assertThatThrownBy(() -> store.entry("T2", "LOGISTICS", first.id(), "cost:read"))
                 .hasMessageContaining("不存在");
         verifyNoInteractions(refs);

@@ -16,6 +16,16 @@ public interface OrderLogisticsCostStore {
         return List.of();
     }
 
+    default java.util.Map<String, String> businessStatuses(
+            String tenant, List<String> ids, String action) {
+        return java.util.Map.of();
+    }
+
+    default List<LogisticsCostDetailView> trackingCandidates(
+            String tenant, List<String> numbers, String carrierCode, String action) {
+        return List.of();
+    }
+
     LogisticsCostPageView entries(
             String tenant, String category, LogisticsCostQuery query, String action);
 

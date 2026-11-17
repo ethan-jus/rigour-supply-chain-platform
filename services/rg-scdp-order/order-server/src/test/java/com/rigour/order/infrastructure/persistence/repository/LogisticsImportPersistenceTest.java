@@ -28,7 +28,7 @@ public class LogisticsImportPersistenceTest {
                                 "sa",
                                 ""));
         jdbc.execute(
-                """
+"""
 CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id VARCHAR(36),enterprise_id VARCHAR(80),carrier_order_no VARCHAR(80),file_name VARCHAR(200),file_hash VARCHAR(64),source_json CLOB,state VARCHAR(20),cost_id VARCHAR(36),revision INT,created_by VARCHAR(50),created_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,UNIQUE(tenant_id,carrier_order_no))
 """);
         for (var column :
@@ -190,7 +190,7 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
     }
 
     @Test
-    void changedSourceUpdatesPendingAmountAndDateButNeverConfirmedVoidOrDeletedCosts() {
+    void changedSourceUpdatesActiveCostButNeverVoidedDeletedOrUnmigratedLegacyRows() {
         jdbc.execute("ALTER TABLE order_logistics_cost ADD id VARCHAR(36)");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD amount DECIMAL(18,2)");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD cost_date DATE");
@@ -198,14 +198,17 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
         jdbc.execute("ALTER TABLE order_logistics_cost ADD status_code VARCHAR(20)");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD revision INT DEFAULT 1");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD deleted INT DEFAULT 0");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD amount_manually_edited INT DEFAULT 0");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD sources_json CLOB DEFAULT '[]'");
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD updated_time TIMESTAMP");
         jdbc.execute(
                 "CREATE TABLE order_logistics_cost_guard(tenant_id VARCHAR(36) PRIMARY KEY,version"
-                    + " BIGINT)");
+                        + " BIGINT)");
         jdbc.execute("CREATE ALIAS JSON_SET FOR '" + getClass().getName() + ".costJsonSet'");
         jdbc.update(
                 "INSERT INTO"
                     + " order_logistics_cost(tenant_id,id,amount,cost_date,data_json,status_code)"
-                    + " VALUES('T1','C1',40.50,'2026-11-06',?, 'DRAFT')",
+                    + " VALUES('T1','C1',40.50,'2026-11-06',?, 'ACTIVE')",
                 "{\"amount\":40.50,\"costDate\":\"2026-11-06\",\"remark\":\"人工归属保持\"}");
         jdbc.update("INSERT INTO order_logistics_cost_guard VALUES('T1',0)");
         var first = store.receive("T1", "SYSTEM", api("40.50", "a"));

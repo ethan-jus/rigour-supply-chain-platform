@@ -29,12 +29,34 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
                 (city, codes) -> batch.put(city, codes.stream().distinct().sorted().toList()));
         var key = java.util.Map.copyOf(batch);
         // 保存前后的来源校验复用本次请求已读取的同批客户，权限与下次请求仍重新核验。
-        return LogisticsRequestCache.get(
-                AuthorizationContext.requireCurrent().tenantId().toString(),
-                action,
-                "customersByCities",
-                key,
-                () -> readLedgerCustomersByCities(key, action));
+        String tenant = AuthorizationContext.requireCurrent().tenantId().toString();
+        var result =
+                LogisticsRequestCache.get(
+                        tenant,
+                        action,
+                        "customersByCities",
+                        key,
+                        () -> readLedgerCustomersByCities(key, action));
+        // 同一请求后续的单点客户核验复用已按相同权限、城市和编码读取的结果。
+        key.forEach(
+                (city, codes) ->
+                        codes.forEach(
+                                code ->
+                                        LogisticsRequestCache.get(
+                                                tenant,
+                                                action,
+                                                "party",
+                                                partyKey("CUSTOMER", code, null, null, city, 0),
+                                                () ->
+                                                        result
+                                                                .getOrDefault(city, List.of())
+                                                                .stream()
+                                                                .filter(
+                                                                        row ->
+                                                                                code.equals(
+                                                                                        row.code()))
+                                                                .toList())));
+        return result;
     }
 
     private java.util.Map<String, List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView>>
@@ -143,20 +165,24 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
             String city,
             int begin,
             String action) {
-        var key =
-                java.util.List.of(
-                        kind,
-                        java.util.Objects.toString(code, ""),
-                        java.util.Objects.toString(id, ""),
-                        java.util.Objects.toString(keyword, ""),
-                        java.util.Objects.toString(city, ""),
-                        Integer.toString(begin));
+        var key = partyKey(kind, code, id, keyword, city, begin);
         return LogisticsRequestCache.get(
                 AuthorizationContext.requireCurrent().tenantId().toString(),
                 action,
                 "party",
                 key,
                 () -> readLedgerParties(kind, code, id, keyword, city, begin, action));
+    }
+
+    private static List<String> partyKey(
+            String kind, String code, Long id, String keyword, String city, int begin) {
+        return List.of(
+                kind,
+                java.util.Objects.toString(code, ""),
+                java.util.Objects.toString(id, ""),
+                java.util.Objects.toString(keyword, ""),
+                java.util.Objects.toString(city, ""),
+                Integer.toString(begin));
     }
 
     private List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> readLedgerParties(
@@ -293,6 +319,16 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
 
     @Override
     public List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees(String action) {
+        return LogisticsRequestCache.get(
+                AuthorizationContext.requireCurrent().tenantId().toString(),
+                action,
+                "employees",
+                "all",
+                () -> readEmployees(action));
+    }
+
+    private List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> readEmployees(
+            String action) {
         var uri =
                 UriComponentsBuilder.fromUriString(hr)
                         .path("/api/v1/hr/cost-references/employees")

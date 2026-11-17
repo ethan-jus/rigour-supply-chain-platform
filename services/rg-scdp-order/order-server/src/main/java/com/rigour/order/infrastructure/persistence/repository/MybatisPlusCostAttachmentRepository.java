@@ -60,7 +60,8 @@ public class MybatisPlusCostAttachmentRepository implements CostAttachmentStore 
                                 .eq("tenant_id", tenant)
                                 .eq("id", entry)
                                 .eq("revision", revision)
-                                .eq("status_code", "DRAFT")
+                                .eq("status_code", "ACTIVE")
+                                .eq("deleted", 0)
                                 .set("attachment_save_id", submissionId)
                                 .set("attachment_save_hash", fingerprint)
                                 .set("attachment_save_revision", revision));
@@ -131,7 +132,8 @@ public class MybatisPlusCostAttachmentRepository implements CostAttachmentStore 
                                 .eq(OrderLogisticsCostEntity::getTenantId, tenant)
                                 .eq(OrderLogisticsCostEntity::getId, entry)
                                 .eq(OrderLogisticsCostEntity::getRevision, revision)
-                                .eq(OrderLogisticsCostEntity::getStatusCode, "DRAFT")
+                                .eq(OrderLogisticsCostEntity::getStatusCode, "ACTIVE")
+                                .apply("deleted=0")
                                 .set(OrderLogisticsCostEntity::getUpdatedBy, actor)
                                 .set(
                                         OrderLogisticsCostEntity::getUpdatedTime,

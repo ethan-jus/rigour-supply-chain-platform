@@ -14,6 +14,10 @@ final class CostLedgerPartitions {
 
     static List<Map<String, String>> expand(
             String source, Map<String, String> row, ObjectMapper json) {
+        // 未完善、已作废运输保留原始单据供追溯，不展开成本分摊；只有已完善记录参与统计。
+        // 历史作废单可能保留未完成的分摊，不能因此阻断其他有效成本的整批刷新。
+        if ("ORDER".equals(source) && !"CONFIRMED".equals(row.get("status_code")))
+            return List.of(row);
         if (!Set.of("ERP", "ORDER").contains(source) || row.get("data_json") == null)
             return List.of(row);
         JsonNode data = json.readTree(row.get("data_json"));

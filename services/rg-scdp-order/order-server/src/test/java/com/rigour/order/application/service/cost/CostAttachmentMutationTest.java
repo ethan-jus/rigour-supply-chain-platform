@@ -42,7 +42,7 @@ class CostAttachmentMutationTest {
                         0,
                         Set.of(),
                         Set.of("order:logistics-cost:write")));
-        state("DRAFT", 3);
+        state("ACTIVE", 3);
         when(files.list(tenant.toString(), "bill")).thenReturn(List.of(file("old")));
         when(storage.upload(anyString(), anyString(), anyString(), any()))
                 .thenReturn("private/new");
@@ -91,9 +91,9 @@ class CostAttachmentMutationTest {
                                             "new.pdf",
                                             "application/pdf",
                                             pdf))
-                    .hasMessageContaining("待确认");
+                    .hasMessageContaining("有效运输记录");
             assertThatThrownBy(() -> service.remove("logistics", "bill", "old", 3))
-                    .hasMessageContaining("待确认");
+                    .hasMessageContaining("有效运输记录");
         }
         verifyNoInteractions(storage);
         verify(files, never()).retire(anyString(), anyString(), anyString());

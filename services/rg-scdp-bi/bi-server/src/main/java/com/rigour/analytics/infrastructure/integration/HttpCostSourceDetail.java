@@ -89,6 +89,11 @@ public class HttpCostSourceDetail implements CostSourceDetail {
         String status = data.path("statusCode").asText();
         if ("HR".equals(source) && "PAYROLL".equals(category) && "PAID".equals(status))
             status = "CONFIRMED";
+        if ("ORDER".equals(source) && "ACTIVE".equals(status))
+            status =
+                    "COMPLETE".equals(data.path("businessStatusCode").asText())
+                            ? "CONFIRMED"
+                            : "DRAFT";
         return new State(status, data.path("revision").asLong());
     }
 }

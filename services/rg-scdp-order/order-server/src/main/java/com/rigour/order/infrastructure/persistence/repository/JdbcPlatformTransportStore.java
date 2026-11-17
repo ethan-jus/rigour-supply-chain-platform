@@ -16,7 +16,7 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.*;
 
-/** 来源事实与人工归属分别保存；只创建待确认记录，绝不由同步确认成本。 */
+/** 来源事实与人工归属分别保存；来源保存即生成有效记录，人工成本与平台账单分离。 */
 @Repository
 public class JdbcPlatformTransportStore implements PlatformTransportStore {
     private final JdbcTemplate jdbc;
@@ -47,25 +47,63 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
             var order = row.latestOrder() == null ? row.order() : row.latestOrder();
             BigDecimal amount = order.facts() == null ? null : order.facts().billAmount();
             LocalDate costDate = LocalDate.parse(order.useTime().substring(0, 10));
-            // 同步只能刷新待确认候选金额；已确认成本、软删除和人工关联始终不变。
-            int changed =
+            var states =
+                    jdbc.queryForList(
+                            "SELECT"
+                                + " status_code,amount_manually_edited,data_json,amount,cost_date,sources_json"
+                                + " FROM order_logistics_cost WHERE tenant_id=? AND id=? AND"
+                                + " deleted=0 FOR UPDATE",
+                            tenant,
+                            row.costId());
+            if (states.isEmpty()) return row;
+            var state = states.getFirst();
+            if ("ACTIVE".equals(state.get("status_code"))) {
+                var prior =
+                        json.readValue(
+                                state.get("data_json").toString(), LogisticsCostCommand.class);
+                boolean protectedAmount = JdbcFlags.isSet(state.get("amount_manually_edited"));
+                BigDecimal nextAmount = protectedAmount ? prior.amount() : amount;
+                if ((prior.amount() == null
+                                ? nextAmount == null
+                                : nextAmount != null && prior.amount().compareTo(nextAmount) == 0)
+                        && Objects.equals(prior.costDate(), costDate)) return row;
+                var next =
+                        com.rigour.order.application.service.cost.TransportAllocationPlan.reprice(
+                                prior, nextAmount);
+                var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(next);
+                tree.put("costDate", costDate.toString());
+                if (tree.path("ledger").isObject())
+                    ((tools.jackson.databind.node.ObjectNode) tree.path("ledger"))
+                            .put("costMonth", costDate.toString().substring(0, 7));
+                String body = json.writeValueAsString(tree);
+                if (!Objects.equals(json.readTree(state.get("data_json").toString()), tree)) {
                     jdbc.update(
                             "UPDATE order_logistics_cost SET"
-                                    + " amount=?,cost_date=?,data_json=JSON_SET(data_json,'$.amount',CAST(? AS"
-                                    + " JSON),'$.costDate',?),revision=revision+1 WHERE tenant_id=? AND id=? AND"
-                                    + " deleted=0 AND status_code='DRAFT' AND (NOT(amount <=> ?) OR NOT(cost_date <=> ?))",
-                            amount,
+                                + " amount=?,cost_date=?,data_json=?,sources_json=?,"
+                                + " revision=revision+1,updated_time=CURRENT_TIMESTAMP(6) WHERE"
+                                + " tenant_id=? AND id=?",
+                            nextAmount,
                             costDate,
-                            amount == null ? "null" : amount.toPlainString(),
-                            costDate.toString(),
+                            body,
+                            next.ledger() == null
+                                    ? state.get("sources_json")
+                                    : json.writeValueAsString(next.ledger().sources()),
+                            tenant,
+                            row.costId());
+                    jdbc.update(
+                            "UPDATE order_logistics_cost_guard SET version=version+1 WHERE"
+                                + " tenant_id=?",
+                            tenant);
+                    jdbc.update(
+                            "INSERT INTO"
+                                + " order_logistics_cost_audit(tenant_id,entry_id,action_code,actor_id,reason,snapshot_json)"
+                                + " VALUES(?,?,'SOURCE_SYNC',?,'平台来源更新；人工金额保持不变',?)",
                             tenant,
                             row.costId(),
-                            amount,
-                            costDate);
-            if (changed > 0)
-                jdbc.update(
-                        "UPDATE order_logistics_cost_guard SET version=version+1 WHERE tenant_id=?",
-                        tenant);
+                            actor,
+                            body);
+                }
+            }
             return row;
         }
         var manual =
@@ -139,8 +177,8 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                         null);
         jdbc.update(
                 "INSERT INTO"
-                    + " order_logistics_cost(id,tenant_id,document_no,request_id,category_code,title,cost_date,amount,payment_status_code,status_code,data_json,sources_json,created_by,updated_by,source_system,carrier_code,tracking_no,origin_biz_key)"
-                    + " VALUES(?,?,?,?,'LOGISTICS','货拉拉运输',?,?,'UNKNOWN','DRAFT',?,'[]',?,?,'HUOLALA','HLL',?,?)",
+                    + " order_logistics_cost(id,tenant_id,document_no,request_id,category_code,title,cost_date,amount,payment_status_code,status_code,payer_code,data_json,sources_json,created_by,updated_by,source_system,carrier_code,tracking_no,origin_biz_key)"
+                    + " VALUES(?,?,?,?,'LOGISTICS','货拉拉运输',?,?,'UNKNOWN','ACTIVE','COMPANY',?,'[]',?,?,'HUOLALA','HLL',?,?)",
                 id,
                 tenant,
                 "LC" + date.replace("-", "") + id.replace("-", "").substring(0, 12),
@@ -220,6 +258,26 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
             Draft draft,
             List<LogisticsCostSourceView> sources,
             String actor) {
+        saveBusiness(tenant, costId, draft, sources, actor, false);
+    }
+
+    @Override
+    public void saveAssociations(
+            String tenant,
+            String costId,
+            Draft draft,
+            List<LogisticsCostSourceView> sources,
+            String actor) {
+        saveBusiness(tenant, costId, draft, sources, actor, true);
+    }
+
+    private void saveBusiness(
+            String tenant,
+            String costId,
+            Draft draft,
+            List<LogisticsCostSourceView> sources,
+            String actor,
+            boolean costSaved) {
         lockTenant(tenant);
         var state =
                 jdbc.queryForMap(
@@ -227,14 +285,15 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                                 + " tenant_id=? AND id=? FOR UPDATE",
                         tenant,
                         costId);
-        if (!"DRAFT".equals(state.get("status_code"))
-                || ((Number) state.get("deleted")).intValue() != 0
-                || !Objects.equals(((Number) state.get("revision")).intValue(), draft.revision()))
-            throw bad("记录已变化或不是待确认，请刷新");
+        if (!"ACTIVE".equals(state.get("status_code"))
+                || JdbcFlags.isSet(state.get("deleted"))
+                || !Objects.equals(
+                        ((Number) state.get("revision")).intValue(),
+                        draft.revision() + (costSaved ? 1 : 0))) throw bad("记录已变化或不是有效记录，请刷新");
         var previous = byCosts(tenant, List.of(costId)).get(costId);
         if (previous == null) throw bad("平台记录不存在");
         var old = previous.draft();
-        if (old == null) {
+        if (old == null && !costSaved) {
             var prior =
                     jdbc.queryForObject(
                             "SELECT sources_json FROM order_logistics_cost WHERE tenant_id=? AND"
@@ -254,6 +313,27 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                         || !Objects.equals(old.transportType(), draft.transportType()))
                 && (draft.reason() == null || draft.reason().isBlank()))
             throw bad("更改或解除已有订单关联请填写原因");
+        jdbc.update(
+                "UPDATE order_logistics_import_order SET business_json=? WHERE tenant_id=? AND"
+                        + " cost_id=?",
+                json.writeValueAsString(draft),
+                tenant,
+                costId);
+        jdbc.update(
+                "DELETE FROM order_logistics_transport_link WHERE tenant_id=? AND source_id=?",
+                tenant,
+                previous.source().id());
+        for (String code : draft.orderCodes())
+            jdbc.update(
+                    "INSERT INTO"
+                        + " order_logistics_transport_link(tenant_id,source_id,order_type,order_code,updated_by)"
+                        + " VALUES(?,?,?,?,?)",
+                    tenant,
+                    previous.source().id(),
+                    draft.transportType(),
+                    code,
+                    actor);
+        if (costSaved) return;
         // 同一关联保留首次建立时间；负责人、备注更新不能重写关联历史。
         var priorSources =
                 jdbc.queryForObject(
@@ -280,26 +360,34 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                                             s.documentAmount(), java.time.Instant.now());
                                 })
                         .toList();
+        var prior =
+                jdbc.queryForObject(
+                        "SELECT data_json FROM order_logistics_cost WHERE tenant_id=? AND id=?",
+                        String.class,
+                        tenant,
+                        costId);
+        var tree = (tools.jackson.databind.node.ObjectNode) json.readTree(prior);
+        var priorAmount =
+                tree.path("amount").isNull() || tree.path("amount").isMissingNode()
+                        ? null
+                        : tree.path("amount").decimalValue();
+        boolean changedAmount =
+                priorAmount == null
+                        ? draft.amount() != null
+                        : draft.amount() == null || priorAmount.compareTo(draft.amount()) != 0;
+        tree.set("amount", json.valueToTree(draft.amount()));
+        tree.put("ownerEmployeeCode", draft.ownerEmployeeCode());
+        tree.put("remark", draft.remark());
+        tree.set("ledger", json.nullNode());
         jdbc.update(
-                "UPDATE order_logistics_import_order SET business_json=? WHERE tenant_id=? AND"
-                        + " cost_id=?",
-                json.writeValueAsString(draft),
+                "UPDATE order_logistics_cost SET amount=?,data_json=?,"
+                    + " amount_manually_edited=IF(?,1,amount_manually_edited) WHERE tenant_id=? AND"
+                    + " id=?",
+                draft.amount(),
+                json.writeValueAsString(tree),
+                changedAmount,
                 tenant,
                 costId);
-        jdbc.update(
-                "DELETE FROM order_logistics_transport_link WHERE tenant_id=? AND source_id=?",
-                tenant,
-                previous.source().id());
-        for (String code : draft.orderCodes())
-            jdbc.update(
-                    "INSERT INTO"
-                        + " order_logistics_transport_link(tenant_id,source_id,order_type,order_code,updated_by)"
-                        + " VALUES(?,?,?,?,?)",
-                    tenant,
-                    previous.source().id(),
-                    draft.transportType(),
-                    code,
-                    actor);
         jdbc.update(
                 "UPDATE order_logistics_cost SET"
                     + " sources_json=?,revision=revision+1,title=COALESCE(?,title),type_code=?,transport_purpose_code=?,owner_employee_code=?,updated_by=?,updated_time=CURRENT_TIMESTAMP(6)"
@@ -312,6 +400,9 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                 actor,
                 tenant,
                 costId);
+        jdbc.update(
+                "UPDATE order_logistics_cost_guard SET version=version+1 WHERE tenant_id=?",
+                tenant);
         jdbc.update(
                 "INSERT INTO"
                     + " order_logistics_cost_audit(tenant_id,entry_id,action_code,actor_id,reason,snapshot_json)"
@@ -358,23 +449,23 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
         var r = imports.byCost(tenant, id).orElse(null);
         if (r == null || !"API".equals(r.sourceChannel())) return;
         var source = r.latestOrder() == null ? r.order() : r.latestOrder();
-        BigDecimal bill = source.facts() == null ? null : source.facts().billAmount();
         var p = c.ledger();
         if (p != null && p.manualBillItems() != null && !p.manualBillItems().isEmpty())
             throw bad("平台账单明细只读");
+        if (!Objects.equals(
+                c.paymentStatusCode(),
+                jdbc.queryForObject(
+                        "SELECT payment_status_code FROM order_logistics_cost WHERE tenant_id=? AND"
+                            + " id=?",
+                        String.class,
+                        tenant,
+                        id))) throw bad("平台付款信息只读");
         if (p == null
                 || !"HLL".equals(p.carrierCode())
                 || !Objects.equals(p.platformOrderNo(), source.orderNo())
-                || !Objects.equals(c.costDate(), LocalDate.parse(source.useTime().substring(0, 10)))
-                || bill == null
-                || p.feeItems() == null
-                || p.feeItems().isEmpty()
-                || p.feeItems().stream().anyMatch(f -> f.feeAmount() == null)
-                || bill.compareTo(
-                                p.feeItems().stream()
-                                        .map(f -> f.feeAmount())
-                                        .reduce(BigDecimal.ZERO, BigDecimal::add))
-                        != 0) throw bad("平台物流公司、单号、日期和账单金额只读，请刷新后核对");
+                || !Objects.equals(
+                        c.costDate(), LocalDate.parse(source.useTime().substring(0, 10))))
+            throw bad("平台物流公司、单号和日期只读，请刷新后核对");
         jdbc.update(
                 "UPDATE order_logistics_import_order SET"
                     + " source_json=latest_source_json,source_hash=latest_source_hash,source_difference=0"

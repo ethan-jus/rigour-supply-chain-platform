@@ -116,7 +116,7 @@ class HuolalaCostConfirmationTest {
     }
 
     @Test
-    void excelCostUpgradedByApiCannotBypassDifferenceGuard() {
+    void platformDifferenceDoesNotReintroduceManualConfirmation() {
         source(true, null);
         assertThatThrownBy(
                         () ->
@@ -127,11 +127,11 @@ class HuolalaCostConfirmationTest {
                                         new LogisticsCostActionCommand(1, ""),
                                         "U1",
                                         "order:logistics-cost:confirm"))
-                .hasMessageContaining("来源账单已变化");
+                .hasMessageContaining("无需确认");
     }
 
     @Test
-    void verifiedExcelAmountIsRecheckedAtConfirmationRatherThanTrustingPage() {
+    void verifiedBillRemainsSeparateFromRetiredConfirmationOperation() {
         source(
                 false,
                 new BillVerification(new BigDecimal("50.00"), "根据最终账单核对", "U1", Instant.now()));
@@ -144,7 +144,7 @@ class HuolalaCostConfirmationTest {
                                         new LogisticsCostActionCommand(1, ""),
                                         "U1",
                                         "order:logistics-cost:confirm"))
-                .hasMessageContaining("净账单不一致");
+                .hasMessageContaining("无需确认");
     }
 
     @Test

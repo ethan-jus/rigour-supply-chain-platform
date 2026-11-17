@@ -247,6 +247,8 @@ public final class OrderDataScope {
         // 非订单资金收付是真实业务类型，只有完整的全量资金授权才能读取没有原单的记录。
         if ("order_fund_document".equals(table) && unrestrictedFinancial(policy(action)))
             linked = "(" + linked + " OR " + table + ".related_order_id IS NULL)";
+        if ("order_sales_shipment".equals(table) && unrestrictedFinancial(policy(action)))
+            linked = "(" + linked + " OR " + table + ".sales_order_id IS NULL)";
         return new Predicate(linked, p.args());
     }
 
@@ -361,8 +363,6 @@ public final class OrderDataScope {
     public void requireOrder(String tenant, long id, String action) {
         requireOrder(tenant, id, action, null);
     }
-
-
 
     public void requireOrder(String tenant, long id, String action, Long warehouse) {
 

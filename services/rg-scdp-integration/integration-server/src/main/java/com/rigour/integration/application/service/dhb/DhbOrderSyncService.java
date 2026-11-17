@@ -290,7 +290,8 @@ public final class DhbOrderSyncService {
     private static final InheritableThreadLocal<DhbShipmentDependencyRepair.Session>
             SHIPMENT_DEPENDENCIES = new InheritableThreadLocal<>();
 
-    private static final InheritableThreadLocal<Set<String>> MANUAL_SHIPMENT_IDS = new InheritableThreadLocal<>();
+    private static final InheritableThreadLocal<Set<String>> MANUAL_SHIPMENT_IDS =
+            new InheritableThreadLocal<>();
 
     private static final tools.jackson.databind.json.JsonMapper WORK_JSON =
             tools.jackson.databind.json.JsonMapper.builder().build();
@@ -498,27 +499,38 @@ public final class DhbOrderSyncService {
             Map<String, Object> sourceOrderLocks = new ConcurrentHashMap<>();
             MAPPING_LOOKUP_CACHE.set(new ConcurrentHashMap<>());
             UNIT_DICTIONARY_SYNC_CACHE.set(ConcurrentHashMap.newKeySet());
-            if (shipmentDependencyRepair != null && (selectedScope == null || "SHIPMENT".equals(selectedScope)
-                    || replayTarget != null && Set.of(SOURCE_OBJECT_SALES_SHIPMENT, SOURCE_OBJECT_ERP_STOCK_OUT)
-                            .contains(replayTarget.sourceObjectType())))
-                SHIPMENT_DEPENDENCIES.set(shipmentDependencyRepair.session(caller.tenantId(), task.connectorId(), pageLimit));
+            if (shipmentDependencyRepair != null
+                    && (selectedScope == null
+                            || "SHIPMENT".equals(selectedScope)
+                            || replayTarget != null
+                                    && Set.of(
+                                                    SOURCE_OBJECT_SALES_SHIPMENT,
+                                                    SOURCE_OBJECT_ERP_STOCK_OUT)
+                                            .contains(replayTarget.sourceObjectType())))
+                SHIPMENT_DEPENDENCIES.set(
+                        shipmentDependencyRepair.session(
+                                caller.tenantId(), task.connectorId(), pageLimit));
             MANUAL_SHIPMENT_IDS.set(ConcurrentHashMap.newKeySet());
             detailExecutor = newDetailExecutor();
             Set<String> retriedShipments = Set.of();
             if (replayTarget == null) {
                 if (incrementalWork != null
-                        && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT")
+                        // 发货页按所选窗口先留存来源事实，不能先扫描窗口外历史失败项。
+                        // 历史待补资料仍保留单笔重试入口；窗口内失败项随来源查询重试。
+                        && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT")
                                 .contains(selectedScope == null ? "" : selectedScope))
-                    retriedShipments = retryPending(
-                            caller,
-                            task,
-                            started.runId(),
-                            selectedScope,
-                            windowTo,
-                            counts,
-                            progress,
-                            employeeCache,
-                            customerRegionCache, sourceOrderLocks);
+                    retriedShipments =
+                            retryPending(
+                                    caller,
+                                    task,
+                                    started.runId(),
+                                    selectedScope,
+                                    windowTo,
+                                    counts,
+                                    progress,
+                                    employeeCache,
+                                    customerRegionCache,
+                                    sourceOrderLocks);
                 if (selectedScope == null || "SALES_ORDER".equals(selectedScope)) {
                     PageRequest pageRequest = PageRequest.first(pageSize);
                     int pages = 0;
@@ -610,7 +622,9 @@ public final class DhbOrderSyncService {
                             counts,
                             employeeCache,
                             sourceOrderLocks,
-                            detailExecutor, retriedShipments);
+                            detailExecutor,
+                            retriedShipments,
+                            progress);
                 if (selectedScope == null || "RECEIPT".equals(selectedScope))
                     syncReceipts(
                             caller,
@@ -675,11 +689,17 @@ public final class DhbOrderSyncService {
             long remaining =
                     incrementalWork != null && replayTarget == null && selectedScope == null
                             ? List.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT").stream()
-                                    .mapToLong(type -> incrementalWork.pendingCount(caller.tenantId(), task.connectorId(), type)).sum()
+                                    .mapToLong(
+                                            type ->
+                                                    incrementalWork.pendingCount(
+                                                            caller.tenantId(),
+                                                            task.connectorId(),
+                                                            type))
+                                    .sum()
                             : durable
-                            ? incrementalWork.pendingCount(
-                                    caller.tenantId(), task.connectorId(), selectedScope)
-                            : 0;
+                                    ? incrementalWork.pendingCount(
+                                            caller.tenantId(), task.connectorId(), selectedScope)
+                                    : 0;
             String status = remaining > 0 ? "PARTIAL" : counts.status();
             String errorCode =
                     counts.rejected == 0
@@ -694,15 +714,19 @@ public final class DhbOrderSyncService {
                                     ? "部分订货宝单据未处理，请先同步或核对原销售单、客户及商品资料，再重试未完成的单据"
                                     : "订货宝单据重试未完成，请核对未完成原因后重试";
             if (counts.logisticsPreserved > 0)
-                errorMessage =
-                        counts.logisticsPreserved
-                                + "张销售发货的物流已保存，已出库发货；部分资料关联或库存台账待补齐，请按单核对";
-            if ((durable || remaining > 0) && (remaining > 0 || counts.rejected > 0 || counts.review > 0)) {
+                errorMessage = counts.logisticsPreserved + "张销售发货的物流已保存，已出库发货；部分资料关联或库存台账待补齐，请按单核对";
+            if ((durable || remaining > 0)
+                    && (remaining > 0 || counts.rejected > 0 || counts.review > 0)) {
                 // 到这里列表已完整读取且每项已可靠保存。业务待处理不能误称全部成功。
                 status = "PARTIAL";
                 errorCode = "DHB_DURABLE_PROJECTION_PENDING";
-                errorMessage = (counts.logisticsPreserved > 0 ? counts.logisticsPreserved + "张销售发货的物流已保存；" : "来源已保存；")
-                        + "仍有 " + remaining + " 条单据待处理；缺少资料的请手工补录，再按原单号继续关联";
+                errorMessage =
+                        (counts.logisticsPreserved > 0
+                                        ? counts.logisticsPreserved + "张销售发货的物流已保存；"
+                                        : "来源已保存；")
+                                + "仍有 "
+                                + remaining
+                                + " 条单据待处理；缺少资料的请手工补录，再按原单号继续关联";
             }
             long pendingCount =
                     durable || remaining > 0
@@ -820,7 +844,8 @@ public final class DhbOrderSyncService {
                                 : value instanceof Payment p
                                         ? firstNonBlank(p.paymentNumber(), p.sourceId())
                                         : value instanceof Shipment s
-                                                ? firstNonBlank(s.shipmentNumber(), s.sourceId()) : null;
+                                                ? firstNonBlank(s.shipmentNumber(), s.sourceId())
+                                                : null;
         return id == null ? "missing-" + fingerprint(WORK_JSON.writeValueAsString(value)) : id;
     }
 
@@ -846,10 +871,18 @@ public final class DhbOrderSyncService {
                             ? o.updatedAt()
                             : value instanceof Receipt r
                                     ? r.updatedAt()
-                                    : value instanceof Shipment s ? s.updatedAt() : ((Payment) value).updatedAt();
+                                    : value instanceof Shipment s
+                                            ? s.updatedAt()
+                                            : ((Payment) value).updatedAt();
             items.put(
                     id,
-                    new DhbIncrementalWorkStore.Item(id, fingerprint(payload), payload, updated));
+                    new DhbIncrementalWorkStore.Item(
+                            id,
+                            fingerprint(
+                                    (value instanceof Shipment ? "source-facts-v2:" : "")
+                                            + payload),
+                            payload,
+                            updated));
         }
         return items;
     }
@@ -876,16 +909,20 @@ public final class DhbOrderSyncService {
             DhbIncrementalWorkStore.Item item,
             java.util.function.Supplier<ProjectionOutcome> apply) {
         var result = apply.get();
-        if (incrementalWork != null && "SHIPMENT".equals(type) && MANUAL_SHIPMENT_IDS.get() != null
+        if (incrementalWork != null
+                && "SHIPMENT".equals(type)
+                && MANUAL_SHIPMENT_IDS.get() != null
                 && MANUAL_SHIPMENT_IDS.get().contains(item.id())) {
-            incrementalWork.waitForManual(caller.tenantId(), task.connectorId(), type, item, Instant.now());
+            incrementalWork.waitForManual(
+                    caller.tenantId(), task.connectorId(), type, item, Instant.now());
         } else if (incrementalWork != null)
             incrementalWork.complete(
                     caller.tenantId(),
                     task.connectorId(),
                     type,
                     item,
-                    result != ProjectionOutcome.REJECTED && result != ProjectionOutcome.REVIEW
+                    result != ProjectionOutcome.REJECTED
+                            && result != ProjectionOutcome.REVIEW
                             && result != ProjectionOutcome.LOGISTICS_PRESERVED,
                     Instant.now());
         return result;
@@ -900,7 +937,8 @@ public final class DhbOrderSyncService {
             Counts counts,
             java.util.function.Consumer<String> progress,
             Map<String, EmployeeProjection> employees,
-            Map<Long, Optional<String>> regions, Map<String, Object> sourceOrderLocks) {
+            Map<Long, Optional<String>> regions,
+            Map<String, Object> sourceOrderLocks) {
         var pending =
                 incrementalWork
                         .pending(caller.tenantId(), task.connectorId(), type, 100, Instant.now())
@@ -947,9 +985,15 @@ public final class DhbOrderSyncService {
                                                         runId,
                                                         WORK_JSON.readValue(
                                                                 item.payload(), Payment.class));
-                                        case "SHIPMENT" -> projectShipment(caller, task, runId,
-                                                WORK_JSON.readValue(item.payload(), Shipment.class),
-                                                employees, sourceOrderLocks);
+                                        case "SHIPMENT" ->
+                                                projectShipment(
+                                                        caller,
+                                                        task,
+                                                        runId,
+                                                        WORK_JSON.readValue(
+                                                                item.payload(), Shipment.class),
+                                                        employees,
+                                                        sourceOrderLocks);
                                         default -> throw new IllegalArgumentException("不支持的重试对象");
                                     });
             counts.fetched++;
@@ -957,7 +1001,10 @@ public final class DhbOrderSyncService {
             page.completed(outcome);
         }
         return "SHIPMENT".equals(type)
-                ? pending.stream().map(DhbIncrementalWorkStore.Item::id).collect(java.util.stream.Collectors.toSet()) : Set.of();
+                ? pending.stream()
+                        .map(DhbIncrementalWorkStore.Item::id)
+                        .collect(java.util.stream.Collectors.toSet())
+                : Set.of();
     }
 
     private ProjectionOutcome retryPayment(
@@ -1191,9 +1238,13 @@ public final class DhbOrderSyncService {
     }
 
     private ProjectionOutcome projectOrder(
-            CallerIdentity caller, SyncTaskContext task, UUID runId, OrderSummary summary,
+            CallerIdentity caller,
+            SyncTaskContext task,
+            UUID runId,
+            OrderSummary summary,
             Map<String, EmployeeProjection> employeeCache,
-            Map<Long, Optional<String>> customerRegionCache, OrderDetail dependencyDetail) {
+            Map<Long, Optional<String>> customerRegionCache,
+            OrderDetail dependencyDetail) {
         String sourceOrderNo =
                 firstNonBlank(
                         summary == null ? null : summary.orderNumber(),
@@ -1287,8 +1338,10 @@ public final class DhbOrderSyncService {
                         employeeCache,
                         customerRegionCache);
             }
-            OrderDetail detail = dependencyDetail == null
-                    ? client.getOrderContent(task.connector(), sourceOrderNo) : dependencyDetail;
+            OrderDetail detail =
+                    dependencyDetail == null
+                            ? client.getOrderContent(task.connector(), sourceOrderNo)
+                            : dependencyDetail;
             Map<String, Object> payload = combinedPayload(summary, detail);
             raw =
                     store.persistRawObject(
@@ -1980,13 +2033,16 @@ public final class DhbOrderSyncService {
             Counts counts,
             Map<String, EmployeeProjection> employeeCache,
             Map<String, Object> sourceOrderLocks,
-            ExecutorService detailExecutor, Set<String> retried) {
+            ExecutorService detailExecutor,
+            Set<String> retried,
+            java.util.function.Consumer<String> progress) {
         Set<String> seen = new java.util.HashSet<>(retried);
         // 接口默认只返回未下载单。显式覆盖两种状态，按更新时间增量回查历史发货变更。
         for (String downloaded : List.of("F", "T")) {
             PageRequest pageRequest = PageRequest.first(pageSize);
             int pages = 0;
             while (true) {
+                progress.accept("正在读取发货资料，第 " + (pages + 1) + " 页，累计已读取 " + counts.fetched + " 张");
                 Page<Shipment> page =
                         client.getShipments(
                                 task.connector(),
@@ -2013,13 +2069,36 @@ public final class DhbOrderSyncService {
                 counts.fetched += unique.size();
                 var items = workItems(unique);
                 var skip = stageWork(caller, task, "SHIPMENT", items);
-                var manual = incrementalWork == null ? Set.<String>of()
-                        : incrementalWork.awaitingManual(caller.tenantId(), task.connectorId(), "SHIPMENT", items.keySet());
-                counts.duplicate += unique.stream().filter(row -> skip.contains(workId(row))).count();
-                counts.addAll(projectDetails(detailExecutor, "shipment-detail",
-                        unique.stream().filter(row -> !skip.contains(workId(row)) && !manual.contains(workId(row))).toList(),
-                        shipment -> applyWork(caller, task, "SHIPMENT", items.get(workId(shipment)),
-                                () -> projectShipment(caller, task, runId, shipment, employeeCache, sourceOrderLocks))));
+                var manual =
+                        incrementalWork == null
+                                ? Set.<String>of()
+                                : incrementalWork.awaitingManual(
+                                        caller.tenantId(),
+                                        task.connectorId(),
+                                        "SHIPMENT",
+                                        items.keySet());
+                counts.duplicate +=
+                        unique.stream().filter(row -> skip.contains(workId(row))).count();
+                counts.addAll(
+                        projectDetails(
+                                detailExecutor,
+                                "shipment-detail",
+                                unique.stream().filter(row -> !skip.contains(workId(row))).toList(),
+                                shipment ->
+                                        applyWork(
+                                                caller,
+                                                task,
+                                                "SHIPMENT",
+                                                items.get(workId(shipment)),
+                                                () ->
+                                                        projectShipment(
+                                                                caller,
+                                                                task,
+                                                                runId,
+                                                                shipment,
+                                                                employeeCache,
+                                                                sourceOrderLocks))));
+                progress.accept("已读取 " + counts.fetched + " 张发货资料，继续核对来源关联");
                 if (page.hasNext() && pages >= pageLimit)
                     throw new IllegalStateException(
                             "DHB_PAGE_LIMIT_REACHED: 分页未读取完毕，未推进游标，请缩小时间范围");
@@ -2037,44 +2116,65 @@ public final class DhbOrderSyncService {
             Map<String, EmployeeProjection> employeeCache,
             Map<Long, Optional<String>> customerRegionCache,
             Map<String, Object> sourceOrderLocks) {
-        var queued = incrementalWork != null && Set.of(SOURCE_OBJECT_SALES_SHIPMENT, SOURCE_OBJECT_ERP_STOCK_OUT)
-                .contains(replayTarget.sourceObjectType())
-                ? incrementalWork.find(caller.tenantId(), task.connectorId(), "SHIPMENT", replayTarget.sourceId()) : null;
-        var result = switch (replayTarget.sourceObjectType()) {
-            case SOURCE_OBJECT_FUND_PAYMENT ->
-                    projectPayment(
-                            caller,
-                            task,
-                            runId,
-                            refreshPayment(task.connector(), replayTarget.sourceId(), null));
-            case SOURCE_OBJECT_SALES_ORDER ->
-                    projectOrder(
-                            caller,
-                            task,
-                            runId,
-                            replayOrderSummary(
-                                    caller.tenantId(), task.connectorId(), replayTarget.sourceId()),
-                            employeeCache,
-                            customerRegionCache);
-            case SOURCE_OBJECT_ERP_STOCK_OUT, SOURCE_OBJECT_SALES_SHIPMENT ->
-                    projectShipment(
-                            caller,
-                            task,
-                            runId,
-                            replayShipmentSummary(replayTarget.sourceId()),
-                            employeeCache,
-                            sourceOrderLocks,
-                            replayTarget.sourceObjectType());
-            default ->
-                    throw new IllegalArgumentException(
-                            "当前订货宝单对象重放暂不支持 sourceObjectType=" + replayTarget.sourceObjectType());
-        };
+        var queued =
+                incrementalWork != null
+                                && Set.of(SOURCE_OBJECT_SALES_SHIPMENT, SOURCE_OBJECT_ERP_STOCK_OUT)
+                                        .contains(replayTarget.sourceObjectType())
+                        ? incrementalWork.find(
+                                caller.tenantId(),
+                                task.connectorId(),
+                                "SHIPMENT",
+                                replayTarget.sourceId())
+                        : null;
+        var result =
+                switch (replayTarget.sourceObjectType()) {
+                    case SOURCE_OBJECT_FUND_PAYMENT ->
+                            projectPayment(
+                                    caller,
+                                    task,
+                                    runId,
+                                    refreshPayment(
+                                            task.connector(), replayTarget.sourceId(), null));
+                    case SOURCE_OBJECT_SALES_ORDER ->
+                            projectOrder(
+                                    caller,
+                                    task,
+                                    runId,
+                                    replayOrderSummary(
+                                            caller.tenantId(),
+                                            task.connectorId(),
+                                            replayTarget.sourceId()),
+                                    employeeCache,
+                                    customerRegionCache);
+                    case SOURCE_OBJECT_ERP_STOCK_OUT, SOURCE_OBJECT_SALES_SHIPMENT ->
+                            projectShipment(
+                                    caller,
+                                    task,
+                                    runId,
+                                    replayShipmentSummary(replayTarget.sourceId()),
+                                    employeeCache,
+                                    sourceOrderLocks,
+                                    replayTarget.sourceObjectType());
+                    default ->
+                            throw new IllegalArgumentException(
+                                    "当前订货宝单对象重放暂不支持 sourceObjectType="
+                                            + replayTarget.sourceObjectType());
+                };
         if (queued != null) {
-            if (MANUAL_SHIPMENT_IDS.get() != null && MANUAL_SHIPMENT_IDS.get().contains(queued.id()))
-                incrementalWork.waitForManual(caller.tenantId(), task.connectorId(), "SHIPMENT", queued, Instant.now());
-            else incrementalWork.complete(caller.tenantId(), task.connectorId(), "SHIPMENT", queued,
-                    result != ProjectionOutcome.REJECTED && result != ProjectionOutcome.REVIEW
-                            && result != ProjectionOutcome.LOGISTICS_PRESERVED, Instant.now());
+            if (MANUAL_SHIPMENT_IDS.get() != null
+                    && MANUAL_SHIPMENT_IDS.get().contains(queued.id()))
+                incrementalWork.waitForManual(
+                        caller.tenantId(), task.connectorId(), "SHIPMENT", queued, Instant.now());
+            else
+                incrementalWork.complete(
+                        caller.tenantId(),
+                        task.connectorId(),
+                        "SHIPMENT",
+                        queued,
+                        result != ProjectionOutcome.REJECTED
+                                && result != ProjectionOutcome.REVIEW
+                                && result != ProjectionOutcome.LOGISTICS_PRESERVED,
+                        Instant.now());
         }
         return result;
     }
@@ -2164,7 +2264,19 @@ public final class DhbOrderSyncService {
                         ? SOURCE_OBJECT_SALES_SHIPMENT
                         : replaySourceObjectType;
         try {
-            ShipmentDetail detail = client.getShipmentContent(task.connector(), sourceShipmentNo);
+            ShipmentDetail detail;
+            try {
+                detail = client.getShipmentContent(task.connector(), sourceShipmentNo);
+            } catch (RuntimeException failed) {
+                // 列表事实先留存，详情失败继续保留在原有重试队列中。
+                var listPayload = combinedShipmentPayload(summary, null);
+                if ("SALES".equals(stockOutTypeCode(summary, listPayload)))
+                    orderProjectionClient.saveShipmentSnapshot(
+                            orderServiceCaller(caller.tenantId()),
+                            DhbShipmentSourceMapper.command(
+                                    task.connectorId(), sourceShipmentNo, summary, listPayload));
+                throw failed;
+            }
             Map<String, Object> payload = combinedShipmentPayload(summary, detail);
             raw =
                     store.persistRawObject(
@@ -2182,6 +2294,52 @@ public final class DhbOrderSyncService {
             syncObservedUnitDictionaries(
                     caller.tenantId(), task.taskId(), runId, "shipmentLine.sourceUnit", payload);
             String stockOutTypeCode = stockOutTypeCode(summary, payload);
+            if ("SALES".equals(stockOutTypeCode))
+                orderProjectionClient.saveShipmentSnapshot(
+                        orderServiceCaller(caller.tenantId()),
+                        DhbShipmentSourceMapper.command(
+                                task.connectorId(), sourceShipmentNo, summary, payload));
+            if ("SALES".equals(stockOutTypeCode)) {
+                var facts =
+                        DhbShipmentSourceMapper.command(
+                                task.connectorId(), sourceShipmentNo, summary, payload);
+                if (!blank(facts.trackingNo())
+                        && facts.shipTime() != null
+                        && store.findActiveMapping(
+                                        caller.tenantId(),
+                                        task.connectorId(),
+                                        SOURCE_OBJECT_SALES_ORDER,
+                                        facts.sourceOrderNo())
+                                == null)
+                    transportPreserved =
+                            projectShipmentTransport(
+                                    caller,
+                                    task,
+                                    runId,
+                                    sourceShipmentNo,
+                                    summary,
+                                    new DhbShipmentTransportMapper.ShippingContext(
+                                            null,
+                                            null,
+                                            facts.customerCode(),
+                                            null,
+                                            facts.shipTime(),
+                                            facts.logisticsCompany()),
+                                    payload);
+            }
+            if (incrementalWork != null
+                    && "SALES".equals(stockOutTypeCode)
+                    && incrementalWork
+                            .awaitingManual(
+                                    caller.tenantId(),
+                                    task.connectorId(),
+                                    "SHIPMENT",
+                                    Set.of(sourceShipmentNo))
+                            .contains(sourceShipmentNo)) {
+                if (MANUAL_SHIPMENT_IDS.get() != null)
+                    MANUAL_SHIPMENT_IDS.get().add(sourceShipmentNo);
+                return ProjectionOutcome.LOGISTICS_PRESERVED;
+            }
             String actualSourceObjectType = sourceObjectTypeForShipment(stockOutTypeCode);
             if (replaySourceObjectType != null
                     && !replaySourceObjectType.equals(actualSourceObjectType)) {
@@ -2323,23 +2481,12 @@ public final class DhbOrderSyncService {
                                     map(mapObject(payload.get("list")))),
                             salesOrder.customerCodeSnapshot(),
                             salesOrder.regionCode(),
-                            sourceBusinessTime(
-                                    "DHB_SHIPMENT_BUSINESS_TIME_MISSING",
-                                    "订货宝发货单缺少来源日期",
-                                    "sourceShipmentNo",
-                                    sourceShipmentNo,
-                                    summary == null ? null : summary.shipmentAt(),
-                                    summary == null ? null : summary.createdAt(),
-                                    summary == null ? null : summary.updatedAt(),
-                                    detail == null
-                                            ? null
-                                            : instant(
-                                                    firstObject(
-                                                            detail.attributes(), "CreateDate"))),
+                            DhbShipmentSourceMapper.time(
+                                    DhbShipmentSourceMapper.value(payload, "ships_date")),
                             summary == null ? null : summary.logisticsName());
-            projectShipmentTransport(
-                    caller, task, runId, sourceShipmentNo, summary, shipping, payload);
-            transportPreserved = true;
+            transportPreserved =
+                    projectShipmentTransport(
+                            caller, task, runId, sourceShipmentNo, summary, shipping, payload);
 
             ExternalObjectMapping existing =
                     store.findActiveMapping(
@@ -2461,7 +2608,7 @@ public final class DhbOrderSyncService {
         }
     }
 
-    private void projectShipmentTransport(
+    private boolean projectShipmentTransport(
             CallerIdentity caller,
             SyncTaskContext task,
             UUID runId,
@@ -2469,6 +2616,8 @@ public final class DhbOrderSyncService {
             Shipment summary,
             DhbShipmentTransportMapper.ShippingContext shipment,
             Map<String, Object> payload) {
+        // 无快递单号不生成运输成本；发货履约仍按原职责同步。
+        if (DhbShipmentTransportMapper.trackingNumbers(payload, summary).isEmpty()) return false;
         String carrier =
                 DhbShipmentTransportMapper.rawValue(payload, "logistics_code", "logistics_name");
         String mode =
@@ -2526,6 +2675,7 @@ public final class DhbOrderSyncService {
                     "WARN",
                     "发货物流已留存，需核对 shipmentNo=" + no + " " + result.issue(),
                     "DHB_SHIPMENT_LOGISTICS_REVIEW");
+        return true;
     }
 
     private ProjectionOutcome projectReceipt(
@@ -3354,7 +3504,10 @@ public final class DhbOrderSyncService {
             return;
         }
         String lockKey = sourceOrderNo.strip();
-        var lock = (SourceOrderDependency) sourceOrderLocks.computeIfAbsent(lockKey, ignored -> new SourceOrderDependency());
+        var lock =
+                (SourceOrderDependency)
+                        sourceOrderLocks.computeIfAbsent(
+                                lockKey, ignored -> new SourceOrderDependency());
         synchronized (lock) {
             if (lock.failure != null) throw lock.failure;
             try {
@@ -3372,8 +3525,12 @@ public final class DhbOrderSyncService {
             UUID runId,
             String sourceOrderNo,
             Map<String, EmployeeProjection> employeeCache) {
-        verifyDependencyMayAutoSync(caller.tenantId(), task.connectorId(),
-                List.of(SOURCE_OBJECT_SALES_ORDER), List.of(sourceOrderNo), sourceOrderNo);
+        verifyDependencyMayAutoSync(
+                caller.tenantId(),
+                task.connectorId(),
+                List.of(SOURCE_OBJECT_SALES_ORDER),
+                List.of(sourceOrderNo),
+                sourceOrderNo);
         ExternalObjectMapping existing =
                 store.findActiveMapping(
                         caller.tenantId(),
@@ -3383,20 +3540,42 @@ public final class DhbOrderSyncService {
         if (existing != null && existing.internalObjectId() != null) {
             return;
         }
-        var existingOrder = orderProjectionClient.findSalesOrderBySource(
-                orderServiceCaller(caller.tenantId()), SOURCE_SYSTEM_DINGHUOBAO, sourceOrderNo);
+        var existingOrder =
+                orderProjectionClient.findSalesOrderBySource(
+                        orderServiceCaller(caller.tenantId()),
+                        SOURCE_SYSTEM_DINGHUOBAO,
+                        sourceOrderNo);
         if (existingOrder != null && existingOrder.isPresent()) {
             var order = existingOrder.get();
-            if (order.id() == null || !sourceOrderNo.equals(order.sourceOrderNo())
+            if (order.id() == null
+                    || !sourceOrderNo.equals(order.sourceOrderNo())
                     || !SOURCE_SYSTEM_DINGHUOBAO.equals(order.sourceSystemCode())
-                    || Set.of("CANCELLED", "DELETED").contains(Objects.toString(order.orderStatusCode(), "")))
-                throw new ProjectionRejected("DHB_DEPENDENCY_IDENTITY_CONFLICT",
+                    || Set.of("CANCELLED", "DELETED")
+                            .contains(Objects.toString(order.orderStatusCode(), "")))
+                throw new ProjectionRejected(
+                        "DHB_DEPENDENCY_IDENTITY_CONFLICT",
                         "销售单 " + sourceOrderNo + " 的已有原单关联或状态不一致，请到销售订单核对",
-                        "MAPPING", Map.of("sourceOrderNo", sourceOrderNo), Map.of());
-            store.upsertExternalObjectMapping(caller.tenantId(), caller.userId(),
-                    new ExternalObjectMappingWrite(task.connectorId(), SOURCE_OBJECT_SALES_ORDER,
-                            sourceOrderNo, sourceOrderNo, "ORDER", "SALES_ORDER", order.id(), order.orderNo(),
-                            "ACTIVE", runId, Instant.now(), null, null, "复用同来源销售订单，补回发货依赖关联"));
+                        "MAPPING",
+                        Map.of("sourceOrderNo", sourceOrderNo),
+                        Map.of());
+            store.upsertExternalObjectMapping(
+                    caller.tenantId(),
+                    caller.userId(),
+                    new ExternalObjectMappingWrite(
+                            task.connectorId(),
+                            SOURCE_OBJECT_SALES_ORDER,
+                            sourceOrderNo,
+                            sourceOrderNo,
+                            "ORDER",
+                            "SALES_ORDER",
+                            order.id(),
+                            order.orderNo(),
+                            "ACTIVE",
+                            runId,
+                            Instant.now(),
+                            null,
+                            null,
+                            "复用同来源销售订单，补回发货依赖关联"));
             return;
         }
         // 根据发货原单号点查；不遍历销售列表、不以近似单号或客户名称猜测原单。
@@ -3404,23 +3583,50 @@ public final class DhbOrderSyncService {
         try {
             detail = client.getOrderContent(task.connector(), sourceOrderNo);
         } catch (RuntimeException error) {
-            throw new ProjectionRejected("DHB_SHIPMENT_SOURCE_ORDER_UNAVAILABLE",
+            throw new ProjectionRejected(
+                    "DHB_SHIPMENT_SOURCE_ORDER_UNAVAILABLE",
                     "销售单 " + sourceOrderNo + " 暂无法从订货宝读取，请核对原单后重试本发货单",
-                    "DETAIL", Map.of("required", "SALES_ORDER"), Map.of("sourceOrderNo", sourceOrderNo));
+                    "DETAIL",
+                    Map.of("required", "SALES_ORDER"),
+                    Map.of("sourceOrderNo", sourceOrderNo));
         }
         if (detail == null || !sourceOrderNo.equals(detail.orderNumber()))
-            throw new ProjectionRejected("DHB_SHIPMENT_SOURCE_ORDER_MISMATCH",
+            throw new ProjectionRejected(
+                    "DHB_SHIPMENT_SOURCE_ORDER_MISMATCH",
                     "订货宝返回的销售单号与发货原单不一致，已停止关联，请核对 " + sourceOrderNo,
-                    "MAPPING", Map.of("sourceOrderNo", sourceOrderNo), Map.of());
-        projectOrder(caller, task, runId, new OrderSummary(sourceOrderNo, sourceOrderNo,
-                        detail.status(), detail.amount(), null, null, null, null, detail.attributes()),
-                employeeCache, new ConcurrentHashMap<>(), detail);
-        existing = store.findActiveMapping(caller.tenantId(), task.connectorId(), SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
+                    "MAPPING",
+                    Map.of("sourceOrderNo", sourceOrderNo),
+                    Map.of());
+        projectOrder(
+                caller,
+                task,
+                runId,
+                new OrderSummary(
+                        sourceOrderNo,
+                        sourceOrderNo,
+                        detail.status(),
+                        detail.amount(),
+                        null,
+                        null,
+                        null,
+                        null,
+                        detail.attributes()),
+                employeeCache,
+                new ConcurrentHashMap<>(),
+                detail);
+        existing =
+                store.findActiveMapping(
+                        caller.tenantId(),
+                        task.connectorId(),
+                        SOURCE_OBJECT_SALES_ORDER,
+                        sourceOrderNo);
         if (existing != null && existing.internalObjectId() != null) return;
         throw new ProjectionRejected(
                 "DHB_SHIPMENT_ORDER_MAPPING_MISSING",
                 "销售单 " + sourceOrderNo + " 已读取但未能建立有效关联，请到销售订单核对历史关联或原单状态后重试本发货单",
-                "MAPPING", Map.of("required", "SALES_ORDER mapping"), Map.of("sourceOrderNo", sourceOrderNo));
+                "MAPPING",
+                Map.of("required", "SALES_ORDER mapping"),
+                Map.of("sourceOrderNo", sourceOrderNo));
     }
 
     private SalesPaymentRecordDetailView upsertSalesPayment(
@@ -4559,12 +4765,26 @@ public final class DhbOrderSyncService {
             var keys = new ArrayList<String>();
             addCandidate(keys, summary == null ? null : summary.warehouseGuid());
             addCandidate(keys, summary == null ? null : summary.warehouseNumber());
-            for (var key : candidates(content, "stock_id", "stock_num", "StockID", "StockNum", "stock_guid")) addCandidate(keys, key);
+            for (var key :
+                    candidates(
+                            content, "stock_id", "stock_num", "StockID", "StockNum", "stock_guid"))
+                addCandidate(keys, key);
             throw new ProjectionRejected(
                     "DHB_SHIPMENT_WAREHOUSE_MAPPING_MISSING",
-                    "发货单 " + sourceShipmentNo + " 的仓库尚未关联（来源编号：" + String.join("、", keys) + "），请手工补录仓库资料后继续关联",
-                    "MAPPING", Map.of("required", "仓库 mapping"),
-                    Map.of("sourceShipmentNo", sourceShipmentNo, "sourceOrderNo", sourceOrderNo, "sourceIds", keys));
+                    "发货单 "
+                            + sourceShipmentNo
+                            + " 的仓库尚未关联（来源编号："
+                            + String.join("、", keys)
+                            + "），请手工补录仓库资料后继续关联",
+                    "MAPPING",
+                    Map.of("required", "仓库 mapping"),
+                    Map.of(
+                            "sourceShipmentNo",
+                            sourceShipmentNo,
+                            "sourceOrderNo",
+                            sourceOrderNo,
+                            "sourceIds",
+                            keys));
         }
         List<SalesShipmentLineCommand> lines =
                 shipmentLines(tenantId, connectorId, sourceShipmentNo, content, salesOrder);
@@ -4579,35 +4799,26 @@ public final class DhbOrderSyncService {
                         null,
                         shipmentStatusCode(
                                 firstNonBlank(
-                                        summary == null ? null : summary.status(),
-                                        first(content, list, "Status", "status"))),
+                                        first(content, list, "status", "Status"),
+                                        summary == null ? null : summary.status())),
                         firstNonBlank(
                                 summary == null ? null : summary.logisticsName(),
                                 first(
                                         content,
                                         list,
+                                        "logistics_name",
                                         "LogisticsName",
                                         "logisticsName",
                                         "ExpressName")),
                         firstNonBlank(
-                                summary == null ? null : summary.trackingNumber(),
-                                first(
-                                        content,
-                                        list,
-                                        "ExpressNumber",
-                                        "expressNumber",
-                                        "LogisticsNumber")),
-                        sourceBusinessTime(
-                                "DHB_SHIPMENT_BUSINESS_TIME_MISSING",
-                                "订货宝发货单缺少发货/创建/更新时间，不能生成销售发货单",
-                                "sourceShipmentNo",
-                                sourceShipmentNo,
-                                summary == null ? null : summary.shipmentAt(),
-                                summary == null ? null : summary.createdAt(),
-                                summary == null ? null : summary.updatedAt(),
-                                detail == null
-                                        ? null
-                                        : instant(firstObject(detail.attributes(), "CreateDate"))),
+                                text(
+                                        String.join(
+                                                ",",
+                                                DhbShipmentTransportMapper.trackingNumbers(
+                                                        payload))),
+                                summary == null ? null : summary.trackingNumber()),
+                        DhbShipmentSourceMapper.time(
+                                DhbShipmentSourceMapper.value(payload, "ships_date")),
                         lines,
                         firstNonBlank(
                                 summary == null ? null : summary.remark(),
@@ -6806,7 +7017,8 @@ public final class DhbOrderSyncService {
             String sourceOrderNo,
             String label) {
         if (SHIPMENT_DEPENDENCIES.get() != null)
-            verifyDependencyMayAutoSync(tenantId, connectorId, objectTypes, sourceIds, sourceOrderNo);
+            verifyDependencyMayAutoSync(
+                    tenantId, connectorId, objectTypes, sourceIds, sourceOrderNo);
         ExternalObjectMapping mapping =
                 optionalMappingAny(tenantId, connectorId, objectTypes, sourceIds);
         if (mapping != null) return mapping;
@@ -6816,15 +7028,26 @@ public final class DhbOrderSyncService {
             var refreshed = dependencies.refresh(objectTypes);
             advice = refreshed.message();
             var cache = MAPPING_LOOKUP_CACHE.get();
-            if (cache != null) cache.keySet().removeIf(k -> k.tenantId().equals(tenantId)
-                    && k.connectorId().equals(connectorId) && objectTypes.contains(k.sourceObjectType()));
+            if (cache != null)
+                cache.keySet()
+                        .removeIf(
+                                k ->
+                                        k.tenantId().equals(tenantId)
+                                                && k.connectorId().equals(connectorId)
+                                                && objectTypes.contains(k.sourceObjectType()));
             mapping = optionalMappingAny(tenantId, connectorId, objectTypes, sourceIds);
             if (mapping != null) return mapping;
         }
         throw new ProjectionRejected(
                 "DHB_ORDER_MAPPING_MISSING",
-                "单据 " + sourceOrderNo + " 的" + label + "尚未关联（来源编码："
-                        + String.join("、", sourceIds == null ? List.of() : sourceIds) + "）；" + advice,
+                "单据 "
+                        + sourceOrderNo
+                        + " 的"
+                        + label
+                        + "尚未关联（来源编码："
+                        + String.join("、", sourceIds == null ? List.of() : sourceIds)
+                        + "）；"
+                        + advice,
                 "MAPPING",
                 Map.of("required", label + " mapping"),
                 Map.of(
@@ -6834,13 +7057,21 @@ public final class DhbOrderSyncService {
                         sourceIds == null ? List.of() : sourceIds));
     }
 
-    private void verifyDependencyMayAutoSync(UUID tenantId, UUID connectorId,
-            List<String> objectTypes, List<String> sourceIds, String sourceNo) {
-        if (sourceIds != null && !sourceIds.isEmpty()
+    private void verifyDependencyMayAutoSync(
+            UUID tenantId,
+            UUID connectorId,
+            List<String> objectTypes,
+            List<String> sourceIds,
+            String sourceNo) {
+        if (sourceIds != null
+                && !sourceIds.isEmpty()
                 && store.dependencyAutoSyncBlocked(tenantId, connectorId, objectTypes, sourceIds))
-            throw new ProjectionRejected("DHB_DEPENDENCY_IDENTITY_CONFLICT",
+            throw new ProjectionRejected(
+                    "DHB_DEPENDENCY_IDENTITY_CONFLICT",
                     "单据 " + sourceNo + " 的来源关联已被移除、忽略或存在冲突，请核对后恢复；系统不会自动改绑",
-                    "MAPPING", Map.of("required", "有效来源关联"), Map.of("sourceIds", sourceIds));
+                    "MAPPING",
+                    Map.of("required", "有效来源关联"),
+                    Map.of("sourceIds", sourceIds));
     }
 
     private ExternalObjectMapping optionalMappingAny(
@@ -6853,12 +7084,21 @@ public final class DhbOrderSyncService {
                         cachedActiveMapping(tenantId, connectorId, objectType, sourceId);
                 if (mapping != null) {
                     if (customerMatch != null
-                            && (!Objects.equals(customerMatch.internalObjectId(), mapping.internalObjectId())
-                                    || !Objects.equals(customerMatch.internalDomain(), mapping.internalDomain())
-                                    || !Objects.equals(customerMatch.internalObjectType(), mapping.internalObjectType())))
+                            && (!Objects.equals(
+                                            customerMatch.internalObjectId(),
+                                            mapping.internalObjectId())
+                                    || !Objects.equals(
+                                            customerMatch.internalDomain(),
+                                            mapping.internalDomain())
+                                    || !Objects.equals(
+                                            customerMatch.internalObjectType(),
+                                            mapping.internalObjectType())))
                         throw new ProjectionRejected(
-                                objectTypes.equals(List.of("CUSTOMER")) ? "DHB_CUSTOMER_IDENTITY_CONFLICT" : "DHB_DEPENDENCY_IDENTITY_CONFLICT",
-                                objectTypes.equals(List.of("CUSTOMER")) ? "客户编号和GUID指向不同门店，必须先核对映射"
+                                objectTypes.equals(List.of("CUSTOMER"))
+                                        ? "DHB_CUSTOMER_IDENTITY_CONFLICT"
+                                        : "DHB_DEPENDENCY_IDENTITY_CONFLICT",
+                                objectTypes.equals(List.of("CUSTOMER"))
+                                        ? "客户编号和GUID指向不同门店，必须先核对映射"
                                         : "来源编码指向不同资料，已停止自动关联，请核对来源关联",
                                 "MAPPING",
                                 Map.of("required", "同一门店ID"),
@@ -7120,14 +7360,15 @@ public final class DhbOrderSyncService {
                 "订货宝发货单缺少发货/创建/更新时间，不能生成ERP销售出库单",
                 "sourceShipmentNo",
                 sourceShipmentNo,
-                summary == null ? null : summary.shipmentAt(),
                 instant(firstObject(content, "ShipsDate", "shipsDate", "ships_date")),
+                summary == null ? null : summary.shipmentAt(),
                 instant(firstObject(list, "ShipsDate", "shipsDate", "ships_date")),
-                summary == null ? null : summary.createdAt(),
                 instant(firstObject(content, "CreateDate", "createDate", "create_date")),
+                summary == null ? null : summary.createdAt(),
                 instant(firstObject(list, "CreateDate", "createDate", "create_date")),
+                instant(firstObject(content, "UpdateDate", "updateDate", "update_date")),
                 summary == null ? null : summary.updatedAt(),
-                detail == null ? null : instant(firstObject(detail.attributes(), "CreateDate")));
+                instant(firstObject(list, "UpdateDate", "updateDate", "update_date")));
     }
 
     private static boolean transferInboundReceipt(Map<String, Object> payload) {
@@ -7664,7 +7905,10 @@ public final class DhbOrderSyncService {
 
     private static String shipmentStatusCode(String sourceStatus) {
         String value = lower(sourceStatus);
-        if (value == null) return "SHIPPED";
+        if (Set.of("shipped", "receivedin", "received", "cancelled")
+                .contains(Objects.toString(value, "")))
+            return DhbShipmentSourceMapper.status(value);
+        if (value == null) return "CREATED";
         if (Set.of("signed", "received", "completed", "finished", "done", "confirm").contains(value)
                 || value.contains("签收")
                 || value.contains("完成")) {

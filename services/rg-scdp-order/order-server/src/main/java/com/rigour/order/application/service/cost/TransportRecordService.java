@@ -64,7 +64,9 @@ public class TransportRecordService {
     }
 
     public List<Detail> selected(List<String> ids) {
-        var rows = costs.exportSelected(ids);
+        var rows =
+                costs.withBusinessStatuses(
+                        costs.exportSelected(ids), "order:logistics-cost:export");
         var sources = platform.byCosts(tenant(), ids);
         var shipping = shipmentRecords(ids);
         return rows.stream()
@@ -134,15 +136,11 @@ public class TransportRecordService {
         AuthorizationContext.requirePermission("order:logistics-cost:write");
         validate(d);
         var old = id == null ? null : detail(id);
-        if (old != null && !"DRAFT".equals(old.record().statusCode())) throw bad("只有待确认记录可编辑，请先撤销");
+        if (old != null && !"ACTIVE".equals(old.record().statusCode())) throw bad("作废记录不可修改");
         if (old != null && !Objects.equals(old.record().revision(), d.revision()))
             throw bad("记录已变化，请刷新");
         if (old != null && old.platform() == null && !old.shipments().isEmpty()) {
             var original = old.record().data().ledger();
-            if (original.deliveryModeCode() == null
-                    || !"SELF".equals(original.deliveryModeCode())
-                            && original.carrierCode() == null)
-                throw bad("订货宝配送方式或物流公司尚未映射，请先维护数据字典的来源映射并重新同步");
             if (!"DELIVERY".equals(d.transportType())
                     || !Objects.equals(original.carrierCode(), d.carrierCode())
                     || !Objects.equals(original.platformOrderNo(), d.platformOrderNo())
@@ -154,6 +152,7 @@ public class TransportRecordService {
                     || !new HashSet<>(original.sources().stream().map(Source::orderCode).toList())
                             .equals(new HashSet<>(d.orderCodes())))
                 throw bad("订货宝发货及原销售关系只读，请在原单更正后同步");
+            if (!TransportAllocationPlan.complex(original)) return saveShipmentFinancials(old, d);
         }
         if (old == null)
             try {
@@ -161,9 +160,7 @@ public class TransportRecordService {
             } catch (Exception e) {
                 throw bad("保存标识无效，请重新打开新增页面");
             }
-        if (old != null
-                && old.platform() == null
-                && TransportAllocationPlan.complex(old.record().data().ledger()))
+        if (old != null && TransportAllocationPlan.complex(old.record().data().ledger()))
             throw bad("此记录有多项费用或特殊分摊，请使用费用明细编辑，避免覆盖原分摊");
         var sources = documents(d, "order:logistics-cost:write");
         if (old != null && old.platform() != null) {
@@ -181,11 +178,25 @@ public class TransportRecordService {
                     || !Objects.equals(
                             blankToNull(d.trackingNo()),
                             blankToNull(order.raw() == null ? null : order.raw().get("运单号")))
-                    || !Objects.equals(d.date().toString(), order.useTime().substring(0, 10))
-                    || f != null && !same(d.amount(), f.billAmount()))
-                throw bad("平台物流公司、订单号、日期和金额只读");
+                    || !Objects.equals(d.date().toString(), order.useTime().substring(0, 10)))
+                throw bad("平台物流公司、订单号和日期只读");
             // 未关联也能维护负责人、备注，暂不要求抄录平台未提供的地址。
             var plan = TransportAllocationPlan.calculate(d.amount(), sources, d.orderAllocations());
+            // 关联业务后立即固化同一份成本与分摊；平台账单仍独立只读。
+            if (!sources.isEmpty()) {
+                var saved =
+                        costs.save(
+                                "logistics",
+                                id,
+                                command(old.record(), d, sources, "order:logistics-cost:write"));
+                platform.saveAssociations(
+                        tenant(),
+                        id,
+                        d,
+                        sources,
+                        AuthorizationContext.requireCurrent().principalId().toString());
+                return detail(saved.id());
+            }
             platform.saveDraft(
                     tenant(),
                     id,
@@ -210,100 +221,130 @@ public class TransportRecordService {
         return detail(saved.id());
     }
 
-    @Transactional
-    public Detail confirm(String id, LogisticsCostActionCommand action) {
-        AuthorizationContext.requirePermission("order:logistics-cost:confirm");
-        var d = detail(id);
-        if (d.shipments().stream()
-                .anyMatch(
-                        s -> !Set.of("receivedin", "received").contains(s.latest().sourceStatus())))
-            throw bad("来源发货已取消或仍待发货，请核对后再确认成本");
-        if (d.record().revision() != action.revision()) throw bad("记录已变化，请刷新");
-        if (d.platform() == null && evidence.list("logistics", id).isEmpty())
-            throw bad("手工运输记录至少上传一份业务凭证后才能确认");
-        if (d.platform() != null) {
-            var draft = d.platform().draft();
-            if (draft == null) throw bad("请先关联业务订单");
-            var source = d.platform().source();
-            var order = source.latestOrder() == null ? source.order() : source.latestOrder();
-            BigDecimal amount = order.facts() == null ? null : order.facts().billAmount();
-            if (amount == null) throw bad("平台账单金额尚未取得，请同步后确认");
-            var from =
-                    order.facts().stops() == null || order.facts().stops().isEmpty()
+    private Detail saveShipmentFinancials(Detail old, Draft d) {
+        var data = old.record().data();
+        var ledger = data.ledger();
+        var items = d.manualBillItems() == null ? ledger.manualBillItems() : d.manualBillItems();
+        BigDecimal amount =
+                items == null || items.isEmpty()
+                        ? d.amount()
+                        : com.rigour.order.domain.cost.LogisticsLedgerRules.manualBillTotal(items);
+        if (amount != null
+                && (amount.signum() < 0
+                        || amount.scale() > 2
+                        || amount.compareTo(new BigDecimal("999999999999.99")) > 0))
+            throw bad("运费须为非负金额，最多两位小数");
+        if (amount != null
+                && amount.signum() == 0
+                && (d.zeroReason() == null || d.zeroReason().isBlank())) throw bad("请填写零元运费原因");
+        String payment = first(d.paymentStatusCode(), data.paymentStatusCode());
+        if (!refs.validCodes(tenant(), "COST_PAYMENT_STATUS").contains(payment))
+            throw bad("请选择有效付款状态");
+        var frozen =
+                ledger.sources().stream()
+                        .map(
+                                link ->
+                                        new LogisticsCostSourceView(
+                                                        null,
+                                                        link.orderCode(),
+                                                        link.orderTypeCode(),
+                                                        null,
+                                                        null,
+                                                        null,
+                                                        null,
+                                                        null,
+                                                        null,
+                                                        null,
+                                                        null)
+                                                .withBusinessSnapshot(
+                                                        link.documentAmount(), link.linkedAt()))
+                        .toList();
+        var plan = TransportAllocationPlan.calculate(amount, frozen, d.orderAllocations());
+        var links =
+                ledger.sources().stream()
+                        .map(
+                                link -> {
+                                    var a = link.allocations().getFirst();
+                                    return new Source(
+                                            link.orderTypeCode(),
+                                            link.orderCode(),
+                                            link.linkRoleCode(),
+                                            List.of(
+                                                    new Allocation(
+                                                            a.feeKey(),
+                                                            a.receivingPointCode(),
+                                                            a.cityCode(),
+                                                            plan.bases().get(link.orderCode()),
+                                                            amount == null
+                                                                    ? BigDecimal.ZERO
+                                                                    : plan.shares()
+                                                                            .get(
+                                                                                    link
+                                                                                            .orderCode()))),
+                                            link.noSourceReason(),
+                                            link.employeeCode(),
+                                            link.employeeName(),
+                                            link.departmentId(),
+                                            link.departmentName(),
+                                            link.sourceWarehouseCode(),
+                                            link.documentAmount(),
+                                            link.documentDate(),
+                                            link.linkedAt());
+                                })
+                        .toList();
+        var f = ledger.feeItems().getFirst();
+        ledger =
+                ledger.withSources(links)
+                        .withFeeItems(
+                                List.of(
+                                        new Fee(
+                                                f.feeKey(),
+                                                f.feeTypeCode(),
+                                                amount,
+                                                f.bearerCode(),
+                                                amount,
+                                                plan.method(),
+                                                d.zeroReason(),
+                                                f.remark(),
+                                                f.basisUnitCode())))
+                        .withManualBillItems(items);
+        Long department = data.departmentId();
+        String employeeName = old.record().ownerEmployeeName();
+        if (!Objects.equals(d.ownerEmployeeCode(), data.ownerEmployeeCode())) {
+            var employee =
+                    d.ownerEmployeeCode() == null || d.ownerEmployeeCode().isBlank()
                             ? null
-                            : order.facts().stops().getFirst();
-            var latest =
-                    new Draft(
-                                    d.record().revision(),
-                                    draft.transportType(),
-                                    draft.date(),
-                                    "HLL",
-                                    order.raw() == null ? null : order.raw().get("运单号"),
-                                    order.orderNo(),
-                                    draft.warehouseCode(),
-                                    first(draft.senderName(), from == null ? null : from.name()),
-                                    first(
-                                            draft.senderContact(),
-                                            from == null ? null : from.contactName()),
-                                    first(
-                                            draft.senderPhone(),
-                                            from == null ? null : from.contactPhone()),
-                                    first(
-                                            draft.senderAddress(),
-                                            from == null ? null : from.address()),
-                                    draft.cityCode(),
-                                    amount,
-                                    draft.ownerEmployeeCode(),
-                                    draft.remark(),
-                                    action.reason(),
-                                    draft.zeroReason(),
-                                    draft.orderCodes(),
-                                    draft.requestId(),
-                                    null,
-                                    List.of())
-                            .withAllocations(draft.orderAllocations());
-            var existing = d.record().data().ledger();
-            boolean custom = TransportAllocationPlan.complex(existing);
-            LogisticsCostCommand checked;
-            if (custom) {
-                var codes =
-                        existing.sources().stream()
-                                .map(Source::orderCode)
-                                .filter(Objects::nonNull)
-                                .collect(java.util.stream.Collectors.toSet());
-                if (!codes.equals(new HashSet<>(draft.orderCodes()))
-                        || !Objects.equals(existing.transportPurposeCode(), draft.transportType()))
-                    throw bad("订单关联已变化，请重新维护原费用分摊，不能自动替换自定义分摊");
-                var c = d.record().data();
-                checked =
-                        new LogisticsCostCommand(
-                                c.requestId(),
-                                d.record().revision(),
-                                c.title(),
-                                c.typeCode(),
-                                c.cityCode(),
-                                c.cityName(),
-                                c.departmentId(),
-                                draft.ownerEmployeeCode(),
-                                c.costDate(),
-                                c.amount(),
-                                c.paymentStatusCode(),
-                                c.logistics(),
-                                draft.remark(),
-                                action.reason(),
-                                existing);
-            } else
-                checked =
-                        command(
-                                d.record(),
-                                latest,
-                                documents(latest, "order:logistics-cost:confirm"),
-                                "order:logistics-cost:confirm");
-            var saved = costs.preparePlatformConfirmation(id, checked);
-            action = new LogisticsCostActionCommand(saved.revision(), action.reason());
+                            : refs.employees("order:logistics-cost:write").stream()
+                                    .filter(e -> d.ownerEmployeeCode().equals(e.employeeCode()))
+                                    .findFirst()
+                                    .orElseThrow(() -> bad("费用负责人不存在或无权限"));
+            department = employee == null ? null : employee.departmentId();
+            employeeName = employee == null ? null : employee.employeeName();
         }
-        costs.action("logistics", id, action, true);
-        return detail(id);
+        var command =
+                new LogisticsCostCommand(
+                        data.requestId(),
+                        old.record().revision(),
+                        data.title(),
+                        data.typeCode(),
+                        data.cityCode(),
+                        data.cityName(),
+                        department,
+                        d.ownerEmployeeCode(),
+                        data.costDate(),
+                        amount,
+                        payment,
+                        data.logistics(),
+                        d.remark(),
+                        d.reason(),
+                        ledger);
+        return detail(costs.saveFinancialSnapshot(old.record(), command, employeeName).id());
+    }
+
+    /** 旧客户端获得明确提示，不能继续创建确认状态。 */
+    public Detail confirm(String id, LogisticsCostActionCommand action) {
+        AuthorizationContext.requirePermission("order:logistics-cost:write");
+        throw bad("运输记录保存即生效，无需确认");
     }
 
     private List<LogisticsCostSourceView> documents(Draft d, String action) {
@@ -375,7 +416,7 @@ public class TransportRecordService {
                                 billItems);
         if (rows.isEmpty()) throw bad("请先关联业务订单");
         String city = first(d.cityCode(), rows.getFirst().cityCode());
-        if (city == null) throw bad("请维护业务单据的归属城市后再确认");
+        if (city == null) throw bad("请维护业务单据的归属城市后保存");
         String cityName = refs.city(city, action);
         Party sender;
         if (d.warehouseCode() != null && !d.warehouseCode().isBlank()) {
@@ -521,7 +562,16 @@ public class TransportRecordService {
                                 List.of(),
                                 List.of())
                         .withPlatformOrderNo(d.platformOrderNo())
-                        .withManualBillItems(billItems);
+                        .withManualBillItems(billItems)
+                        .withShippingTime(
+                                d.shippingTime() != null
+                                        ? d.shippingTime()
+                                        : old != null
+                                                        && old.data().ledger() != null
+                                                        && Objects.equals(
+                                                                old.data().costDate(), d.date())
+                                                ? old.data().ledger().shippingTime()
+                                                : null);
         return new LogisticsCostCommand(
                 old == null ? d.requestId() : old.data().requestId(),
                 old == null ? null : old.revision(),
@@ -585,6 +635,9 @@ public class TransportRecordService {
                 || d.date() == null
                 || d.remark() != null && d.remark().length() > 1000
                 || d.reason() != null && d.reason().length() > 500) throw bad("运输日期、备注或原因无效");
+        if (d.shippingTime() != null
+                && (!d.shippingTime().toLocalDate().equals(d.date())
+                        || d.shippingTime().getNano() != 0)) throw bad("发货时间须与运输日期一致，精确到秒");
         for (String value :
                 Arrays.asList(
                         d.carrierCode(),
@@ -611,10 +664,6 @@ public class TransportRecordService {
 
     private static String first(String a, String b) {
         return a == null || a.isBlank() ? b : a;
-    }
-
-    private static boolean same(BigDecimal a, BigDecimal b) {
-        return a == null ? b == null : b != null && a.compareTo(b) == 0;
     }
 
     private static BusinessException bad(String message) {

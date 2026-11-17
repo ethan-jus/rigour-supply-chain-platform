@@ -24,6 +24,16 @@ public interface PlatformTransportStore {
             List<LogisticsCostSourceView> sources,
             String actor);
 
+    /** 成本已由领域保存成功；这里只维护平台侧关联，不重复推进成本版本。 */
+    default void saveAssociations(
+            String tenant,
+            String costId,
+            Draft draft,
+            List<LogisticsCostSourceView> sources,
+            String actor) {
+        saveDraft(tenant, costId, draft, sources, actor);
+    }
+
     void assertReadOnly(String tenant, String id, LogisticsCostCommand command);
 
     void voucher(String tenant, VoucherUpdate update);

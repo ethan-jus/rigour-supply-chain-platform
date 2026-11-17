@@ -46,14 +46,23 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         var records =
                 jdbc.queryForList(
                         "SELECT * FROM order_transport_shipment_source WHERE tenant_id=? AND"
-                            + " platform_code='DHB' AND connector_id=? AND source_shipment_id=? FOR"
-                            + " UPDATE",
+                            + " platform_code='DHB' AND connector_id=? AND (source_shipment_id=? OR"
+                            + " source_shipment_no=?) FOR UPDATE",
                         tenant,
                         command.connectorId().toString(),
-                        command.shipmentId());
+                        command.shipmentId(),
+                        command.shipmentNo());
+        // 单笔补查可能只有发货单号，不能把它当作另一个发货身份重新建运输。
+        // 同号已有多个成本或两个正式来源ID冲突时先保留现场，不猜选或覆盖任一金额。
+        if (records.size() > 1) throw bad("该发货单已对应多条运输记录，请核对重复记录");
         String body = json.writeValueAsString(command), fp = fingerprint(body);
         Map<String, Object> old = records.isEmpty() ? null : records.getFirst();
         if (old != null) {
+            String priorId = old.get("source_shipment_id").toString();
+            if (!priorId.equals(command.shipmentId())
+                    && !priorId.equals(command.shipmentNo())
+                    && !command.shipmentId().equals(command.shipmentNo()))
+                throw bad("该发货单的来源编号不一致，请核对原单");
             var previous = json.readValue(old.get("latest_json").toString(), Command.class);
             if (previous.sourceUpdatedAt() != null
                     && command.sourceUpdatedAt() != null
@@ -63,12 +72,35 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         }
         String sourceId = old == null ? UUID.randomUUID().toString() : old.get("id").toString();
         String costId = old == null ? null : Objects.toString(old.get("cost_id"), null);
+        // 仅对“无单号、无运费、无人工凭证”的旧记录清理允许补单号后重新建有效运输。
+        // 普通人工作废记录不得被来源同步重新启用。
+        if (old != null && costId != null && !command.trackingNumbers().isEmpty()) {
+            var priorSource = json.readValue(old.get("latest_json").toString(), Command.class);
+            if (priorSource.trackingNumbers().isEmpty()) {
+                Integer archived =
+                        jdbc.queryForObject(
+                                "SELECT COUNT(*) FROM order_logistics_cost c WHERE c.tenant_id=?"
+                                    + " AND c.id=? AND c.status_code='VOID' AND c.amount IS NULL"
+                                    + " AND EXISTS(SELECT 1 FROM order_logistics_cost_audit h WHERE"
+                                    + " h.tenant_id=c.tenant_id AND h.entry_id=c.id AND"
+                                    + " h.action_code='VOID' AND"
+                                    + " h.reason='订货宝无快递单号旧记录清理：按2026-11-16确认规则作废') AND NOT"
+                                    + " EXISTS(SELECT 1 FROM order_logistics_cost_attachment a"
+                                    + " WHERE a.tenant_id=c.tenant_id AND a.entry_id=c.id AND"
+                                    + " a.deleted=0)",
+                                Integer.class,
+                                tenant,
+                                costId);
+                if (archived != null && archived == 1) costId = null;
+            }
+        }
         String issue = null;
         boolean difference = false;
         boolean shipped = Set.of("receivedin", "received").contains(command.sourceStatus());
         if (shipped && costId == null) {
             var matches = matches(tenant, command, transport.ledger().carrierCode());
             if (matches.size() > 1) issue = "同一快递单号对应多笔运输，请核对已有记录";
+            else if (matches.size() == 1 && order == null) issue = "同一快递单号已有运输记录，请核对后关联原销售单";
             else if (matches.size() == 1) {
                 var row =
                         costs.entry(
@@ -79,32 +111,34 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                 var codes = codes(row);
                 if (!codes.isEmpty() && !codes.contains(order.documentNo()))
                     issue = "同一快递单号已有其他业务关联，请核对是否同一运输";
-                else if (!codes.contains(order.documentNo()) && !"DRAFT".equals(row.statusCode()))
-                    issue = "匹配运输已确认或作废，请先核对原记录，不能自动变更关联";
+                else if (!codes.contains(order.documentNo()) && !"ACTIVE".equals(row.statusCode()))
+                    issue = "匹配运输已作废，请先核对原记录，不能自动变更关联";
                 else {
                     costId = row.id();
                     if (!codes.contains(order.documentNo()))
-                        linkPlatform(tenant, actor, row, order);
+                        linkPlatform(tenant, actor, row, order, transport);
                 }
             } else {
                 costId = UUID.randomUUID().toString();
                 var data = withRequest(transport, costId, null, transport.ledger());
                 var linked =
-                        data.ledger()
-                                .withSources(
-                                        List.of(
-                                                data.ledger()
-                                                        .sources()
-                                                        .getFirst()
-                                                        .withBusinessSnapshot(
-                                                                order.documentAmount(),
-                                                                order.documentDate(),
-                                                                Instant.now())));
+                        order == null
+                                ? data.ledger()
+                                : data.ledger()
+                                        .withSources(
+                                                List.of(
+                                                        data.ledger()
+                                                                .sources()
+                                                                .getFirst()
+                                                                .withBusinessSnapshot(
+                                                                        order.documentAmount(),
+                                                                        order.documentDate(),
+                                                                        Instant.now())));
                 data = data.withLedger(linked, null);
                 jdbc.update(
                         "INSERT INTO"
                             + " order_logistics_cost(id,tenant_id,document_no,request_id,category_code,title,type_code,transport_purpose_code,city_code,warehouse_id,source_warehouse_id,cost_date,amount,payment_status_code,status_code,data_json,sources_json,created_by,updated_by,source_system,carrier_code,delivery_mode_code,cost_month,origin_biz_key)"
-                            + " VALUES(?,?,?,?,'LOGISTICS',?,'DELIVERY','DELIVERY',?,?,?,?,NULL,'UNKNOWN','DRAFT',?,?,?,?,'DHB',?,?,?,?)",
+                            + " VALUES(?,?,?,?,'LOGISTICS',?,'DELIVERY','DELIVERY',?,?,?,?,NULL,'UNKNOWN','ACTIVE',?,?,?,?,'DHB',?,?,?,?)",
                         costId,
                         tenant,
                         "LC"
@@ -129,11 +163,18 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         }
         if (old != null
                 && !Objects.equals(
-                        ((Number) old.get("sales_order_id")).longValue(), command.salesOrderId())) {
+                        old.get("sales_order_id") == null
+                                ? null
+                                : ((Number) old.get("sales_order_id")).longValue(),
+                        command.salesOrderId())
+                && old.get("sales_order_id") != null
+                && command.salesOrderId() != null) {
             issue = "来源发货更换了销售订单，请核对原运输关联";
             shipped = false;
         }
-        if (costId != null && old != null) {
+        if (costId != null
+                && old != null
+                && !(command.salesOrderId() == null && old.get("sales_order_id") != null)) {
             var states =
                     jdbc.queryForList(
                             "SELECT status_code,revision,deleted,source_system,data_json FROM"
@@ -142,14 +183,14 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                             costId);
             if (!states.isEmpty()) {
                 var state = states.getFirst();
-                difference = !shipped || "CONFIRMED".equals(state.get("status_code"));
+                difference = !shipped || "VOID".equals(state.get("status_code"));
                 if (!shipped && issue == null)
                     issue =
                             "cancelled".equals(command.sourceStatus())
                                     ? "来源发货已取消，请核对运输记录"
                                     : "来源仍为待发货，请核对实际发货情况";
-                else if ("DRAFT".equals(state.get("status_code"))
-                        && ((Number) state.get("deleted")).intValue() == 0
+                else if ("ACTIVE".equals(state.get("status_code"))
+                        && !JdbcFlags.isSet(state.get("deleted"))
                         && "DHB".equals(state.get("source_system"))) {
                     var prior =
                             json.readValue(
@@ -157,8 +198,24 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                     // 新来源只更新收发货事实；人工补充的账单、付款、备注、凭证和费用分摊保留。
                     var nextLedger = transport.ledger();
                     var oldLedger = prior.ledger();
+                    boolean linkedNow =
+                            oldLedger.sources().isEmpty()
+                                    && !nextLedger.sources().isEmpty()
+                                    && order != null;
+                    var preservedSources =
+                            linkedNow
+                                    ? nextLedger.sources().stream()
+                                            .map(
+                                                    l ->
+                                                            l.withBusinessSnapshot(
+                                                                    order.documentAmount(),
+                                                                    order.documentDate(),
+                                                                    Instant.now()))
+                                            .toList()
+                                    : oldLedger.sources();
                     boolean factsChanged =
-                            !Objects.equals(prior.costDate(), transport.costDate())
+                            linkedNow
+                                    || !Objects.equals(prior.costDate(), transport.costDate())
                                     || !Objects.equals(
                                             oldLedger.carrierCode(), nextLedger.carrierCode())
                                     || !Objects.equals(
@@ -183,7 +240,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                                     nextLedger.sender(),
                                     nextLedger.receivingPoints(),
                                     oldLedger.feeItems(),
-                                    oldLedger.sources(),
+                                    preservedSources,
                                     oldLedger.nonSalesPurposeCode(),
                                     oldLedger.noTrackingReason(),
                                     oldLedger.noSourceReason(),
@@ -211,12 +268,17 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                                     prior.remark(),
                                     prior.reason(),
                                     nextLedger);
+                    if (linkedNow)
+                        data =
+                                com.rigour.order.application.service.cost.TransportAllocationPlan
+                                        .reprice(data, prior.amount());
                     if (factsChanged) {
                         jdbc.update(
                                 "UPDATE order_logistics_cost SET"
-                                    + " data_json=?,carrier_code=?,delivery_mode_code=?,cost_date=?,city_code=?,revision=revision+1,updated_by=?,updated_time=CURRENT_TIMESTAMP(6)"
+                                    + " data_json=?,sources_json=?,carrier_code=?,delivery_mode_code=?,cost_date=?,city_code=?,revision=revision+1,updated_by=?,updated_time=CURRENT_TIMESTAMP(6)"
                                     + " WHERE tenant_id=? AND id=?",
                                 json.writeValueAsString(data),
+                                json.writeValueAsString(data.ledger().sources()),
                                 nextLedger.carrierCode(),
                                 nextLedger.deliveryModeCode(),
                                 data.costDate(),
@@ -258,10 +320,15 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         else
             jdbc.update(
                     "UPDATE order_transport_shipment_source SET"
-                        + " source_shipment_no=?,sales_order_id=?,cost_id=?,latest_json=?,fingerprint=?,issue=?,difference_pending=?,updated_by=?,updated_time=CURRENT_TIMESTAMP(6)"
+                        + " source_shipment_id=?,source_shipment_no=?,sales_order_id=?,cost_id=?,latest_json=?,fingerprint=?,issue=?,difference_pending=?,updated_by=?,updated_time=CURRENT_TIMESTAMP(6)"
                         + " WHERE tenant_id=? AND id=?",
+                    old.get("source_shipment_id").equals(old.get("source_shipment_no"))
+                            ? command.shipmentId()
+                            : old.get("source_shipment_id"),
                     command.shipmentNo(),
-                    costId != null ? old.get("sales_order_id") : command.salesOrderId(),
+                    command.salesOrderId() != null
+                            ? command.salesOrderId()
+                            : old.get("sales_order_id"),
                     costId,
                     body,
                     fp,
@@ -304,7 +371,8 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
             String tenant,
             String actor,
             LogisticsCostDetailView row,
-            LogisticsCostSourceView order) {
+            LogisticsCostSourceView order,
+            LogisticsCostCommand shipment) {
         var p = platform.detail(tenant, row.id());
         if (p == null) throw bad("匹配运输未关联当前销售单，请核对后手工关联");
         var o = p.source().latestOrder() == null ? p.source().order() : p.source().latestOrder();
@@ -312,9 +380,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         var documents = new ArrayList<>(row.sources());
         documents.add(order);
         var codes = documents.stream().map(LogisticsCostSourceView::documentNo).distinct().toList();
-        platform.saveDraft(
-                tenant,
-                row.id(),
+        var draftToSave =
                 new Draft(
                         row.revision(),
                         "DELIVERY",
@@ -328,7 +394,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                         draft == null ? null : draft.senderPhone(),
                         draft == null ? null : draft.senderAddress(),
                         draft == null ? order.cityCode() : draft.cityCode(),
-                        o.facts() == null ? null : o.facts().billAmount(),
+                        row.data().amount(),
                         draft == null ? null : draft.ownerEmployeeCode(),
                         draft == null ? null : draft.remark(),
                         "订货宝原销售单自动关联",
@@ -336,9 +402,60 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                         codes,
                         row.data().requestId(),
                         row.data().paymentStatusCode(),
-                        List.of()),
-                documents,
-                actor);
+                        List.of());
+        // 同一货拉拉运输补上订货宝原单时，保存完整成本分摊，不退回仅有关系的中间状态。
+        var l = shipment.ledger();
+        var ledger =
+                new LogisticsCostLedger(
+                                2,
+                                "DELIVERY",
+                                "THIRD_PARTY",
+                                "HLL",
+                                row.data().costDate().toString().substring(0, 7),
+                                null,
+                                null,
+                                l.sender(),
+                                l.receivingPoints(),
+                                l.feeItems(),
+                                l.sources(),
+                                null,
+                                "实际无运单号",
+                                null,
+                                l.scopeWarehouseIds(),
+                                l.scopeCityCodes())
+                        .withPlatformOrderNo(o.orderNo());
+        var data = row.data();
+        var next =
+                new LogisticsCostCommand(
+                        data.requestId(),
+                        row.revision(),
+                        "销售订单配送",
+                        "DELIVERY",
+                        shipment.cityCode(),
+                        shipment.cityName(),
+                        data.departmentId(),
+                        data.ownerEmployeeCode(),
+                        data.costDate(),
+                        null,
+                        data.paymentStatusCode(),
+                        data.logistics(),
+                        data.remark(),
+                        "订货宝原销售单自动关联",
+                        ledger);
+        next =
+                com.rigour.order.application.service.cost.TransportAllocationPlan.reprice(
+                        next, data.amount());
+        costs.save(
+                tenant,
+                "LOGISTICS",
+                row.id(),
+                next,
+                List.of(),
+                row.warehouseName(),
+                row.ownerEmployeeName(),
+                actor,
+                "order:logistics-cost:read");
+        platform.saveAssociations(tenant, row.id(), draftToSave, documents, actor);
     }
 
     private List<String> codes(LogisticsCostDetailView row) {
@@ -413,7 +530,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                 Objects.toString(row.get("cost_id"), null),
                 json.readValue(row.get("latest_json").toString(), Command.class),
                 Objects.toString(row.get("issue"), null),
-                ((Number) row.get("difference_pending")).intValue() != 0);
+                JdbcFlags.isSet(row.get("difference_pending")));
     }
 
     private String fingerprint(String s) {

@@ -61,15 +61,15 @@ test("第三方必填公司和单号，自营不强制外部单号", () => {
         {},
     );
 });
-test("费用未知允许保存，确认前必须补金额", () => {
+test("费用未知允许保存，运输记录不再需要确认", () => {
     const result = saveManual(initialState(), draft);
     assert.equal(result.record.amount, null);
     assert.throws(
         () => transition(result.state, result.record.id, "确认"),
-        /补齐/,
+        /无需确认/,
     );
 });
-test("零费用必须说明，完整说明及凭证后可保存确认", () => {
+test("零费用必须说明，完整说明及凭证后保存生效", () => {
     assert.ok(manualFieldErrors({ ...draft, amount: 0 })["备注"]);
     const result = saveManual(initialState(), {
         ...draft,
@@ -77,8 +77,8 @@ test("零费用必须说明，完整说明及凭证后可保存确认", () => {
         remark: "客户承担，无我方额外支出",
     });
     assert.equal(
-        transition(result.state, result.record.id, "确认").records[0].status,
-        "已确认",
+        result.record.status,
+        "有效",
     );
 });
 test("空费用行和负合计拦截，优惠负数可参与合法合计", () => {

@@ -29,9 +29,29 @@ class CostLedgerPartitionsTest {
     }
 
     @Test
+    void unfinishedAndVoidedTransportCannotBlockRefreshWithIncompleteAllocations() {
+        var r =
+                row(
+                        "30",
+"""
+{"ledger":{"schemaVersion":2,"costMonth":"2026-11","feeItems":[{"feeKey":"F","ourAmount":30}]}}
+""");
+        r.put(
+                "sources_json",
+                "[{\"linkRoleCode\":\"COST\",\"allocations\":[{\"feeKey\":\"F\",\"amount\":30}]}]");
+        for (String status : List.of("DRAFT", "VOID", "ACTIVE")) {
+            r.put("status_code", status);
+            assertThat(CostLedgerPartitions.expand("ORDER", r, json)).containsExactly(r);
+        }
+        r.put("status_code", "CONFIRMED");
+        assertThatThrownBy(() -> CostLedgerPartitions.expand("ORDER", r, json))
+                .hasMessageContaining("分摊无效");
+    }
+
+    @Test
     void halfYearRentAndOneMonthOperationsAreNotMultipliedAndCountAsOneDocument() {
         var data =
-                """
+"""
 {"warehouseLedger":{"schemaVersion":2,"feeItems":[
 {"feeAmount":60000,"monthAllocations":[{"month":"2026-11","amount":10000},{"month":"2026-12","amount":10000},{"month":"2027-01","amount":10000},{"month":"2027-02","amount":10000},{"month":"2027-03","amount":10000},{"month":"2027-04","amount":10000}]},
 {"feeAmount":1000,"monthAllocations":[{"month":"2026-11","amount":1000}]}]}}
@@ -64,12 +84,12 @@ class CostLedgerPartitionsTest {
         var r =
                 row(
                         "300",
-                        """
+"""
 {"ledger":{"schemaVersion":2,"costMonth":"2026-11","feeItems":[{"feeKey":"F","ourAmount":300}]}}
 """);
         r.put(
                 "sources_json",
-                """
+"""
 [{"linkRoleCode":"COST","allocations":[{"feeKey":"F","cityCode":"C1","amount":100},{"feeKey":"F","cityCode":"C2","amount":200}]},{"linkRoleCode":"TRACE","allocations":[]}]
 """);
         var rows = CostLedgerPartitions.expand("ORDER", r, json);
@@ -85,7 +105,7 @@ class CostLedgerPartitionsTest {
         var r =
                 row(
                         "300.01",
-                        """
+"""
 {"ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","costMonth":"2026-11","feeItems":[{"feeKey":"F","feeTypeCode":"FREIGHT","ourAmount":300.01}]}}
 """);
         r.put("payer_code", "COMPANY");
@@ -93,7 +113,7 @@ class CostLedgerPartitionsTest {
         r.put("department_id", "999");
         r.put(
                 "sources_json",
-                """
+"""
 [{"linkRoleCode":"COST","employeeCode":"E1","employeeName":"张三","departmentId":10,"departmentName":"销售一部","allocations":[{"feeKey":"F","cityCode":"C1","amount":100.00}]},
  {"linkRoleCode":"COST","employeeCode":"E2","employeeName":"李四","departmentId":20,"departmentName":"销售二部","allocations":[{"feeKey":"F","cityCode":"C1","amount":200.01}]},
  {"linkRoleCode":"TRACE","employeeCode":"RECORDER","allocations":[]}]
@@ -123,7 +143,7 @@ class CostLedgerPartitionsTest {
         var r =
                 row(
                         null,
-                        """
+"""
 {"warehouseLedger":{"schemaVersion":2,"feeItems":[{"feeAmount":null,"monthAllocations":[{"month":"2026-11","amount":null}]}]}}
 """);
         assertThat(CostLedgerPartitions.expand("ERP", r, json).getFirst())
@@ -137,7 +157,7 @@ class CostLedgerPartitionsTest {
         var r =
                 row(
                         "310",
-                        """
+"""
 {"warehouseLedger":{"schemaVersion":2,"feeItems":[
   {"feeTypeCode":"RENT","feeAmount":300,"monthAllocations":[{"month":"2026-11","amount":150},{"month":"2026-12","amount":150}]},
   {"feeTypeCode":"ASSEMBLY_NEW","feeAmount":10,"monthAllocations":[{"month":"2026-11","amount":10}]}]}}
@@ -176,7 +196,7 @@ class CostLedgerPartitionsTest {
         r.put("payer_code", "COMPANY");
         r.put(
                 "sources_json",
-                """
+"""
 [{"linkRoleCode":"COST","allocations":[{"feeKey":"F1","cityCode":"C1","amount":100},{"feeKey":"F2","cityCode":"C1","amount":20}]},
  {"linkRoleCode":"COST","allocations":[{"feeKey":"F1","cityCode":"C2","amount":200}]},
  {"linkRoleCode":"TRACE","allocations":[]}]

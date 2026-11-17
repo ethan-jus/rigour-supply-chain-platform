@@ -151,7 +151,8 @@ class TransportSubmissionServiceTest {
                 .thenAnswer(
                         i -> {
                             if (i.getArgument(0) == null) {
-                                db.update("INSERT INTO cost VALUES('C1',1,'DRAFT',NULL,NULL,NULL)");
+                                db.update(
+                                        "INSERT INTO cost VALUES('C1',1,'ACTIVE',NULL,NULL,NULL)");
                                 db.update("INSERT INTO link VALUES('C1','SO1')");
                             } else db.update("UPDATE cost SET revision=revision+1 WHERE id='C1'");
                             return detail("C1");
@@ -421,14 +422,14 @@ class TransportSubmissionServiceTest {
                                         command(1, List.of(upload()), List.of()),
                                         List.of(content())))
                 .hasMessageContaining("记录已变化");
-        db.update("UPDATE cost SET status='CONFIRMED',revision=3");
+        db.update("UPDATE cost SET status='VOID',revision=3");
         assertThatThrownBy(
                         () ->
                                 service.save(
                                         "C1",
                                         command(3, List.of(upload()), List.of()),
                                         List.of(content())))
-                .hasMessageContaining("不是待确认");
+                .hasMessageContaining("不是有效记录");
         verify(storage, times(1)).upload(anyString(), anyString(), anyString(), any());
     }
 

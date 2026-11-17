@@ -193,6 +193,21 @@ class LogisticsLedgerReadPerformanceTest {
     }
 
     @Test
+    void unmappedSourceCustomerWithoutCityRetainsSnapshotWithoutUnscopedLookup() {
+        var original = row("DHB-PENDING", "WH");
+        var data = json.valueToTree(original.data());
+        ((tools.jackson.databind.node.ObjectNode) data.path("ledger").path("sender"))
+                .put("displayName", "来源发货方");
+        ((tools.jackson.databind.node.ObjectNode) data.path("ledger").path("receivingPoints").get(0))
+                .putNull("cityCode");
+        var command = json.treeToValue(data, LogisticsCostCommand.class);
+        var result = ledger.enrich(List.of(original.withData(command)), READ);
+        assertThat(result).hasSize(1);
+        assertThat(result.getFirst().data().ledger().receivingPoints().getFirst().cityCode()).isNull();
+        verifyNoInteractions(refs);
+    }
+
+    @Test
     void referencePermissionFailuresAreNotConvertedIntoCachedNames() {
         when(refs.ledgerParties("CUSTOMER", "CUS1", null, null, "WH", 0, READ))
                 .thenThrow(new AuthorizationDeniedException(READ));

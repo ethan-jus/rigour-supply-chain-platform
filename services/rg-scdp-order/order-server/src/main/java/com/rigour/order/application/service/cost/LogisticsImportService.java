@@ -214,8 +214,8 @@ public class LogisticsImportService {
         if ("API".equals(row.sourceChannel())) throw bad("平台账单只读，不能手动修改平台金额");
         if (row.revision() != command.revision()) throw bad("来源已变化，请刷新后核对");
         if (row.costId() != null
-                && !"DRAFT".equals(costs.entry("logistics", row.costId()).statusCode()))
-            throw bad("请先撤销已确认费用，再核对净费用");
+                && !"ACTIVE".equals(costs.entry("logistics", row.costId()).statusCode()))
+            throw bad("作废记录不能修改净费用");
         store.verifyBill(
                 t,
                 id,
@@ -244,7 +244,7 @@ public class LogisticsImportService {
                 || row.revision() != command.revision()) throw bad("来源信息已变化，请刷新");
         if (row.costId() != null) {
             var cost = costs.entry("logistics", row.costId());
-            if (!"DRAFT".equals(cost.statusCode())) throw bad("请先撤销已确认费用，再核对来源差异");
+            if (!"ACTIVE".equals(cost.statusCode())) throw bad("作废记录不能修改来源差异");
             var f = row.latestOrder().facts();
             var amount =
                     row.verification() != null
@@ -255,7 +255,7 @@ public class LogisticsImportService {
                     || amount == null
                     || cost.data().amount() == null
                     || amount.compareTo(cost.data().amount()) != 0)
-                throw bad("请先将待确认费用核对为最新净账单金额，再接受来源变更");
+                throw bad("请先将有效运输记录核对为最新净账单金额，再接受来源变更");
         }
         store.accept(t, id, command.revision(), actor(), command.reason().strip());
         return store.lockManaged(t, actor(), true, id);

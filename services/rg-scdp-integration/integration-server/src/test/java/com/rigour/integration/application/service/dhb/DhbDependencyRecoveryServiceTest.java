@@ -53,7 +53,7 @@ class DhbDependencyRecoveryServiceTest {
                         Set.of("integration:dhb:write")));
         when(lease.execute(eq(tenant), eq(connector), anyString(), any()))
                 .thenAnswer(c -> ((Supplier<?>) c.getArgument(3)).get());
-        when(store.openException(tenant, "SALES_SHIPMENT", "FH001"))
+        when(store.openException(tenant, connector, "SALES_SHIPMENT", "FH001"))
                 .thenReturn(
                         read(
                                 DhbSyncExceptionView.class,
@@ -75,7 +75,7 @@ class DhbDependencyRecoveryServiceTest {
                                         runId.toString(),
                                         "connectorId",
                                         connector.toString())));
-        when(store.openReconciliation(tenant, "SALES_SHIPMENT", "FH001"))
+        when(store.openReconciliation(tenant, runId, "SALES_SHIPMENT", "FH001"))
                 .thenReturn(
                         read(
                                 DhbSyncReconciliationCaseView.class,
@@ -184,6 +184,22 @@ class DhbDependencyRecoveryServiceTest {
                                 null));
         assertThatThrownBy(() -> service.link(command("CUS1"))).hasMessageContaining("关联其他");
         verify(mappings, never()).upsertExternalObjectMapping(any(), any(), any());
+    }
+
+    @Test
+    void saveReadsEvidenceOnlyFromTheChosenConnectionsOriginalRun() {
+        service.link(command("CUS1"));
+        verify(store).openException(tenant, connector, "SALES_SHIPMENT", "FH001");
+        verify(store).openReconciliation(tenant, runId, "SALES_SHIPMENT", "FH001");
+        verify(store, never()).syncExceptions(any(), anyString(), anyInt());
+        verify(store, never()).syncReconciliationCases(any(), anyString(), anyString(), anyInt());
+    }
+
+    @Test
+    void missingEvidenceCannotWriteFromClientSuppliedRequirement() {
+        when(store.openReconciliation(tenant, runId, "SALES_SHIPMENT", "FH001")).thenReturn(null);
+        assertThatThrownBy(() -> service.link(command("CUS1"))).hasMessageContaining("不能直接改绑");
+        verifyNoInteractions(targets, mappings);
     }
 
     @Test

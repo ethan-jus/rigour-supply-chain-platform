@@ -48,6 +48,10 @@ public class LogisticsCostFilterTest {
                                 "")
                         .replace(" JSON ", " LONGTEXT ");
         jdbc.execute(ddl);
+        jdbc.execute("ALTER TABLE order_logistics_cost DROP CONSTRAINT ck_cost_status");
+        jdbc.execute(
+                "ALTER TABLE order_logistics_cost ADD CONSTRAINT ck_cost_status CHECK(status_code"
+                        + " IN ('ACTIVE','VOID'))");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN deleted INT NOT NULL DEFAULT 0");
 
         for (String name : List.of("extract", "unquote", "search")) {
@@ -65,8 +69,12 @@ public class LogisticsCostFilterTest {
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN source_system VARCHAR(20)");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN tracking_no VARCHAR(100)");
         jdbc.execute(
-                "CREATE TABLE order_logistics_import_order(id VARCHAR(50) PRIMARY KEY,"
-                        + " tenant_id VARCHAR(50),cost_id VARCHAR(50),source_json LONGTEXT,latest_source_json LONGTEXT)");
+                "CREATE TABLE order_logistics_import_order(id VARCHAR(50) PRIMARY KEY, tenant_id"
+                        + " VARCHAR(50),cost_id VARCHAR(50),source_json LONGTEXT,latest_source_json"
+                        + " LONGTEXT)");
+        jdbc.execute(
+                "CREATE TABLE order_transport_shipment_source(tenant_id VARCHAR(50),cost_id"
+                        + " VARCHAR(50),latest_json LONGTEXT)");
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(OrderLogisticsCostMapper.class);
@@ -102,7 +110,8 @@ public class LogisticsCostFilterTest {
         jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");
         jdbc.update("UPDATE order_logistics_cost SET created_time='2026-11-12 12:00:00'");
         jdbc.update(
-                "UPDATE order_logistics_cost SET created_time='2026-11-12 13:00:00' WHERE id='early'");
+                "UPDATE order_logistics_cost SET created_time='2026-11-12 13:00:00' WHERE"
+                        + " id='early'");
         jdbc.update(
                 "INSERT INTO order_logistics_import_order VALUES('early','T1','early',?,NULL)",
                 "{\"raw\":{\"下单时间\":\"2026-10-01 10:00:00\"},\"useTime\":\"2026-11-20 10:00:00\"}");
@@ -129,28 +138,58 @@ public class LogisticsCostFilterTest {
     }
 
     @Test
-    void recordsMissingPlatformOrderTimeUseCreatedTimeThenIdAcrossPages() {
+    void manualShipmentDateOverridesBackfillCreationTimeAcrossPages() {
         insert("aaa-new", "T1", "NEW-ARRIVAL", 7L);
         insert("zzz-old", "T1", "OLDER-ARRIVAL", 7L);
         insert("zzz-backfill", "T1", "HISTORICAL-BACKFILL", 7L);
         jdbc.update("UPDATE order_logistics_cost SET created_time='2026-11-11 10:00:00'");
         jdbc.update(
-                "UPDATE order_logistics_cost SET created_time='2026-11-12 09:49:00' WHERE id='aaa-new'");
+                "UPDATE order_logistics_cost SET created_time='2026-11-12 09:49:00' WHERE"
+                        + " id='aaa-new'");
         jdbc.update(
-                "UPDATE order_logistics_cost SET cost_date='2026-09-30',created_time='2026-11-12 10:00:00' WHERE id='zzz-backfill'");
+                "UPDATE order_logistics_cost SET cost_date='2026-09-30',created_time='2026-11-12"
+                        + " 10:00:00' WHERE id='zzz-backfill'");
         jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");
         var first = JSON.readValue("{\"begin\":0,\"step\":1}", LogisticsCostQuery.class);
         var second = JSON.readValue("{\"begin\":1,\"step\":1}", LogisticsCostQuery.class);
         assertThat(store.entries("T1", "LOGISTICS", first, "cost:read").items())
                 .extracting(r -> r.id())
-                .containsExactly("zzz-backfill");
+                .containsExactly("aaa-new");
         assertThat(store.entries("T1", "LOGISTICS", second, "cost:read").items())
                 .extracting(r -> r.id())
-                .containsExactly("aaa-new");
+                .containsExactly("zzz-old");
         var all = JSON.readValue("{\"begin\":0,\"step\":20}", LogisticsCostQuery.class);
         assertThat(store.entries("T1", "LOGISTICS", all, "cost:read").items())
                 .extracting(r -> r.id())
-                .containsExactly("zzz-backfill", "aaa-new", "zzz-old", "good");
+                .containsExactly("aaa-new", "zzz-old", "good", "zzz-backfill");
+    }
+
+    @Test
+    void dhbShipmentInstantUsesBusinessTimeZoneAndEarliestDepartureOfTheSameTransport() {
+        insert("dhb", "T1", "DHB", 7L);
+        insert("manual", "T1", "MANUAL", 7L);
+        jdbc.update(
+                "UPDATE order_logistics_cost SET"
+                        + " source_warehouse_id=warehouse_id,cost_date='2026-11-16'");
+        jdbc.update(
+                "INSERT INTO order_transport_shipment_source"
+                        + " VALUES('T1','dhb',?),('T1','dhb',?),('T2','manual',?)",
+                "{\"shipTime\":\"2026-11-15T17:00:00Z\"}",
+                "{\"shipTime\":\"2026-11-16T06:00:00Z\"}",
+                "{\"shipTime\":\"2027-01-01T00:00:00Z\"}");
+        var q = JSON.readValue("{\"begin\":0,\"step\":20}", LogisticsCostQuery.class);
+        assertThat(store.entries("T1", "LOGISTICS", q, "cost:read").items())
+                .extracting(r -> r.id())
+                .containsExactly("dhb", "manual", "good");
+        assertThat(
+                        jdbc.queryForObject(
+                                        "SELECT "
+                                                + MybatisPlusOrderLogisticsCostRepository
+                                                        .transportTimeSql()
+                                                + " FROM order_logistics_cost WHERE id='dhb'",
+                                        java.sql.Timestamp.class)
+                                .toLocalDateTime())
+                .isEqualTo(java.time.LocalDateTime.of(2026, 11, 16, 1, 0));
     }
 
     @Test
@@ -219,7 +258,7 @@ public class LogisticsCostFilterTest {
         jdbc.update(
                 "INSERT INTO"
                     + " order_logistics_cost(id,tenant_id,request_id,document_no,title,type_code,city_code,cost_date,amount,payment_status_code,status_code,data_json,created_by,updated_by,category_code,warehouse_id,sources_json)"
-                    + " VALUES(?,?,?,?,'差旅住宿','TRAVEL','CITY','2026-10-01',100,'PAID','CONFIRMED',?,'U','U','LOGISTICS',?,"
+                    + " VALUES(?,?,?,?,'差旅住宿','TRAVEL','CITY','2026-10-01',100,'PAID','ACTIVE',?,'U','U','LOGISTICS',?,"
                     + " '[{\"documentNo\":\"SRC-A\",\"senderName\":\"SENDER-ONLY\"}]')",
                 id,
                 tenant,
@@ -270,7 +309,7 @@ public class LogisticsCostFilterTest {
         insert("notmine", "T1", "NOTMINE", null);
         jdbc.update("UPDATE order_logistics_cost SET created_by='ANOTHER' WHERE id='notmine'");
         jdbc.update(
-                "UPDATE order_logistics_cost SET amount=NULL,status_code='DRAFT' WHERE"
+                "UPDATE order_logistics_cost SET amount=NULL,status_code='ACTIVE' WHERE"
                         + " id='manual'");
         var result =
                 store.entries(

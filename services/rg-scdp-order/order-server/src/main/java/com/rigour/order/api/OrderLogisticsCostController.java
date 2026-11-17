@@ -45,12 +45,12 @@ public final class OrderLogisticsCostController implements OrderLogisticsCostApi
 
     @Override
     public ApiResponse<LogisticsCostDetailView> create(LogisticsCostCommand command) {
-        return ApiResponse.success(service.save("logistics", null, command));
+        return ApiResponse.success(service.saveApi(null, command));
     }
 
     @Override
     public ApiResponse<LogisticsCostDetailView> update(String id, LogisticsCostCommand command) {
-        return ApiResponse.success(service.save("logistics", id, command));
+        return ApiResponse.success(service.saveApi(id, command));
     }
 
     @Override

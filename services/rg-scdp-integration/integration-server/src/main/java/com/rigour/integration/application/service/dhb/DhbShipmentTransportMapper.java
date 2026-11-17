@@ -29,22 +29,29 @@ final class DhbShipmentTransportMapper {
         var detail = map(payload.get("detail"));
         var list = map(payload.get("list"));
         var address = map(detail.get("address"));
-        Object rawTracking =
-                detail.containsKey("express_num")
-                        ? detail.get("express_num")
-                        : list.get("express_num");
-        var tracking = new LinkedHashSet<String>();
-        collectTracking(rawTracking, tracking);
+        var tracking = trackingNumbers(payload, summary);
         var receiver =
                 new LogisticsCostLedger.Party(
                         "TO0",
                         "CUSTOMER",
                         shipment.customerCode(),
-                        first(address, "company", "company_name", "client_name", "name"),
-                        first(address, "company", "company_name", "client_name", "name"),
-                        first(address, "contact", "contact_name", "linkman"),
-                        first(address, "mobile", "phone", "telephone"),
-                        first(address, "address", "detail_address"),
+                        first(
+                                address,
+                                "consignee",
+                                "company",
+                                "company_name",
+                                "client_name",
+                                "name"),
+                        first(
+                                address,
+                                "consignee",
+                                "company",
+                                "company_name",
+                                "client_name",
+                                "name"),
+                        first(address, "consignee_contact", "contact", "contact_name", "linkman"),
+                        first(address, "consignee_phone", "mobile", "phone", "telephone"),
+                        first(address, "consignee_address", "address", "detail_address"),
                         shipment.cityCode());
         String status = first(detail, "status");
         if (status == null) status = summary == null ? first(list, "status") : summary.status();
@@ -91,6 +98,24 @@ final class DhbShipmentTransportMapper {
         return value;
     }
 
+    static List<String> trackingNumbers(Map<String, Object> payload) {
+        return trackingNumbers(payload, null);
+    }
+
+    static List<String> trackingNumbers(Map<String, Object> payload, Shipment summary) {
+        var detail = map(payload.get("detail"));
+        var list = map(payload.get("list"));
+        var result = new LinkedHashSet<String>();
+        collectTracking(
+                detail.containsKey("express_num")
+                        ? detail.get("express_num")
+                        : list.containsKey("express_num")
+                                ? list.get("express_num")
+                                : summary == null ? null : summary.trackingNumber(),
+                result);
+        return List.copyOf(result);
+    }
+
     private static void collectTracking(Object value, Set<String> result) {
         if (value instanceof List<?> values) values.forEach(v -> collectTracking(v, result));
         else if (value instanceof Map<?, ?> values) {
@@ -99,7 +124,8 @@ final class DhbShipmentTransportMapper {
                     collectTracking(values.get(key), result);
                     return;
                 }
-        } else if (value instanceof String text && !text.isBlank()) result.add(text.strip());
+        } else if (value instanceof String text && !text.isBlank())
+            for (String no : text.split("[,，;；\\r\\n]+")) if (!no.isBlank()) result.add(no.strip());
         // 数值编号可能已经丢失前导0，保留原文但不作为去重匹配键。
     }
 

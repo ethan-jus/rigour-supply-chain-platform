@@ -31,7 +31,6 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -323,13 +322,23 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         + " IS NOT NULL)",
                     "%" + value + "%");
         }
+        if (!text(filter.statusCode())) q.eq("status_code", "ACTIVE");
+        if ("COMPLETE".equals(filter.statusCode()) || "INCOMPLETE".equals(filter.statusCode()))
+            q.eq("status_code", "ACTIVE")
+                    .apply(
+                            ("INCOMPLETE".equals(filter.statusCode()) ? "NOT " : "")
+                                    + completeBusinessSql());
         q.in("OTHER".equals(filter.typeCode()), "type_code", List.of("OTHER", "NON_SALES"))
                 .eq(
                         text(filter.typeCode()) && !"OTHER".equals(filter.typeCode()),
                         "type_code",
                         filter.typeCode())
                 .eq(text(filter.cityCode()), "city_code", filter.cityCode())
-                .eq(text(filter.statusCode()), "status_code", filter.statusCode())
+                .eq(
+                        text(filter.statusCode())
+                                && !List.of("COMPLETE", "INCOMPLETE").contains(filter.statusCode()),
+                        "status_code",
+                        filter.statusCode())
                 .eq(
                         text(filter.paymentStatusCode()),
                         "payment_status_code",
@@ -344,6 +353,88 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         return q;
     }
 
+    /** 资料完整状态与生命周期独立；金额是否已知与自动同步人工保护仍沿用原规则。 */
+    static String completeBusinessSql() {
+        String links =
+                "JSON_TABLE(COALESCE(sources_json,'[]'),'$[*]' COLUMNS(order_code VARCHAR(100) PATH"
+                    + " '$.orderCode', document_no VARCHAR(100) PATH '$.documentNo',role_code"
+                    + " VARCHAR(20) PATH '$.linkRoleCode', employee_code VARCHAR(64) PATH"
+                    + " '$.employeeCode',department_id VARCHAR(64) PATH '$.departmentId')) links";
+        String relevant = "(links.role_code IS NULL OR links.role_code='COST')";
+        return "(amount IS NOT NULL AND EXISTS(SELECT 1 FROM "
+                + links
+                + " WHERE "
+                + relevant
+                + " AND COALESCE(NULLIF(links.order_code,''),NULLIF(links.document_no,'')) IS NOT"
+                + " NULL) AND NOT EXISTS(SELECT 1 FROM "
+                + links
+                + " WHERE "
+                + relevant
+                + " AND (NULLIF(links.employee_code,'') IS NULL OR NULLIF(links.department_id,'')"
+                + " IS NULL)) AND (EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
+                + " i.tenant_id=order_logistics_cost.tenant_id AND"
+                + " i.cost_id=order_logistics_cost.id AND i.source_channel='API') OR EXISTS(SELECT"
+                + " 1 FROM order_transport_shipment_source s WHERE"
+                + " s.tenant_id=order_logistics_cost.tenant_id AND"
+                + " s.cost_id=order_logistics_cost.id) OR EXISTS(SELECT 1 FROM"
+                + " order_logistics_cost_attachment a WHERE"
+                + " a.tenant_id=order_logistics_cost.tenant_id AND"
+                + " a.entry_id=order_logistics_cost.id AND a.deleted=0)))";
+    }
+
+    @Override
+    public java.util.Map<String, String> businessStatuses(
+            String tenant, List<String> ids, String action) {
+        if (ids.isEmpty()) return java.util.Map.of();
+        var result = new java.util.HashMap<String, String>();
+        for (var r :
+                mapper.selectMaps(
+                        where(tenant, "LOGISTICS", action)
+                                .in("id", ids)
+                                .select(
+                                        "id",
+                                        "CASE WHEN status_code='VOID' THEN 'VOID' WHEN "
+                                                + completeBusinessSql()
+                                                + " THEN 'COMPLETE' ELSE 'INCOMPLETE' END"
+                                                + " business_status")))
+            result.put(r.get("id").toString(), r.get("business_status").toString());
+        return result;
+    }
+
+    @Override
+    public List<LogisticsCostDetailView> trackingCandidates(
+            String tenant, List<String> numbers, String carrierCode, String action) {
+        if (numbers.isEmpty()) return List.of();
+        if (numbers.size() > 500) throw bad("一次最多匹配500个快递单号");
+        String encoded = json.writeValueAsString(numbers);
+        var q = where(tenant, "LOGISTICS", action).eq("status_code", "ACTIVE");
+        if (text(carrierCode)) q.eq("carrier_code", carrierCode);
+        q.and(
+                w ->
+                        w.in("tracking_no", numbers)
+                                .or()
+                                .in(
+                                        "JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo'))",
+                                        numbers)
+                                .or()
+                                .apply(
+                                        "EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
+                                            + " i.tenant_id=order_logistics_cost.tenant_id AND"
+                                            + " i.cost_id=order_logistics_cost.id AND"
+                                            + " JSON_CONTAINS({0},JSON_QUOTE(i.carrier_order_no)))",
+                                        encoded)
+                                .or()
+                                .apply(
+                                        "EXISTS(SELECT 1 FROM order_transport_shipment_source s"
+                                            + " WHERE s.tenant_id=order_logistics_cost.tenant_id"
+                                            + " AND s.cost_id=order_logistics_cost.id AND"
+                                            + " JSON_OVERLAPS(JSON_EXTRACT(s.latest_json,'$.trackingNumbers'),{0}))",
+                                        encoded));
+        var rows = mapper.selectList(q.last("LIMIT 2001"));
+        if (rows.size() > 2000) throw bad("匹配结果过多，请按物流公司或拆分文件后导入");
+        return rows.stream().map(this::view).toList();
+    }
+
     @Transactional(readOnly = true)
     public LogisticsCostPageView entries(
             String tenant, String category, LogisticsCostQuery filter, String action) {
@@ -352,21 +443,23 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                 query(tenant, category, filter, action)
                                         .select(
                                                 "COUNT(*) total",
-                                                "COALESCE(SUM(CASE WHEN status_code='CONFIRMED'"
+                                                "COALESCE(SUM(CASE WHEN status_code='ACTIVE'"
                                                         + " THEN amount ELSE 0"
                                                         + " END),0) confirmed",
-                                                "COALESCE(SUM(CASE WHEN status_code='CONFIRMED' AND"
+                                                "COALESCE(SUM(CASE WHEN status_code='ACTIVE' AND"
                                                     + " payer_code='COMPANY' AND"
                                                     + " payment_status_code='PAID' THEN amount ELSE"
                                                     + " 0 END),0) paid",
-                                                "COALESCE(SUM(status_code='DRAFT'),0) pending",
+                                                "COALESCE(SUM(status_code='ACTIVE' AND amount IS"
+                                                        + " NULL),0) pending",
                                                 "COALESCE(SUM(CASE WHEN status_code<>'VOID' THEN"
                                                         + " amount ELSE 0 END),0) registered",
                                                 "COALESCE(SUM(status_code<>'VOID' AND amount IS"
                                                         + " NULL),0) missing",
-                                                "COALESCE(SUM(CASE WHEN status_code='DRAFT' THEN"
-                                                        + " amount ELSE 0 END),0) pending_amount",
-                                                "COALESCE(SUM(status_code='CONFIRMED' AND amount=0"
+                                                "COALESCE(SUM(CASE WHEN status_code='ACTIVE' AND"
+                                                    + " amount IS NULL THEN amount ELSE 0 END),0)"
+                                                    + " pending_amount",
+                                                "COALESCE(SUM(status_code='ACTIVE' AND amount=0"
                                                         + " AND payer_code IN"
                                                         + " ('SUPPLIER','CUSTOMER','OTHER')),0)"
                                                         + " third_party"))
@@ -375,16 +468,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                 mapper
                         .selectList(
                                 query(tenant, category, filter, action)
-                                        // 自动记录复用来源主键，用主键查询平台下单时间，避免逐行扫描来源表。
-                                        // 缺少实际下单时间的记录排在后面，再按录入时间及 ID 稳定排序。
-                                        .orderByDesc(
-                                                "COALESCE((SELECT JSON_UNQUOTE(JSON_EXTRACT("
-                                                    + "COALESCE(i.latest_source_json,i.source_json),'$.raw.\"下单时间\"'))"
-                                                    + " FROM order_logistics_import_order i WHERE"
-                                                    + " i.id=order_logistics_cost.id AND"
-                                                    + " i.cost_id=order_logistics_cost.id AND"
-                                                    + " i.tenant_id=order_logistics_cost.tenant_id"
-                                                    + " LIMIT 1), '')")
+                                        // 平台下单时间／订货宝实际发货时间／手工发货日期，统一在分页前排序。
+                                        .orderByDesc(transportTimeSql())
                                         .orderByDesc("created_time", "id")
                                         .last(
                                                 "LIMIT "
@@ -406,6 +491,34 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                 ((Number) totals.get("missing")).longValue(),
                 new BigDecimal(totals.get("pending_amount").toString()),
                 ((Number) totals.get("third_party")).longValue());
+    }
+
+    static String transportTimeSql() {
+        String placed =
+                "JSON_UNQUOTE(JSON_EXTRACT(COALESCE(i.latest_source_json,i.source_json),'$.raw.\"下单时间\"'))";
+        String shipped = "JSON_UNQUOTE(JSON_EXTRACT(s.latest_json,'$.shipTime'))";
+        // 先明确判断长度再转换；真实 MySQL 对照中，CAST 内嵌套 NULLIF 会误将有效时间变为 NULL。
+        return "COALESCE((SELECT "
+                + sqlDateTime(placed)
+                + " FROM order_logistics_import_order i WHERE i.id=order_logistics_cost.id AND"
+                + " i.cost_id=order_logistics_cost.id AND"
+                + " i.tenant_id=order_logistics_cost.tenant_id LIMIT 1),(SELECT"
+                + " MIN(TIMESTAMPADD(HOUR,8,"
+                + sqlDateTime(shipped)
+                + ")) FROM order_transport_shipment_source s WHERE"
+                + " s.tenant_id=order_logistics_cost.tenant_id AND"
+                + " s.cost_id=order_logistics_cost.id),CASE WHEN source_system='HUOLALA' THEN NULL"
+                + " ELSE COALESCE("
+                + sqlDateTime("JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.shippingTime'))")
+                + ",CAST(cost_date AS DATETIME)) END)";
+    }
+
+    private static String sqlDateTime(String value) {
+        return "CASE WHEN CHAR_LENGTH("
+                + value
+                + ")>=19 THEN CAST(REPLACE(SUBSTRING("
+                + value
+                + ",1,19),'T',' ') AS DATETIME) ELSE NULL END";
     }
 
     public LogisticsCostDetailView entry(String tenant, String category, String id, String action) {
@@ -563,6 +676,13 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         .set("owner_employee_name", employeeName)
                         .set("updated_by", actor)
                         .set("updated_time", LocalDateTime.now(ZoneOffset.UTC));
+        // 人工更改金额或采用自定义分摊后，来源同步不得重算该成本。
+        if (old == null
+                || !sameAmount(old.data().amount(), c.amount())
+                || c.ledger() != null
+                        && c.ledger().feeItems().stream()
+                                .anyMatch(f -> "MANUAL".equals(f.allocationMethodCode())))
+            values.set("amount_manually_edited", true);
         if (id == null) {
             if (previous != null) {
                 if (!body(old.data()).equals(body)
@@ -579,6 +699,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             row.setRequestId(c.requestId());
             row.setCategoryCode(category);
             row.setSourceSystem(sourceSystem(c, sources));
+            row.setStatusCode("ACTIVE");
             row.setTitle(c.title());
             row.setTypeCode(ledger ? c.ledger().transportPurposeCode() : c.logistics().legCode());
             row.setCityCode(c.cityCode());
@@ -600,7 +721,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             row.setCreatedBy(actor);
             row.setUpdatedBy(actor);
             mapper.insert(row);
-            if (ledger) mapper.update(null, values.eq("tenant_id", tenant).eq("id", row.getId()));
+            mapper.update(null, values.eq("tenant_id", tenant).eq("id", row.getId()));
             var saved = entry(tenant, category, row.getId(), action);
             audit(tenant, saved, "CREATE", actor, c.reason());
             return saved;
@@ -634,8 +755,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                 .eq("id", id)
                                 .eq("revision", c.revision())
                                 .eq("deleted", 0)
-                                .eq("status_code", "DRAFT")
-                                .set("status_code", "DRAFT")
+                                .eq("status_code", "ACTIVE")
+                                .set("status_code", "ACTIVE")
                                 .setSql("revision=revision+1"))
                 != 1) throw conflict("费用已被修改，请刷新后重试");
         if (!"order:logistics-cost:confirm".equals(action))
@@ -656,76 +777,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             String action) {
         lock(tenant);
         var old = entry(tenant, category, id, action);
-        boolean confirm = action.endsWith(":confirm");
-        if (confirm) {
-            var sources = mapper.lockCarrierSource(tenant, id);
-            if (sources != null)
-                for (var source : sources) {
-                    var carrier =
-                            json.readValue(
-                                    source.get("source_json").toString(),
-                                    com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder
-                                            .class);
-                    if (((Number) source.get("source_difference")).intValue() != 0)
-                        throw conflict("货拉拉来源账单已变化，请先核对来源差异");
-                    var verification =
-                            source.get("bill_verification_json") == null
-                                    ? null
-                                    : json.readValue(
-                                            source.get("bill_verification_json").toString(),
-                                            com.rigour.order.api.v1.model.LogisticsImportModels
-                                                    .BillVerification.class);
-                    if (carrier.facts() == null && verification == null) continue;
-                    var amount =
-                            verification == null
-                                    ? carrier.facts().billAmount()
-                                    : verification.amount();
-                    if (verification == null
-                                    && !"FINAL".equals(carrier.facts().billState())
-                                    && (c.reason() == null || c.reason().isBlank())
-                            || amount == null
-                            || old.data().amount() == null
-                            || amount.compareTo(
-                                            carrier.facts() != null
-                                                            && verification == null
-                                                            && old.data().ledger() != null
-                                                            && old.data().ledger().feeItems()
-                                                                    != null
-                                                            && !old.data()
-                                                                    .ledger()
-                                                                    .feeItems()
-                                                                    .isEmpty()
-                                                    ? old.data().ledger().feeItems().stream()
-                                                            .map(
-                                                                    f ->
-                                                                            f.feeAmount() == null
-                                                                                    ? java.math
-                                                                                            .BigDecimal
-                                                                                            .ZERO
-                                                                                    : f.feeAmount())
-                                                            .reduce(
-                                                                    java.math.BigDecimal.ZERO,
-                                                                    java.math.BigDecimal::add)
-                                                    : old.data().amount())
-                                    != 0
-                            || old.data().ledger() == null
-                            || !carrier.orderNo().equals(old.data().ledger().platformOrderNo())
-                            || !"HLL".equals(old.data().ledger().carrierCode()))
-                        throw conflict("运输费用、货拉拉单号及已核对净账单不一致，请重新编辑后确认");
-                }
-        }
-        if (confirm
-                && old.data().ledger() == null
-                && old.data().logistics().sourceIds() != null
-                && !old.data().logistics().sourceIds().isEmpty()) {
-            var transport = old.data().logistics();
-            var current = sources(tenant, transport.legCode(), "", transport.sourceIds(), action);
-            if (current.size() != old.sources().size()
-                    || !new HashSet<>(current).equals(new HashSet<>(old.sources())))
-                throw conflict("来源单据已变更或无权限，请重新编辑费用后确认");
-        }
-        transitionRule(
-                old.statusCode(), confirm ? "CONFIRM" : "VOID", old.data().amount(), c.reason());
+        if (action.endsWith(":confirm")) throw bad("运输记录保存即生效，无需确认");
+        transitionRule(old.statusCode(), "VOID", old.data().amount(), c.reason());
         if (mapper.update(
                         null,
                         new UpdateWrapper<OrderLogisticsCostEntity>()
@@ -733,13 +786,13 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                 .eq("id", id)
                                 .eq("revision", c.revision())
                                 .eq("status_code", old.statusCode())
-                                .set("status_code", confirm ? "CONFIRMED" : "VOID")
+                                .set("status_code", "VOID")
                                 .setSql("revision=revision+1")
                                 .set("updated_by", actor)
                                 .set("updated_time", LocalDateTime.now(ZoneOffset.UTC)))
                 != 1) throw conflict("费用已修改，请刷新");
         var saved = entry(tenant, category, id, action);
-        audit(tenant, saved, confirm ? "CONFIRM" : "VOID", actor, c.reason());
+        audit(tenant, saved, "VOID", actor, c.reason());
         return saved;
     }
 
@@ -754,7 +807,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             boolean delete) {
         lock(tenant);
         var old = entry(tenant, category, id, permission);
-        String operation = delete ? "DELETE" : "REVOKE";
+        if (!delete) throw bad("运输记录保存即生效，无需撤销确认");
+        String operation = "DELETE";
         transitionRule(old.statusCode(), operation, old.data().amount(), command.reason());
         var update =
                 new UpdateWrapper<OrderLogisticsCostEntity>()
@@ -767,7 +821,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         .set("updated_time", LocalDateTime.now(ZoneOffset.UTC))
                         .setSql("revision=revision+1");
         if (delete) update.set("deleted", 1);
-        else update.set("status_code", "DRAFT");
+        else throw bad("运输记录不支持撤销确认");
         if (mapper.update(null, update) != 1) throw conflict("费用已变化，请刷新后重试");
         // 删除前已按完整数据范围授权；保留删除后的版本快照及附件供追溯。
         var saved =
@@ -894,11 +948,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         var tree = (tools.jackson.databind.node.ObjectNode) json.valueToTree(c);
         var plan = (tools.jackson.databind.node.ObjectNode) tree.get("ledger");
         plan.remove("sources");
-        if (plan.get("sender") instanceof tools.jackson.databind.node.ObjectNode sender)
-            sender.remove("displayName");
-        for (var point : plan.path("receivingPoints"))
-            if (point instanceof tools.jackson.databind.node.ObjectNode row)
-                row.remove("displayName");
+        // 保存入口已按租户及操作权限解析收发方，保留服务端核实的名称快照。
+        // 删除快照会让每次详情、附件校验和保存回执再次逐点请求 CRM。
         return json.writeValueAsString(tree);
     }
 
@@ -951,6 +1002,10 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             if (c == '?') result.append('{').append(index++).append('}');
             else result.append(c);
         q.apply(result.toString(), args.toArray());
+    }
+
+    private static boolean sameAmount(BigDecimal a, BigDecimal b) {
+        return a == null ? b == null : b != null && a.compareTo(b) == 0;
     }
 
     private static String ledgerPayer(LogisticsCostCommand c) {

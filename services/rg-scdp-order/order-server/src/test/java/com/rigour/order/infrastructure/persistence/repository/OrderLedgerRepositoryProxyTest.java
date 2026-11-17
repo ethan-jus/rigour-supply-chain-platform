@@ -31,8 +31,8 @@ class OrderLedgerRepositoryProxyTest {
         var jdbc = mock(JdbcTemplate.class);
         when(jdbc.queryForObject(
                         "SELECT COUNT(*) FROM order_logistics_cost WHERE tenant_id=? AND"
-                                + " carrier_code='HLL' AND"
-                                + " JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo'))=?",
+                            + " carrier_code='HLL' AND"
+                            + " JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo'))=?",
                         Long.class,
                         "T1",
                         "HL000001"))
@@ -48,6 +48,15 @@ class OrderLedgerRepositoryProxyTest {
                         })
                 .withBean(JdbcTemplate.class, () -> jdbc)
                 .withBean(ObjectMapper.class, () -> JsonMapper.builder().build())
+                .withBean(
+                        com.rigour.order.application.port.out.PlatformTransportStore.class,
+                        () ->
+                                mock(
+                                        com.rigour.order.application.port.out.PlatformTransportStore
+                                                .class))
+                .withBean(
+                        com.rigour.order.application.port.out.CostAttachmentStore.class,
+                        () -> mock(com.rigour.order.application.port.out.CostAttachmentStore.class))
                 .withBean(
                         DataSourceTransactionManager.class,
                         () -> new DataSourceTransactionManager(mock(DataSource.class)))

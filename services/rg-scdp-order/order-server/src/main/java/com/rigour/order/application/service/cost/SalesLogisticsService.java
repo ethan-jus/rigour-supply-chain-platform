@@ -53,7 +53,23 @@ public class SalesLogisticsService {
         AuthorizationContext.requirePermission("order:logistics-cost:read");
         var order = orders.salesOrderForLogistics(id);
         var source = source(order.orderNo(), "order:logistics-cost:read", true);
-        var rows = costs.linkedSales(tenant(), order.orderNo(), "order:logistics-cost:read");
+        var rawRows = costs.linkedSales(tenant(), order.orderNo(), "order:logistics-cost:read");
+        var states =
+                costs.businessStatuses(
+                        tenant(),
+                        rawRows.stream().map(LogisticsCostDetailView::id).toList(),
+                        "order:logistics-cost:read");
+        var rows =
+                rawRows.stream()
+                        .map(
+                                r ->
+                                        r.withBusinessStatus(
+                                                states.getOrDefault(
+                                                        r.id(),
+                                                        "VOID".equals(r.statusCode())
+                                                                ? "VOID"
+                                                                : "INCOMPLETE")))
+                        .toList();
         var platforms =
                 platform.byCosts(tenant(), rows.stream().map(LogisticsCostDetailView::id).toList());
         var shipping =
@@ -71,7 +87,7 @@ public class SalesLogisticsService {
             if (amount == null) unknown = true;
             else {
                 allocated = allocated.add(amount);
-                if ("CONFIRMED".equals(row.statusCode())) confirmed = confirmed.add(amount);
+                if ("ACTIVE".equals(row.statusCode())) confirmed = confirmed.add(amount);
             }
         }
         return new Context(
@@ -134,8 +150,8 @@ public class SalesLogisticsService {
                                                 .toList());
         // 已有关系重放不更改版本、归属或已确认成本。
         if (codes.contains(order.orderNo())) return old;
-        if (!"DRAFT".equals(row.statusCode()) || row.revision() != command.revision())
-            throw bad("记录已变化或不是待确认，请刷新；已确认运输须先撤销");
+        if (!"ACTIVE".equals(row.statusCode()) || row.revision() != command.revision())
+            throw bad("记录已变化或已作废，请刷新");
         String type = row.data().typeCode();
         if (type != null && !type.isBlank() && !"DELIVERY".equals(type))
             throw bad("该运输已有非销售用途，请核对，不能更改为销售配送");
@@ -161,7 +177,7 @@ public class SalesLogisticsService {
                         prior == null ? null : prior.senderPhone(),
                         prior == null ? null : prior.senderAddress(),
                         prior == null ? null : prior.cityCode(),
-                        carrier.facts() == null ? null : carrier.facts().billAmount(),
+                        row.data().amount(),
                         prior == null ? null : prior.ownerEmployeeCode(),
                         prior == null ? null : prior.remark(),
                         command.reason() == null || command.reason().isBlank()

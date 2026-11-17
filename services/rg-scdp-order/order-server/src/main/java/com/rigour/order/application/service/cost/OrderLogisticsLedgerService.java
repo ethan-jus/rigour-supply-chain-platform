@@ -56,13 +56,25 @@ public final class OrderLogisticsLedgerService {
             warehouseId =
                     Long.valueOf(party("WAREHOUSE", q.sourceWarehouseCode(), null, action).id());
         if (q.targetWarehouseCode() != null && !q.targetWarehouseCode().isBlank()) return List.of();
+        boolean departmentFilter = q.departmentName() != null && !q.departmentName().isBlank();
+        var employees =
+                departmentFilter
+                        ? employeeDirectory(action)
+                        : Map.<String, LogisticsCostEmployeeView>of();
+        var departmentCodes = new LinkedHashSet<String>();
+        employees.forEach(
+                (code, employee) -> {
+                    if (employee.departmentName() != null
+                            && employee.departmentName().contains(q.departmentName()))
+                        departmentCodes.add(code);
+                });
+        String tenant = AuthorizationContext.requireCurrent().tenantId().toString();
         var documents =
-                sales.sales(
-                        AuthorizationContext.requireCurrent().tenantId().toString(),
-                        q,
-                        action,
-                        warehouseId);
-        return withUsage(salesViews(documents, action), q, action);
+                departmentFilter
+                        ? sales.sales(tenant, q, action, warehouseId, departmentCodes)
+                        : sales.sales(tenant, q, action, warehouseId);
+        return withUsage(
+                salesViews(documents, action, departmentFilter ? employees : null), q, action);
     }
 
     public List<LogisticsCostSourceView> salesSources(
@@ -84,7 +96,44 @@ public final class OrderLogisticsLedgerService {
 
     private List<LogisticsCostSourceView> salesViews(
             List<OrderDeliveryCostSourceView> documents, String action) {
+        return salesViews(documents, action, null);
+    }
+
+    private Map<String, LogisticsCostEmployeeView> employeeDirectory(String action) {
+        // 现有HR费用员工目录仅接受租户用户；自动同步继续保留原单归属，不能伪造用户身份取资料。
+        if (!"TENANT".equals(AuthorizationContext.requireCurrent().principalScope()))
+            return Map.of();
+        Map<String, LogisticsCostEmployeeView> result = new HashMap<>();
+        Set<String> conflicts = new HashSet<>();
+        for (var employee : references.employees(action)) {
+            if (employee.employeeCode() == null || employee.employeeCode().isBlank()) continue;
+            var previous = result.putIfAbsent(employee.employeeCode(), employee);
+            if (previous != null && !previous.equals(employee))
+                conflicts.add(employee.employeeCode());
+        }
+        conflicts.forEach(result::remove);
+        return result;
+    }
+
+    private List<LogisticsCostSourceView> salesViews(
+            List<OrderDeliveryCostSourceView> documents,
+            String action,
+            Map<String, LogisticsCostEmployeeView> directory) {
         List<LogisticsCostSourceView> result = new ArrayList<>();
+        boolean needsDepartment =
+                documents.stream()
+                        .anyMatch(
+                                s ->
+                                        s.employeeCode() != null
+                                                && !s.employeeCode().isBlank()
+                                                && (s.departmentName() == null
+                                                        || s.departmentName().isBlank()));
+        var employees =
+                directory != null
+                        ? directory
+                        : needsDepartment
+                                ? employeeDirectory(action)
+                                : Map.<String, LogisticsCostEmployeeView>of();
         var operatingCities =
                 documents.isEmpty() ? Map.<String, String>of() : references.cities(action);
         Map<Long, LogisticsLedgerPartyView> warehouses = new HashMap<>();
@@ -112,6 +161,16 @@ public final class OrderLogisticsLedgerService {
                     customers.put(city, indexed);
                 });
         for (var s : documents) {
+            var employee = s.employeeCode() == null ? null : employees.get(s.employeeCode());
+            Long departmentId = s.departmentId();
+            String departmentName = s.departmentName();
+            // 只有缺失的归属才按稳定员工编码补齐，已有历史归属不随员工调岗变化。
+            if ((departmentName == null || departmentName.isBlank())
+                    && employee != null
+                    && (departmentId == null || departmentId.equals(employee.departmentId()))) {
+                departmentId = employee.departmentId();
+                departmentName = employee.departmentName();
+            }
             LogisticsLedgerPartyView warehouse =
                     s.warehouseId() == null
                             ? null
@@ -171,8 +230,8 @@ public final class OrderLogisticsLedgerService {
                                     null,
                                     s.employeeCode(),
                                     s.employeeName(),
-                                    s.departmentId(),
-                                    s.departmentName(),
+                                    departmentId,
+                                    departmentName,
                                     contactName,
                                     contactPhone,
                                     warehouse == null ? null : warehouse.cityCode(),
@@ -499,6 +558,11 @@ public final class OrderLogisticsLedgerService {
         // 保存时已经核验过档案；读取保留实际运输快照，不逐点串行回查当前档案。
         if ("OTHER".equals(p.partyTypeCode())
                 || p.displayName() != null && !p.displayName().isBlank()) return p;
+        // 来源物流尚未关联本系统客户时可能没有城市或本地客户编码。
+        // 不能拿来源编码发起无范围的客户查询；先保留真实收发货快照供后续补齐。
+        if ("CUSTOMER".equals(p.partyTypeCode())
+                && (city == null || city.isBlank() || p.partyCode() == null || p.partyCode().isBlank()))
+            return p;
         if (!Set.of("WAREHOUSE", "SUPPLIER", "CUSTOMER")
                 .contains(Objects.toString(p.partyTypeCode(), ""))) throw bad("收发方查询参数无效");
         // 已持久化费用经过列表数据范围校验；CRM 客户引用还会按 action 和 city 校验权限。

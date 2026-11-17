@@ -46,6 +46,24 @@ class CostSourceNormalizerTest {
     }
 
     @Test
+    void legacyActiveTransportIsExcludedUntilCompletenessProjectionRefreshes() {
+        var data = row();
+        data.put("status_code", "ACTIVE");
+        data.put("payer_code", "COMPANY");
+        var fact = normalizer.normalize("ORDER", data, cities, Map.of());
+        assertThat(fact).isNotNull();
+        assertThat(fact.status()).isEqualTo("DRAFT");
+        assertThat(fact.confirmed()).isFalse();
+        data.put("status_code", "CONFIRMED");
+        assertThat(normalizer.normalize("ORDER", data, cities, Map.of()).confirmed()).isTrue();
+        data.put("status_code", "ACTIVE");
+        assertThatThrownBy(() -> normalizer.normalize("ERP", data, cities, Map.of()))
+                .hasMessageContaining("状态无效");
+        data.put("status_code", "VOID");
+        assertThat(normalizer.normalize("ORDER", data, cities, Map.of()).confirmed()).isFalse();
+    }
+
+    @Test
     void automaticProcurementUsesReceivingWarehouseAndPreservesWarehouseRestriction() {
         var row = row();
         row.put("category_code", "PURCHASE");

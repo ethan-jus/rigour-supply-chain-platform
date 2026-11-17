@@ -143,6 +143,55 @@ class LogisticsCustomerBatchHttpTest {
     }
 
     @Test
+    void exactPointValidationReusesOnlyCustomersAuthorizedByTheSameBatchAndScope() {
+        var tenant = UUID.randomUUID();
+        caller(tenant);
+        newRequest();
+        var fixture = fixture();
+        fixture.server
+                .expect(requestTo(url("write")))
+                .andExpect(content().json("{\"WH\":[\"C1\",\"MISSING\"]}"))
+                .andRespond(
+                        withSuccess(
+                                "{\"code\":\"OK\",\"data\":{\"WH\":[{\"id\":\"1\",\"code\":\"C1\",\"name\":\"已核实客户\"}]}}",
+                                MediaType.APPLICATION_JSON));
+        fixture.server
+                .expect(
+                        requestTo(
+                                "http://crm.test/api/v1/crm/cost-customer-references?action=order:logistics-cost:read&begin=0&cityCode=WH&keyword=C1"))
+                .andRespond(
+                        withSuccess("{\"code\":\"OK\",\"data\":[]}", MediaType.APPLICATION_JSON));
+        fixture.refs.ledgerCustomersByCities(
+                Map.of("WH", List.of("C1", "MISSING")), "order:logistics-cost:write");
+        assertThat(
+                        fixture.refs.ledgerParties(
+                                "CUSTOMER",
+                                "C1",
+                                null,
+                                null,
+                                "WH",
+                                0,
+                                "order:logistics-cost:write"))
+                .singleElement()
+                .satisfies(row -> assertThat(row.name()).isEqualTo("已核实客户"));
+        assertThat(
+                        fixture.refs.ledgerParties(
+                                "CUSTOMER",
+                                "MISSING",
+                                null,
+                                null,
+                                "WH",
+                                0,
+                                "order:logistics-cost:write"))
+                .isEmpty();
+        assertThat(
+                        fixture.refs.ledgerParties(
+                                "CUSTOMER", "C1", null, null, "WH", 0, "order:logistics-cost:read"))
+                .isEmpty();
+        fixture.server.verify();
+    }
+
+    @Test
     void failedCustomerReadCanRetryWithoutReusingTheFailure() {
         var tenant = UUID.randomUUID();
         caller(tenant);

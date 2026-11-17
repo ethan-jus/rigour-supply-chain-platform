@@ -18,25 +18,18 @@ public final class LogisticsCostRules {
 
     public static void transition(String state, String action, BigDecimal amount, String reason) {
         switch (action) {
-            case "UPDATE", "CONFIRM", "VOID" -> {
-                if (!"DRAFT".equals(state))
-                    throw new IllegalArgumentException("仅待确认费用可编辑、确认或作废；已确认费用请先撤销");
-            }
-            case "REVOKE" -> {
-                if (!"CONFIRMED".equals(state)) throw new IllegalArgumentException("仅已确认费用可撤销");
+            case "UPDATE", "VOID" -> {
+                if (!"ACTIVE".equals(state)) throw new IllegalArgumentException("仅有效运输记录可修改或作废");
             }
             case "DELETE" -> {
-                if (!"VOID".equals(state)) throw new IllegalArgumentException("仅已作废费用可删除");
+                if (!"VOID".equals(state)) throw new IllegalArgumentException("仅已作废运输记录可删除");
             }
+            case "CONFIRM", "REVOKE" -> throw new IllegalArgumentException("运输记录保存即生效，无需确认或撤销确认");
             default -> throw new IllegalArgumentException("费用操作无效");
         }
-        if ("CONFIRM".equals(action)) {
-            money(amount, true);
-            if (amount.signum() == 0 && blank(reason))
-                throw new IllegalArgumentException("零元费用确认需填写原因");
-        }
-        if (List.of("VOID", "REVOKE", "DELETE").contains(action) && blank(reason))
-            throw new IllegalArgumentException("请填写作废、撤销或删除原因");
+        money(amount, false);
+        if (List.of("VOID", "DELETE").contains(action) && blank(reason))
+            throw new IllegalArgumentException("请填写作废或删除原因");
     }
 
     public static void sameTrip(List<String> keys) {

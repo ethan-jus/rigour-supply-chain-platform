@@ -168,9 +168,9 @@ public class TransportSubmissionService {
             Set<String> changedIds) {
         var old = id == null ? null : transports.detail(id);
         if (old != null
-                && (!"DRAFT".equals(old.record().statusCode())
+                && (!"ACTIVE".equals(old.record().statusCode())
                         || !Objects.equals(old.record().revision(), command.draft().revision())))
-            throw bad("记录已变化或不是待确认，请刷新");
+            throw bad("记录已变化或不是有效记录，请刷新");
         boolean manual = old == null || old.platform() == null;
         var existing =
                 id == null
@@ -203,10 +203,9 @@ public class TransportSubmissionService {
         Detail saved;
         if (command.advanced() != null) {
             if (old == null
-                    || !manual
                     || !Objects.equals(command.advanced().revision(), command.draft().revision()))
                 throw bad("费用明细编辑信息无效，请重新打开记录");
-            saved = new Detail(costs.save("logistics", id, command.advanced()), null);
+            saved = transports.detail(costs.save("logistics", id, command.advanced()).id());
         } else saved = transports.saveWithPendingEvidence(id, command.draft());
         // 新增请求编号已落过单时，必须通过原保存回执重试；新回执不能再次追加整批凭证。
         if (id == null && !files.list(tenant, saved.record().id()).isEmpty())

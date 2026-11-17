@@ -10,15 +10,13 @@ import java.util.Set;
 
 class CostLifecycleTest {
     @Test
-    void onlyVoidsCanBeDeletedAndConfirmedMustBeRevokedBeforeEditing() {
-        for (String state : List.of("DRAFT", "CONFIRMED", "VOID")) {
+    void savedRecordsCanBeEditedAndOnlyVoidedRecordsCanBeDeleted() {
+        for (String state : List.of("ACTIVE", "VOID")) {
             for (String action : List.of("UPDATE", "CONFIRM", "VOID", "REVOKE", "DELETE")) {
                 boolean allowed =
-                        "DRAFT".equals(state)
-                                ? Set.of("UPDATE", "CONFIRM", "VOID").contains(action)
-                                : "CONFIRMED".equals(state)
-                                        ? "REVOKE".equals(action)
-                                        : "DELETE".equals(action);
+                        "ACTIVE".equals(state)
+                                ? Set.of("UPDATE", "VOID").contains(action)
+                                : "DELETE".equals(action);
                 if (allowed)
                     assertThatCode(
                                     () ->
@@ -33,11 +31,7 @@ class CostLifecycleTest {
                             .isInstanceOf(IllegalArgumentException.class);
             }
         }
-        for (var pair :
-                List.of(
-                        List.of("DRAFT", "VOID"),
-                        List.of("CONFIRMED", "REVOKE"),
-                        List.of("VOID", "DELETE")))
+        for (var pair : List.of(List.of("ACTIVE", "VOID"), List.of("VOID", "DELETE")))
             assertThatThrownBy(
                             () ->
                                     LogisticsCostRules.transition(

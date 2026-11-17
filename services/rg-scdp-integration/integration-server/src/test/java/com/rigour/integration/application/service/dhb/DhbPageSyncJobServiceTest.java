@@ -95,19 +95,70 @@ class DhbPageSyncJobServiceTest {
     void salespersonDirectoryUsesTheSamePersistentBackgroundQueue() {
         var delegate = mock(DhbSyncOrchestrationService.class);
         var store = mock(DhbPageSyncJobStore.class);
-        var command = new DhbPageSyncCommand(DhbPageSyncCommand.Scope.SALESPERSON, connector, null, null, 100, true);
-        var staffJob = new DhbPageSyncJob(id, connector, "SALESPERSON", "RUNNING", "业务员", now, now, null, null);
+        var command =
+                new DhbPageSyncCommand(
+                        DhbPageSyncCommand.Scope.SALESPERSON, connector, null, null, 100, true);
+        var staffJob =
+                new DhbPageSyncJob(
+                        id, connector, "SALESPERSON", "RUNNING", "业务员", now, now, null, null);
         when(store.reserve(eq(tenant), eq(id), eq(command), any())).thenReturn(staffJob);
         when(store.claim(eq(tenant), eq(id), any())).thenReturn(true);
         when(store.find(tenant, id)).thenReturn(Optional.of(staffJob));
-        when(delegate.runPage(any(), eq(command), any(), eq(true))).thenReturn(
-                new DhbSyncOrchestrationResult(id, "SUCCEEDED", "MANUAL_SALESPERSON", now, now, List.of()));
+        when(delegate.runPage(any(), eq(command), any(), eq(true)))
+                .thenReturn(
+                        new DhbSyncOrchestrationResult(
+                                id, "SUCCEEDED", "MANUAL_SALESPERSON", now, now, List.of()));
         var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC));
         try {
             assertThat(service.start(caller(tenant), id, command).scope()).isEqualTo("SALESPERSON");
             verify(delegate).validatePageTarget(any(), eq(command));
-            verify(store, timeout(2000)).finish(eq(tenant), eq(id), eq("SUCCEEDED"), anyString(), any(), any());
+            verify(store, timeout(2000))
+                    .finish(eq(tenant), eq(id), eq("SUCCEEDED"), anyString(), any(), any());
         } finally {
+            service.close();
+        }
+    }
+
+    @Test
+    void shipmentWindowReturnsBeforeCompletionAndDuplicateSubmissionReusesJob() throws Exception {
+        var delegate = mock(DhbSyncOrchestrationService.class);
+        var store = mock(DhbPageSyncJobStore.class);
+        var window =
+                new DhbPageSyncCommand(
+                        DhbPageSyncCommand.Scope.SHIPMENT,
+                        connector,
+                        now.minusSeconds(86400),
+                        now,
+                        100,
+                        false);
+        var shipmentJob =
+                new DhbPageSyncJob(
+                        id, connector, "SHIPMENT", "RUNNING", "发货", now, now, null, null);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        when(store.reserve(eq(tenant), eq(id), eq(window), any())).thenReturn(shipmentJob);
+        when(store.claim(eq(tenant), eq(id), any())).thenReturn(true, false);
+        when(store.find(tenant, id)).thenReturn(Optional.of(shipmentJob));
+        when(delegate.runPage(any(), eq(window), any(), eq(true)))
+                .thenAnswer(
+                        call -> {
+                            entered.countDown();
+                            release.await(5, TimeUnit.SECONDS);
+                            return new DhbSyncOrchestrationResult(
+                                    id, "SUCCEEDED", "MANUAL_SHIPMENT", now, now, List.of());
+                        });
+        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC));
+        try {
+            assertThat(service.start(caller(tenant), id, window).scope()).isEqualTo("SHIPMENT");
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+            service.start(caller(tenant), id, window);
+            verify(delegate, times(1)).runPage(any(), eq(window), any(), eq(true));
+            verify(delegate, times(2)).validatePageTarget(any(), eq(window));
+            release.countDown();
+            verify(store, timeout(2000))
+                    .finish(eq(tenant), eq(id), eq("SUCCEEDED"), anyString(), any(), any());
+        } finally {
+            release.countDown();
             service.close();
         }
     }

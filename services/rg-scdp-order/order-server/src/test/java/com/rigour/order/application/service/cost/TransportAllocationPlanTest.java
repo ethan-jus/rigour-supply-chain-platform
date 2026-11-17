@@ -81,7 +81,7 @@ class TransportAllocationPlanTest {
 
     Detail platformDetail(String status, String amount, String shares) {
         return json.readValue(
-                """
+"""
 {"record":{"revision":1,"statusCode":"%s","data":{"amount":137.64,"ledger":{"schemaVersion":2,"feeItems":[],"sources":[{"orderCode":"S1","linkRoleCode":"COST","allocations":[{"amount":82.58}]},{"orderCode":"S2","linkRoleCode":"COST","allocations":[{"amount":55.06}]}]}},"sources":[{"documentNo":"S1","sourceType":"SALES_ORDER","documentAmount":6000},{"documentNo":"S2","sourceType":"SALES_ORDER","documentAmount":4000}]},"platform":{"source":{"revision":1,"sourceDifference":false,"order":{"line":0,"raw":{},"facts":{"billAmount":%s}}},"draft":{"orderCodes":["S1","S2"],"orderAllocations":%s}}}
 """
                         .formatted(status, amount, shares),
@@ -90,21 +90,22 @@ class TransportAllocationPlanTest {
 
     @Test
     void pendingPlatformDraftIsVisibleInSalesSummaryBeforeConfirmation() {
-        var d = platformDetail("DRAFT", "137.64", "{\"S1\":80,\"S2\":57.64}");
+        var d = platformDetail("ACTIVE", "137.64", "{\"S1\":80,\"S2\":57.64}");
         assertThat(TransportAllocationPlan.savedShares(d.record(), d.platform()).get("S1"))
-                .isEqualByComparingTo("80");
+                .isEqualByComparingTo("82.58");
     }
 
     @Test
     void confirmedCostUsesFrozenAllocationWhenPlatformBillChanges() {
-        var d = platformDetail("CONFIRMED", "142.64", "{\"S1\":80,\"S2\":57.64}");
+        var d = platformDetail("ACTIVE", "142.64", "{\"S1\":80,\"S2\":57.64}");
         assertThat(TransportAllocationPlan.savedShares(d.record(), d.platform()).get("S1"))
                 .isEqualByComparingTo("82.58");
     }
 
     @Test
     void changedPendingBillDoesNotQuietlyRedistributeAnExplicitAllocation() {
-        var d = platformDetail("DRAFT", "142.64", "{\"S1\":80,\"S2\":57.64}");
-        assertThat(TransportAllocationPlan.savedShares(d.record(), d.platform())).isEmpty();
+        var d = platformDetail("ACTIVE", "142.64", "{\"S1\":80,\"S2\":57.64}");
+        assertThat(TransportAllocationPlan.savedShares(d.record(), d.platform()).get("S1"))
+                .isEqualByComparingTo("82.58");
     }
 }
