@@ -430,3 +430,4 @@ final result: passed (scoped prototype review)
 - 用户明确本轮先忽略本机缺少高德 Web 配置的构建阻断，继续既有分支交付流程。配置预检保留，正式构建仍记为未通过，未填入假值。
 - 重新核对 Docker CLI 已安装但本机 daemon 不可用；容器依赖检查继续记为未执行，不把既有定向检查描述为完整 verify 通过。
 - 交付包含本轮订货宝来源事实、运输运费补录、自动资料完整状态及 BI 展示相关改动；两份含凭据的 application-local.yml 不进入提交。合并最新 dev 后复查受影响的前端代码及检查结果。
+- 合并检查：Platform 已包含更新后的 origin/dev；Portal 自动合并 dev，销售订单页保留物流逻辑，复用 dev 公共状态标签。合并后前端 248 个文件、1954 项测试全部通过，vue-tsc 与合并文件 ESLint 通过；后端 81 项定向回归及 reactor 架构检查通过。16 份冻结基线、684 份历史迁移未改写。地图正式构建与 Docker 限制按上文单独记录。
