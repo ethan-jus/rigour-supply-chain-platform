@@ -68,6 +68,14 @@ public class JdbcStoreFactStore implements StoreFactStore {
             refresh(e.tenantId(),e.storeId(),now);
             return;
         }
+        if("WORK_DAY_CUTOFF".equals(e.interruptionReason()) && "IN_PROGRESS".equals(v.get("status_code"))) {
+            jdbc.update("UPDATE crm_visit SET verification_state='INSUFFICIENT',status_code='SUBMITTED',review_source='WORK_DAY_CUTOFF',review_reason='WORK_DAY_CUTOFF',revision=revision+1,updated_at=?,updated_by='SALES_EVIDENCE' WHERE tenant_id=? AND id=?",ts(now),e.tenantId(),e.visitId());
+            jdbc.update("UPDATE crm_store_summary SET revision=revision+1,visit_synced_at=? WHERE tenant_id=? AND store_id=?",ts(now),e.tenantId(),e.storeId());
+            jdbc.update("INSERT INTO crm_store_event(id,tenant_id,store_id,ownership_id,object_type,object_id,event_type,actor_user_id,occurred_at,reason,request_id,event_seq) VALUES(?,?,?,?,'VISIT',?,'VISIT_INTERRUPTED','SALES_EVIDENCE',?,'WORK_DAY_CUTOFF',?,1)",IdWorker.getId(),e.tenantId(),e.storeId(),e.ownershipId(),e.visitId(),ts(now),UUID.randomUUID().toString());
+            refresh(e.tenantId(),e.storeId(),now);
+            return;
+        }
+        if("WORK_DAY_CUTOFF".equals(v.get("review_source"))) return;
         if(e.fieldwork()!=null && !"CANCELLED".equals(v.get("review_source"))) {
             if(fieldwork==null)throw new IllegalStateException("拜访资料投影不可用");
             fieldwork.apply(e,now);

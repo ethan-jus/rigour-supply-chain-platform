@@ -146,7 +146,7 @@ class SalesEmployeeProfileIntegrationTests {
         profiles.register();
         caller(user, Set.of("sales:policy:write", "sales:policy:publish", "sales:store-projection:write", "sales:assignment:write"));
         admin.upsertFieldPolicy(new FieldPolicyCommand("DEFAULT", "外勤", "Asia/Shanghai", LocalTime.MIDNIGHT,
-                null, null, null, null, 480, 240, false, false, null, false, 20, null, 120, "ALL", null, true));
+                480, 240, false, false, false, null, false, 20, new java.math.BigDecimal("100"), 120, "ALL", null, true, null));
         UUID store = UUID.randomUUID();
         admin.upsertStoreProjection(new StoreProjectionCommand(store, null, "客户", "门店一", "地址", null, null, "ACTIVE"));
         admin.upsertAssignment(new AssignmentCommand(first.salesProfileId(), store, null, "PRIMARY"));
@@ -155,7 +155,7 @@ class SalesEmployeeProfileIntegrationTests {
         caller(user, permissions);
         assertThat(context.visitTargets(null, 1, 20).items()).extracting(t -> t.storeId()).containsExactly(store);
         assertThat(context.context().hrEmployeeId()).isEqualTo("9007199254740993");
-        var day = attendance.checkIn(new CheckInCommand("test-checkin", "test-device", Instant.now(), null, null, null));
+        var day = attendance.checkIn(new CheckInCommand("test-checkin", "test-device", Instant.now(), new com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationEvidence(java.math.BigDecimal.TEN, java.math.BigDecimal.ONE, java.math.BigDecimal.ONE, "APP_NATIVE"), null, null));
         assertThat(day.employeeId()).isNull();
         assertThat(day.hrEmployeeId()).isEqualTo("9007199254740993");
         assertThat(jdbc.queryForObject("SELECT hr_employee_id FROM sales_work_day WHERE tenant_id=?", Long.class, bin(tenant)))

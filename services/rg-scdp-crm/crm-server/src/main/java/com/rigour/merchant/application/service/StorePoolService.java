@@ -197,6 +197,47 @@ public class StorePoolService {
                 .filter(p->usablePoi(access,p)&&access.ancestry(p.areaCode()).stream().anyMatch(a->areaCode.equals(a.code())))
                 .limit(20).toList();
     }
+    public List<com.rigour.settings.api.v1.model.DictItemView> intakeTypes() {
+        return references.storeTypes(scope("crm:lead:create").access().tenantId()).stream().filter(t->!Boolean.FALSE.equals(t.enabled())).toList();
+    }
+    public Lead lead(String recordId) {id(recordId);return store.lead(scope("crm:lead:read"),recordId);}
+    public IntakeLocation intakeLocation(double longitude,double latitude,String system) {
+        var access=scope("crm:lead:create");
+        if(!Double.isFinite(longitude)||!Double.isFinite(latitude)||Math.abs(longitude)>180||Math.abs(latitude)>90||!Set.of("WGS84","GCJ02").contains(system))throw new RequestValidationException("位置无效");
+        var point=pois.resolve(access.access().tenantId(),longitude,latitude,system);
+        if(point==null||!"RESOLVED".equals(point.status())||point.amapLongitude()==null||point.amapLatitude()==null)throw new RequestValidationException("地址解析暂不可用，请重试");
+        maintenanceArea(access,point.adcode());return point;
+    }
+    public IntakeResult discover(IntakeQuery q) {
+        var access=scope("crm:lead:create");String keyword=Objects.toString(q.keyword(),"").strip();
+        if(keyword.length()>100)throw new RequestValidationException("门店关键词不能超过100字");
+        boolean located=q.longitude()!=null||q.latitude()!=null;
+        double lng=0,lat=0;List<Poi> found;
+        if(located) {
+            if(q.longitude()==null||q.latitude()==null||!Double.isFinite(q.longitude())||!Double.isFinite(q.latitude())
+                    ||Math.abs(q.longitude())>180||Math.abs(q.latitude())>90||!Set.of("WGS84","GCJ02").contains(Objects.toString(q.coordinateSystem(),"")))
+                throw new RequestValidationException("请提供有效定位与坐标系");
+            lng=q.longitude();lat=q.latitude();
+            if("WGS84".equals(q.coordinateSystem())) {
+                var origin=nearbyOrigin(access,new NearbyModels.Query(lng,lat,"WGS84",null));lng=origin.gcjLongitude();lat=origin.gcjLatitude();
+            }
+            int radius=q.radiusMeters()==null?3000:q.radiusMeters();
+            if(radius<100||radius>5000)throw new RequestValidationException("搜索半径须在100至5000米内");
+            found=pois.around(access.access().tenantId(),keyword,lng,lat,radius);
+        } else {
+            required(keyword,100,"门店名称");searchArea(access,q.areaCode());
+            found=pois.search(access.access().tenantId(),keyword,q.areaCode());
+        }
+        final double centerLng=lng,centerLat=lat;
+        var candidates=found.stream().filter(p->usablePoi(access,p)&&p.id()!=null&&p.name()!=null&&p.address()!=null)
+                .filter(p->located||access.ancestry(p.areaCode()).stream().anyMatch(a->q.areaCode().equals(a.code())))
+                .limit(20).toList();
+        return new IntakeResult(store.intakeCandidates(access,candidates).stream().map(c->new IntakeCandidate(c.poi(),c.state(),c.storeId(),located?distance(centerLng,centerLat,c.poi().longitude().doubleValue(),c.poi().latitude().doubleValue()):null)).toList(),"GCJ02");
+    }
+    private static double distance(double lng,double lat,double toLng,double toLat) {
+        double a=Math.sin(Math.toRadians(lat-toLat)/2),b=Math.sin(Math.toRadians(lng-toLng)/2);
+        return 12742017.6*Math.asin(Math.min(1,Math.sqrt(a*a+Math.cos(Math.toRadians(lat))*Math.cos(Math.toRadians(toLat))*b*b)));
+    }
     public Admission admit(AmapAdmission c) {
         request(c.requestId());
         if(c.poiId()==null||!c.poiId().matches("[A-Za-z0-9]{1,64}"))throw new RequestValidationException("POI 编码无效");

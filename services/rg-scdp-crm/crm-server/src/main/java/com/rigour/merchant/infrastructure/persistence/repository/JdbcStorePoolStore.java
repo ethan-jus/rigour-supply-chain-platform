@@ -354,8 +354,9 @@ public class JdbcStorePoolStore implements StorePoolStore {
         int count=jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_master WHERE tenant_id=? AND dedup_key="+KEY+" AND (? IS NULL OR id<>?)",Integer.class,scope.access().tenantId(),area,name,address,excludeId,excludeId);
         if(count>0)throw new StateConflictException("商家库中已存在该门店（含私海、停业和归档记录），请使用原档案或联系管理员核验");
     }
+    private static final String SUSPECTED_SQL="SELECT COUNT(*) FROM crm_store_master WHERE tenant_id=? AND admin_area_code=? AND record_status<>'MERGED' AND (REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(name,'（','('),'）',')'))), '[[:space:]　]', '')=REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(?,'（','('),'）',')'))), '[[:space:]　]', '') OR (coordinate_system='GCJ02' AND ABS(longitude-?)<0.001 AND ABS(latitude-?)<0.001 AND (LOCATE(?,name)>0 OR LOCATE(name,?)>0)))";
     private boolean suspected(StoreScope scope,String name,String area,Object lng,Object lat) {
-        return jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_master WHERE tenant_id=? AND admin_area_code=? AND record_status<>'MERGED' AND (REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(name,'（','('),'）',')'))), '[[:space:]　]', '')=REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(?,'（','('),'）',')'))), '[[:space:]　]', '') OR (coordinate_system='GCJ02' AND ABS(longitude-?)<0.001 AND ABS(latitude-?)<0.001 AND (LOCATE(?,name)>0 OR LOCATE(name,?)>0)))",Integer.class,scope.access().tenantId(),area,name,lng,lat,name,name)>0;
+        return jdbc.queryForObject(SUSPECTED_SQL,Integer.class,scope.access().tenantId(),area,name,lng,lat,name,name)>0;
     }
     private void pendingDuplicate(StoreScope scope,LeadCommand c,String excludeId) {
         int count=jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_lead WHERE tenant_id=? AND status_code='PENDING_REVIEW' AND proposed_admin_area_code=? AND REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(proposed_name,'（','('),'）',')'))), '[[:space:]　]', '')=REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(?,'（','('),'）',')'))), '[[:space:]　]', '') AND REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(proposed_address,'（','('),'）',')'))), '[[:space:]　]', '')=REGEXP_REPLACE(LOWER(TRIM(REPLACE(REPLACE(?,'（','('),'）',')'))), '[[:space:]　]', '') AND (? IS NULL OR id<>?)",Integer.class,scope.access().tenantId(),c.areaCode(),c.name(),c.address(),excludeId,excludeId);
@@ -374,6 +375,45 @@ public class JdbcStorePoolStore implements StorePoolStore {
             var r=row(scope,rs);
             return new StoreMatch(r.id(),r.name(),r.address(),r.areaCode(),r.provinceName(),r.cityName(),r.countyName(),r.recordStatus(),r.businessStatus(),r.poolType());
         },args.toArray());
+    }
+    @Override public List<IntakeCandidate> intakeCandidates(StoreScope scope,List<Poi> pois) {
+        if(pois.isEmpty())return List.of();
+        var areas=pois.stream().map(Poi::areaCode).distinct().toList();
+        var selects=new ArrayList<String>();var args=new ArrayList<Object>();
+        args.add(scope.access().tenantId());args.addAll(areas);
+        // DISTINCT materializes the area subset once for all suspected-match checks.
+        String candidates="WITH intake_scope AS (SELECT DISTINCT tenant_id,admin_area_code,record_status,name,coordinate_system,longitude,latitude,id FROM crm_store_master WHERE tenant_id=? AND admin_area_code IN ("+String.join(",",Collections.nCopies(areas.size(),"?"))+") AND record_status<>'MERGED') ";
+        String suspected=SUSPECTED_SQL.replace("FROM crm_store_master","FROM intake_scope");
+        for(int index=0;index<pois.size();index++) {
+            var poi=pois.get(index);
+            // Separate identity and dedup lookups use their indexes; UNION keeps one row per store.
+            selects.add("SELECT ? candidate_index,s.id,s.admin_area_code,s.record_status,q.pool_type,q.owner_employee_id,("+suspected+") suspected FROM (SELECT 1) input LEFT JOIN (SELECT id FROM crm_store_master WHERE tenant_id=? AND dedup_key="+KEY+" UNION SELECT store_id id FROM crm_store_identity WHERE tenant_id=? AND provider_code='AMAP' AND identity_scope='CN' AND external_id=?) matched ON 1=1 LEFT JOIN crm_store_master s ON s.id=matched.id AND s.tenant_id=? LEFT JOIN crm_store_summary q ON q.tenant_id=s.tenant_id AND q.store_id=s.id");
+            Collections.addAll(args,index,scope.access().tenantId(),poi.areaCode(),poi.name(),poi.longitude(),poi.latitude(),poi.name(),poi.name(),scope.access().tenantId(),poi.areaCode(),poi.name(),poi.address(),scope.access().tenantId(),poi.id(),scope.access().tenantId());
+        }
+        var rows=jdbc.queryForList(candidates+String.join(" UNION ALL ",selects),args.toArray());
+        var result=new ArrayList<IntakeCandidate>();
+        for(int index=0;index<pois.size();index++) {
+            final int current=index;
+            var matches=rows.stream().filter(r->((Number)r.get("candidate_index")).intValue()==current).toList();
+            var row=matches.getFirst();String state=((Number)row.get("suspected")).intValue()>0?"REVIEW":"NEW";String id=null;
+            if(row.get("id")!=null) {
+                state="UNAVAILABLE";
+                if(matches.size()==1&&"ACTIVE".equals(row.get("record_status"))&&scope.permitsArea((String)row.get("admin_area_code"))) {
+                    if("PUBLIC".equals(row.get("pool_type"))&&scope.access().permissions().contains("crm:pool:public-read"))state="PUBLIC";
+                    else if("PRIVATE".equals(row.get("pool_type"))&&scope.access().employeeId()!=null
+                            &&scope.access().employeeId().equals(Objects.toString(row.get("owner_employee_id"),null))
+                            &&scope.access().permissions().contains("crm:pool:private-read"))state="MINE";
+                    if(!"UNAVAILABLE".equals(state))id=row.get("id").toString();
+                }
+            }
+            result.add(new IntakeCandidate(pois.get(index),state,id,null));
+        }
+        return result;
+    }
+    @Override public Lead lead(StoreScope scope,String id) {
+        var rows=jdbc.query("SELECT * FROM crm_store_lead WHERE tenant_id=? AND id=? AND created_by=? AND proposed_admin_area_version=?",(rs,n)->lead(rs),scope.access().tenantId(),id,scope.access().userId(),scope.catalog().version());
+        if(rows.isEmpty()||!scope.permitsArea(rows.getFirst().areaCode()))throw new AuthorizationDeniedException("lead-owner");
+        return rows.getFirst();
     }
     @Override @Transactional public Admission admit(StoreScope scope,AmapAdmission c,Poi poi,String typeCode) {
         queryCache.changed(scope.access().tenantId());

@@ -58,6 +58,40 @@ public class SalesFieldworkReviewService {
     }
 
     @Transactional
+    public Case adjustment(UUID dayId, Statement command) {
+        if (command == null) throw new RequestValidationException("请填写补正说明");
+        var caller = SalesWorkContextService.requireTenantCaller();
+        AuthorizationContext.requirePermission("sales:work-day:write");
+        var identity = context.resolveIdentity(caller, clock.instant());
+        var day = days.findWorkDay(caller.tenantId(), identity.profile().id(), dayId)
+                .orElseThrow(() -> new RequestValidationException("当日作业不存在"));
+        String key = text(command.requestId(),100), note = text(command.note(),2000);
+        String evidenceKey = "attendance-adjustment:" + dayId;
+        var previous = cases.findEvidence(caller.tenantId(), evidenceKey);
+        if (previous.isPresent() && replayed(caller,previous.get().id(),key,"STATEMENT",null,note))
+            return detail(caller,previous.get());
+        requireAdjustment(caller,day);
+        cases.detect(caller.tenantId(),identity.profile().id(),dayId,null,evidenceKey,"ATTENDANCE",
+                "打卡补正申请","{}",clock.instant());
+        var found = cases.findEvidence(caller.tenantId(),evidenceKey).orElseThrow();
+        var item = cases.find(caller.tenantId(),found.id(),true).orElseThrow();
+        if (!replayed(caller,item.id(),key,"STATEMENT",null,note)) {
+            cases.append(caller.tenantId(),item.id(),caller.userId(),key,"STATEMENT",null,note,"EXPLAINED",clock.instant());
+            audit(caller,item.id(),"SALES_ATTENDANCE_ADJUSTMENT_REQUEST",Map.of("workDayId",dayId.toString()));
+        }
+        return detail(caller,item);
+    }
+
+    private void requireAdjustment(CallerIdentity caller, SalesWorkAttendanceRepository.WorkDaySnapshot day) {
+        var policy = context.resolvePolicyVersion(caller.tenantId(), day.fieldPolicyVersionId());
+        if (!policy.allowAdjustment() || policy.adjustmentDeadlineHours() == null)
+            throw new RequestValidationException("该作业日未开放打卡补正");
+        var deadline = day.businessDate().plusDays(1).atTime(policy.businessDayCutoff())
+                .atZone(java.time.ZoneId.of(day.timezoneId())).toInstant().plusSeconds(policy.adjustmentDeadlineHours()*3600L);
+        if (clock.instant().isAfter(deadline)) throw new RequestValidationException("已超过打卡补正申请期限");
+    }
+
+    @Transactional
     public Case start(UUID profile,UUID day,com.rigour.sales.api.v1.model.SalesFieldworkEvidenceModels.StartReview command) {
         var caller=SalesWorkContextService.requireTenantCaller();
         fieldwork.requireProfile(profile,"sales:risk:write");
@@ -89,6 +123,7 @@ public class SalesFieldworkReviewService {
         if(!identity.profile().id().equals(item.salesProfileId())) throw new AuthorizationDeniedException("sales:work-day:write");
         String key=text(command.requestId(),100),note=text(command.note(),2000);
         if(!replayed(caller,id,key,"STATEMENT",null,note)) {
+            if("ATTENDANCE".equals(item.kind())) requireAdjustment(caller,days.findWorkDay(caller.tenantId(),identity.profile().id(),item.workDayId()).orElseThrow());
             // A later explanation reopens review; previous conclusions remain in immutable history.
             cases.append(caller.tenantId(),id,caller.userId(),key,"STATEMENT",null,note,"EXPLAINED",clock.instant());
             audit(caller,id,"SALES_FIELDWORK_STATEMENT",Map.of());

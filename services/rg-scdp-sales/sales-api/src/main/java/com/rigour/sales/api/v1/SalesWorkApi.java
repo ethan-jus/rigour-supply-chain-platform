@@ -52,6 +52,7 @@ public interface SalesWorkApi {
     String CHECK_IN_PATH = BASE_PATH + "/work-days/check-in";
     String LOCATION_BATCH_PATH = BASE_PATH + "/work-days/{workDayId}/location-points:batch";
     String INTERRUPTION_PATH = BASE_PATH + "/work-days/{workDayId}/interruptions";
+    String RESUME_WORK_PATH = BASE_PATH + "/work-days/{workDayId}/resume";
     String CHECK_OUT_PATH = BASE_PATH + "/work-days/{workDayId}/check-out";
     String WORK_DAY_PATH = BASE_PATH + "/me/work-days/{date}";
     String WORK_DAY_MONTH_PATH = BASE_PATH + "/me/work-days/month";
@@ -84,6 +85,10 @@ public interface SalesWorkApi {
     @PostMapping(LOCATION_BATCH_PATH)
     ApiResponse<LocationBatchResult> uploadLocationPoints(@PathVariable("workDayId") UUID workDayId,
                                                           @RequestBody LocationBatchCommand command);
+
+    @PostMapping(RESUME_WORK_PATH)
+    ApiResponse<WorkDayView> resumeWork(@PathVariable("workDayId") UUID workDayId,
+            @RequestBody com.rigour.sales.api.v1.model.SalesWorkApiModels.ResumeWorkCommand command);
 
     @PostMapping(CHECK_OUT_PATH)
     ApiResponse<WorkDayView> checkOut(@PathVariable("workDayId") UUID workDayId, @RequestBody CheckOutCommand command);

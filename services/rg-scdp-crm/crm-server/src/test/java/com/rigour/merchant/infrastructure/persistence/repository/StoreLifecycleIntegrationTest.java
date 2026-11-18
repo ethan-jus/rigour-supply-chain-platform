@@ -103,7 +103,7 @@ class StoreLifecycleIntegrationTest {
         var policy=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("fixture",500,10,1,true,600,30,true,true,true,BigDecimal.ONE);
         var v=transaction(()->visits.checkIn(owner,store,new CheckIn(UUID.randomUUID().toString(),ownership,new BigDecimal("120.1"),new BigDecimal("30.1"),"GCJ02",BigDecimal.ONE,capture),policy,t.plusSeconds(600)));
         var source=source();
-        java.util.function.LongFunction<com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence> evidence=revision->new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence(tenant,store,ownership,v.id(),capture,"E1","fixture",revision,t.plusSeconds(1300),v.visitedAt(),t.plusSeconds(1200),t.plusSeconds(1200),"CONTACTED","正常拜访",1,600000L,"TECHNICALLY_VERIFIED",null,null,false,null,null,null,"FAILED");
+        java.util.function.LongFunction<com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence> evidence=revision->new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence(tenant,store,ownership,v.id(),capture,"E1","fixture",revision,t.plusSeconds(1300),v.visitedAt(),t.plusSeconds(1200),t.plusSeconds(1200),"CONTACTED","正常拜访",1,600000L,"TECHNICALLY_VERIFIED",null,null,false,null,null,null,"FAILED",null);
         transaction(()->{source.acceptEvidence(evidence.apply(1),t.plusSeconds(1300));return null;});
         var effective=visits.visits(owner,store).getFirst();assertThat(effective.status()).isEqualTo("EFFECTIVE");assertThat(effective.reviewSource()).isEqualTo("AUTOMATIC");
         assertThat(db.queryForObject("SELECT valid_visit_count FROM crm_store_summary WHERE tenant_id=? AND store_id=?",Long.class,tenant,store)).isEqualTo(1);

@@ -10,6 +10,11 @@ import java.util.UUID;
 /** 阶段 2 外勤事实持久化端口；只操作 Sales Work 自有 Schema。 */
 public interface SalesWorkAttendanceRepository {
 
+    record ExpiryCandidate(UUID tenantId, UUID salesProfileId, UUID workDayId, Instant cutoff) {}
+    List<ExpiryCandidate> findExpiredWorkDays(Instant now);
+    List<ExpiryCandidate> findExpiredWorkDays(Instant now, UUID tenantId, UUID salesProfileId);
+    int expireWorkDay(UUID tenantId, UUID workDayId, Instant cutoff);
+
     Optional<WorkDaySnapshot> findWorkDay(UUID tenantId, UUID salesProfileId, UUID workDayId);
 
     Optional<WorkDaySnapshot> findWorkDay(
@@ -42,6 +47,8 @@ public interface SalesWorkAttendanceRepository {
             String deviceIdHash,
             String networkType,
             UUID policyVersionId);
+
+    void setResumeReason(UUID tenantId, UUID workDayId, String deviceEventId, String reason);
 
     void insertLocationSession(
             UUID id, UUID tenantId, UUID workDayId, Instant startedAt, int expectedIntervalMinutes);
@@ -82,11 +89,8 @@ public interface SalesWorkAttendanceRepository {
 
     int finishWorkDay(UUID tenantId, UUID workDayId, Instant checkedOutAt, int verifiedWorkMinutes);
 
-    /** 签退后同一业务日重新签到：仅允许 FINISHED 重开为 ACTIVE，保留累计时长与历史 Punch。 */
+    /** 填写原因后同一业务日恢复作业：仅允许 FINISHED 重开为 ACTIVE，保留累计时长与历史 Punch。 */
     int reopenWorkDay(UUID tenantId, UUID workDayId);
-
-    /** 最近一次指定类型 Punch 的服务端时间，用于重开后按最新签到起算工作时长。 */
-    Optional<Instant> findLatestPunchReceivedAt(UUID tenantId, UUID workDayId, String eventType);
 
     /** 下一个日结版本号；重新签退时版本递增，不改写已发出的日结事实。 */
     int nextSummaryVersion(UUID tenantId, UUID workDayId);
@@ -159,5 +163,5 @@ public interface SalesWorkAttendanceRepository {
             BigDecimal longitude,
             BigDecimal latitude,
             BigDecimal accuracyMeters,
-            String evidenceStatus) {}
+            String evidenceStatus, String resumeReason) {}
 }

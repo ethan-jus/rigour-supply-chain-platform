@@ -21,6 +21,14 @@ public class StorePoolController {
     public ApiResponse<List<StoreMatch>> reviewLookup(@RequestParam String keyword,@RequestParam String areaCode){return ApiResponse.success(service.reviewLookup(keyword,areaCode));}
     @GetMapping("/intake/poi-candidates")
     public ApiResponse<List<Poi>> intakeCandidates(@RequestParam String keyword,@RequestParam String areaCode){return ApiResponse.success(service.intakeCandidates(keyword,areaCode));}
+    @GetMapping("/intake/location")
+    public ApiResponse<IntakeLocation> intakeLocation(@RequestParam double longitude,@RequestParam double latitude,@RequestParam String coordinateSystem){return ApiResponse.success(service.intakeLocation(longitude,latitude,coordinateSystem));}
+    @GetMapping("/intake/discover")
+    public ApiResponse<IntakeResult> discover(@ModelAttribute IntakeQuery query){return ApiResponse.success(service.discover(query));}
+    @GetMapping("/intake/types")
+    public ApiResponse<List<com.rigour.settings.api.v1.model.DictItemView>> intakeTypes(){return ApiResponse.success(service.intakeTypes());}
+    @GetMapping("/leads/{id}")
+    public ApiResponse<Lead> lead(@PathVariable String id){return ApiResponse.success(service.lead(id));}
     @PostMapping("/intake/amap")
     public ApiResponse<Admission> admit(@RequestBody AmapAdmission command){return ApiResponse.success(service.admit(command));}
     @PutMapping("/leads/{id}")

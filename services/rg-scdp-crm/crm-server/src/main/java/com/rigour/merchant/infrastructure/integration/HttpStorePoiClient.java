@@ -42,6 +42,20 @@ public class HttpStorePoiClient implements StorePoiClient {
                 .queryParam("longitude",longitude).queryParam("latitude",latitude).build().encode().toUri();
         return get(tenant,uri,new ParameterizedTypeReference<ApiResponse<NearbyModels.Coordinates>>(){});
     }
+    private record ProviderPoi(String poiId,String name,String address,String publicPhone,String typeCode,String adcode,java.math.BigDecimal longitude,java.math.BigDecimal latitude) {}
+    private record ProviderPage(List<ProviderPoi> items) {}
+    public List<Poi> around(String tenant,String keyword,double longitude,double latitude,int radiusMeters) {
+        URI uri=UriComponentsBuilder.fromUriString(base).path("/internal/v1/integration/amap/pois/around")
+                .queryParam("keyword",keyword).queryParam("longitude",longitude).queryParam("latitude",latitude)
+                .queryParam("radius",radiusMeters).queryParam("page",1).queryParam("size",20).build().encode().toUri();
+        var result=get(tenant,uri,new ParameterizedTypeReference<ApiResponse<ProviderPage>>(){});
+        return result.items().stream().map(p->new Poi(p.poiId(),p.name(),p.address(),p.publicPhone(),p.typeCode(),p.adcode(),p.longitude(),p.latitude())).toList();
+    }
+    public com.rigour.merchant.api.v1.model.StoreModels.IntakeLocation resolve(String tenant,double longitude,double latitude,String system) {
+        URI uri=UriComponentsBuilder.fromUriString(base).path("/internal/v1/integration/amap/reverse-geocode"+("GCJ02".equals(system)?"/gcj02":""))
+                .queryParam("longitude",longitude).queryParam("latitude",latitude).build().encode().toUri();
+        return get(tenant,uri,new ParameterizedTypeReference<ApiResponse<com.rigour.merchant.api.v1.model.StoreModels.IntakeLocation>>(){});
+    }
     public Poi detail(String tenant,String id) {
         return get(tenant,URI.create(base+"/internal/v1/integration/store-pois/"+id),new ParameterizedTypeReference<ApiResponse<Poi>>(){});
     }

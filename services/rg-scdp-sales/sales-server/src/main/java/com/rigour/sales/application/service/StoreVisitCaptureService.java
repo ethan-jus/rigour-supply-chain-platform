@@ -21,6 +21,8 @@ public class StoreVisitCaptureService {
         if(c==null||c.requestId()==null||!c.requestId().matches("[A-Za-z0-9_-]{16,64}")||c.storeId()==null||!c.storeId().matches("[1-9][0-9]{0,18}")||c.ownershipId()==null||!c.ownershipId().matches("[1-9][0-9]{0,18}")||c.workDayId()==null||c.location()==null||c.location().longitude()==null||c.location().latitude()==null||c.location().accuracyMeters()==null)throw new RequestValidationException("新门店拜访参数无效");
         var identity=context.resolveIdentity(actor,clock.instant());
         var day=days.findWorkDay(actor.tenantId(),identity.profile().id(),c.workDayId()).orElseThrow(()->new StateConflictException("工作日不存在"));if(!"ACTIVE".equals(day.status()))throw new StateConflictException("请先开始工作日");
+        var fieldPolicy=context.resolvePolicyVersion(actor.tenantId(),day.fieldPolicyVersionId());
+        if(!clock.instant().isBefore(day.businessDate().plusDays(1).atTime(fieldPolicy.businessDayCutoff()).atZone(java.time.ZoneId.of(day.timezoneId())).toInstant()))throw new StateConflictException("上一作业日已截止，请重新签到");
         UUID capture=UUID.nameUUIDFromBytes((actor.tenantId()+":crm-capture:"+c.requestId()).getBytes(StandardCharsets.UTF_8));
         var active=visits.findActiveVisit(actor.tenantId(),identity.profile().id());
         if(active.isPresent()&&!capture.equals(active.get().id()))throw new StateConflictException("请先结束当前进行中的拜访");

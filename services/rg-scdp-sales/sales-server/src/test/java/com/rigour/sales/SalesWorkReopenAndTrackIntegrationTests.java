@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.CheckInCommand;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.ResumeWorkCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.CheckOutCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationBatchCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationEvidence;
@@ -195,6 +196,32 @@ class SalesWorkReopenAndTrackIntegrationTests {
         assertThat(track.distanceAvailable()).isFalse();
     }
 
+    @Test
+    void trackClassifiesCrmRevisitsInOneScopedQueryAndIgnoresCancelledHistory() {
+        UUID policy=UUID.randomUUID(), version=UUID.randomUUID(), other=UUID.randomUUID();
+        jdbc.update("INSERT INTO sales_visit_policy(id,tenant_id,policy_code,policy_name,status,created_at,updated_at) VALUES(?,?,'TRACK-TYPE','轨迹类型','ACTIVE',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",bin(policy),bin(tenantId));
+        jdbc.update("INSERT INTO sales_visit_policy_version(id,tenant_id,policy_id,version_no,publish_status,check_in_radius_meters,minimum_dwell_minutes,required_photo_count,created_by,created_at) VALUES(?,?,?,1,'PUBLISHED',100,0,1,?,UTC_TIMESTAMP(6))",bin(version),bin(tenantId),bin(policy),bin(userId));
+        jdbc.update("INSERT INTO sales_profile(id,tenant_id,platform_user_id,employee_id,hr_employee_id,hr_employee_code,sales_no,status,effective_from,source_version,version,created_at,updated_at) VALUES(?,?,?,NULL,101,'TRACK-OTHER','TRACK-OTHER','ACTIVE',UTC_TIMESTAMP(6),1,0,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",bin(other),bin(tenantId),bin(UUID.randomUUID()));
+        LocalDate date=LocalDate.of(2026,11,13);
+        UUID cancelled=historyCapture(profileId,100,date,77L,"07:00:00",version);
+        jdbc.update("UPDATE sales_visit SET status='CANCELLED' WHERE id=?",bin(cancelled));
+        historyCapture(other,101,date,77L,"07:30:00",version);
+        UUID first=historyCapture(profileId,100,date,77L,"08:00:00",version);
+        UUID again=historyCapture(profileId,100,date,77L,"09:00:00",version);
+        UUID different=historyCapture(profileId,100,date,78L,"10:00:00",version);
+        historyCapture(profileId,100,date.minusDays(1),79L,"08:00:00",version);
+        UUID crossDay=historyCapture(profileId,100,date,79L,"11:00:00",version);
+        for (UUID visit : List.of(first,again,different,crossDay)) {
+            jdbc.update("INSERT INTO sales_visit_target_snapshot(id,tenant_id,visit_id,target_type,store_name,store_address,store_longitude,store_latitude,captured_at) VALUES(?,?,?,'STORE','测试门店','测试地址',116,40,UTC_TIMESTAMP(6))",bin(UUID.randomUUID()),bin(tenantId),bin(visit));
+        }
+        var track=attendanceService.track(date);
+        assertThat(track.visits()).extracting(v->v.visitId()).containsExactly(first,again,different,crossDay);
+        assertThat(track.visits()).extracting(v->v.visitType()).containsExactly("FIRST_VISIT","REVISIT","FIRST_VISIT","REVISIT");
+        var repository=new com.rigour.sales.infrastructure.persistence.JdbcSalesWorkVisitRepository(jdbc);
+        assertThat(repository.findRevisitedVisitIds(UUID.randomUUID(),profileId,track.workDayId())).isEmpty();
+        assertThat(repository.findRevisitedVisitIds(tenantId,other,track.workDayId())).isEmpty();
+    }
+
     private UUID historyCapture(UUID profile,long hrId,LocalDate date,Long store,String time,UUID policy) {
         var dayIds=jdbc.query("SELECT id FROM sales_work_day WHERE tenant_id=? AND sales_profile_id=? AND business_date=?",(r,n)->r.getBytes(1),bin(tenantId),bin(profile),date);
         byte[] day;
@@ -254,7 +281,7 @@ class SalesWorkReopenAndTrackIntegrationTests {
     }
 
     @Test
-    void checkInAfterCheckOutReopensWorkDayAndTrackIsQueryable() {
+    void explicitResumeAfterCheckOutPreservesPeriodsAndTrack() {
         LocationEvidence location = new LocationEvidence(
                 new BigDecimal("120.1000000"), new BigDecimal("30.2000000"),
                 new BigDecimal("15"), "FEISHU");
@@ -266,17 +293,22 @@ class SalesWorkReopenAndTrackIntegrationTests {
 
         attendanceService.uploadLocationPoints(first.id(), new LocationBatchCommand("reopen-location-1",
                 List.of(new LocationPointCommand("reopen-point-1", new BigDecimal("120.1001000"),
-                        new BigDecimal("30.2001000"), new BigDecimal("12"), Instant.now(), "FEISHU"))));
+                        new BigDecimal("30.2001000"), new BigDecimal("12"), Instant.now(), "FEISHU")), first.locationSessionId()));
 
         WorkDayView finished = attendanceService.checkOut(first.id(),
                 new CheckOutCommand("reopen-check-out-1", Instant.now(), location, null, "ONLINE"));
         assertThat(finished.status()).isEqualTo("FINISHED");
         int firstSpanMinutes = finished.verifiedWorkMinutes();
 
-        // 关键回归：签退后同一业务日允许重新签到，重开同一工作日而不是报错。
-        WorkDayView reopened = attendanceService.checkIn(
-                new CheckInCommand("reopen-check-in-2", "client-1", Instant.now(), location,
-                        null, "ONLINE"));
+        assertThatThrownBy(() -> attendanceService.checkIn(new CheckInCommand("ordinary-in", "client-1", Instant.now(), location, null, "ONLINE")))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("恢复作业");
+        assertThatThrownBy(() -> attendanceService.resumeWork(first.id(), new ResumeWorkCommand("empty-reason", "client-1", Instant.now(), location, null, "ONLINE", " ")))
+                .isInstanceOf(BusinessException.class).hasMessageContaining("原因");
+        var resume = new ResumeWorkCommand("reopen-check-in-2", "client-1", Instant.now(), location, null, "ONLINE", "客户临时追加拜访");
+        WorkDayView reopened = attendanceService.resumeWork(first.id(), resume);
+        assertThat(attendanceService.resumeWork(first.id(), resume).locationSessionId()).isEqualTo(reopened.locationSessionId());
+        assertThat(reopened.workPeriods()).hasSize(2);
+        assertThat(reopened.workPeriods().getLast().reason()).isEqualTo("客户临时追加拜访");
         assertThat(reopened.id()).isEqualTo(first.id());
         assertThat(reopened.status()).isEqualTo("ACTIVE");
         assertThat(reopened.checkedInAt()).isEqualTo(first.checkedInAt());
@@ -286,7 +318,7 @@ class SalesWorkReopenAndTrackIntegrationTests {
         var secondBatch = attendanceService.uploadLocationPoints(first.id(),
                 new LocationBatchCommand("reopen-location-2",
                         List.of(new LocationPointCommand("reopen-point-2", new BigDecimal("120.1002000"),
-                                new BigDecimal("30.2002000"), new BigDecimal("18"), Instant.now(), "FEISHU"))));
+                                new BigDecimal("30.2002000"), new BigDecimal("18"), Instant.now(), "FEISHU")), reopened.locationSessionId()));
         assertThat(secondBatch.acceptedCount()).isEqualTo(1);
 
         WorkDayView finishedAgain = attendanceService.checkOut(first.id(),
@@ -328,6 +360,79 @@ class SalesWorkReopenAndTrackIntegrationTests {
     }
 
     @Test
+    void workDurationSumsActualPeriodsAndRoundsOnlyAfterSumming() {
+        var location=new LocationEvidence(BigDecimal.TEN,BigDecimal.ONE,BigDecimal.ONE,"APP_NATIVE");
+        var day=attendanceService.checkIn(new CheckInCommand("duration-in","client",Instant.now(),location,null,null));
+        attendanceService.checkOut(day.id(),new CheckOutCommand("duration-out",Instant.now(),location,null,null));
+        attendanceService.resumeWork(day.id(),new ResumeWorkCommand("duration-resume","client",Instant.now(),location,null,null,"临时拜访"));
+        var now=Instant.now();
+        var events=jdbc.query("SELECT id FROM sales_punch_event WHERE tenant_id=? AND work_day_id=? ORDER BY server_received_at",(rs,n)->rs.getBytes(1),bin(tenantId),bin(day.id()));
+        jdbc.update("UPDATE sales_punch_event SET server_received_at=? WHERE id=?",timestamp(now.minusSeconds(10800)),events.get(0));
+        jdbc.update("UPDATE sales_punch_event SET server_received_at=? WHERE id=?",timestamp(now.minusSeconds(8120)),events.get(1));
+        jdbc.update("UPDATE sales_punch_event SET server_received_at=? WHERE id=?",timestamp(now.minusSeconds(1840)),events.get(2));
+        var finished=attendanceService.checkOut(day.id(),new CheckOutCommand("duration-final",now,location,null,null));
+        assertThat(finished.totalWorkMinutes()).isEqualTo(75);
+        assertThat(finished.verifiedWorkMinutes()).isEqualTo(75);
+        assertThat(finished.workPeriods()).hasSize(2);
+    }
+
+    @Autowired private com.rigour.sales.application.service.SalesWorkDayExpiryWorker expiry;
+    @Autowired private com.rigour.sales.application.service.SalesFieldworkReviewService reviewService;
+    @Autowired private com.rigour.sales.application.port.out.SalesWorkQueryRepository policies;
+
+    @Test
+    void cutoffStopsCaptureWithoutManufacturingCheckoutAndAdjustmentRespectsOriginalRule() {
+        var location=new LocationEvidence(BigDecimal.TEN,BigDecimal.ONE,BigDecimal.ONE,"APP_NATIVE");
+        var day=attendanceService.checkIn(new CheckInCommand("cutoff-in","client",Instant.now(),location,null,null));
+        var previous=day.businessDate().minusDays(1);
+        jdbc.update("UPDATE sales_work_day SET business_date=? WHERE id=?",previous,bin(day.id()));
+        jdbc.update("UPDATE sales_work_day SET checked_in_at=DATE_SUB(checked_in_at,INTERVAL 1 DAY) WHERE id=?",bin(day.id()));
+        jdbc.update("UPDATE sales_punch_event SET server_received_at=DATE_SUB(server_received_at,INTERVAL 1 DAY) WHERE work_day_id=?",bin(day.id()));
+        jdbc.update("UPDATE sales_location_session SET started_at=DATE_SUB(started_at,INTERVAL 1 DAY) WHERE work_day_id=?",bin(day.id()));
+        expiry.expireOwn(tenantId,profileId);
+        var expired=attendanceService.workDay(previous);
+        assertThat(expired.status()).isEqualTo("MISSING_CHECK_OUT");assertThat(expired.checkedOutAt()).isNull();
+        assertThat(expired.totalWorkMinutes()).isZero();
+        assertThat(workDays.findPunchEvents(tenantId,day.id())).hasSize(1);
+        assertThat(workDays.findLocationSession(tenantId,day.id(),day.locationSessionId()).orElseThrow().status()).isEqualTo("CLOSED");
+        assertThat(reviewCases.byDay(tenantId,day.id())).hasSize(1);
+        expiry.expireOwn(tenantId,profileId);assertThat(reviewCases.byDay(tenantId,day.id())).hasSize(1);
+        var command=new com.rigour.sales.api.v1.model.SalesFieldworkReviewModels.Statement("adjust-once","实际结束时间18:00，忘记签退");
+        var created=reviewService.adjustment(day.id(),command);
+        assertThat(reviewService.adjustment(day.id(),command).events()).hasSize(1);
+        jdbc.update("UPDATE sales_field_policy_version SET allow_adjustment=0 WHERE id=?",bin(policyVersionId));
+        assertThatThrownBy(()->reviewService.adjustment(day.id(),new com.rigour.sales.api.v1.model.SalesFieldworkReviewModels.Statement("adjust-disabled","新的说明"))).hasMessageContaining("未开放");
+        assertThat(reviewService.adjustment(day.id(),command).id()).isEqualTo(created.id());
+        jdbc.update("UPDATE sales_field_policy_version SET allow_adjustment=1,adjustment_deadline_hours=1 WHERE id=?",bin(policyVersionId));
+        assertThatThrownBy(()->reviewService.adjustment(day.id(),new com.rigour.sales.api.v1.model.SalesFieldworkReviewModels.Statement("adjust-expired","新的说明"))).hasMessageContaining("超过");
+    }
+
+    @Test
+    void disabledResumeAndDisabledTrackingKeepPunchLocationRequirements() {
+        jdbc.update("UPDATE sales_field_policy_version SET allow_resume=0,location_enabled=0 WHERE id=?",bin(policyVersionId));
+        assertThatThrownBy(()->attendanceService.checkIn(new CheckInCommand("no-location","client",Instant.now(),null,null,null))).isInstanceOf(BusinessException.class);
+        var location=new LocationEvidence(BigDecimal.TEN,BigDecimal.ONE,BigDecimal.ONE,"APP_NATIVE");
+        var day=attendanceService.checkIn(new CheckInCommand("no-track","client",Instant.now(),location,null,null));
+        assertThat(day.locationSessionId()).isNull();
+        attendanceService.checkOut(day.id(),new CheckOutCommand("no-track-out",Instant.now(),location,null,null));
+        assertThatThrownBy(()->attendanceService.resumeWork(day.id(),new ResumeWorkCommand("not-allowed","client",Instant.now(),location,null,null,"临时拜访"))).hasMessageContaining("不允许");
+    }
+
+    @Test
+    void businessDateHasNoGapWhenBoundaryChangesInEitherDirection() throws Exception {
+        Method date=SalesWorkAttendanceService.class.getDeclaredMethod("businessDate",Instant.class,com.rigour.sales.application.port.out.SalesWorkQueryRepository.FieldPolicy.class);date.setAccessible(true);
+        jdbc.update("UPDATE sales_field_policy_version SET business_day_cutoff='06:00',effective_from=? WHERE id=?",timestamp(Instant.parse("2026-11-18T16:00:00Z")),bin(policyVersionId));
+        var later=policies.findFieldPolicy(tenantId,policyVersionId).orElseThrow();
+        assertThat(date.invoke(null,Instant.parse("2026-11-18T21:59:59Z"),later)).isEqualTo(LocalDate.of(2026,11,19));
+        assertThat(date.invoke(null,Instant.parse("2026-11-19T21:59:59Z"),later)).isEqualTo(LocalDate.of(2026,11,19));
+        assertThat(date.invoke(null,Instant.parse("2026-11-19T22:00:00Z"),later)).isEqualTo(LocalDate.of(2026,11,20));
+        jdbc.update("UPDATE sales_field_policy_version SET business_day_cutoff='00:00',effective_from=? WHERE id=?",timestamp(Instant.parse("2026-11-18T22:00:00Z")),bin(policyVersionId));
+        var earlier=policies.findFieldPolicy(tenantId,policyVersionId).orElseThrow();
+        assertThat(date.invoke(null,Instant.parse("2026-11-19T15:59:59Z"),earlier)).isEqualTo(LocalDate.of(2026,11,19));
+        assertThat(date.invoke(null,Instant.parse("2026-11-19T16:00:00Z"),earlier)).isEqualTo(LocalDate.of(2026,11,20));
+    }
+
+    @Test
     void closedSessionAcceptsItsOwnLatePointsWithoutRelabelingReopenedSession() {
         var location = new LocationEvidence(new BigDecimal("120.1"), new BigDecimal("30.2"), new BigDecimal("10"), "APP_NATIVE");
         var first = attendanceService.checkIn(new CheckInCommand("late-in", "client", Instant.now(), location, null, null));
@@ -339,7 +444,7 @@ class SalesWorkReopenAndTrackIntegrationTests {
         assertThat((BigDecimal)original.get("raw_longitude")).isEqualByComparingTo("120.095");
         assertThat(original.get("raw_coordinate_system")).isEqualTo("WGS84");
         assertThat(attendanceService.uploadLocationPoints(first.id(), batch).acceptedCount()).isEqualTo(1);
-        var reopened = attendanceService.checkIn(new CheckInCommand("late-reopen", "client", Instant.now(), location, null, null));
+        var reopened = attendanceService.resumeWork(first.id(), new ResumeWorkCommand("late-reopen", "client", Instant.now(), location, null, null, "补充拜访"));
         assertThat(reopened.locationSessionId()).isNotEqualTo(first.locationSessionId());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM sales_location_point WHERE tenant_id=? AND location_session_id=?", Integer.class, bin(tenantId), bin(first.locationSessionId()))).isEqualTo(1);
         var invalid = new LocationBatchCommand("late-invalid", List.of(new LocationPointCommand("outside", location.longitude(), location.latitude(), location.accuracyMeters(), observed.plusSeconds(3600), "APP_NATIVE")), first.locationSessionId());

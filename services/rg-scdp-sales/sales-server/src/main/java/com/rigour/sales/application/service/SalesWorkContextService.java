@@ -87,9 +87,8 @@ public final class SalesWorkContextService {
     private static FieldPolicyView policyView(FieldPolicy policy) {
         return new FieldPolicyView(policy.id(), policy.policyCode(), policy.policyName(), policy.versionNo(),
                 policy.publishStatus(), policy.timezoneId(), policy.businessDayCutoff(),
-                policy.checkInWindowStart(), policy.checkInWindowEnd(), policy.checkOutWindowStart(),
-                policy.checkOutWindowEnd(), policy.standardWorkMinutes(), policy.minimumWorkMinutes(),
-                policy.requireCheckOut(), policy.allowAdjustment(), policy.adjustmentDeadlineHours(),
+                policy.standardWorkMinutes(), policy.minimumWorkMinutes(),
+                policy.allowResume(), policy.workHoursEnabled(), policy.allowAdjustment(), policy.adjustmentDeadlineHours(),
                 policy.locationEnabled(), policy.locationIntervalMinutes(),
                 policy.minimumLocationAccuracyMeters(), policy.offlineUploadDeadlineMinutes(),
                 policy.effectiveFrom());

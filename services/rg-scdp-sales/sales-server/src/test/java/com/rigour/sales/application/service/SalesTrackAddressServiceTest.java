@@ -21,9 +21,9 @@ class SalesTrackAddressServiceTest {
     }
     @Test void sameLocationIsResolvedOnceAndMissingLocationRemainsExplicit() {
         var lng = new BigDecimal("120.1"); var lat = new BigDecimal("30.2");
-        var punches = List.of(new TrackPunchView("CHECK_IN", null, null, lng, lat, null, "VALID"),
-                new TrackPunchView("CHECK_OUT", null, null, lng, lat, null, "VALID"),
-                new TrackPunchView("CHECK_IN", null, null, null, null, null, "MISSING"));
+        var punches = List.of(new TrackPunchView("CHECK_IN", null, null, lng, lat, null, "VALID",null),
+                new TrackPunchView("CHECK_OUT", null, null, lng, lat, null, "VALID",null),
+                new TrackPunchView("CHECK_IN", null, null, null, null, null, "MISSING",null));
         when(attendance.track(date)).thenReturn(new WorkDayTrackView(null, date, "FINISHED", 0, 0, List.of(), punches, List.of(), List.of()));
         when(maps.reverseGcj02(lng, lat)).thenReturn(new AmapPoiClient.Address("RESOLVED", "附近", "真实地址"));
         var result = service.ownPunchAddresses(date);
@@ -34,7 +34,7 @@ class SalesTrackAddressServiceTest {
     }
     @Test void providerFailureDoesNotInventAnAddress() {
         var lng = BigDecimal.ONE; var lat = BigDecimal.TEN;
-        when(attendance.track(date)).thenReturn(new WorkDayTrackView(null, date, "ACTIVE", 0, 0, List.of(), List.of(new TrackPunchView("CHECK_IN", null, null, lng, lat, null, "VALID")), List.of(), List.of()));
+        when(attendance.track(date)).thenReturn(new WorkDayTrackView(null, date, "ACTIVE", 0, 0, List.of(), List.of(new TrackPunchView("CHECK_IN", null, null, lng, lat, null, "VALID",null)), List.of(), List.of()));
         when(maps.reverseGcj02(lng, lat)).thenThrow(new AmapPoiException("offline"));
         assertThat(service.ownPunchAddresses(date).get(0).status()).isEqualTo("UNAVAILABLE");
         assertThat(service.ownPunchAddresses(date).get(0).address()).isEmpty();

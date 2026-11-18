@@ -16,14 +16,12 @@ public final class SalesWorkApiModels {
 
     public record AttendanceContextView(LocalDate businessDate, Instant captureUntil, Instant serverTime,
                                         boolean locationEnabled, int locationIntervalMinutes,
-                                        int offlineUploadDeadlineMinutes, WorkDayView workDay) {}
+                                        int offlineUploadDeadlineMinutes, boolean allowResume, WorkDayView workDay) {}
 
     public record FieldPolicyView(
             UUID id, String policyCode, String policyName, int versionNo, String publishStatus,
             String timezoneId, LocalTime businessDayCutoff,
-            LocalTime checkInWindowStart, LocalTime checkInWindowEnd,
-            LocalTime checkOutWindowStart, LocalTime checkOutWindowEnd,
-            int standardWorkMinutes, int minimumWorkMinutes, boolean requireCheckOut,
+            int standardWorkMinutes, int minimumWorkMinutes, boolean allowResume, boolean workHoursEnabled,
             boolean allowAdjustment, Integer adjustmentDeadlineHours, boolean locationEnabled,
             int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
             int offlineUploadDeadlineMinutes, Instant effectiveFrom) {
@@ -71,13 +69,16 @@ public final class SalesWorkApiModels {
     }
 
     public record LocationBatchCommand(String idempotencyKey, List<LocationPointCommand> points, UUID locationSessionId) {
-        public LocationBatchCommand(String idempotencyKey, List<LocationPointCommand> points) {
-            this(idempotencyKey, points, null);
-        }
         public LocationBatchCommand {
             points = points == null ? List.of() : List.copyOf(points);
         }
     }
+
+    public record ResumeWorkCommand(String idempotencyKey, String clientInstanceId,
+            Instant clientOccurredAt, LocationEvidence location, String deviceIdHash,
+            String networkType, String reason) {}
+
+    public record WorkPeriodView(Instant startedAt, Instant endedAt, String reason) {}
 
     public record CheckOutCommand(
             String idempotencyKey, Instant clientOccurredAt, LocationEvidence location,
@@ -94,7 +95,7 @@ public final class SalesWorkApiModels {
             String timezoneId, UUID fieldPolicyVersionId, String status,
             Instant checkedInAt, Instant checkedOutAt, UUID locationSessionId,
             int locationPointCount, int interruptionCount, int verifiedWorkMinutes,
-            String evidenceQuality, String hrEmployeeId) {
+            String evidenceQuality, String hrEmployeeId, List<WorkPeriodView> workPeriods, int totalWorkMinutes, boolean adjustmentAllowed, Instant adjustmentDeadline) {
     }
 
     /** 月历中的单日事实；scheduleStatus=UNKNOWN时不得据此推断休息或旷工。 */
@@ -261,7 +262,7 @@ public final class SalesWorkApiModels {
     /** 签到/签退等 Punch 打点；位置为打卡时实时定位证据。 */
     public record TrackPunchView(
             String eventType, Instant clientOccurredAt, Instant serverReceivedAt,
-            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters, String evidenceStatus) {
+            BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters, String evidenceStatus, String resumeReason) {
     }
 
     /** 轨迹地图上的拜访节点；门店位置来自拜访发生时快照。 */

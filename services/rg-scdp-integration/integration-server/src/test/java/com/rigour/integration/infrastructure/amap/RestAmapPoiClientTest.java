@@ -77,6 +77,7 @@ class RestAmapPoiClientTest {
         MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
         RestAmapPoiClient client = new RestAmapPoiClient(builder.build(), properties, JsonMapper.builder().build());
         server.expect(requestTo(containsString("/place/around")))
+                .andExpect(queryParam("extensions", "all"))
                 .andExpect(queryParam("key", "test-amap-key"))
                 .andExpect(queryParam("location", "120.1,30.2"))
                 .andExpect(queryParam("radius", "3000"))

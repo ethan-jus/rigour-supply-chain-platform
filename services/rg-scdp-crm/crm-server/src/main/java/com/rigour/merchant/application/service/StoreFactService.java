@@ -30,6 +30,8 @@ public class StoreFactService {
         if(e.cancelledAt()!=null && (e.submittedAt()!=null || e.cancelledAt().isBefore(e.checkedInAt()) || e.cancelledAt().isAfter(e.checkedAt())
                 || e.cancellationReason()==null || e.cancellationReason().isBlank() || e.cancellationReason().length()>200))
             throw new RequestValidationException("取消拜访参数无效");
+        if(e.interruptionReason()!=null && (!"WORK_DAY_CUTOFF".equals(e.interruptionReason()) || e.checkedOutAt()!=null || e.cancelledAt()!=null))
+            throw new RequestValidationException("作业截止证据无效");
         authorize(e.tenantId(),"crm:store:visit-source-write");
         store.acceptEvidence(e,clock.instant());
     }

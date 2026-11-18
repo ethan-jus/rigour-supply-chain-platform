@@ -45,6 +45,9 @@ public class JdbcStoreVisitCaptureStore implements StoreVisitCaptureStore {
     }
     @Transactional public void create(UUID tenant,UUID profile,UUID day,UUID capture,Context c,LocationEvidence location,UUID visitPlanId){
         visits.lockSalesProfile(tenant,profile);
+        var workdays=jdbc.query("SELECT d.status,d.business_date,d.timezone_id,p.business_day_cutoff FROM sales_work_day d JOIN sales_field_policy_version p ON p.tenant_id=d.tenant_id AND p.id=d.field_policy_version_id WHERE d.tenant_id=? AND d.id=? AND d.sales_profile_id=? FOR UPDATE",(rs,n)->
+                "ACTIVE".equals(rs.getString("status")) && clock.instant().isBefore(rs.getObject("business_date",java.time.LocalDate.class).plusDays(1).atTime(rs.getObject("business_day_cutoff",java.time.LocalTime.class)).atZone(java.time.ZoneId.of(rs.getString("timezone_id"))).toInstant()),SalesUuidCodec.encode(tenant),SalesUuidCodec.encode(day),SalesUuidCodec.encode(profile));
+        if(workdays.isEmpty()||!workdays.getFirst())throw new StateConflictException("作业已结束，请重新确认签到状态");
         var existing=link(tenant,capture);if(existing!=null){if(!existing.visitId().equals(c.visitId()))throw new StateConflictException("采集请求已被占用");return;}
         if(visits.findActiveVisit(tenant,profile).isPresent())throw new StateConflictException("请先结束当前进行中的拜访");
         if(visitPlanId!=null){

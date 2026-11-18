@@ -1,5 +1,6 @@
 package com.rigour.sales.application.service;
 
+import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldPolicyVersionView;
 import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.AssignmentCommand;
 import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.AssignmentView;
 import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldPolicyCommand;
@@ -80,6 +81,14 @@ public class SalesWorkAdminService {
         return new SalesProfileView(row.id(), row.employeeId(), row.salesNo(), row.cityOrgId(), row.status());
     }
 
+    public java.util.List<com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldTeamOption> fieldTeams() {
+        return repository.fieldTeams(requireCaller("sales:policy:read").tenantId());
+    }
+
+    public List<FieldPolicyVersionView> fieldPolicies() {
+        return repository.fieldPolicies(requireCaller("sales:policy:read").tenantId());
+    }
+
     @Transactional
     public PolicyVersionView upsertFieldPolicy(FieldPolicyCommand command) {
         CallerIdentity caller = requireCaller("sales:policy:write");
@@ -87,24 +96,44 @@ public class SalesWorkAdminService {
             AuthorizationContext.requirePermission("sales:policy:publish");
         }
         validateFieldPolicy(command);
+        if ("TEAM".equals(command.scopeType()) && repository.fieldTeams(caller.tenantId()).stream().noneMatch(team -> team.id().equals(command.scopeId())))
+            throw invalid("请选择当前租户的有效销售团队");
         Instant now = clock.instant();
         var policy = repository.ensureFieldPolicy(caller.tenantId(), command.policyCode().trim(),
                 command.policyName().trim(), now);
+        if (command.expectedVersion() != null && command.expectedVersion() != policy.nextVersionNo() - 1)
+            throw new com.rigour.shared.core.exception.StateConflictException("外勤规则已更新，请刷新后重新确认");
+        var versions = repository.fieldPolicies(caller.tenantId()).stream()
+                .filter(row -> row.policy().policyCode().equals(command.policyCode().trim())).toList();
+        var previous = versions.stream().filter(row -> "PUBLISHED".equals(row.publishStatus())
+                && row.effectiveFrom() != null && !row.effectiveFrom().isAfter(now))
+                .max(java.util.Comparator.comparingInt(FieldPolicyVersionView::versionNo)).orElse(null);
+        if (previous != null && versions.stream().filter(row -> row.id().equals(previous.id())).count() > 1)
+            throw invalid("当前规则包含多个适用范围，请先按范围整理规则，不能覆盖发布");
+        Instant effectiveFrom = now;
+        if (previous != null) {
+            var local = now.atZone(ZoneId.of(previous.policy().timezoneId()));
+            var boundary = local.toLocalDate().atTime(previous.policy().businessDayCutoff()).atZone(local.getZone());
+            if (!boundary.toInstant().isAfter(now)) boundary = boundary.plusDays(1);
+            effectiveFrom = boundary.toInstant();
+            var firstEnd = previous.effectiveFrom().atZone(local.getZone()).toLocalDate().plusDays(1)
+                    .atTime(previous.policy().businessDayCutoff()).atZone(local.getZone()).toInstant();
+            if (now.isBefore(firstEnd) && effectiveFrom.isBefore(firstEnd)) effectiveFrom = firstEnd;
+        }
         UUID versionId = repository.insertFieldPolicyVersion(caller.tenantId(), policy.policyId(),
                 policy.nextVersionNo(), command.publish(), command.timezoneId().trim(),
-                command.businessDayCutoff(), command.checkInWindowStart(), command.checkInWindowEnd(),
-                command.checkOutWindowStart(), command.checkOutWindowEnd(), command.standardWorkMinutes(),
-                command.minimumWorkMinutes(), command.requireCheckOut(), command.allowAdjustment(),
+                command.businessDayCutoff(), command.standardWorkMinutes(),
+                command.minimumWorkMinutes(), command.allowResume(), command.workHoursEnabled(), command.allowAdjustment(),
                 command.adjustmentDeadlineHours(), command.locationEnabled(),
                 command.locationIntervalMinutes(), command.minimumLocationAccuracyMeters(),
-                command.offlineUploadDeadlineMinutes(), caller.userId(), now);
+                command.offlineUploadDeadlineMinutes(), caller.userId(), now, effectiveFrom);
         insertScope(caller, "FIELD", versionId, command.scopeType(), command.scopeId(), now);
         appendAudit(caller, "SALES_ADMIN_FIELD_POLICY_VERSION", "SALES_FIELD_POLICY", policy.policyId(),
                 Map.of("versionNo", Integer.toString(policy.nextVersionNo()),
                         "publishStatus", command.publish() ? "PUBLISHED" : "DRAFT"));
         return new PolicyVersionView(policy.policyId(), versionId, command.policyCode().trim(),
                 policy.nextVersionNo(), command.publish() ? "PUBLISHED" : "DRAFT",
-                command.publish() ? now : null);
+                command.publish() ? effectiveFrom : null);
     }
 
     @Transactional
@@ -219,15 +248,25 @@ public class SalesWorkAdminService {
         if (command.businessDayCutoff() == null) {
             throw invalid("businessDayCutoff不能为空");
         }
-        if (command.standardWorkMinutes() <= 0) {
+        if (command.businessDayCutoff().getSecond()!=0 || command.businessDayCutoff().getNano()!=0)
+            throw invalid("作业日开始时间须精确到分钟");
+        if (command.standardWorkMinutes() <= 0 || command.standardWorkMinutes() > 1440 || command.minimumWorkMinutes() < 0) {
             throw invalid("standardWorkMinutes必须大于0");
         }
         if (command.minimumWorkMinutes() > command.standardWorkMinutes()) {
             throw invalid("minimumWorkMinutes不能大于standardWorkMinutes");
         }
-        if (command.locationIntervalMinutes() <= 0) {
+        if (command.locationIntervalMinutes() <= 0 || command.locationIntervalMinutes() > 1440) {
             throw invalid("locationIntervalMinutes必须大于0");
         }
+        if (!"Asia/Shanghai".equals(command.timezoneId())) throw invalid("销售作业统一使用北京时间");
+        if (command.minimumLocationAccuracyMeters() == null || command.minimumLocationAccuracyMeters().signum() <= 0
+                || command.minimumLocationAccuracyMeters().compareTo(java.math.BigDecimal.valueOf(1000)) > 0)
+            throw invalid("可接受定位误差须为1至1000米");
+        if (command.offlineUploadDeadlineMinutes() < 1 || command.offlineUploadDeadlineMinutes() > 10080)
+            throw invalid("补传期限须为1分钟至7天");
+        if (command.allowAdjustment() && (command.adjustmentDeadlineHours() == null || command.adjustmentDeadlineHours() < 1 || command.adjustmentDeadlineHours() > 168))
+            throw invalid("补正期限须为1至168小时");
     }
 
     private void validateVisitPolicy(VisitPolicyCommand command) {

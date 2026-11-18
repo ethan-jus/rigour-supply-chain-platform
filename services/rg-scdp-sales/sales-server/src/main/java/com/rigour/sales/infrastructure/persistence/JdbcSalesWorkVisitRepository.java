@@ -199,6 +199,24 @@ public class JdbcSalesWorkVisitRepository implements SalesWorkVisitRepository {
     }
 
     @Override
+    public java.util.Set<UUID> findRevisitedVisitIds(UUID tenantId, UUID salesProfileId, UUID workDayId) {
+        return new java.util.HashSet<>(jdbc.query("""
+                SELECT visit.id FROM sales_visit visit
+                 WHERE visit.tenant_id=? AND visit.sales_profile_id=? AND visit.work_day_id=?
+                   AND visit.status<>'CANCELLED'
+                   AND EXISTS (
+                       SELECT 1 FROM sales_visit previous
+                        WHERE previous.tenant_id=visit.tenant_id
+                          AND previous.sales_profile_id=visit.sales_profile_id
+                          AND previous.status<>'CANCELLED'
+                          AND previous.checked_in_at<visit.checked_in_at
+                          AND (previous.crm_store_id=visit.crm_store_id
+                               OR (visit.crm_store_id IS NULL AND previous.store_id=visit.store_id))
+                   )
+                """, (rs, row) -> uuid(rs, "id"), bin(tenantId), bin(salesProfileId), bin(workDayId)));
+    }
+
+    @Override
     public boolean existsVisitBefore(UUID tenantId, UUID salesProfileId, UUID storeId, Instant checkedInAt) {
         if (storeId == null || checkedInAt == null) return false;
         Integer found = jdbc.queryForObject("""

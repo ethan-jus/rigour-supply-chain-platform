@@ -1,5 +1,6 @@
 package com.rigour.sales.api;
 
+import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldPolicyVersionView;
 import com.rigour.sales.api.v1.SalesWorkAdminApi;
 import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.AssignmentCommand;
 import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.AssignmentView;
@@ -36,6 +37,14 @@ public final class SalesWorkAdminController {
     @PutMapping(SalesWorkAdminApi.SALES_PROFILE_PATH)
     public ApiResponse<SalesProfileView> upsertSalesProfile(@RequestBody SalesProfileCommand command) {
         return ApiResponse.success(service.upsertSalesProfile(command));
+    }
+
+    @org.springframework.web.bind.annotation.GetMapping("/api/v1/sales/admin/field-policies/teams")
+    public ApiResponse<java.util.List<com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldTeamOption>> fieldTeams() { return ApiResponse.success(service.fieldTeams()); }
+
+    @org.springframework.web.bind.annotation.GetMapping(SalesWorkAdminApi.FIELD_POLICY_PATH)
+    public ApiResponse<java.util.List<FieldPolicyVersionView>> fieldPolicies() {
+        return ApiResponse.success(service.fieldPolicies());
     }
 
     @PutMapping(SalesWorkAdminApi.FIELD_POLICY_PATH)

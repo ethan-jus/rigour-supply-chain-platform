@@ -1,5 +1,6 @@
 package com.rigour.sales.application.port.out;
 
+import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldPolicyVersionView;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalTime;
@@ -12,6 +13,8 @@ import java.util.UUID;
  */
 public interface SalesWorkAdminRepository {
 
+    java.util.List<FieldPolicyVersionView> fieldPolicies(UUID tenantId);
+
     IdentityBindingRow upsertIdentityBinding(UUID tenantId, UUID platformUserId, UUID employeeId,
                                              Instant now);
 
@@ -19,19 +22,19 @@ public interface SalesWorkAdminRepository {
                                        Instant now);
 
     /** 按 policyCode 找或建规则稳定身份，返回 policyId 与下一个版本号。 */
+    java.util.List<com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldTeamOption> fieldTeams(UUID tenantId);
+
     PolicyIdentity ensureFieldPolicy(UUID tenantId, String policyCode, String policyName, Instant now);
 
     PolicyIdentity ensureVisitPolicy(UUID tenantId, String policyCode, String policyName, Instant now);
 
     UUID insertFieldPolicyVersion(UUID tenantId, UUID policyId, int versionNo, boolean publish,
                                   String timezoneId, LocalTime businessDayCutoff,
-                                  LocalTime checkInWindowStart, LocalTime checkInWindowEnd,
-                                  LocalTime checkOutWindowStart, LocalTime checkOutWindowEnd,
                                   int standardWorkMinutes, int minimumWorkMinutes,
-                                  boolean requireCheckOut, boolean allowAdjustment,
+                                  boolean allowResume, boolean workHoursEnabled, boolean allowAdjustment,
                                   Integer adjustmentDeadlineHours, boolean locationEnabled,
                                   int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
-                                  int offlineUploadDeadlineMinutes, UUID actorId, Instant now);
+                                  int offlineUploadDeadlineMinutes, UUID actorId, Instant now, Instant effectiveFrom);
 
     UUID insertVisitPolicyVersion(UUID tenantId, UUID policyId, int versionNo, boolean publish,
                                   boolean requireAssignedTarget, boolean allowProspectTarget,

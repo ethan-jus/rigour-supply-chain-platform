@@ -31,6 +31,8 @@ public interface SalesWorkVisitRepository {
 
     List<VisitSnapshot> findVisitsByWorkDay(UUID tenantId, UUID salesProfileId, UUID workDayId);
 
+    java.util.Set<UUID> findRevisitedVisitIds(UUID tenantId, UUID salesProfileId, UUID workDayId);
+
     boolean existsVisitBefore(UUID tenantId, UUID salesProfileId, UUID storeId, Instant checkedInAt);
 
     /** 串行化同一销售的拜访创建，防止并发产生多个进行中拜访。 */

@@ -27,6 +27,51 @@ public class JdbcSalesWorkAttendanceRepository implements SalesWorkAttendanceRep
     }
 
     @Override
+    public List<ExpiryCandidate> findExpiredWorkDays(Instant now) {
+        return findExpiredWorkDays(now, null, null);
+    }
+
+    @Override
+    public List<ExpiryCandidate> findExpiredWorkDays(Instant now, UUID tenantId, UUID salesProfileId) {
+        var parameters = new ArrayList<Object>();
+        parameters.add(now.atZone(java.time.ZoneOffset.UTC).toLocalDate());
+        if (tenantId != null) { parameters.add(bin(tenantId)); parameters.add(bin(salesProfileId)); }
+        return jdbc.query("""
+                SELECT d.tenant_id,d.sales_profile_id,d.id,d.business_date,d.timezone_id,p.business_day_cutoff
+                FROM sales_work_day d JOIN sales_field_policy_version p
+                  ON p.tenant_id=d.tenant_id AND p.id=d.field_policy_version_id
+                WHERE d.status='ACTIVE' AND d.business_date<=?
+                """ + (tenantId == null ? "" : " AND d.tenant_id=? AND d.sales_profile_id=?"), (rs, row) -> new ExpiryCandidate(SalesUuidCodec.decode(rs.getBytes("tenant_id")), SalesUuidCodec.decode(rs.getBytes("sales_profile_id")),
+                SalesUuidCodec.decode(rs.getBytes("id")), rs.getObject("business_date", LocalDate.class)
+                .plusDays(1).atTime(rs.getObject("business_day_cutoff", java.time.LocalTime.class))
+                .atZone(java.time.ZoneId.of(rs.getString("timezone_id"))).toInstant()),
+                parameters.toArray())
+                .stream().filter(row -> !now.isBefore(row.cutoff())).toList();
+    }
+
+    @Override
+    @org.springframework.transaction.annotation.Transactional
+    public int expireWorkDay(UUID tenantId, UUID workDayId, Instant cutoff) {
+        int changed = jdbc.update("""
+                UPDATE sales_work_day SET status='MISSING_CHECK_OUT',evidence_quality='PENDING',
+                  version=version+1,updated_at=UTC_TIMESTAMP(6)
+                WHERE tenant_id=? AND id=? AND status='ACTIVE'
+                """, bin(tenantId), bin(workDayId));
+        if (changed == 0) return 0;
+        jdbc.update("""
+                UPDATE sales_location_session SET status='CLOSED',ended_at=?,version=version+1,updated_at=UTC_TIMESTAMP(6)
+                WHERE tenant_id=? AND work_day_id=? AND status='ACTIVE'
+                """, timestamp(cutoff), bin(tenantId), bin(workDayId));
+        // Preserve evidence and the absent checkout: an expired visit is not a valid completion.
+        jdbc.update("""
+                UPDATE sales_visit SET status='PENDING_REVIEW',final_reason_code='WORK_DAY_CUTOFF',
+                  version=version+1,updated_at=UTC_TIMESTAMP(6)
+                WHERE tenant_id=? AND work_day_id=? AND status='CHECKED_IN'
+                """, bin(tenantId), bin(workDayId));
+        return changed;
+    }
+
+    @Override
     public java.util.Optional<WorkDaySnapshot> findWorkDay(
             UUID tenantId, UUID salesProfileId, UUID workDayId) {
         List<WorkDaySnapshot> rows =
@@ -305,23 +350,6 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMES
     }
 
     @Override
-    public Optional<Instant> findLatestPunchReceivedAt(
-            UUID tenantId, UUID workDayId, String eventType) {
-        List<Instant> rows =
-                jdbc.query(
-                        """
-                        SELECT server_received_at FROM sales_punch_event
-                         WHERE tenant_id=? AND work_day_id=? AND event_type=?
-                         ORDER BY server_received_at DESC LIMIT 1
-                        """,
-                        (rs, row) -> rs.getTimestamp("server_received_at").toInstant(),
-                        bin(tenantId),
-                        bin(workDayId),
-                        eventType);
-        return rows.stream().findFirst();
-    }
-
-    @Override
     public int nextSummaryVersion(UUID tenantId, UUID workDayId) {
         Integer current =
                 jdbc.queryForObject(
@@ -409,11 +437,17 @@ SELECT longitude, latitude, accuracy_meters, client_occurred_at, server_received
     }
 
     @Override
+    public void setResumeReason(UUID tenantId, UUID workDayId, String deviceEventId, String reason) {
+        jdbc.update("UPDATE sales_punch_event SET resume_reason=? WHERE tenant_id=? AND work_day_id=? AND device_event_id=?",
+                reason, bin(tenantId), bin(workDayId), deviceEventId);
+    }
+
+    @Override
     public List<PunchEventRow> findPunchEvents(UUID tenantId, UUID workDayId) {
         return jdbc.query(
                 """
                 SELECT event_type, client_occurred_at, server_received_at, longitude, latitude,
-                       accuracy_meters, evidence_status
+                       accuracy_meters, evidence_status, resume_reason
                   FROM sales_punch_event
                  WHERE tenant_id=? AND work_day_id=?
                  ORDER BY server_received_at ASC, created_at ASC
@@ -426,7 +460,7 @@ SELECT longitude, latitude, accuracy_meters, client_occurred_at, server_received
                                 rs.getBigDecimal("longitude"),
                                 rs.getBigDecimal("latitude"),
                                 rs.getBigDecimal("accuracy_meters"),
-                                rs.getString("evidence_status")),
+                                rs.getString("evidence_status"), rs.getString("resume_reason")),
                 bin(tenantId),
                 bin(workDayId));
     }

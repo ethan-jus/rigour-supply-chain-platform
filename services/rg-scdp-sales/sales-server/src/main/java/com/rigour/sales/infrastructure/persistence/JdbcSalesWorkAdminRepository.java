@@ -1,5 +1,6 @@
 package com.rigour.sales.infrastructure.persistence;
 
+import com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldPolicyVersionView;
 import com.rigour.sales.application.port.out.SalesWorkAdminRepository;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
@@ -19,6 +20,36 @@ public class JdbcSalesWorkAdminRepository implements SalesWorkAdminRepository {
 
     public JdbcSalesWorkAdminRepository(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    @Override
+    public java.util.List<com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldTeamOption> fieldTeams(UUID tenantId) {
+        return jdbc.query("SELECT id,team_name FROM sales_team WHERE tenant_id=? AND status='ACTIVE' ORDER BY team_name",
+                (rs,n) -> new com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldTeamOption(SalesUuidCodec.decode(rs.getBytes("id")),rs.getString("team_name")),bin(tenantId));
+    }
+
+    @Override
+    public List<FieldPolicyVersionView> fieldPolicies(UUID tenantId) {
+        return jdbc.query("""
+                SELECT v.*,p.policy_code,p.policy_name,s.scope_type,s.scope_id
+                  FROM sales_field_policy_version v
+                  JOIN sales_field_policy p ON p.tenant_id=v.tenant_id AND p.id=v.policy_id
+                  LEFT JOIN sales_policy_scope s ON s.tenant_id=v.tenant_id
+                    AND s.policy_version_id=v.id AND s.policy_type='FIELD' AND s.status='ACTIVE'
+                 WHERE v.tenant_id=? AND p.status='ACTIVE'
+                 ORDER BY v.created_at DESC,v.version_no DESC
+                """, (r, n) -> new FieldPolicyVersionView(SalesUuidCodec.decode(r.getBytes("id")),
+                    r.getInt("version_no"), r.getString("publish_status"), r.getTimestamp("created_at").toInstant(),
+                    r.getTimestamp("effective_from") == null ? null : r.getTimestamp("effective_from").toInstant(),
+                    new com.rigour.sales.api.v1.model.SalesWorkAdminApiModels.FieldPolicyCommand(
+                        r.getString("policy_code"), r.getString("policy_name"), r.getString("timezone_id"),
+                        r.getObject("business_day_cutoff", LocalTime.class),
+                        r.getInt("standard_work_minutes"), r.getInt("minimum_work_minutes"), r.getBoolean("allow_resume"), r.getBoolean("work_hours_enabled"),
+                        r.getBoolean("allow_adjustment"), r.getObject("adjustment_deadline_hours", Integer.class),
+                        r.getBoolean("location_enabled"), r.getInt("location_interval_minutes"),
+                        r.getBigDecimal("minimum_location_accuracy_meters"), r.getInt("offline_upload_deadline_minutes"),
+                        r.getString("scope_type") == null ? "ALL" : r.getString("scope_type"),
+                        SalesUuidCodec.decode(r.getBytes("scope_id")), true, r.getInt("version_no"))), bin(tenantId));
     }
 
     @Override
@@ -90,7 +121,7 @@ public class JdbcSalesWorkAdminRepository implements SalesWorkAdminRepository {
     private PolicyIdentity ensurePolicy(String table, UUID tenantId, String policyCode, String policyName,
                                         Instant now) {
         List<UUID> existing = jdbc.query(
-                "SELECT id FROM " + table + " WHERE tenant_id=? AND policy_code=?",
+                "SELECT id FROM " + table + " WHERE tenant_id=? AND policy_code=? FOR UPDATE",
                 (rs, row) -> SalesUuidCodec.decode(rs.getBytes("id")), bin(tenantId), policyCode);
         UUID policyId;
         if (existing.isEmpty()) {
@@ -116,31 +147,27 @@ public class JdbcSalesWorkAdminRepository implements SalesWorkAdminRepository {
     @Override
     public UUID insertFieldPolicyVersion(UUID tenantId, UUID policyId, int versionNo, boolean publish,
                                          String timezoneId, LocalTime businessDayCutoff,
-                                         LocalTime checkInWindowStart, LocalTime checkInWindowEnd,
-                                         LocalTime checkOutWindowStart, LocalTime checkOutWindowEnd,
                                          int standardWorkMinutes, int minimumWorkMinutes,
-                                         boolean requireCheckOut, boolean allowAdjustment,
+                                         boolean allowResume, boolean workHoursEnabled, boolean allowAdjustment,
                                          Integer adjustmentDeadlineHours, boolean locationEnabled,
                                          int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
-                                         int offlineUploadDeadlineMinutes, UUID actorId, Instant now) {
+                                         int offlineUploadDeadlineMinutes, UUID actorId, Instant now, Instant effectiveFrom) {
         UUID versionId = UUID.randomUUID();
         jdbc.update("""
                 INSERT INTO sales_field_policy_version
                     (id, tenant_id, policy_id, version_no, publish_status, timezone_id,
-                     business_day_cutoff, check_in_window_start, check_in_window_end,
-                     check_out_window_start, check_out_window_end, standard_work_minutes,
-                     minimum_work_minutes, require_check_out, allow_adjustment,
+                     business_day_cutoff, standard_work_minutes,
+                     minimum_work_minutes, allow_resume, work_hours_enabled, allow_adjustment,
                      adjustment_deadline_hours, location_enabled, location_interval_minutes,
                      minimum_location_accuracy_meters, offline_upload_deadline_minutes,
                      effective_from, approved_by, approved_at, created_by, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))
                 """, bin(versionId), bin(tenantId), bin(policyId), versionNo,
                 publish ? "PUBLISHED" : "DRAFT", timezoneId, businessDayCutoff,
-                checkInWindowStart, checkInWindowEnd, checkOutWindowStart, checkOutWindowEnd,
-                standardWorkMinutes, minimumWorkMinutes, requireCheckOut ? 1 : 0, allowAdjustment ? 1 : 0,
+                standardWorkMinutes, minimumWorkMinutes, allowResume ? 1 : 0, workHoursEnabled ? 1 : 0, allowAdjustment ? 1 : 0,
                 adjustmentDeadlineHours, locationEnabled ? 1 : 0, locationIntervalMinutes,
                 minimumLocationAccuracyMeters, offlineUploadDeadlineMinutes,
-                publish ? timestamp(now) : null, publish ? bin(actorId) : null,
+                publish ? timestamp(effectiveFrom) : null, publish ? bin(actorId) : null,
                 publish ? timestamp(now) : null, bin(actorId));
         return versionId;
     }

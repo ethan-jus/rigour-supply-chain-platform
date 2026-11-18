@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class SalesFieldworkReviewController implements SalesFieldworkReviewApi {
     private final SalesFieldworkReviewService service;
     public SalesFieldworkReviewController(SalesFieldworkReviewService service){this.service=service;}
+    @Override public ApiResponse<Case> adjustment(UUID day, Statement command){return ApiResponse.success(service.adjustment(day,command));}
     @Override public ApiResponse<Case> start(UUID profile,UUID day,com.rigour.sales.api.v1.model.SalesFieldworkEvidenceModels.StartReview command){return ApiResponse.success(service.start(profile,day,command));}
     @Override public ApiResponse<List<Case>> own(LocalDate date){return ApiResponse.success(service.own(date));}
     @Override public ApiResponse<List<Case>> day(UUID profile,UUID day){return ApiResponse.success(service.managementDay(profile,day));}

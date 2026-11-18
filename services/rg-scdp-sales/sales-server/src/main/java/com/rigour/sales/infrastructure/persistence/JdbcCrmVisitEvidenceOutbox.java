@@ -44,7 +44,7 @@ public class JdbcCrmVisitEvidenceOutbox implements CrmVisitEvidenceOutbox {
                 f.checkedInAt(),f.checkedOutAt(),f.resultSubmittedAt(),outcome,summary,
                 f.verifiedStorefrontPhotoCount(),f.verifiedRecordingDurationMs(),f.recordingEvidenceStatus(),
                 f.aiRecommendation(),f.aiConfidenceScore(),f.aiResultAdopted(),fieldwork,
-                v.get("cancelled_at")==null?null:jdbc.queryForObject("SELECT cancelled_at FROM sales_visit WHERE tenant_id=? AND id=?",Timestamp.class,SalesUuidCodec.encode(tenant),SalesUuidCodec.encode(capture)).toInstant(),(String)v.get("cancellation_reason"),transcriptionStatus(tenant,capture));
+                v.get("cancelled_at")==null?null:jdbc.queryForObject("SELECT cancelled_at FROM sales_visit WHERE tenant_id=? AND id=?",Timestamp.class,SalesUuidCodec.encode(tenant),SalesUuidCodec.encode(capture)).toInstant(),(String)v.get("cancellation_reason"),transcriptionStatus(tenant,capture),"WORK_DAY_CUTOFF".equals(v.get("final_reason_code"))?"WORK_DAY_CUTOFF":null);
         jdbc.update("UPDATE sales_visit SET crm_capture_revision=?,crm_last_enqueued_at=? WHERE tenant_id=? AND id=?",
                 revision,Timestamp.from(now),SalesUuidCodec.encode(tenant),SalesUuidCodec.encode(capture));
         jdbc.update("""

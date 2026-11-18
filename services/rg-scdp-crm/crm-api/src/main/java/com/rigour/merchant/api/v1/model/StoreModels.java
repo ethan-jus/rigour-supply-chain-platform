@@ -56,6 +56,10 @@ public final class StoreModels {
             this(requestId,name,address,areaCode,longitude,latitude,publicPhone,null,"GCJ02");
         }
     }
+    public record IntakeLocation(String status,String formattedAddress,String adcode,Double amapLongitude,Double amapLatitude) {}
+    public record IntakeQuery(String keyword, String areaCode, Double longitude, Double latitude, String coordinateSystem, Integer radiusMeters) {}
+    public record IntakeCandidate(Poi poi, String state, String storeId, Double distanceMeters) {}
+    public record IntakeResult(List<IntakeCandidate> items, String coordinateSystem) {}
     public record AmapAdmission(String requestId, String poiId) {}
     public record Admission(String storeId, String name) {}
     public record BusinessStatusChange(String requestId,long revision,String status,String reason,boolean management) {}

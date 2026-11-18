@@ -76,6 +76,45 @@ class JdbcStorePoolStoreTest {
     Query workQuery(String view,String pool,String status,String phase,String protection){
         return new Query(view,null,null,null,null,null,null,null,null,null,null,20,null,pool,status,phase,protection);
     }
+    @Test void intakeMatchReusesExactStoreAndNeverDisclosesAnotherOwnersId() {
+        String id=create("330105","开发查重店");
+        var own=national("crm:lead:create","2");
+        var access=own.access();
+        var readable=new StoreScope(new StoreAccessView(access.tenantId(),access.userId(),access.action(),1,"2","E2","销售","10",Set.of("crm:lead:create","crm:pool:public-read","crm:pool:private-read"),access.grants(),false,List.of()),CATALOG,Map.of());
+        var poi=new Poi("BNEW","开发查重店","测试地址开发查重店",null,"080113","330105",new BigDecimal("120.1"),new BigDecimal("30.1"));
+        assertThat(store.intakeCandidates(readable,List.of(poi)).getFirst().storeId()).isEqualTo(id);
+        assertThat(store.intakeCandidates(readable,List.of(poi)).getFirst().state()).isEqualTo("PUBLIC");
+        var mixed=store.intakeCandidates(readable,List.of(poi,new Poi("B02","不重复","不同地址",null,"080113","330105",new BigDecimal("120.1"),new BigDecimal("30.1")),new Poi("B03",poi.name(),"改地址",null,"080113",poi.areaCode(),poi.longitude(),poi.latitude())));
+        assertThat(mixed).extracting(IntakeCandidate::state).containsExactly("PUBLIC","NEW","REVIEW");
+        claim(id,national("crm:pool:claim","2"));
+        assertThat(store.intakeCandidates(readable,List.of(poi)).getFirst().state()).isEqualTo("MINE");
+        var hidden=store.intakeCandidates(national("crm:lead:create","3"),List.of(poi)).getFirst();
+        assertThat(hidden.state()).isEqualTo("UNAVAILABLE");assertThat(hidden.storeId()).isNull();
+        assertThat(store.intakeCandidates(readable,List.of(new Poi("B02","不重复","不同地址",null,"080113","330105",new BigDecimal("120.1"),new BigDecimal("30.1")))).getFirst().state()).isEqualTo("NEW");
+    }
+    @Test void intakeBatchDeduplicatesBothExactKeysAndKeepsMultiAreaSuspectedMatches() {
+        var poi=poi("BDUAL","双键门店","独立地址");
+        String id=admit(poi).storeId();
+        var base=national("crm:lead:create","2").access();
+        var scope=new StoreScope(new StoreAccessView(base.tenantId(),base.userId(),base.action(),1,"2","E2","销售","10",Set.of("crm:lead:create","crm:pool:public-read"),base.grants(),false,List.of()),CATALOG,Map.of());
+        create("330106","西湖疑似店");
+        var suspected=new Poi("BOTHER","西湖疑似店","新地址",null,"080113","330106",new BigDecimal("120.1"),new BigDecimal("30.1"));
+        var rows=store.intakeCandidates(scope,List.of(poi,suspected));
+        assertThat(rows).extracting(IntakeCandidate::state).containsExactly("PUBLIC","REVIEW");
+        assertThat(rows.getFirst().storeId()).isEqualTo(id);
+        assertThat(store.intakeCandidates(scope,List.of())).isEmpty();
+        create("330105","另一精确店");
+        var conflicting=new Poi(poi.id(),"另一精确店","测试地址另一精确店",null,poi.typeCode(),poi.areaCode(),poi.longitude(),poi.latitude());
+        var conflict=store.intakeCandidates(scope,List.of(conflicting)).getFirst();
+        assertThat(conflict.state()).isEqualTo("UNAVAILABLE");
+        assertThat(conflict.storeId()).isNull();
+    }
+    @Test void leadDetailRequiresSameTenantSubmitterAndAuthorizedArea() {
+        var creator=hangzhou("crm:lead:create","2");
+        var lead=inTx(()->store.submit(creator,new LeadCommand(UUID.randomUUID().toString(),"本人提报","地址","330105",new BigDecimal("120.1"),new BigDecimal("30.1"),null)));
+        assertThat(store.lead(hangzhou("crm:lead:read","2"),lead.id()).id()).isEqualTo(lead.id());
+        assertThatThrownBy(()->store.lead(national("crm:lead:read","3"),lead.id())).isInstanceOf(AuthorizationDeniedException.class);
+    }
     @Test void recentSubmittedVisitIsVisibleWithoutPretendingItIsEffectiveAndResetsOnReclaim(){
         String id=create("330105","待核验门店");
         claim(id,national("crm:pool:claim","2"));

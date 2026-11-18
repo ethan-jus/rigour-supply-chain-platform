@@ -45,9 +45,7 @@ public interface SalesWorkQueryRepository {
 
     record FieldPolicy(UUID id, String policyCode, String policyName, int versionNo,
                        String publishStatus, String timezoneId, LocalTime businessDayCutoff,
-                       LocalTime checkInWindowStart, LocalTime checkInWindowEnd,
-                       LocalTime checkOutWindowStart, LocalTime checkOutWindowEnd,
-                       int standardWorkMinutes, int minimumWorkMinutes, boolean requireCheckOut,
+                       int standardWorkMinutes, int minimumWorkMinutes, boolean allowResume, boolean workHoursEnabled,
                        boolean allowAdjustment, Integer adjustmentDeadlineHours, boolean locationEnabled,
                        int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
                        int offlineUploadDeadlineMinutes, Instant effectiveFrom) {

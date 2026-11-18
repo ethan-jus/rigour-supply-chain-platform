@@ -34,12 +34,18 @@ public final class SalesWorkAdminApiModels {
      */
     public record FieldPolicyCommand(
             String policyCode, String policyName, String timezoneId,
-            LocalTime businessDayCutoff, LocalTime checkInWindowStart, LocalTime checkInWindowEnd,
-            LocalTime checkOutWindowStart, LocalTime checkOutWindowEnd,
-            int standardWorkMinutes, int minimumWorkMinutes, boolean requireCheckOut,
+            LocalTime businessDayCutoff,
+            int standardWorkMinutes, int minimumWorkMinutes, boolean allowResume, boolean workHoursEnabled,
             boolean allowAdjustment, Integer adjustmentDeadlineHours, boolean locationEnabled,
             int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
-            int offlineUploadDeadlineMinutes, String scopeType, UUID scopeId, boolean publish) {
+            int offlineUploadDeadlineMinutes, String scopeType, UUID scopeId, boolean publish,
+            Integer expectedVersion) {
+    }
+
+    public record FieldTeamOption(UUID id, String name) {}
+
+    public record FieldPolicyVersionView(UUID id, int versionNo, String publishStatus,
+            Instant createdAt, Instant effectiveFrom, FieldPolicyCommand policy) {
     }
 
     /** 维护拜访规则并追加一个新版本；scopeType 语义同外勤规则。 */

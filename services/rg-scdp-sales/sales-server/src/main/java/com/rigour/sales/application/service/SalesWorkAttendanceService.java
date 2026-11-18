@@ -3,6 +3,8 @@ package com.rigour.sales.application.service;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.AttendanceMonthDayView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.AttendanceMonthView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.CheckInCommand;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.ResumeWorkCommand;
+import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkPeriodView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.CheckOutCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.InterruptionCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationBatchCommand;
@@ -46,7 +48,6 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.YearMonth;
 import java.time.ZoneId;
@@ -77,6 +78,7 @@ public class SalesWorkAttendanceService {
     private final ObjectMapper objectMapper;
     private final Clock clock;
     private final SalesFieldworkService fieldwork;
+    private final SalesWorkDayExpiryWorker expiry;
 
     public SalesWorkAttendanceService(
             SalesWorkContextService contextService,
@@ -86,7 +88,7 @@ public class SalesWorkAttendanceService {
             OutboxStore outboxStore,
             AuditSink auditSink,
             ObjectMapper objectMapper,
-            Clock clock, SalesFieldworkService fieldwork) {
+            Clock clock, SalesFieldworkService fieldwork, SalesWorkDayExpiryWorker expiry) {
         this.contextService = contextService;
         this.repository = repository;
         this.visitRepository = visitRepository;
@@ -95,7 +97,7 @@ public class SalesWorkAttendanceService {
         this.auditSink = auditSink;
         this.objectMapper = objectMapper;
         this.clock = clock;
-        this.fieldwork = fieldwork;
+        this.fieldwork = fieldwork; this.expiry = expiry;
     }
 
     @Transactional
@@ -105,16 +107,16 @@ public class SalesWorkAttendanceService {
         Instant receivedAt = clock.instant();
         SalesWorkContextService.SalesIdentity identity =
                 contextService.resolveIdentity(caller, receivedAt);
+        expiry.expireOwn(caller.tenantId(), identity.profile().id());
         FieldPolicy policy =
                 contextService.resolvePolicy(caller.tenantId(), identity.profile(), receivedAt);
-        validateLocation(command.location(), policy.locationEnabled());
+        validateLocation(command.location(), true);
         String key = key(command.idempotencyKey());
         Reservation reservation = reserve(caller, "CHECK_IN", key, command);
         if (reservation.status() == Status.COMPLETED)
             return replayWorkDay(caller, identity.profile().id(), reservation);
         throwIfNotReserved(reservation);
 
-        ensureWindow(policy, receivedAt, true);
         LocalDate businessDate = businessDate(receivedAt, policy);
         var existing =
                 repository.findWorkDay(caller.tenantId(), identity.profile().id(), businessDate);
@@ -122,7 +124,7 @@ public class SalesWorkAttendanceService {
             if ("ACTIVE".equals(existing.get().status())) {
                 throw new BusinessException(ErrorCode.SALES_WORK_DAY_ALREADY_ACTIVE);
             }
-            return reopenWorkDay(caller, identity, existing.get(), command, key, receivedAt);
+            throw new BusinessException(ErrorCode.SALES_WORK_DAY_INVALID_STATE, "当天已签退，请填写原因后恢复作业", List.of());
         }
 
         UUID workDayId = UUID.randomUUID();
@@ -215,25 +217,21 @@ public class SalesWorkAttendanceService {
         Reservation reservation = reserve(caller, "LOCATION_BATCH", key, command);
         if (reservation.status() == Status.COMPLETED) return replayLocationBatch(reservation);
         throwIfNotReserved(reservation);
-        UUID sessionId = command.locationSessionId() == null ? workDay.locationSessionId() : command.locationSessionId();
-        // Legacy requests are accepted only for the currently active session. New clients bind
-        // every offline batch to its original session; a reopened day cannot relabel old points.
-        if (command.locationSessionId() == null && !"ACTIVE".equals(workDay.status()))
-            throw new BusinessException(ErrorCode.SALES_WORK_DAY_INVALID_STATE);
-        if (command.locationSessionId() != null) {
-            var capture = repository.findLocationSession(caller.tenantId(), workDay.id(), sessionId)
-                    .orElseThrow(() -> badRequest("定位会话不属于本次作业"));
-            Instant cutoff=workDay.businessDate().plusDays(1).atTime(policy.businessDayCutoff())
-                    .atZone(ZoneId.of(policy.timezoneId())).toInstant();
-            Instant end = capture.endedAt() == null ? receivedAt : capture.endedAt();
-            if(end.isAfter(cutoff)) end=cutoff;
-            if ((capture.endedAt()!=null || !receivedAt.isBefore(cutoff)) && receivedAt.isAfter(end.plusSeconds(policy.offlineUploadDeadlineMinutes() * 60L)))
-                throw badRequest("已超过原定位会话补传期限");
-            for (var point : command.points()) {
-                if (point.clientOccurredAt() == null || point.clientOccurredAt().isBefore(capture.startedAt().minusSeconds(60))
-                        || point.clientOccurredAt().isAfter(end.plusSeconds(60)))
-                    throw badRequest("定位点不在原作业时段内");
-            }
+        UUID sessionId = command.locationSessionId();
+        if (sessionId == null) throw badRequest("定位会话不能为空");
+        var capture = repository.findLocationSession(caller.tenantId(), workDay.id(), sessionId)
+                .orElseThrow(() -> badRequest("定位会话不属于本次作业"));
+        Instant cutoff = workDay.businessDate().plusDays(1).atTime(policy.businessDayCutoff())
+                .atZone(ZoneId.of(policy.timezoneId())).toInstant();
+        Instant end = capture.endedAt() == null ? receivedAt : capture.endedAt();
+        if (end.isAfter(cutoff)) end = cutoff;
+        if ((capture.endedAt() != null || !receivedAt.isBefore(cutoff))
+                && receivedAt.isAfter(end.plusSeconds(policy.offlineUploadDeadlineMinutes() * 60L)))
+            throw badRequest("已超过原定位会话补传期限");
+        for (var point : command.points()) {
+            if (point.clientOccurredAt() == null || point.clientOccurredAt().isBefore(capture.startedAt().minusSeconds(60))
+                    || point.clientOccurredAt().isAfter(end.plusSeconds(60)) || !point.clientOccurredAt().isBefore(cutoff))
+                throw badRequest("定位点不在原作业时段内");
         }
 
         List<LocationPointCommand> uniquePoints = uniquePoints(command.points());
@@ -318,7 +316,7 @@ public class SalesWorkAttendanceService {
         FieldPolicy policy =
                 contextService.resolvePolicyVersion(
                         caller.tenantId(), workDay.fieldPolicyVersionId());
-        validateLocation(command.location(), policy.locationEnabled());
+        validateLocation(command.location(), true);
         String key = key(command.idempotencyKey());
         Reservation reservation = reserve(caller, "CHECK_OUT", key, command);
         if (reservation.status() == Status.COMPLETED)
@@ -333,13 +331,8 @@ public class SalesWorkAttendanceService {
             throw new BusinessException(
                     ErrorCode.SALES_WORK_DAY_INVALID_STATE, "请先结束进行中的拜访再签退工作日", List.of());
         }
-        ensureWindow(policy, receivedAt, false);
-        // 重开后按最近一次签到起算本段时长，并与此前各段累计；不把签退间隔计入工时。
-        Instant spanStart =
-                repository
-                        .findLatestPunchReceivedAt(caller.tenantId(), workDay.id(), "CHECK_IN")
-                        .orElse(workDay.checkedInAt());
-        int verifiedMinutes = workDay.verifiedWorkMinutes() + elapsedMinutes(spanStart, receivedAt);
+        ensureCurrentWorkDay(workDay, policy, receivedAt);
+        int verifiedMinutes = totalWorkMinutes(caller.tenantId(), workDay, receivedAt);
         repository.insertPunchEvent(
                 UUID.randomUUID(),
                 caller.tenantId(),
@@ -477,13 +470,14 @@ public class SalesWorkAttendanceService {
         var caller=requireCaller("sales:context:read");
         var now=clock.instant();
         var identity=contextService.resolveIdentity(caller,now);
+        expiry.expireOwn(caller.tenantId(),identity.profile().id());
         var policy=contextService.resolvePolicy(caller.tenantId(),identity.profile(),now);
         var date=businessDate(now,policy);
-        var day=repository.findWorkDay(caller.tenantId(),identity.profile().id(),date).map(SalesWorkAttendanceService::view).orElse(null);
+        var day=repository.findWorkDay(caller.tenantId(),identity.profile().id(),date).map(this::view).orElse(null);
         if(day!=null) policy=contextService.resolvePolicyVersion(caller.tenantId(),day.fieldPolicyVersionId());
         var until=date.plusDays(1).atTime(policy.businessDayCutoff()).atZone(java.time.ZoneId.of(policy.timezoneId())).toInstant();
         return new com.rigour.sales.api.v1.model.SalesWorkApiModels.AttendanceContextView(date,until,now,
-                policy.locationEnabled(),policy.locationIntervalMinutes(),policy.offlineUploadDeadlineMinutes(),day);
+                policy.locationEnabled(),policy.locationIntervalMinutes(),policy.offlineUploadDeadlineMinutes(),policy.allowResume(),day);
     }
 
     public WorkDayView workDay(LocalDate date) {
@@ -546,7 +540,7 @@ public class SalesWorkAttendanceService {
                             date,
                             row.id(),
                             "WORK_RECORDED",
-                            attendanceStatus(row, date, today, pinned.minimumWorkMinutes()),
+                            attendanceStatus(row, date, today, pinned.workHoursEnabled() ? pinned.minimumWorkMinutes() : 0),
                             row.checkedInAt(),
                             row.checkedOutAt(),
                             row.verifiedWorkMinutes(),
@@ -626,7 +620,7 @@ public class SalesWorkAttendanceService {
                                                 row.longitude(),
                                                 row.latitude(),
                                                 row.accuracyMeters(),
-                                                row.evidenceStatus()))
+                                                row.evidenceStatus(), row.resumeReason()))
                         .toList();
         List<VisitSnapshot> visitRows =
                 visitRepository.findVisitsByWorkDay(tenantId, salesProfileId, workDay.id()).stream()
@@ -639,6 +633,8 @@ public class SalesWorkAttendanceService {
                         tenantId, visitRows.stream().map(VisitSnapshot::id).toList())) {
             targets.put(target.visitId(), target);
         }
+        var revisited = visitRows.isEmpty() ? java.util.Set.<UUID>of()
+                : visitRepository.findRevisitedVisitIds(tenantId, salesProfileId, workDay.id());
         List<TrackVisitView> visits = new ArrayList<>();
         for (int index = 0; index < visitRows.size(); index++) {
             VisitSnapshot visit = visitRows.get(index);
@@ -654,11 +650,7 @@ public class SalesWorkAttendanceService {
                                                             ? clock.instant()
                                                             : visit.checkedOutAt())
                                             .toMinutes());
-            String visitType =
-                    visitRepository.existsVisitBefore(
-                                    tenantId, salesProfileId, visit.storeId(), visit.checkedInAt())
-                            ? "REVISIT"
-                            : "FIRST_VISIT";
+            String visitType = revisited.contains(visit.id()) ? "REVISIT" : "FIRST_VISIT";
             visits.add(
                     new TrackVisitView(
                             visit.id(),
@@ -761,25 +753,30 @@ public class SalesWorkAttendanceService {
 
     private record Coordinate(BigDecimal longitude, BigDecimal latitude) {}
 
-    /**
-     * 签退后同一业务日重新签到：重开同一工作日聚合（保留首次签到时间和累计工时）， 新建定位会话并追加 CHECK_IN Punch；已进入复核（非 FINISHED）的工作日不允许重开。
-     * 时间窗口和定位校验按当前生效规则执行，工作日固化的规则版本不变。
-     */
-    private WorkDayView reopenWorkDay(
-            CallerIdentity caller,
-            SalesWorkContextService.SalesIdentity identity,
-            WorkDaySnapshot finished,
-            CheckInCommand command,
-            String key,
-            Instant receivedAt) {
+    @Transactional
+    public WorkDayView resumeWork(UUID workDayId, ResumeWorkCommand command) {
+        var caller = requireCaller("sales:work-day:write");
+        if (workDayId == null || command == null || !StringUtils.hasText(command.reason()) || command.reason().trim().length() > 500)
+            throw badRequest("请填写恢复作业原因（最多500字）");
+        validateCheckInCommand(new CheckInCommand(command.idempotencyKey(), command.clientInstanceId(),
+                command.clientOccurredAt(), command.location(), command.deviceIdHash(), command.networkType()));
+        Instant receivedAt = clock.instant();
+        var identity = contextService.resolveIdentity(caller, receivedAt);
+        var finished = repository.findWorkDay(caller.tenantId(), identity.profile().id(), workDayId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.SALES_WORK_DAY_NOT_FOUND));
+        var pinned = contextService.resolvePolicyVersion(caller.tenantId(), finished.fieldPolicyVersionId());
+        String key = key(command.idempotencyKey());
+        var reservation = reserve(caller, "RESUME_WORK", key, command);
+        if (reservation.status() == Status.COMPLETED) return replayWorkDay(caller, identity.profile().id(), reservation);
+        throwIfNotReserved(reservation);
+        ensureCurrentWorkDay(finished, pinned, receivedAt);
+        if (!pinned.allowResume()) throw new BusinessException(ErrorCode.SALES_WORK_DAY_INVALID_STATE, "当前规则不允许签退后恢复作业", List.of());
+        validateLocation(command.location(), true);
         if (!"FINISHED".equals(finished.status())) {
             throw new BusinessException(
-                    ErrorCode.SALES_WORK_DAY_INVALID_STATE, "当前业务日已进入复核，不能重复签到", List.of());
+                    ErrorCode.SALES_WORK_DAY_INVALID_STATE, "当前状态不能恢复作业", List.of());
         }
         UUID sessionId = null;
-        FieldPolicy pinned =
-                contextService.resolvePolicyVersion(
-                        caller.tenantId(), finished.fieldPolicyVersionId());
         if (pinned.locationEnabled()) {
             sessionId = UUID.randomUUID();
         }
@@ -791,7 +788,7 @@ public class SalesWorkAttendanceService {
                 caller.tenantId(),
                 finished.id(),
                 "CHECK_IN",
-                deviceEventKey("check-in", key),
+                deviceEventKey("resume", key),
                 command.clientOccurredAt(),
                 receivedAt,
                 longitude(command.location()),
@@ -800,6 +797,7 @@ public class SalesWorkAttendanceService {
                 bounded(command.deviceIdHash(), 128),
                 bounded(command.networkType(), 32),
                 finished.fieldPolicyVersionId());
+        repository.setResumeReason(caller.tenantId(), finished.id(), deviceEventKey("resume", key), command.reason().trim());
         if (sessionId != null) {
             repository.insertLocationSession(
                     sessionId,
@@ -822,8 +820,8 @@ public class SalesWorkAttendanceService {
                 caller,
                 "SALES_WORK_DAY_REOPEN",
                 finished.id(),
-                Map.of("businessDate", finished.businessDate().toString()));
-        complete(caller, "CHECK_IN", key, finished.id().toString());
+                Map.of("businessDate", finished.businessDate().toString(), "reason", command.reason().trim()));
+        complete(caller, "RESUME_WORK", key, finished.id().toString());
         return view(
                 repository
                         .findWorkDay(caller.tenantId(), identity.profile().id(), finished.id())
@@ -939,7 +937,16 @@ public class SalesWorkAttendanceService {
         }
     }
 
-    private static WorkDayView view(WorkDaySnapshot snapshot) {
+    private boolean expired(WorkDaySnapshot day) {
+        if (!"ACTIVE".equals(day.status())) return false;
+        var policy = contextService.resolvePolicyVersion(SalesWorkContextService.requireTenantCaller().tenantId(), day.fieldPolicyVersionId());
+        return !clock.instant().isBefore(day.businessDate().plusDays(1).atTime(policy.businessDayCutoff()).atZone(zone(policy)).toInstant());
+    }
+
+    private WorkDayView view(WorkDaySnapshot snapshot) {
+        var policy = contextService.resolvePolicyVersion(SalesWorkContextService.requireTenantCaller().tenantId(), snapshot.fieldPolicyVersionId());
+        Instant deadline = policy.adjustmentDeadlineHours() == null ? null : snapshot.businessDate().plusDays(1)
+                .atTime(policy.businessDayCutoff()).atZone(zone(policy)).toInstant().plusSeconds(policy.adjustmentDeadlineHours() * 3600L);
         return new WorkDayView(
                 snapshot.id(),
                 snapshot.employeeId(),
@@ -947,7 +954,7 @@ public class SalesWorkAttendanceService {
                 snapshot.businessDate(),
                 snapshot.timezoneId(),
                 snapshot.fieldPolicyVersionId(),
-                snapshot.status(),
+                expired(snapshot) ? "MISSING_CHECK_OUT" : snapshot.status(),
                 snapshot.checkedInAt(),
                 snapshot.checkedOutAt(),
                 snapshot.locationSessionId(),
@@ -955,32 +962,52 @@ public class SalesWorkAttendanceService {
                 snapshot.interruptionCount(),
                 snapshot.verifiedWorkMinutes(),
                 snapshot.evidenceQuality(),
-                snapshot.hrEmployeeId() == null ? null : snapshot.hrEmployeeId().toString());
+                snapshot.hrEmployeeId() == null ? null : snapshot.hrEmployeeId().toString(),
+                workPeriods(SalesWorkContextService.requireTenantCaller().tenantId(), snapshot),
+                totalWorkMinutes(SalesWorkContextService.requireTenantCaller().tenantId(), snapshot, clock.instant()),
+                policy.allowAdjustment() && deadline != null && !clock.instant().isAfter(deadline), deadline);
     }
 
     private static LocalDate businessDate(Instant instant, FieldPolicy policy) {
         ZonedDateTime local = instant.atZone(zone(policy));
+        if (policy.effectiveFrom() != null) {
+            LocalDate firstDate = policy.effectiveFrom().atZone(zone(policy)).toLocalDate();
+            Instant firstEnd = firstDate.plusDays(1).atTime(policy.businessDayCutoff()).atZone(zone(policy)).toInstant();
+            if (!instant.isBefore(policy.effectiveFrom()) && instant.isBefore(firstEnd)) return firstDate;
+        }
         return local.toLocalTime().isBefore(policy.businessDayCutoff())
                 ? local.toLocalDate().minusDays(1)
                 : local.toLocalDate();
     }
 
-    private static void ensureWindow(FieldPolicy policy, Instant instant, boolean checkIn) {
-        LocalTime time = instant.atZone(zone(policy)).toLocalTime();
-        LocalTime start = checkIn ? policy.checkInWindowStart() : policy.checkOutWindowStart();
-        LocalTime end = checkIn ? policy.checkInWindowEnd() : policy.checkOutWindowEnd();
-        if (start != null && end != null && !withinWindow(time, start, end)) {
-            throw new BusinessException(
-                    checkIn
-                            ? ErrorCode.SALES_CHECK_IN_OUTSIDE_WINDOW
-                            : ErrorCode.SALES_CHECK_OUT_OUTSIDE_WINDOW);
-        }
+    private static void ensureCurrentWorkDay(WorkDaySnapshot day, FieldPolicy policy, Instant now) {
+        Instant end = day.businessDate().plusDays(1).atTime(policy.businessDayCutoff()).atZone(zone(policy)).toInstant();
+        if (!now.isBefore(end)) throw new BusinessException(ErrorCode.SALES_WORK_DAY_INVALID_STATE, "该作业日已结束，请进入今日作业", List.of());
     }
 
-    private static boolean withinWindow(LocalTime time, LocalTime start, LocalTime end) {
-        return start.compareTo(end) <= 0
-                ? !time.isBefore(start) && !time.isAfter(end)
-                : !time.isBefore(start) || !time.isAfter(end);
+    private List<WorkPeriodView> workPeriods(UUID tenantId, WorkDaySnapshot day) {
+        var periods = new ArrayList<WorkPeriodView>();
+        Instant start = null; String reason = null;
+        for (var event : repository.findPunchEvents(tenantId, day.id())) {
+            if ("CHECK_IN".equals(event.eventType())) { start = event.serverReceivedAt(); reason = event.resumeReason(); }
+            else if ("CHECK_OUT".equals(event.eventType()) && start != null) {
+                periods.add(new WorkPeriodView(start, event.serverReceivedAt(), reason)); start = null; reason = null;
+            }
+        }
+        if (start != null) periods.add(new WorkPeriodView(start, null, reason));
+        return List.copyOf(periods);
+    }
+
+    private int totalWorkMinutes(UUID tenantId, WorkDaySnapshot day, Instant now) {
+        var policy = contextService.resolvePolicyVersion(tenantId, day.fieldPolicyVersionId());
+        Instant cutoff = day.businessDate().plusDays(1).atTime(policy.businessDayCutoff()).atZone(zone(policy)).toInstant();
+        long seconds = 0;
+        for (var period : workPeriods(tenantId, day)) {
+            Instant end = period.endedAt();
+            if (end == null && "ACTIVE".equals(day.status()) && now.isBefore(cutoff)) end = now;
+            if (end != null) seconds += Math.max(0, Duration.between(period.startedAt(), end).getSeconds());
+        }
+        return Math.toIntExact(seconds / 60);
     }
 
     private static ZoneId zone(FieldPolicy policy) {
@@ -989,12 +1016,6 @@ public class SalesWorkAttendanceService {
         } catch (RuntimeException error) {
             throw new BusinessException(ErrorCode.SALES_POLICY_NOT_FOUND);
         }
-    }
-
-    private static int elapsedMinutes(Instant start, Instant end) {
-        if (start == null || end.isBefore(start)) return 0;
-        long minutes = Duration.between(start, end).toMinutes();
-        return (int) Math.min(Integer.MAX_VALUE, minutes);
     }
 
     private static String qualityStatus(BigDecimal accuracy, FieldPolicy policy) {

@@ -65,9 +65,7 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
         List<FieldPolicy> rows = jdbc.query("""
                 SELECT fpv.id, fp.policy_code, fp.policy_name, fpv.version_no, fpv.publish_status,
                        fpv.timezone_id, fpv.business_day_cutoff,
-                       fpv.check_in_window_start, fpv.check_in_window_end,
-                       fpv.check_out_window_start, fpv.check_out_window_end,
-                       fpv.standard_work_minutes, fpv.minimum_work_minutes, fpv.require_check_out,
+                       fpv.standard_work_minutes, fpv.minimum_work_minutes, fpv.allow_resume, fpv.work_hours_enabled,
                        fpv.allow_adjustment, fpv.adjustment_deadline_hours, fpv.location_enabled,
                        fpv.location_interval_minutes, fpv.minimum_location_accuracy_meters,
                        fpv.offline_upload_deadline_minutes, fpv.effective_from
@@ -122,9 +120,7 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
         List<FieldPolicy> rows = jdbc.query("""
                 SELECT fpv.id, fp.policy_code, fp.policy_name, fpv.version_no, fpv.publish_status,
                        fpv.timezone_id, fpv.business_day_cutoff,
-                       fpv.check_in_window_start, fpv.check_in_window_end,
-                       fpv.check_out_window_start, fpv.check_out_window_end,
-                       fpv.standard_work_minutes, fpv.minimum_work_minutes, fpv.require_check_out,
+                       fpv.standard_work_minutes, fpv.minimum_work_minutes, fpv.allow_resume, fpv.work_hours_enabled,
                        fpv.allow_adjustment, fpv.adjustment_deadline_hours, fpv.location_enabled,
                        fpv.location_interval_minutes, fpv.minimum_location_accuracy_meters,
                        fpv.offline_upload_deadline_minutes, fpv.effective_from
@@ -289,12 +285,8 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
         return new FieldPolicy(uuid(rs, "id"), rs.getString("policy_code"), rs.getString("policy_name"),
                 rs.getInt("version_no"), rs.getString("publish_status"), rs.getString("timezone_id"),
                 rs.getObject("business_day_cutoff", LocalTime.class),
-                rs.getObject("check_in_window_start", LocalTime.class),
-                rs.getObject("check_in_window_end", LocalTime.class),
-                rs.getObject("check_out_window_start", LocalTime.class),
-                rs.getObject("check_out_window_end", LocalTime.class),
                 rs.getInt("standard_work_minutes"), rs.getInt("minimum_work_minutes"),
-                rs.getBoolean("require_check_out"), rs.getBoolean("allow_adjustment"),
+                rs.getBoolean("allow_resume"), rs.getBoolean("work_hours_enabled"), rs.getBoolean("allow_adjustment"),
                 integerValue(rs.getObject("adjustment_deadline_hours")), rs.getBoolean("location_enabled"),
                 rs.getInt("location_interval_minutes"), rs.getBigDecimal("minimum_location_accuracy_meters"),
                 rs.getInt("offline_upload_deadline_minutes"), instant(rs.getTimestamp("effective_from")));

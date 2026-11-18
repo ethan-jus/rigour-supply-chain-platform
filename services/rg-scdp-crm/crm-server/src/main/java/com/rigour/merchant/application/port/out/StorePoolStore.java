@@ -12,6 +12,8 @@ public interface StorePoolStore {
     List<com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy> policyHistory(String tenant);
     com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy publishPolicy(StoreScope scope, com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Publish command);
     List<StoreMatch> lookup(StoreScope scope,String keyword,String areaCode);
+    List<IntakeCandidate> intakeCandidates(StoreScope scope, List<Poi> pois);
+    Lead lead(StoreScope scope, String id);
     Admission admit(StoreScope scope,AmapAdmission command,Poi poi,String typeCode);
     Lead resubmit(StoreScope scope,String id,Resubmit command);
     void businessStatus(StoreScope scope,String id,BusinessStatusChange command);

@@ -77,7 +77,7 @@ public class RestAmapPoiClient implements AmapPoiClient {
                         .queryParam("radius", radiusMeters)
                         .queryParam("offset", pageSize)
                         .queryParam("page", page)
-                        .queryParam("extensions", "base")
+                        .queryParam("extensions", "all")
                         .queryParam("sortrule", "distance");
                 if (StringUtils.hasText(keyword)) {
                     uriBuilder.queryParam("keywords", keyword.trim());

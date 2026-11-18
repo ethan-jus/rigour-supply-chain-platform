@@ -18,7 +18,7 @@ class HttpStorePoiClientTest {
         var trust=new ContextTrustProperties();trust.setKeysBase64(Map.of("v1",Base64.getEncoder().encodeToString(new byte[32])));
         signer=new TrustedContextSigner(trust);
         server=HttpServer.create(new InetSocketAddress("127.0.0.1",0),0);
-        server.createContext("/internal/v1/integration/store-pois",exchange->{
+        server.createContext("/internal/v1/integration",exchange->{
             request=new MockHttpServletRequest("GET",exchange.getRequestURI().getRawPath());
             request.setQueryString(exchange.getRequestURI().getRawQuery());
             exchange.getRequestHeaders().forEach((key,values)->request.addHeader(key,values.getFirst()));
@@ -49,5 +49,23 @@ class HttpStorePoiClientTest {
     @Test void unknownUpstreamFailureNeverLeaksRawDiagnostics() {
         status=500;body="private upstream secret";
         assertThatThrownBy(()->client.detail(UUID.randomUUID().toString(),"B001")).isInstanceOf(BusinessException.class).hasMessageNotContaining("secret");
+    }
+    @Test void nearbyContractMapsProviderIdentifiersAndKeepsSignedRadiusQuery() {
+        status=200;body="""
+          {"code":"OK","data":{"items":[{"poiId":"B001","name":"球馆","address":"地址","publicPhone":null,"typeCode":"080113","adcode":"330105","longitude":120.1,"latitude":30.2}],"total":1}}
+          """;
+        assertThat(client.around(UUID.randomUUID().toString(),"",120.1,30.2,1000)).singleElement().satisfies(p->{
+            assertThat(p.id()).isEqualTo("B001");assertThat(p.areaCode()).isEqualTo("330105");assertThat(p.longitude()).isEqualByComparingTo("120.1");
+        });
+        assertThat(signer.verify(request)).isTrue();assertThat(request.getQueryString()).contains("radius=1000").contains("size=20");
+    }
+    @Test void locationResolutionUsesTheCorrectCoordinateEndpoint() {
+        status=200;body="""
+          {"code":"OK","data":{"status":"RESOLVED","formattedAddress":"浙江省杭州市","adcode":"330105","amapLongitude":120.105,"amapLatitude":30.202}}
+          """;
+        assertThat(client.resolve(UUID.randomUUID().toString(),120.1,30.2,"WGS84").amapLongitude()).isEqualTo(120.105);
+        assertThat(request.getRequestURI()).endsWith("/reverse-geocode");assertThat(signer.verify(request)).isTrue();
+        client.resolve(UUID.randomUUID().toString(),120.105,30.202,"GCJ02");
+        assertThat(request.getRequestURI()).endsWith("/reverse-geocode/gcj02");assertThat(signer.verify(request)).isTrue();
     }
 }

@@ -203,15 +203,15 @@ VALUES (?, ?, ?, ?, ?, 'PRIMARY', UTC_TIMESTAMP(6) - INTERVAL 60 SECOND,
                                         new java.math.BigDecimal("120.1001000"),
                                         new java.math.BigDecimal("30.2001000"),
                                         new java.math.BigDecimal("12"),
-                                        clientTime,
+                                        Instant.now(),
                                         "FEISHU"),
                                 new LocationPointCommand(
                                         "device-point-2",
                                         new java.math.BigDecimal("120.1002000"),
                                         new java.math.BigDecimal("30.2002000"),
                                         new java.math.BigDecimal("18"),
-                                        clientTime,
-                                        "FEISHU")));
+                                        Instant.now(),
+                                        "FEISHU")), active.locationSessionId());
         var locationResult = attendanceService.uploadLocationPoints(active.id(), points);
         assertThat(locationResult.acceptedCount()).isEqualTo(2);
         assertThat(attendanceService.uploadLocationPoints(active.id(), points).acceptedCount())
@@ -290,14 +290,10 @@ VALUES (?, ?, ?, ?, ?, 'PRIMARY', UTC_TIMESTAMP(6) - INTERVAL 60 SECOND,
                         error ->
                                 assertThat(error.getErrorCode())
                                         .isEqualTo(ErrorCode.SALES_IDEMPOTENCY_CONFLICT));
-        LocationBatchCommand afterCheckout =
-                new LocationBatchCommand("location-after-checkout", points.points());
-        assertThatThrownBy(() -> attendanceService.uploadLocationPoints(active.id(), afterCheckout))
-                .isInstanceOfSatisfying(
-                        BusinessException.class,
-                        error ->
-                                assertThat(error.getErrorCode())
-                                        .isEqualTo(ErrorCode.SALES_WORK_DAY_INVALID_STATE));
+        LocationBatchCommand afterCheckout = new LocationBatchCommand("location-after-checkout", points.points(), active.locationSessionId());
+        assertThat(attendanceService.uploadLocationPoints(active.id(), afterCheckout).acceptedCount()).isZero();
+        assertThatThrownBy(() -> attendanceService.uploadLocationPoints(active.id(), new LocationBatchCommand("missing-session", points.points(), null)))
+                .hasMessageContaining("定位会话不能为空");
     }
 
     private void setCaller() {

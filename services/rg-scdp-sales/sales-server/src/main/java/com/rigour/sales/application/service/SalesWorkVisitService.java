@@ -145,6 +145,10 @@ public class SalesWorkVisitService {
         WorkDaySnapshot workDay = attendanceRepository
                 .findWorkDay(caller.tenantId(), identity.profile().id(), command.workDayId())
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_WORK_DAY_NOT_FOUND));
+        var fieldPolicy = contextService.resolvePolicyVersion(caller.tenantId(), workDay.fieldPolicyVersionId());
+        if (!receivedAt.isBefore(workDay.businessDate().plusDays(1).atTime(fieldPolicy.businessDayCutoff())
+                .atZone(java.time.ZoneId.of(workDay.timezoneId())).toInstant()))
+            throw new BusinessException(ErrorCode.SALES_VISIT_REQUIRES_ACTIVE_WORK_DAY);
         if (!"ACTIVE".equals(workDay.status())) {
             throw new BusinessException(ErrorCode.SALES_VISIT_REQUIRES_ACTIVE_WORK_DAY);
         }

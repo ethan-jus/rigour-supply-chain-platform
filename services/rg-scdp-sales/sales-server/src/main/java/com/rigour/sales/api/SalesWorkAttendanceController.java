@@ -47,6 +47,12 @@ public final class SalesWorkAttendanceController {
         return ApiResponse.success(service.uploadLocationPoints(workDayId, command));
     }
 
+    @PostMapping(SalesWorkApi.RESUME_WORK_PATH)
+    public ApiResponse<WorkDayView> resumeWork(@PathVariable("workDayId") UUID workDayId,
+            @RequestBody com.rigour.sales.api.v1.model.SalesWorkApiModels.ResumeWorkCommand command) {
+        return ApiResponse.success(service.resumeWork(workDayId, command));
+    }
+
     @PostMapping(SalesWorkApi.CHECK_OUT_PATH)
     public ApiResponse<WorkDayView> checkOut(
             @PathVariable("workDayId") UUID workDayId, @RequestBody CheckOutCommand command) {

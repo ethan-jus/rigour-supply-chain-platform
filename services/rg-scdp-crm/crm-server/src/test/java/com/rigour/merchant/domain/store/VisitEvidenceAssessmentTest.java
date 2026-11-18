@@ -10,7 +10,7 @@ class VisitEvidenceAssessmentTest {
     final Instant at=Instant.parse("2026-11-06T02:00:00Z");
     final Policy policy=new Policy("policy",500,10,1,true,600,30,true,true,true,new BigDecimal("0.9"));
     Evidence evidence(int dwell,long photos,Long audio,String audioStatus,String ai,BigDecimal score,boolean adopted){
-        return new Evidence("tenant","1","2","3","capture","EMP","policy",1,at.plusSeconds(1000),at,at.plusSeconds(dwell),at.plusSeconds(dwell),"CONTACTED","客户有采购意向",photos,audio,audioStatus,ai,score,adopted,null,null,null,"SUCCEEDED");
+        return new Evidence("tenant","1","2","3","capture","EMP","policy",1,at.plusSeconds(1000),at,at.plusSeconds(dwell),at.plusSeconds(dwell),"CONTACTED","客户有采购意向",photos,audio,audioStatus,ai,score,adopted,null,null,null,"SUCCEEDED",null);
     }
     @Test void verifiedCompleteEvidenceQualifies(){assertThat(VisitEvidenceAssessment.anomalies(policy,evidence(600,1,600000L,"TECHNICALLY_VERIFIED","AUTO_CONFIRM",BigDecimal.ONE,true))).isEmpty();}
     @Test void tenMinuteRecordingThresholdIsIndependentOfDwellAndInclusive() {
@@ -34,7 +34,7 @@ class VisitEvidenceAssessmentTest {
     }
     @Test void transcriptionFailureOrDelayDoesNotChangeObjectiveResult(){
         for(String status:java.util.List.of("PENDING","FAILED","MISSING","SUCCEEDED")){
-            var e=new Evidence("tenant","1","2","3","capture","EMP","policy",1,at.plusSeconds(1000),at,at.plusSeconds(600),at.plusSeconds(600),"CONTACTED","现场沟通",1,600000L,"TECHNICALLY_VERIFIED",null,null,false,null,null,null,status);
+            var e=new Evidence("tenant","1","2","3","capture","EMP","policy",1,at.plusSeconds(1000),at,at.plusSeconds(600),at.plusSeconds(600),"CONTACTED","现场沟通",1,600000L,"TECHNICALLY_VERIFIED",null,null,false,null,null,null,status,null);
             assertThat(VisitEvidenceAssessment.anomalies(policy,e)).as(status).isEmpty();
         }
     }

@@ -61,7 +61,7 @@ class JdbcStoreVisitFieldworkStoreTest {
         var result=f.inTx(()->contacts.create(scope,store,new StoreContactModels.Create(UUID.randomUUID().toString(),"前台小李","店员",false,null,null),now));
         assertThat(result.methods()).isEmpty();assertThat(result.wecomRelations()).isEmpty();
     }
-    Evidence cancelled(long revision) {return new Evidence(f.tenant,store,visit.ownershipId(),visit.id(),capture,"E2",policy,revision,now.plusSeconds(revision+60),visit.visitedAt(),now.plusSeconds(60),null,null,null,0,0L,null,null,null,false,null,now.plusSeconds(60),"用户取消拜访",null);}
+    Evidence cancelled(long revision) {return new Evidence(f.tenant,store,visit.ownershipId(),visit.id(),capture,"E2",policy,revision,now.plusSeconds(revision+60),visit.visitedAt(),now.plusSeconds(60),null,null,null,0,0L,null,null,null,false,null,now.plusSeconds(60),"用户取消拜访",null,null);}
     @Test void cancellationReleasesActiveVisitWithoutUpdatingStoreOrRewardingItAndLateEvidenceCannotReviveIt(){
         var before=f.store.detail(f.hangzhou("crm:store:visit-write","2"),store);
         f.inTx(()->{facts.acceptEvidence(cancelled(2),now.plusSeconds(62));return null;});
@@ -73,6 +73,17 @@ class JdbcStoreVisitFieldworkStoreTest {
         assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM crm_store_event WHERE tenant_id=? AND event_type='VISIT_CANCELLED'",Integer.class,f.tenant)).isEqualTo(1);
         assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND status_code='IN_PROGRESS'",Integer.class,f.tenant)).isZero();
         assertThat(projection.syncStatus(f.tenant,visit.id())).isEqualTo("NONE");
+    }
+    @Test void workDayCutoffReleasesVisitForReviewWithoutInventingCheckoutOrApplyingDraft() {
+        var cutoff = new Evidence(f.tenant,store,visit.ownershipId(),visit.id(),capture,"E2",policy,1,now.plusSeconds(60),visit.visitedAt(),null,null,null,null,0,0L,null,null,null,false,null,null,null,null,"WORK_DAY_CUTOFF");
+        f.inTx(()->{facts.acceptEvidence(cutoff,now.plusSeconds(61));return null;});
+        var row=f.jdbc.queryForMap("SELECT status_code,review_reason,checked_out_at,submitted_at FROM crm_visit WHERE tenant_id=? AND id=?",f.tenant,visit.id());
+        assertThat(row.get("status_code")).isEqualTo("SUBMITTED");
+        assertThat(row.get("review_reason")).isEqualTo("WORK_DAY_CUTOFF");
+        assertThat(row.get("checked_out_at")).isNull();assertThat(row.get("submitted_at")).isNull();
+        f.inTx(()->{facts.acceptEvidence(event(draft("CLOSED"),2),now.plusSeconds(601));return null;});
+        assertThat(projection.syncStatus(f.tenant,visit.id())).isEqualTo("NONE");
+        assertThat(f.jdbc.queryForObject("SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND status_code='EFFECTIVE'",Integer.class,f.tenant)).isZero();
     }
     @Test void cancellationCannotOverwriteSubmittedEvidence(){
         f.inTx(()->{facts.acceptEvidence(event(draft("OPEN"),1),now.plusSeconds(601));return null;});

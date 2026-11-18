@@ -51,11 +51,11 @@ public final class StoreVisitCaptureModels {
             String captureRef,String employeeCode,String policyId,long revision,Instant checkedAt,
             Instant checkedInAt,Instant checkedOutAt,Instant submittedAt,String contactOutcome,String resultSummary,
             long verifiedPhotoCount,Long verifiedRecordingDurationMs,String recordingEvidenceStatus,
-            String aiRecommendation,BigDecimal aiConfidenceScore,boolean aiResultAdopted,StoreVisitFieldworkModels.Accepted fieldwork,Instant cancelledAt,String cancellationReason,String transcriptionStatus) {
+            String aiRecommendation,BigDecimal aiConfidenceScore,boolean aiResultAdopted,StoreVisitFieldworkModels.Accepted fieldwork,Instant cancelledAt,String cancellationReason,String transcriptionStatus,String interruptionReason) {
         public Evidence(String tenantId,String storeId,String ownershipId,String visitId,String captureRef,String employeeCode,String policyId,long revision,Instant checkedAt,
                 Instant checkedInAt,Instant checkedOutAt,Instant submittedAt,String contactOutcome,String resultSummary,long verifiedPhotoCount,Long verifiedRecordingDurationMs,String recordingEvidenceStatus,
                 String aiRecommendation,BigDecimal aiConfidenceScore,boolean aiResultAdopted,StoreVisitFieldworkModels.Accepted fieldwork) {
-            this(tenantId,storeId,ownershipId,visitId,captureRef,employeeCode,policyId,revision,checkedAt,checkedInAt,checkedOutAt,submittedAt,contactOutcome,resultSummary,verifiedPhotoCount,verifiedRecordingDurationMs,recordingEvidenceStatus,aiRecommendation,aiConfidenceScore,aiResultAdopted,fieldwork,null,null,null);
+            this(tenantId,storeId,ownershipId,visitId,captureRef,employeeCode,policyId,revision,checkedAt,checkedInAt,checkedOutAt,submittedAt,contactOutcome,resultSummary,verifiedPhotoCount,verifiedRecordingDurationMs,recordingEvidenceStatus,aiRecommendation,aiConfidenceScore,aiResultAdopted,fieldwork,null,null,null,null);
         }
         public Evidence(String tenantId,String storeId,String ownershipId,String visitId,String captureRef,String employeeCode,String policyId,long revision,Instant checkedAt,
                 Instant checkedInAt,Instant checkedOutAt,Instant submittedAt,String contactOutcome,String resultSummary,long verifiedPhotoCount,Long verifiedRecordingDurationMs,String recordingEvidenceStatus,
