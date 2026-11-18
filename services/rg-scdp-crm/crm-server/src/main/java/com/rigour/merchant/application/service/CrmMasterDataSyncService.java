@@ -549,8 +549,8 @@ public final class CrmMasterDataSyncService {
 
     private static int maxPages(Integer value) {
         int result = value == null ? 100 : value;
-        if (result < 1 || result > 100) {
-            throw new IllegalArgumentException("maxPages必须在1到100之间");
+        if (result < 1 || result > 500) {
+            throw new IllegalArgumentException("maxPages必须在1到500之间");
         }
         return result;
     }

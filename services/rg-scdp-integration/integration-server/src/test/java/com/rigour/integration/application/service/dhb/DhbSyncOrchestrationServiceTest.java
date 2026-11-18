@@ -175,7 +175,7 @@ class DhbSyncOrchestrationServiceTest {
     }
 
     @Test
-    void scheduledChainIncludesShipmentWindowAfterSalesAndContinuesWhenBusinessRowsArePending() {
+    void scheduledChainCompletesMoneyAndDeletionChecksBeforeShipmentBackfill() {
         service = serviceWithIncrementalWindow(null, Instant.parse("2026-11-17T07:00:00Z"));
         var end = Instant.parse("2026-11-17T06:58:00Z");
         var cursor = Instant.parse("2026-11-17T06:00:00Z");
@@ -189,12 +189,16 @@ class DhbSyncOrchestrationServiceTest {
         var commands = org.mockito.ArgumentCaptor.forClass(SyncRunCommand.class);
         verify(orderSyncService, org.mockito.Mockito.times(4)).runOrderPull(any(), eq(ORDER_TASK_ID), commands.capture(), anyInt(), any());
         assertThat(commands.getAllValues()).extracting(SyncRunCommand::syncScope)
-                .containsExactly("SALES_ORDER", "SHIPMENT", "RECEIPT", "PAYMENT");
-        var shipment = commands.getAllValues().get(1);
+                .containsExactly("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT");
+        var shipment = commands.getAllValues().get(3);
         assertThat(shipment.from()).isEqualTo(cursor.minusSeconds(900));
         assertThat(shipment.to()).isEqualTo(end);
         assertThat(result.status()).isEqualTo("PARTIAL");
         verify(objectCheckpoints).completed(TENANT_ID, CONNECTOR_ID, "SHIPMENT", end, pending.runId());
+        var ordered = org.mockito.Mockito.inOrder(orderSyncService);
+        ordered.verify(orderSyncService).reconcileDeletedOrders(any(), eq(ORDER_TASK_ID), anyInt(), any());
+        ordered.verify(orderSyncService).runOrderPull(any(), eq(ORDER_TASK_ID),
+                argThat(c -> "SHIPMENT".equals(c.syncScope())), anyInt(), any());
     }
 
     @Test

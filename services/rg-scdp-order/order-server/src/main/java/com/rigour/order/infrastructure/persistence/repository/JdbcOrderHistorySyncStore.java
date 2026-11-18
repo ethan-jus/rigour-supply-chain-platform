@@ -670,11 +670,15 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
     @Override
     public List<String> knownSources(String tenant, UUID connectorId, String sourceNo) {
         require(connectorId != null, "来源连接器缺失");
+        // 分别按来源单号和历史组索引查找，避免每个来源遍历全部订单后再判断历史成员。
         return jdbc.queryForList("SELECT s.source_no FROM order_sync_source s WHERE s.tenant_id=? AND s.connector_id=?"
-                + " AND (? IS NULL OR s.source_no=?) AND EXISTS (SELECT 1 FROM order_sales_order o WHERE o.tenant_id=?"
-                + " AND (o.source_system_code='DINGHUOBAO' AND o.source_order_no COLLATE utf8mb4_general_ci=s.source_no COLLATE utf8mb4_general_ci"
-                + " OR EXISTS(SELECT 1 FROM order_history_member m WHERE m.tenant_id=? AND m.order_id=o.id AND m.group_id=s.group_id)))",
-                String.class, tenant, connectorId.toString(), sourceNo, sourceNo, tenant, tenant);
+                + " AND (? IS NULL OR s.source_no=?)"
+                + " AND (EXISTS (SELECT 1 FROM order_sales_order o WHERE o.tenant_id=s.tenant_id"
+                + " AND o.source_system_code='DINGHUOBAO' AND o.source_order_no=s.source_no)"
+                + " OR EXISTS (SELECT 1 FROM order_history_member m JOIN order_sales_order o"
+                + " ON o.tenant_id=m.tenant_id AND o.id=m.order_id"
+                + " WHERE m.tenant_id=s.tenant_id AND m.group_id=s.group_id))",
+                String.class, tenant, connectorId.toString(), sourceNo, sourceNo);
     }
 
     @Override

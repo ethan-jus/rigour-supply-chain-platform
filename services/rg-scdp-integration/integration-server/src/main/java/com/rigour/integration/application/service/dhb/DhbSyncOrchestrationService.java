@@ -845,10 +845,8 @@ public final class DhbSyncOrchestrationService {
         if (bootstrap.isBefore(Instant.parse("2026-09-03T16:00:00Z")))
             bootstrap = Instant.parse("2026-09-03T16:00:00Z");
         Instant end = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
-        // 定时业务链在原销售单之后处理发货，也复核已补齐资料的历史待处理项。
-        // 单独的订单/回款页面仍保持原有对象范围，避免顺带触发发货。
-        var scopes = includeShipments ? List.of("SALES_ORDER", "SHIPMENT", "RECEIPT", "PAYMENT")
-                : List.of("SALES_ORDER", "RECEIPT", "PAYMENT");
+        // 金额、删除状态和凭证先追平，避免发货历史补齐拖延当前订单和回款。
+        var scopes = List.of("SALES_ORDER", "RECEIPT", "PAYMENT");
         for (String type : scopes) {
             Instant cursor = objectCheckpoints.successfulTo(
                     caller.tenantId(), bucket.key.connectorId(), type);
@@ -866,7 +864,14 @@ public final class DhbSyncOrchestrationService {
             try { steps.add(orderSyncService.backfillVouchers(protectedCaller, bucket.orderTarget.taskId(), 20, progress)); }
             catch (RuntimeException error) { steps.add(failed("ORDER", "VOUCHER_BACKFILL", error)); }
         }
-
+        if (includeShipments) {
+            Instant cursor = objectCheckpoints.successfulTo(caller.tenantId(), bucket.key.connectorId(), "SHIPMENT");
+            Instant from = cursor == null ? bootstrap : cursor.minus(INCREMENTAL_OVERLAP);
+            if (from.isBefore(bootstrap)) from = bootstrap;
+            if (from.isBefore(end))
+                steps.add(runIncrementalOrderScope(protectedCaller, bucket, "SHIPMENT", from, end, pages, progress, background));
+            else steps.add(skipped("ORDER", "SHIPMENT", "该对象游标已覆盖增量窗口，无需再次拉取"));
+        }
     }
 
     /**

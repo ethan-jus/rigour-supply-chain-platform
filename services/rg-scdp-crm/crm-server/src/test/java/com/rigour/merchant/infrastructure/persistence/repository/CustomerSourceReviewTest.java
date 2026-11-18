@@ -90,6 +90,18 @@ class CustomerSourceReviewTest {
     }
 
     @Test
+    void duplicateIdentityExposesReviewActionInsteadOfProfileCompletion() {
+        source.connectorId = CrmUuidCodec.encode(connector);
+        source.sourceFieldsJson = "{}";
+        source.resolutionErrorCode = "CUSTOMER_IDENTITY_DUPLICATE";
+        when(bindings.selectList(any())).thenReturn(List.of(source));
+        var review = store.customerReviews(tenant, connector).getFirst();
+        assertThat(review.issueCode()).isEqualTo("CUSTOMER_IDENTITY_REVIEW_REQUIRED");
+        assertThat(review.issueMessage()).isEqualTo("存在同名客户，请核对是否同一客户");
+        verify(bindings, never()).update(any(), any());
+    }
+
+    @Test
     void explicitChoiceUpdatesOnlyUnresolvedSourceAndKeepsThePrimaryCustomer() {
         store.linkReviewedCustomer(tenant, connector, "SECOND", 7, 15, "核对同一门店", actor);
         verify(identities).lock(tenant.toString());
@@ -109,6 +121,23 @@ class CustomerSourceReviewTest {
                 .contains("FIRST", "核对同一门店", 7L);
         verify(customers).selectOne(any());
         verifyNoMoreInteractions(customers);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {true, false})
+    void independentReviewKeepsOnlyCustomerCreatedByThisExactSource(boolean sameSource) {
+        source.targetId = customer.getPartyId();
+        customer.setSourceSystemCode("DINGHUOBAO");
+        customer.setSourceCustomerId(sameSource ? source.sourceObjectId : "FIRST");
+        store.confirmIndependentCustomer(tenant, connector, "SECOND", 7, false, "地址核对为不同门店", actor);
+        var update = org.mockito.ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper.class);
+        verify(bindings).update(isNull(), update.capture());
+        var assignments = update.getValue().getSqlSet();
+        var target = java.util.regex.Pattern.compile("(?:^|,)target_id=#\\{ew.paramNameValuePairs.([^}]+)}").matcher(assignments);
+        assertThat(target.find()).isTrue();
+        assertThat(update.getValue().getParamNameValuePairs().get(target.group(1)))
+                .isEqualTo(sameSource ? source.targetId : null);
+        verify(customers, never()).insert(any(InternalCustomerEntity.class));
     }
 
     @Test

@@ -13,6 +13,7 @@ import com.rigour.settings.client.BusinessDictionaryBatchClient;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.web.client.RestClientResponseException;
 
 import tools.jackson.databind.json.JsonMapper;
 
@@ -300,6 +301,33 @@ class DhbShipmentLogisticsBoundaryTest {
         verify(store)
                 .markRawFailed(
                         eq(tenant), eq(raw), eq("DHB_SHIPMENT_ORDER_TARGET_MISSING"), anyString());
+        verifyNoInteractions(erp);
+    }
+
+    @Test
+    void deletedSalesTarget404IsAnExplicitMappingIssueWithoutRecreatingTheOrder() {
+        mappedSalesOrder();
+        when(order.salesOrder(any(), eq(11L)))
+                .thenThrow(new RestClientResponseException("not found", 404, "Not Found", null, null, null));
+        assertThat(run().status()).isEqualTo("PARTIAL");
+        verify(store)
+                .markRawFailed(
+                        eq(tenant), eq(raw), eq("DHB_SHIPMENT_ORDER_TARGET_MISSING"), anyString());
+        verify(order, never()).createSalesOrder(any(), any());
+        verify(order, never()).syncShipmentTransport(any(), any());
+        verifyNoInteractions(erp);
+    }
+
+    @Test
+    void unavailableSalesTargetRemainsRetryableRatherThanAMissingMapping() {
+        mappedSalesOrder();
+        when(order.salesOrder(any(), eq(11L)))
+                .thenThrow(new RestClientResponseException("unavailable", 503, "Unavailable", null, null, null));
+        assertThat(run().status()).isEqualTo("PARTIAL");
+        verify(store)
+                .markRawFailed(
+                        eq(tenant), eq(raw), eq("DHB_SHIPMENT_PROJECTION_FAILED"), anyString());
+        verify(order, never()).createSalesOrder(any(), any());
         verifyNoInteractions(erp);
     }
 

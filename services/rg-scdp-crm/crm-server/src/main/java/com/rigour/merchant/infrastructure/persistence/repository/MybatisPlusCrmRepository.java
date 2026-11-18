@@ -181,7 +181,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             problem = switch (Objects.toString(row.resolutionErrorCode, "")) {
                 case "CUSTOMER_EMPLOYEE_MAPPING_REQUIRED" -> "业务员尚未关联本系统员工";
                 case "CUSTOMER_AREA_MAPPING_REQUIRED" -> "归属地区尚未关联本系统地区";
-                case "CUSTOMER_IDENTITY_REVIEW_REQUIRED" -> "存在同名客户，请核对是否同一客户";
+                case "CUSTOMER_IDENTITY_REVIEW_REQUIRED", "CUSTOMER_IDENTITY_DUPLICATE" -> "存在同名客户，请核对是否同一客户";
                 default -> problem;
             };
             var fields = jsonMap(row.sourceFieldsJson);
@@ -191,7 +191,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             result.add(new com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Review(uuid(row.connectorId),
                     row.sourceObjectId, first(row.sourceCode, row.sourceObjectId), row.sourceName,
                     value(fields, "staffName"), first(value(fields,"clientAreaName"), value(fields,"clientCity")),
-                    absentOwner ? "CUSTOMER_OWNER_REQUIRED" : Boolean.TRUE.equals(row.independentConfirmed) && "UNRESOLVED".equals(row.bindingStatus) ? "CUSTOMER_REVIEW_SAVED" : first(row.resolutionErrorCode, "CUSTOMER_PROFILE_INCOMPLETE"),
+                    absentOwner ? "CUSTOMER_OWNER_REQUIRED" : Boolean.TRUE.equals(row.independentConfirmed) && "UNRESOLVED".equals(row.bindingStatus) ? "CUSTOMER_REVIEW_SAVED" : "CUSTOMER_IDENTITY_DUPLICATE".equals(row.resolutionErrorCode) ? "CUSTOMER_IDENTITY_REVIEW_REQUIRED" : first(row.resolutionErrorCode, "CUSTOMER_PROFILE_INCOMPLETE"),
                     problem, row.revision == null ? 0 : row.revision));
         }
         return result;
@@ -261,12 +261,16 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         }
         if (clean(source.primaryCustomerSourceId) != null || !"UNRESOLVED".equals(source.bindingStatus))
             throw new BusinessException(ErrorCode.CONFLICT, "只允许确认尚未关联的来源客户，不能拆开既有客户绑定", List.of());
+        var existing = source.targetId == null ? null : internalCustomerByPartyId(tenantId, uuid(source.targetId));
+        // 已由该来源建立的客户只补独立门店证据，保留客户身份及已有订单引用。
+        boolean keepTarget = existing != null && SOURCE_SYSTEM.equals(existing.getSourceSystemCode())
+                && source.sourceObjectId.equals(existing.getSourceCustomerId());
         if (bindingMapper.update(null, Wrappers.<SourceBindingEntity>update()
                 .eq("tenant_id", bytes(tenantId)).eq("connector_id", bytes(connectorId))
                 .eq("id", source.id).eq("revision", revision).eq("deleted", 0)
                 .set("independent_confirmed", true).set("unresolved_owner_allowed", allowUnmappedOwner)
                 .set("independence_evidence", evidence).set("independence_actor", actorId.toString())
-                .set("independence_previous_target_id", source.targetId).set("target_id", null)
+                .set("independence_previous_target_id", source.targetId).set("target_id", keepTarget ? source.targetId : null)
                 .set("resolution_error_code", "CUSTOMER_REVIEW_SAVED")
                 .set("resolution_error_message", "核对结果已保存，等待系统复核")
                 .set("independence_confirmed_at", now()).set("updated_by", actorId.toString())

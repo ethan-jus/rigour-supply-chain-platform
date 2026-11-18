@@ -461,8 +461,9 @@ class CrmMasterDataSyncServiceTest {
                 org.mockito.ArgumentMatchers.anyInt(), any(), any());
     }
 
-    @Test
-    void customerIncrementalRefreshesAreasUnderSameLeaseBeforeUsingOverlapAndCommittingCursor() {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {10, 500})
+    void customerIncrementalRefreshesAreasUnderSameLeaseBeforeUsingOverlapAndCommittingCursor(int maxPages) {
         var client = mock(DhbCrmMasterDataClient.class);
         var store = mock(CrmMasterDataStore.class);
         var dictionaries = mock(CrmDictionaryCoverageService.class);
@@ -472,28 +473,28 @@ class CrmMasterDataSyncServiceTest {
         emptyAreaRefresh(client, store);
         var area = new SourceRecord("NEW-AREA", null, "新地区", null, null, null,
                 Map.of("AreaName", "新地区"));
-        when(client.collect(any(), eq(CONNECTOR_ID), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(10)))
+        when(client.collect(any(), eq(CONNECTOR_ID), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(maxPages)))
                 .thenReturn(new Collected(CrmMasterDataObjectType.CUSTOMER_AREA, 1, 1, List.of(area)));
         when(store.importRecords(any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(List.of(area))))
                 .thenReturn(List.of(ImportResult.createdOne()));
         Instant cursor = Instant.parse("2026-09-15T16:00:00Z");
         when(store.customerSyncCursor(TENANT_ID, CONNECTOR_ID)).thenReturn(cursor);
-        when(store.startRun(any(), any(), any(), any(), any(), eq(10), any())).thenReturn(UUID.randomUUID());
-        when(client.collect(any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), eq(10), eq(cursor.minusSeconds(300)), any()))
+        when(store.startRun(any(), any(), any(), any(), any(), eq(maxPages), any())).thenReturn(UUID.randomUUID());
+        when(client.collect(any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), eq(maxPages), eq(cursor.minusSeconds(300)), any()))
                 .thenReturn(new Collected(CrmMasterDataObjectType.CUSTOMER, 0, 1, List.of()));
         when(dictionaries.sync(any(), any())).thenReturn(Audit.empty());
         when(store.completeCustomerWindow(any(), any(), any(), any(), any())).thenAnswer(v -> v.getArgument(3));
-        var result = service.runSelected(scheduledCaller(), CONNECTOR_ID, TASK_ID, 10, null, null, "CUSTOMER", true, null);
+        var result = service.runSelected(scheduledCaller(), CONNECTOR_ID, TASK_ID, maxPages, null, null, "CUSTOMER", true, null);
         assertThat(result.status()).isEqualTo("SUCCEEDED");
         assertThat(result.objects()).extracting(object -> object.objectType())
                 .containsExactly("CUSTOMER_AREA", "CUSTOMER");
         assertThat(result.objects().getFirst().created()).isEqualTo(1);
         var order = inOrder(client, store, guard);
-        order.verify(client).collect(any(), eq(CONNECTOR_ID), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(10));
+        order.verify(client).collect(any(), eq(CONNECTOR_ID), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(maxPages));
         order.verify(store).importRecords(any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), eq(List.of(area)));
         order.verify(guard).ensureActive();
         order.verify(store).completeRun(any(), any(), any(), eq(CrmMasterDataObjectType.CUSTOMER_AREA), any(), eq(false));
-        order.verify(client).collect(any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), eq(10), eq(cursor.minusSeconds(300)), any());
+        order.verify(client).collect(any(), any(), eq(CrmMasterDataObjectType.CUSTOMER), eq(maxPages), eq(cursor.minusSeconds(300)), any());
         order.verify(guard).ensureActive();
         order.verify(store).completeCustomerWindow(any(), any(), any(), any(), any());
         verify(lease).executeWithLeaseGuard(eq(TENANT_ID), eq(CONNECTOR_ID), any());

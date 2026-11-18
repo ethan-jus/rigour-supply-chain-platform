@@ -75,6 +75,7 @@ import com.rigour.shared.core.sync.ExternalSourceCodes;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -2462,9 +2463,17 @@ public final class DhbOrderSyncService {
                         Map.of("required", "SALES_ORDER mapping"),
                         Map.of("sourceOrderNo", sourceOrderNo));
             }
-            var salesOrder =
-                    orderProjectionClient.salesOrder(
-                            orderServiceCaller(caller.tenantId()), salesMapping.internalObjectId());
+            SalesOrderDetailView salesOrder;
+            try {
+                salesOrder =
+                        orderProjectionClient.salesOrder(
+                                orderServiceCaller(caller.tenantId()),
+                                salesMapping.internalObjectId());
+            } catch (RestClientResponseException error) {
+                // 已删除的映射目标需要复核，不能作为临时故障无限重试或重新创建订单。
+                if (error.getStatusCode().value() != 404) throw error;
+                salesOrder = null;
+            }
             if (salesOrder == null)
                 throw new ProjectionRejected(
                         "DHB_SHIPMENT_ORDER_TARGET_MISSING",

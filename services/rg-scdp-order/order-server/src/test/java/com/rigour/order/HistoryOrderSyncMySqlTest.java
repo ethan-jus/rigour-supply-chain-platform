@@ -52,6 +52,23 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
         org.assertj.core.api.Assertions.assertThat(store.knownSources(tenant,java.util.UUID.randomUUID(),null)).isEmpty();
     }
 
+    @org.junit.jupiter.api.Test
+    void knownSourcesKeepDeletedOrdersAndDeduplicateDirectAndHistoricalLinks() {
+        order(1, 1, "78", "0", "1");
+        order(2, 1, "78", "0", "1");
+        intake("HISTORY", 1, "78", "1");
+        intake("DELETED", 1, "78", "1");
+        intake("UNLINKED", 1, "78", "1");
+        bind(java.util.List.of("HISTORY"), java.util.List.of(base(1, "0")));
+        db.update("UPDATE order_sales_order SET source_system_code='DINGHUOBAO',source_order_no='HISTORY' WHERE id=1");
+        db.update("UPDATE order_sales_order SET source_system_code='DINGHUOBAO',source_order_no='DELETED',order_status_code='DELETED' WHERE id=2");
+        org.assertj.core.api.Assertions.assertThat(store.knownSources(tenant, connector, null))
+                .containsExactlyInAnyOrder("HISTORY", "DELETED");
+        org.assertj.core.api.Assertions.assertThat(store.knownSources(tenant, connector, "DELETED"))
+                .containsExactly("DELETED");
+        org.assertj.core.api.Assertions.assertThat(store.knownSources(tenant, connector, "UNLINKED")).isEmpty();
+    }
+
     private void cancellationColumns() {
         db.execute("ALTER TABLE order_sales_order ADD updated_by VARCHAR(64), ADD source_status_code VARCHAR(64), ADD source_updated_at DATETIME(6), ADD created_by VARCHAR(64), ADD data_quality_status_code VARCHAR(32), ADD data_quality_message VARCHAR(256), MODIFY id BIGINT AUTO_INCREMENT, ADD UNIQUE KEY uk_test_id(id)");
         db.execute("ALTER TABLE order_sales_order_line ADD revision INT DEFAULT 0, ADD updated_by VARCHAR(64), ADD updated_time TIMESTAMP");
