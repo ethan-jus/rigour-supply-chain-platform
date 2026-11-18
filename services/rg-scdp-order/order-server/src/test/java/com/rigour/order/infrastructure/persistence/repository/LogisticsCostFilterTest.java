@@ -12,15 +12,22 @@ import org.junit.jupiter.api.*;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.mysql.MySQLContainer;
 
 import tools.jackson.databind.json.JsonMapper;
 
 import java.nio.file.*;
 import java.util.*;
-import java.util.regex.Pattern;
 
-/** 执行真实 MyBatis 查询，验证字段交集及权限；H2 仅补足查询使用的 JSON 函数。 */
+/** 在隔离 MySQL 执行真实 MyBatis 查询，验证 JSON_TABLE、字段交集及权限。 */
+@Testcontainers(disabledWithoutDocker = true)
 public class LogisticsCostFilterTest {
+    @Container
+    static final MySQLContainer MYSQL =
+            new MySQLContainer("mysql:8.4").withUsername("root").withPassword("fixture-password");
+
     static final JsonMapper JSON = JsonMapper.builder().build();
     SingleConnectionDataSource ds;
     JdbcTemplate jdbc;
@@ -30,51 +37,36 @@ public class LogisticsCostFilterTest {
     void setup() throws Exception {
         ds =
                 new SingleConnectionDataSource(
-                        "jdbc:h2:mem:cost_"
-                                + UUID.randomUUID()
-                                + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE",
-                        "sa",
-                        "",
+                        MYSQL.getJdbcUrl(),
+                        MYSQL.getUsername(),
+                        MYSQL.getPassword(),
                         true);
         jdbc = new JdbcTemplate(ds);
+        jdbc.execute(
+                "DROP TABLE IF EXISTS order_logistics_cost, order_logistics_import_order,"
+                        + " order_transport_shipment_source");
         String ddl =
                 Files.readString(
                         Path.of("src/main/resources/db/migration/V54__order_logistics_cost.sql"));
         ddl = ddl.substring(ddl.indexOf("CREATE TABLE order_logistics_cost ("));
-        ddl =
-                ddl.substring(0, ddl.indexOf(';') + 1)
-                        .replace(
-                                "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci",
-                                "")
-                        .replace(" JSON ", " LONGTEXT ");
+        ddl = ddl.substring(0, ddl.indexOf(';') + 1);
         jdbc.execute(ddl);
-        jdbc.execute("ALTER TABLE order_logistics_cost DROP CONSTRAINT ck_cost_status");
+        jdbc.execute("ALTER TABLE order_logistics_cost DROP CHECK ck_cost_status");
         jdbc.execute(
                 "ALTER TABLE order_logistics_cost ADD CONSTRAINT ck_cost_status CHECK(status_code"
                         + " IN ('ACTIVE','VOID'))");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN deleted INT NOT NULL DEFAULT 0");
 
-        for (String name : List.of("extract", "unquote", "search")) {
-            String function =
-                    name.equals("extract")
-                            ? "JSON_EXTRACT"
-                            : name.equals("unquote") ? "JSON_UNQUOTE" : "JSON_SEARCH";
-            jdbc.execute(
-                    "CREATE ALIAS "
-                            + function
-                            + " FOR 'com.rigour.order.infrastructure.persistence.repository.LogisticsCostFilterTest."
-                            + name
-                            + "'");
-        }
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN source_system VARCHAR(20)");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN tracking_no VARCHAR(100)");
         jdbc.execute(
                 "CREATE TABLE order_logistics_import_order(id VARCHAR(50) PRIMARY KEY, tenant_id"
                         + " VARCHAR(50),cost_id VARCHAR(50),source_json LONGTEXT,latest_source_json"
-                        + " LONGTEXT)");
+                        + " LONGTEXT) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
         jdbc.execute(
                 "CREATE TABLE order_transport_shipment_source(tenant_id VARCHAR(50),cost_id"
-                        + " VARCHAR(50),latest_json LONGTEXT)");
+                        + " VARCHAR(50),latest_json LONGTEXT) DEFAULT CHARSET=utf8mb4"
+                        + " COLLATE=utf8mb4_general_ci");
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(OrderLogisticsCostMapper.class);
@@ -349,53 +341,5 @@ public class LogisticsCostFilterTest {
                                 null, null, null, name),
                         "cost:read")
                 .total();
-    }
-
-    public static String extract(String text, String path) {
-        Object value = JSON.readValue(text, Object.class);
-        for (String key : path.substring(2).split("\\.")) {
-            if (!(value instanceof Map<?, ?> map)) return null;
-            value = map.get(key.startsWith("\"") ? JSON.readValue(key, String.class) : key);
-        }
-        return value == null ? null : JSON.writeValueAsString(value);
-    }
-
-    public static String unquote(String value) {
-        return value == null ? null : JSON.readValue(value, String.class);
-    }
-
-    /** H2 仅补足 MySQL JSON_SEARCH 使用的路径子集；不是生产查询实现。 */
-    public static String search(
-            String text, String mode, String like, String escape, String... paths) {
-        StringBuilder regex = new StringBuilder();
-        for (int i = 0; i < like.length(); i++) {
-            char c = like.charAt(i);
-            if (c == '\\' && i + 1 < like.length())
-                regex.append(Pattern.quote(String.valueOf(like.charAt(++i))));
-            else regex.append(c == '%' ? ".*" : c == '_' ? "." : Pattern.quote(String.valueOf(c)));
-        }
-        if (text == null) return null;
-        Object root = JSON.readValue(text, Object.class);
-        for (String path : paths) {
-            List<Object> values = new ArrayList<>();
-            values.add(root);
-            for (String part : path.substring(1).replaceFirst("^\\.", "").split("\\.")) {
-                List<Object> next = new ArrayList<>();
-                String key = part.replace("[*]", "");
-                for (Object value : values) {
-                    Object field =
-                            key.isEmpty()
-                                    ? value
-                                    : value instanceof Map<?, ?> map ? map.get(key) : null;
-                    if (part.endsWith("[*]") && field instanceof List<?> list) next.addAll(list);
-                    else if (field != null) next.add(field);
-                }
-                values = next;
-            }
-            if (values.stream()
-                    .anyMatch(v -> v instanceof String && v.toString().matches(regex.toString())))
-                return "match";
-        }
-        return null;
     }
 }
