@@ -402,6 +402,40 @@ class CostDashboardServiceTest {
     }
 
     @Test
+    void incompleteTransportsOnlyContributeDistinctCurrentPeriodNoticeCounts() {
+        var normalizer = new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
+                JsonMapper.builder().build());
+        var rows = new ArrayList<CostFact>();
+        for (String id : List.of("COMPLETE", "PENDING-A", "PENDING-B", "PENDING-B-SPLIT", "OLD", "VOID")) {
+            var raw = new HashMap<String, String>();
+            raw.put("id", id);
+            raw.put("document_no", id);
+            raw.put("title", "运输费用");
+            raw.put("amount", "COMPLETE".equals(id) ? "55.31" : "999.00");
+            raw.put("status_code", "COMPLETE".equals(id) ? "CONFIRMED" : "VOID".equals(id) ? "VOID" : "DRAFT");
+            raw.put("cost_date", "OLD".equals(id) ? "2026-09-01" : "2026-10-01");
+            raw.put("payer_code", "COMPANY");
+            raw.put("revision", "1");
+            raw.put("data_json", "{}");
+            var fact = normalizer.normalize("ORDER", raw, List.of(), Map.of());
+            if (id.startsWith("PENDING-B")) {
+                var dims = new HashMap<>(fact.dimensions());
+                dims.put("rootSourceId", new CostFact.Dimension("B", "B", false));
+                fact = fact.withDimensions(dims);
+            }
+            rows.add(fact);
+        }
+        useFacts(rows);
+        var q = query(null, "freight", "current", "ALL");
+        var report = service.overview(q);
+        assertThat(report.meta().pendingCounts()).containsEntry("freight", 2L);
+        assertThat(report.current().amount()).isEqualTo("55.31");
+        assertThat(service.records(q).items()).hasSize(1);
+        assertThat(CostDashboardExportService.csv(service.context(q), service.matching(service.context(q))))
+                .doesNotContain("PENDING", "999.00", "VOID");
+    }
+
+    @Test
     void removingExpensePermissionRemovesItsAmountsFromEveryAggregate() {
         sources.remove("expense");
         authorize(null);

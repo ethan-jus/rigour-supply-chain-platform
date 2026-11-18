@@ -23,6 +23,16 @@ class LogisticsLedgerRulesTest {
             """;
 
     @Test
+    void positiveOrNegativeDiscountIsSubtractedExactlyOnce() {
+        var fee = new LogisticsCostLedger.ManualBillItem("基础运费", new BigDecimal("65.31"));
+        for (String amount : List.of("10.00", "-10.00")) {
+            var discount = new LogisticsCostLedger.ManualBillItem("优惠", new BigDecimal(amount));
+            assertThat(LogisticsLedgerRules.manualBillTotal(List.of(fee, discount)))
+                    .isEqualByComparingTo("55.31");
+        }
+    }
+
+    @Test
     void thirdPartyOrderNumberIsIndependentOfCarrierAndWaybill() {
         for (String carrier : java.util.List.of("HLL", "SF", "JT_NEW")) {
             var ledger =

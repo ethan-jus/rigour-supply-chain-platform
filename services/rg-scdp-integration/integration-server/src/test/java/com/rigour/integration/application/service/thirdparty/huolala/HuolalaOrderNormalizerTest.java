@@ -51,6 +51,27 @@ class HuolalaOrderNormalizerTest {
     }
 
     @Test
+    void grossCouponBillRequiresBothPaymentAndItemReconciliation() {
+        var l = list(); l.put("coupon_fen", 1000);
+        var d = detail();
+        var item = (ObjectNode) d.at("/order_detail_item/order_item");
+        item.put("price_fen", 6531).put("paid_amount", 5531);
+        var fees = item.putArray("order_price_arr");
+        fees.addObject().put("type", 1).put("bill_name", "运费一口价").put("price_fen", 6531);
+        fees.addObject().put("type", 3).put("bill_name", "货运券抵扣").put("price_fen", -1000);
+        var order = HuolalaOrderNormalizer.normalize(c, l, d, "raw", null, null);
+        assertThat(order.facts().orderAmount()).isEqualByComparingTo("65.31");
+        assertThat(order.facts().billAmount()).isEqualByComparingTo("55.31");
+        assertThat(order.facts().billState()).isEqualTo("FINAL");
+        item.put("price_fen", 5531);
+        assertThat(HuolalaOrderNormalizer.normalize(c, l, d, "net", null, null).facts().billAmount())
+                .isEqualByComparingTo("55.31");
+        item.put("price_fen", 6531); fees.removeAll();
+        assertThat(HuolalaOrderNormalizer.normalize(c, l, d, "missing", null, null).facts().billState())
+                .isEqualTo("REVIEW");
+    }
+
+    @Test
     void projectsEnterpriseBusinessDetailsWithExplicitUnitsAndNoExtraCost() {
         var d = detail();
         var item = (ObjectNode) d.at("/order_detail_item/order_item");

@@ -46,6 +46,19 @@ class ManualLogisticsCostTest {
         TestAuthorizationContext.clear();
     }
 
+    @Test
+    void voidPermissionDoesNotAuthorizeDeletingTransportRecords() {
+        var actor = AuthorizationContext.requireCurrent();
+        for (var permission : Set.of("order:logistics-cost:read", "order:logistics-cost:void", "order:logistics-cost:write")) {
+            TestAuthorizationContext.set(new CallerIdentity(actor.principalScope(), actor.principalId(),
+                    actor.tenantId(), actor.userId(), actor.platformUserId(), actor.sessionId(),
+                    actor.sessionVersion(), actor.userSecurityVersion(), actor.tenantPolicyVersion(), Set.of(), Set.of(permission)));
+            assertThatThrownBy(() -> service.lifecycle("logistics", "C1", new LogisticsCostActionCommand(1, "删除已作废记录"), true))
+                    .isInstanceOf(AuthorizationDeniedException.class);
+        }
+        verifyNoInteractions(store);
+    }
+
     LogisticsCostCommand command(String mode, String sources, String extra) {
         return json.readValue(
                 "{\"requestId\":\""

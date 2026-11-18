@@ -153,7 +153,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         + ledgerPath
                         + ".manualName','"
                         + ledgerPath
-                        + ".partyCode') IS NOT NULL OR"
+                        + ".partyCode','" + ledgerPath + ".displayName','" + ledgerPath + ".address') IS NOT NULL OR"
                         + " JSON_SEARCH(data_json,'one',{1},NULL,'$.logistics.externalDocuments[*]."
                         + field
                         + "') IS NOT NULL)",
@@ -289,7 +289,27 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                     pattern);
         }
         if (text(filter.senderName())) partyFilter(q, "senderName", filter.senderName());
-        if (text(filter.receiverName())) partyFilter(q, "receiverName", filter.receiverName());
+        if (text(filter.receiverName())) {
+            // 未关联平台订单还没有本系统收货点，必须同时查询平台原始路线；不把发货地当收货地。
+            q.and(w -> w.nested(local -> partyFilter(local, "receiverName", filter.receiverName()))
+                    .or().apply("EXISTS(SELECT 1 FROM order_logistics_import_order i JOIN"
+                            + " JSON_TABLE(COALESCE(i.latest_source_json,i.source_json),'$.facts.stops[*]'"
+                            + " COLUMNS(pos FOR ORDINALITY,stop_name VARCHAR(500) PATH '$.name',"
+                            + " stop_address VARCHAR(1000) PATH '$.address')) p"
+                            + " WHERE i.tenant_id=order_logistics_cost.tenant_id AND i.cost_id=order_logistics_cost.id"
+                            + " AND p.pos>1 AND (LOCATE({0},p.stop_name)>0 OR LOCATE({0},p.stop_address)>0))",
+                            filter.receiverName().trim()));
+        }
+        if (Boolean.TRUE.equals(filter.salesSelectable())) {
+            q.eq("status_code", "ACTIVE").eq("carrier_code", "HLL").eq("source_system", "HUOLALA")
+                    .and(w -> w.isNull("type_code").or().eq("type_code", "DELIVERY"))
+                    .apply("EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
+                            + " i.tenant_id=order_logistics_cost.tenant_id AND i.cost_id=order_logistics_cost.id"
+                            + " AND i.source_channel='API' AND JSON_UNQUOTE(JSON_EXTRACT("
+                            + " COALESCE(i.latest_source_json,i.source_json),'$.status'))='已完成')");
+            if (filter.dateFrom() != null) q.apply(transportTimeSql() + ">={0}", filter.dateFrom().atStartOfDay());
+            if (filter.dateTo() != null) q.apply(transportTimeSql() + "<{0}", filter.dateTo().plusDays(1).atStartOfDay());
+        }
         if (text(filter.carrierName()))
             q.apply(
                     "LOCATE({0},COALESCE(JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.logistics.carrierName')),''))>0",
@@ -348,8 +368,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         text(filter.ownerEmployeeCode()),
                         "owner_employee_code",
                         filter.ownerEmployeeCode())
-                .ge(filter.dateFrom() != null, "cost_date", filter.dateFrom())
-                .le(filter.dateTo() != null, "cost_date", filter.dateTo());
+                .ge(!Boolean.TRUE.equals(filter.salesSelectable()) && filter.dateFrom() != null, "cost_date", filter.dateFrom())
+                .le(!Boolean.TRUE.equals(filter.salesSelectable()) && filter.dateTo() != null, "cost_date", filter.dateTo());
         return q;
     }
 

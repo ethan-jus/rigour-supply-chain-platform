@@ -91,7 +91,7 @@ public final class OrderLogisticsLedgerService {
                         nos,
                         action,
                         historical);
-        return salesViews(documents, action);
+        return salesViews(documents, action, null, !historical);
     }
 
     private List<LogisticsCostSourceView> salesViews(
@@ -119,6 +119,12 @@ public final class OrderLogisticsLedgerService {
             List<OrderDeliveryCostSourceView> documents,
             String action,
             Map<String, LogisticsCostEmployeeView> directory) {
+        return salesViews(documents, action, directory, true);
+    }
+
+    private List<LogisticsCostSourceView> salesViews(
+            List<OrderDeliveryCostSourceView> documents, String action,
+            Map<String, LogisticsCostEmployeeView> directory, boolean validateCity) {
         List<LogisticsCostSourceView> result = new ArrayList<>();
         boolean needsDepartment =
                 documents.stream()
@@ -135,13 +141,13 @@ public final class OrderLogisticsLedgerService {
                                 ? employeeDirectory(action)
                                 : Map.<String, LogisticsCostEmployeeView>of();
         var operatingCities =
-                documents.isEmpty() ? Map.<String, String>of() : references.cities(action);
+                documents.isEmpty() || !validateCity ? Map.<String, String>of() : references.cities(action);
         Map<Long, LogisticsLedgerPartyView> warehouses = new HashMap<>();
         Map<String, Map<String, LogisticsLedgerPartyView>> customers = new HashMap<>();
         Map<String, Set<String>> byCity = new LinkedHashMap<>();
         for (var source : documents)
             if (source.cityCode() != null
-                    && operatingCities.containsKey(source.cityCode())
+                    && (!validateCity || operatingCities.containsKey(source.cityCode()))
                     && source.customerCode() != null
                     && (source.contactName() == null
                             || source.contactPhone() == null
@@ -194,7 +200,7 @@ public final class OrderLogisticsLedgerService {
                             ? null
                             : customers.getOrDefault(s.cityCode(), Map.of()).get(s.customerCode());
             String issue =
-                    s.cityCode() == null || !operatingCities.containsKey(s.cityCode())
+                    s.cityCode() == null || validateCity && !operatingCities.containsKey(s.cityCode())
                             ? "销售订单归属城市未配置或不在可用范围，请先维护原单归属"
                             : null;
             String contactName =

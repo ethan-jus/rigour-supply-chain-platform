@@ -174,7 +174,8 @@ public final class OrderLogisticsCostService {
                                 q.platformEmployeeName(),
                                 q.employeeRelationState(),
                                 q.contactPhone(),
-                                q.mappedEmployeeCode()),
+                                q.mappedEmployeeCode(),
+                                q.salesSelectable()),
                         p);
         var rows = withBusinessStatuses(page.items(), p);
         return page.withItems(
@@ -350,7 +351,7 @@ public final class OrderLogisticsCostService {
     public LogisticsCostDetailView lifecycle(
             String value, String id, LogisticsCostActionCommand command, boolean delete) {
         if (!delete) throw bad("运输记录保存即生效，无需撤销确认");
-        String category = category(value), p = permission(category, delete ? "void" : "confirm");
+        String category = category(value), p = permission(category, delete ? "delete" : "confirm");
         var caller = actor(p);
         if (command == null || command.revision() < 1) throw bad("缺少费用版本");
         required(command.reason(), 500, delete ? "删除原因" : "撤销原因");

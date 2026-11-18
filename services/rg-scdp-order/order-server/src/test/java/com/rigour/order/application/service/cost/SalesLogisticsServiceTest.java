@@ -121,6 +121,30 @@ class SalesLogisticsServiceTest {
     }
 
     @Test
+    void salesSummaryExcludesVoidAndOnlyCountsCompleteSharesAsCost() {
+        var complete = costForSummary("C1", "ACTIVE", "15.53");
+        var incomplete = costForSummary("C2", "ACTIVE", "20.00");
+        var cancelled = costForSummary("C3", "VOID", "100.00");
+        when(costs.linkedSales(tenant.toString(), "SO001", "order:logistics-cost:read"))
+                .thenReturn(List.of(complete, incomplete, cancelled));
+        when(costs.businessStatuses(tenant.toString(), List.of("C1", "C2"), "order:logistics-cost:read"))
+                .thenReturn(Map.of("C1", "COMPLETE", "C2", "INCOMPLETE"));
+        when(platform.byCosts(tenant.toString(), List.of("C1", "C2"))).thenReturn(Map.of());
+        var result = service.context(11L);
+        assertThat(result.transports()).extracting(r -> r.record().id()).containsExactly("C1", "C2");
+        assertThat(result.allocatedAmount()).isEqualByComparingTo("35.53");
+        assertThat(result.confirmedAmount()).isEqualByComparingTo("15.53");
+    }
+
+    LogisticsCostDetailView costForSummary(String id, String status, String amount) {
+        return json.readValue(
+                """
+                {"id":"%s","revision":1,"statusCode":"%s","data":{"amount":%s,"ledger":{"schemaVersion":1,"sources":[
+                  {"orderCode":"SO001","linkRoleCode":"COST","allocations":[{"amount":%s}]}]}}}
+                """.formatted(id, status, amount, amount), LogisticsCostDetailView.class);
+    }
+
+    @Test
     void choosingCompletedPlatformOrderKeepsSameCostIdentityAndFixesSalesPurpose() {
         var old =
                 json.readValue(

@@ -35,7 +35,46 @@ public record LogisticsCostQuery(
         String platformEmployeeName,
         String employeeRelationState,
         String contactPhone,
-        String mappedEmployeeCode) {
+        String mappedEmployeeCode,
+        Boolean salesSelectable) {
+    public LogisticsCostQuery(
+        int begin,
+        int step,
+        String documentNo,
+        String title,
+        String remark,
+        String trackingNo,
+        String sourceDocumentNo,
+        String typeCode,
+        String cityCode,
+        String statusCode,
+        String paymentStatusCode,
+        LocalDate dateFrom,
+        LocalDate dateTo,
+        Long warehouseId,
+        String ownerEmployeeCode,
+        String objectName,
+        String sourceSystem,
+        String payerCode,
+        Boolean missingAmount,
+        String senderName,
+        String receiverName,
+        String carrierName,
+        String costMonth,
+        String orderTypeCode,
+        String carrierCode,
+        String sourceEmployeeName,
+        String sourceDepartmentName,
+        String relationState,
+        String platformOrderNo,
+        String platformEmployeeName,
+        String employeeRelationState,
+        String contactPhone,
+        String mappedEmployeeCode
+    ) {
+        this(begin, step, documentNo, title, remark, trackingNo, sourceDocumentNo, typeCode, cityCode, statusCode, paymentStatusCode, dateFrom, dateTo, warehouseId, ownerEmployeeCode, objectName, sourceSystem, payerCode, missingAmount, senderName, receiverName, carrierName, costMonth, orderTypeCode, carrierCode, sourceEmployeeName, sourceDepartmentName, relationState, platformOrderNo, platformEmployeeName, employeeRelationState, contactPhone, mappedEmployeeCode, null);
+    }
+
     public LogisticsCostQuery(
             int begin,
             int step,

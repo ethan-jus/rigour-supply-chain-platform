@@ -247,6 +247,21 @@ public class CostDashboardService {
                         .toList();
         String dataState =
                 "FAILED".equals(state.status()) || state.succeededAt() == null ? "STALE" : "READY";
+        // 待完善记录只提示数量，绝不混入金额、图表、对比或成本明细。
+        var currentPending = latest.records().stream().filter(a::visible)
+                .filter(r -> "DRAFT".equals(r.status()))
+                .map(CostFact::key).collect(java.util.stream.Collectors.toSet());
+        var pendingCounts = new java.util.LinkedHashMap<String, Long>();
+        snapshot.records().stream().filter(a::visible)
+                .filter(r -> "DRAFT".equals(r.status()) && currentPending.contains(r.key()))
+                .filter(r -> r.inPeriod(p, false))
+                .filter(r -> f.city() == null || f.city().equals(r.city()))
+                .filter(r -> f.department() == null || f.department().equals(r.dashboardDepartment())
+                        || r.dashboardDepartmentPath().contains(f.department()))
+                .collect(java.util.stream.Collectors.groupingBy(CostFact::category,
+                        java.util.stream.Collectors.mapping(CostFact::documentKey,
+                                java.util.stream.Collectors.toSet())))
+                .forEach((category, documents) -> pendingCounts.put(category, (long) documents.size()));
         CostDashboardMeta meta =
                 new CostDashboardMeta(
                         "cost-v11",
@@ -261,7 +276,8 @@ public class CostDashboardService {
                         comparison ? null : "无可比期确认记录",
                         dataState,
                         a.exportAllowed(),
-                        CATEGORIES.keySet().stream().filter(a.categories()::contains).toList());
+                        CATEGORIES.keySet().stream().filter(a.categories()::contains).toList(),
+                        java.util.Map.copyOf(pendingCounts));
         return new Context(snapshot, a, f, p, rows, meta);
     }
 

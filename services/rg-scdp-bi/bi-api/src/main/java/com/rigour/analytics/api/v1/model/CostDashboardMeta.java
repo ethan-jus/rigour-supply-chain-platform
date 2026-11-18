@@ -17,4 +17,14 @@ public record CostDashboardMeta(
         String comparisonReason,
         String dataState,
         boolean exportAllowed,
-        List<String> availableCategories) {}
+        List<String> availableCategories,
+        java.util.Map<String, Long> pendingCounts) {
+    public CostDashboardMeta(String metricVersion, String snapshotId, Instant generatedAt,
+            LocalDate effectiveCutoff, CostDashboardPeriod period, List<String> includedSources,
+            List<String> excludedScopes, boolean comparisonAvailable, String comparisonReason,
+            String dataState, boolean exportAllowed, List<String> availableCategories) {
+        this(metricVersion, snapshotId, generatedAt, effectiveCutoff, period, includedSources,
+                excludedScopes, comparisonAvailable, comparisonReason, dataState, exportAllowed,
+                availableCategories, java.util.Map.of());
+    }
+}

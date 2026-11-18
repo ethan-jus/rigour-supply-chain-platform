@@ -18,10 +18,17 @@ public final class LogisticsLedgerRules {
             if (item == null) throw bad("账单明细无效");
             required(item.name(), 100, "费用项目名称");
             LogisticsCostRules.money(item.amount() == null ? null : item.amount().abs(), true);
-            total = total.add(item.amount());
+            total = total.add(manualBillAmount(item));
         }
         LogisticsCostRules.money(total, true);
         return total;
+    }
+
+    /** 优惠名称明确扣减语义，兼容原有负数金额，不对已扣减金额再减一次。 */
+    public static BigDecimal manualBillAmount(LogisticsCostLedger.ManualBillItem item) {
+        if (item.amount() == null) return null;
+        return item.name() != null && item.name().matches(".*(优惠|减免|抵扣|折扣).*")
+                ? item.amount().abs().negate() : item.amount();
     }
 
     public static BigDecimal validate(LogisticsCostLedger p, boolean confirm) {

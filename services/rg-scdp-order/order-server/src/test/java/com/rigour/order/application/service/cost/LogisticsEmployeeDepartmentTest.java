@@ -63,6 +63,20 @@ class LogisticsEmployeeDepartmentTest {
     }
 
     @Test
+    void historicalPreviewDoesNotLoadCityCatalogButWriteStillValidatesIt() {
+        var nos = List.of("SO1");
+        when(source.salesByNos(tenant.toString(), nos, read, true))
+                .thenReturn(List.of(order("SO1", "EMP1", "old")));
+        assertThat(service.salesSources(nos, read, true)).hasSize(1);
+        verify(refs, never()).cities(anyString());
+        verify(refs, never()).employees(anyString());
+        when(source.salesByNos(tenant.toString(), nos, read, false))
+                .thenReturn(List.of(order("SO1", "EMP1", "old")));
+        service.salesSources(nos, read, false);
+        verify(refs).cities(read);
+    }
+
+    @Test
     void batchFillsMissingDepartmentsByEmployeeCodeAndKeepsHistoricalAttribution() {
         var rows =
                 List.of(

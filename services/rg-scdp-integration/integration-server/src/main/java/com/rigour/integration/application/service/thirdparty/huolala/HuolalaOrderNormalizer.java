@@ -102,6 +102,18 @@ public final class HuolalaOrderNormalizer {
                                 integer(receipt, "none_receipt"),
                                 receipt.path("none_receipt_reason").asText(null))
                         : null;
+        // 原价、费用明细及支付金额同时吻合时，才识别原价中尚未扣除的优惠。
+        // 已含优惠的 price_fen 不再次扣减；退款、赠金仍由下方规则保留核对。
+        BigDecimal billAmount = price;
+        if (price != null && coupon != null && coupon.signum() > 0
+                && paid != null && unpaid != null && paid.signum() >= 0 && unpaid.signum() >= 0
+                && price.compareTo(paid.add(unpaid)) != 0
+                && price.subtract(coupon).compareTo(paid.add(unpaid)) == 0
+                && !fees.isEmpty() && fees.stream().allMatch(f -> f.amount() != null)
+                && fees.stream().map(Fee::amount).reduce(BigDecimal.ZERO, BigDecimal::add)
+                        .compareTo(paid.add(unpaid)) == 0) {
+            billAmount = paid.add(unpaid);
+        }
         String issue = null;
         if (!detailed) issue = "未取得订单详情，请核对原始账单";
         else if (status != 2) issue = "平台账单尚未最终完成，或订单已取消、存在申诉";
@@ -114,7 +126,7 @@ public final class HuolalaOrderNormalizer {
                 || unpaid == null
                 || paid.signum() < 0
                 || unpaid.signum() < 0
-                || price.compareTo(paid.add(unpaid)) != 0) issue = "平台总价与已付、未付金额不一致，请核对最终净费用";
+                || billAmount.compareTo(paid.add(unpaid)) != 0) issue = "平台总价与已付、未付金额不一致，请核对最终净费用";
         String sourceUser = list.path("user_id").asText("");
         String useTime = item.path("order_time").asText(list.path("order_time").asText(""));
         Map<String, String> raw = new LinkedHashMap<>();
@@ -189,7 +201,7 @@ public final class HuolalaOrderNormalizer {
                         employeeName,
                         employeeCode,
                         price,
-                        price != null && price.signum() >= 0 ? price : null,
+                        billAmount != null && billAmount.signum() >= 0 ? billAmount : null,
                         unpaid,
                         refund,
                         coupon,

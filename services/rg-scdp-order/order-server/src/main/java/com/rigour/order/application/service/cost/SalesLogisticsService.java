@@ -53,7 +53,8 @@ public class SalesLogisticsService {
         AuthorizationContext.requirePermission("order:logistics-cost:read");
         var order = orders.salesOrderForLogistics(id);
         var source = source(order.orderNo(), "order:logistics-cost:read", true);
-        var rawRows = costs.linkedSales(tenant(), order.orderNo(), "order:logistics-cost:read");
+        var rawRows = costs.linkedSales(tenant(), order.orderNo(), "order:logistics-cost:read").stream()
+                .filter(r -> "ACTIVE".equals(r.statusCode())).toList();
         var states =
                 costs.businessStatuses(
                         tenant(),
@@ -87,7 +88,7 @@ public class SalesLogisticsService {
             if (amount == null) unknown = true;
             else {
                 allocated = allocated.add(amount);
-                if ("ACTIVE".equals(row.statusCode())) confirmed = confirmed.add(amount);
+                if ("COMPLETE".equals(row.businessStatusCode())) confirmed = confirmed.add(amount);
             }
         }
         return new Context(
