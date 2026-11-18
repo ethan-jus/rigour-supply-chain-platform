@@ -27,8 +27,12 @@ final class SalesTrackMetrics {
         long seconds = 0;
         int rejected = 0, pairs = 0;
         boolean broken = false;
-        for (var row : rows) {
+        for (int index = 0; index < rows.size(); index++) {
+            var row = rows.get(index);
             if (!valid(row)) { rejected++; broken = true; continue; }
+            if (previous != null && coarseSpike(previous, row, index + 1 < rows.size() ? rows.get(index + 1) : null, maximumGap)) {
+                rejected++; continue;
+            }
             if (previous != null) {
                 long elapsed = Duration.between(time(previous), time(row)).getSeconds();
                 double hop = distance(previous, row);
@@ -53,6 +57,20 @@ final class SalesTrackMetrics {
         }
         if (path.size() > 1) legs.add(new TrackLegView((int)Math.round(legDistance), path));
         return new Result((int)Math.round(total), (int)(seconds / 60), pairs > 0, rejected, List.copyOf(legs), List.copyOf(gaps));
+    }
+    // A solitary less precise excursion that returns to the previous uncertainty circle is not
+    // evidence of a trip. Wait for a following fix before displaying a coarse trailing jump.
+    private static boolean coarseSpike(LocationPointRow before, LocationPointRow point, LocationPointRow after, long maximumGap) {
+        long elapsed = Duration.between(time(before), time(point)).getSeconds();
+        if (!Objects.equals(before.sessionId(), point.sessionId()) || elapsed <= 0 || elapsed > maximumGap
+                || point.accuracyMeters().doubleValue() < before.accuracyMeters().doubleValue() * 2
+                || distance(before, point) <= before.accuracyMeters().doubleValue() + point.accuracyMeters().doubleValue()) return false;
+        if (after == null) return true;
+        if (!valid(after) || !Objects.equals(point.sessionId(), after.sessionId())
+                || point.accuracyMeters().doubleValue() < after.accuracyMeters().doubleValue() * 2) return false;
+        long following = Duration.between(time(point), time(after)).getSeconds();
+        return following > 0 && following <= maximumGap
+                && distance(before, after) <= before.accuracyMeters().doubleValue() + after.accuracyMeters().doubleValue();
     }
     private static boolean valid(LocationPointRow row) {
         return "ACCEPTED".equals(row.qualityStatus()) && row.clientOccurredAt() != null

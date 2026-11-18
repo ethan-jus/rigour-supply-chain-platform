@@ -50,4 +50,15 @@ class SalesTrackMetricsTest {
         var b=new LocationPointRow(BigDecimal.valueOf(116),BigDecimal.valueOf(40.003),BigDecimal.valueOf(120),BASE.plusSeconds(60),BASE,"APP_NATIVE","ACCEPTED",SESSION);
         assertThat(SalesTrackMetrics.calculate(List.of(a,b),1).distanceMeters()).isBetween(333,334);
     }
+    @Test void coarseIsolatedExcursionIsNotDrawnOrCounted() {
+        var coarse=new LocationPointRow(BigDecimal.valueOf(116),BigDecimal.valueOf(40.001),BigDecimal.valueOf(40),BASE.plusSeconds(60),BASE,"APP_NATIVE","ACCEPTED",SESSION);
+        var before=point(0,40,SESSION,"ACCEPTED");
+        assertThat(SalesTrackMetrics.calculate(List.of(before,coarse),1).distanceMeters()).isZero();
+        var result=SalesTrackMetrics.calculate(List.of(before,coarse,point(120,40,SESSION,"ACCEPTED")),1);
+        assertThat(result.distanceMeters()).isZero(); assertThat(result.legs()).isEmpty(); assertThat(result.rejected()).isEqualTo(1);
+    }
+    @Test void preciseReturnTripRemainsRealMileage() {
+        var result=SalesTrackMetrics.calculate(List.of(point(0,40,SESSION,"ACCEPTED"),point(60,40.001,SESSION,"ACCEPTED"),point(120,40,SESSION,"ACCEPTED")),1);
+        assertThat(result.distanceMeters()).isBetween(221,223); assertThat(result.legs().getFirst().points()).hasSize(3);
+    }
 }
