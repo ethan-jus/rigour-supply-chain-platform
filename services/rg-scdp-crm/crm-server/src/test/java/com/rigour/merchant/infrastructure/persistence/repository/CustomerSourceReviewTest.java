@@ -65,6 +65,80 @@ class CustomerSourceReviewTest {
     }
 
     @Test
+    void casualCustomerIsRecordedAsExcludedWithoutCreatingACustomer() {
+        when(bindings.selectOne(any())).thenReturn(null);
+        var result = importCustomer(Map.of("clientAreaName", "散客", "staffID", 0));
+        assertThat(result.duplicates()).isEqualTo(1);
+        var saved = org.mockito.ArgumentCaptor.forClass(SourceBindingEntity.class);
+        verify(bindings).insert(saved.capture());
+        assertThat(saved.getValue().bindingStatus).isEqualTo("EXCLUDED");
+        assertThat(saved.getValue().resolutionErrorCode).isEqualTo("CUSTOMER_CASUAL_EXCLUDED");
+        assertThat(saved.getValue().sourceFieldsJson).contains("散客");
+        verifyNoInteractions(customers);
+    }
+
+    @Test
+    void casualPolicyPreservesExistingResolvedIdentityAndHistoricalOwner() {
+        source.bindingStatus = "RESOLVED";
+        source.targetId = customer.getPartyId();
+        source.resolutionErrorCode = null;
+        var originalParty = source.targetId;
+        importCustomer(Map.of("clientAreaName", " 散客 ", "staffID", 0));
+        assertThat(source.bindingStatus).isEqualTo("RESOLVED");
+        assertThat(source.targetId).containsExactly(originalParty);
+        assertThat(source.resolutionErrorCode).isEqualTo("CUSTOMER_CASUAL_EXCLUDED");
+        verifyNoInteractions(customers);
+    }
+
+    @Test
+    void manuallyExcludedCustomerCannotBeRecreatedEvenWhenUpstreamOwnerAndAreaChange() {
+        source.bindingStatus = "EXCLUDED";
+        source.resolutionErrorCode = "CUSTOMER_MANUALLY_EXCLUDED";
+        source.resolutionErrorMessage = "用户已确认删除，保留来源留痕";
+        var result = importCustomer(Map.of("clientAreaName", "深圳市", "staffID", 42, "staffName", "张三"));
+        assertThat(result.duplicates()).isEqualTo(1);
+        assertThat(source.bindingStatus).isEqualTo("EXCLUDED");
+        assertThat(source.resolutionErrorCode).isEqualTo("CUSTOMER_MANUALLY_EXCLUDED");
+        verifyNoInteractions(customers);
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CUSTOMER_MANUALLY_EXCLUDED", "CUSTOMER_CASUAL_EXCLUDED"})
+    void excludedSourceDoesNotAppearAsAnUnresolvedCustomer(String reason) {
+        source.resolutionErrorCode = reason;
+        source.sourceFieldsJson = "{}";
+        when(bindings.selectList(any())).thenReturn(List.of(source));
+        assertThat(store.customerReviews(tenant, connector)).isEmpty();
+        store.pendingCustomerRecords(tenant, connector);
+        var query = org.mockito.ArgumentCaptor.forClass(com.baomidou.mybatisplus.core.conditions.Wrapper.class);
+        verify(bindings, times(2)).selectList(query.capture());
+        assertThat(query.getAllValues().getLast().getSqlSegment()).contains("COALESCE(resolution_error_code", reason);
+    }
+
+    @Test
+    void excludedSourcePublishesIgnoredMappingInsteadOfAnUnresolvedDependency() {
+        source.bindingStatus = "EXCLUDED";
+        source.resolutionErrorCode = "CUSTOMER_MANUALLY_EXCLUDED";
+        source.resolutionErrorMessage = "用户确认删除并排除导入";
+        source.sourceFieldsJson = "{}";
+        when(bindings.selectList(any())).thenReturn(List.of(source));
+        var mappings = store.externalObjectMappings(tenant, connector, UUID.randomUUID(),
+                com.rigour.merchant.domain.model.CrmMasterDataObjectType.CUSTOMER);
+        assertThat(mappings).hasSize(1);
+        assertThat(mappings.getFirst().mappingStatus()).isEqualTo("IGNORED");
+        assertThat(mappings.getFirst().conflictReason()).isEqualTo("CUSTOMER_MANUALLY_EXCLUDED");
+        assertThat(mappings.getFirst().sourceObjectId()).isEqualTo("SECOND");
+        assertThat(mappings.getFirst().internalObjectId()).isNull();
+    }
+
+    private com.rigour.merchant.application.port.out.CrmMasterDataStore.ImportResult importCustomer(Map<String,Object> fields) {
+        var record = new com.rigour.merchant.application.port.out.DhbCrmMasterDataClient.SourceRecord(
+                "SECOND", "C2", "客户", null, null, null, fields);
+        return org.springframework.test.util.ReflectionTestUtils.invokeMethod(store, "importRecordInternal",
+                tenant, connector, UUID.randomUUID(), com.rigour.merchant.domain.model.CrmMasterDataObjectType.CUSTOMER, record);
+    }
+
+    @Test
     void historicalReviewsAreTenantScopedAndKeepEachSourceConnectorWhenNoTaskIsActive() {
         source.connectorId = CrmUuidCodec.encode(connector);
         source.sourceFieldsJson = "{}";

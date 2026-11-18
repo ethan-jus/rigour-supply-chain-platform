@@ -1073,7 +1073,7 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
             ExternalObjectMappingEntity row, ExternalObjectMappingCommand command, UUID actorId) {
         if (row == null) return false;
         // 领域服务可恢复自己生成的待核对项；人工停用、删除及不同目标仍必须由业务处理。
-        if (canRecoverOwnedConflict(row, command, actorId)) return false;
+        if (canUpdateOwnedMapping(row, command, actorId)) return false;
         if (row.deletedAt != null || !"ACTIVE".equals(row.mappingStatus)) return true;
         if (!"ACTIVE".equals(command.mappingStatus() == null ? "ACTIVE" : command.mappingStatus()))
             return false;
@@ -1084,11 +1084,20 @@ public class MybatisPlusDhbIntegrationStore implements DhbIntegrationStore {
                         && !Objects.equals(row.internalObjectNo, command.internalObjectNo());
     }
 
-    private static boolean canRecoverOwnedConflict(
+    private static boolean canUpdateOwnedMapping(
             ExternalObjectMappingEntity row, ExternalObjectMappingCommand command, UUID actorId) {
+        boolean customerPolicy = "CRM".equals(row.internalDomain)
+                && "CUSTOMER".equals(row.internalObjectType);
+        boolean excludingCustomer = customerPolicy && "CONFLICT".equals(row.mappingStatus)
+                && "IGNORED".equals(command.mappingStatus())
+                && Set.of("CUSTOMER_CASUAL_EXCLUDED", "CUSTOMER_MANUALLY_EXCLUDED")
+                        .contains(Objects.toString(command.conflictReason(), ""));
+        boolean restoringCasualCustomer = customerPolicy && "IGNORED".equals(row.mappingStatus)
+                && "CUSTOMER_CASUAL_EXCLUDED".equals(row.conflictReason)
+                && "ACTIVE".equals(command.mappingStatus());
+        boolean recoveringConflict = "CONFLICT".equals(row.mappingStatus) && "ACTIVE".equals(command.mappingStatus());
         if (actorId == null
-                || !"CONFLICT".equals(row.mappingStatus)
-                || !"ACTIVE".equals(command.mappingStatus())
+                || !(recoveringConflict || excludingCustomer || restoringCasualCustomer)
                 || row.deletedAt != null
                 || row.sourceDeletedAt != null
                 || command.sourceDeletedAt() != null

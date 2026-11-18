@@ -47,6 +47,27 @@ class DhbOrderSyncProgressTest {
     }
 
     @Test
+    void generalOrderSyncDoesNotPullOrRetryPausedShipmentAndTransferBacklog() {
+        var worker = service();
+        var work = mock(DhbIncrementalWorkStore.class);
+        var review = mock(DhbShipmentRecoveryReview.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(worker, "incrementalWork", work);
+        org.springframework.test.util.ReflectionTestUtils.setField(worker, "shipmentRecoveryReview", review);
+        when(client.getOrders(any(), any())).thenReturn(new DhbClient.Page<>(DhbClient.PageRequest.first(100), 0, List.of()));
+        when(client.getReceipts(any(), any())).thenReturn(new DhbClient.Page<>(DhbClient.PageRequest.first(100), 0, List.of()));
+        when(client.getPayments(any(), any())).thenReturn(new DhbClient.Page<>(DhbClient.PageRequest.first(100), 0, List.of()));
+        worker.runOrderPull(DhbSyncOrchestrationService.serviceCaller(tenant), taskId,
+                new SyncRunCommand(from, to, null, null, null, null), 100);
+        verify(client).getOrders(any(), any());
+        verify(client, atLeastOnce()).getReceipts(any(), any());
+        verify(client, atLeastOnce()).getPayments(any(), any());
+        verify(client, never()).getShipments(any(), any());
+        verify(client, never()).getTransferOrders(any(), any());
+        verify(work, never()).pendingCount(any(), any(), eq("SHIPMENT"));
+        verifyNoInteractions(review);
+    }
+
+    @Test
     void missingVoucherBatchDownloadsOnlyExactReceiptAndNeverProjectsMoney() {
         var worker = service();
         var storage = mock(ProductMediaStorage.class);

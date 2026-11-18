@@ -175,6 +175,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         var customers = internalCustomersByPartyId(tenant, parties);
         var result = new ArrayList<com.rigour.merchant.api.v1.model.CustomerSourceReviewModels.Review>();
         for (var row : rows) {
+            if (customerSyncExcluded(row)) continue;
             var customer = row.targetId == null ? null : customers.get(uuid(row.targetId));
             String problem = customerMappingProblem(row, customer);
             if (problem == null) continue;
@@ -609,6 +610,21 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         String json = json(storageSourceFields(snapshot.sourceFields()));
         String hash = sha256(json);
         boolean sourceChanged = binding == null || !hash.equals(binding.sourcePayloadHash);
+        if (type == CrmMasterDataObjectType.CUSTOMER
+                && (binding != null && "CUSTOMER_MANUALLY_EXCLUDED".equals(binding.resolutionErrorCode)
+                    || "散客".equals(clean(value(snapshot.sourceFields(), "clientAreaName"))))) {
+            boolean created = binding == null;
+            if (created) binding = newBinding(tenantId, connectorId, type, record.sourceId(), now);
+            boolean manual = "CUSTOMER_MANUALLY_EXCLUDED".equals(binding.resolutionErrorCode);
+            // Existing resolved identities remain usable by historical orders; no customer profile is rewritten.
+            String status = !manual && "RESOLVED".equals(binding.bindingStatus) && binding.targetId != null
+                    ? "RESOLVED" : "EXCLUDED";
+            var excluded = new Target(first(binding.targetType, "PARTY"), uuid(binding.targetId), status,
+                    manual ? "CUSTOMER_MANUALLY_EXCLUDED" : "CUSTOMER_CASUAL_EXCLUDED",
+                    manual ? binding.resolutionErrorMessage : "归属地区为散客，按客户同步规则排除");
+            saveBinding(binding, runId, snapshot, excluded, json, hash, now, created);
+            return ImportResult.duplicateOne();
+        }
         if (type == CrmMasterDataObjectType.CUSTOMER && binding != null
                 && clean(binding.primaryCustomerSourceId) != null) {
             return importMergedCustomerAlias(tenantId, connectorId, runId, binding, snapshot, json, hash, now);
@@ -664,21 +680,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                     addressProjectionBatch);
                 };
         boolean created = binding == null;
-        if (binding == null) {
-            binding = new SourceBindingEntity();
-            binding.id = bytes(CrmUuidCodec.next());
-            binding.tenantId = bytes(tenantId);
-            binding.connectorId = bytes(connectorId);
-            binding.sourceSystem = SOURCE_SYSTEM;
-            binding.sourceObjectType = type.name();
-            binding.sourceObjectId = record.sourceId();
-            binding.revision = 0L;
-            binding.createdBy = SYSTEM_ACTOR;
-            binding.createdTime = now;
-            binding.updatedBy = SYSTEM_ACTOR;
-            binding.updatedTime = now;
-            binding.deleted = 0;
-        }
+        if (created) binding = newBinding(tenantId, connectorId, type, record.sourceId(), now);
         boolean repaired =
                 !created
                         && (hash.equals(binding.sourcePayloadHash)
@@ -696,6 +698,29 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         }
         if (created) return ImportResult.createdOne();
         return repaired ? ImportResult.repairedOne() : ImportResult.changedOne();
+    }
+
+    private SourceBindingEntity newBinding(UUID tenantId, UUID connectorId,
+            CrmMasterDataObjectType type, String sourceId, LocalDateTime now) {
+        SourceBindingEntity binding = new SourceBindingEntity();
+        binding.id = bytes(CrmUuidCodec.next());
+        binding.tenantId = bytes(tenantId);
+        binding.connectorId = bytes(connectorId);
+        binding.sourceSystem = SOURCE_SYSTEM;
+        binding.sourceObjectType = type.name();
+        binding.sourceObjectId = sourceId;
+        binding.revision = 0L;
+        binding.createdBy = SYSTEM_ACTOR;
+        binding.createdTime = now;
+        binding.updatedBy = SYSTEM_ACTOR;
+        binding.updatedTime = now;
+        binding.deleted = 0;
+        return binding;
+    }
+
+    private boolean customerSyncExcluded(SourceBindingEntity binding) {
+        return "CUSTOMER_MANUALLY_EXCLUDED".equals(binding.resolutionErrorCode)
+                || "CUSTOMER_CASUAL_EXCLUDED".equals(binding.resolutionErrorCode);
     }
 
     private void refreshCustomerProfile(UUID tenant, UUID run, byte[] party, SourceRecord record, LocalDateTime now) {
@@ -2513,6 +2538,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 .eq("tenant_id", bytes(tenantId)).eq("connector_id", bytes(connectorId))
                 .eq("source_system", SOURCE_SYSTEM).eq("source_object_type", "CUSTOMER")
                 .eq("deleted", 0).eq("source_presence", "PRESENT")
+                .apply("COALESCE(resolution_error_code, '') NOT IN ('CUSTOMER_MANUALLY_EXCLUDED', 'CUSTOMER_CASUAL_EXCLUDED')")
                 .and(q -> q.ne("binding_status", "RESOLVED").or().isNull("target_id")
                         .or().apply("""
                             target_id IN (SELECT c.party_id FROM crm_customer c WHERE c.tenant_id={0} AND c.deleted=0
@@ -2653,7 +2679,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                 .eq("source_system", SOURCE_SYSTEM)
                                 .eq("source_object_type", CrmMasterDataObjectType.CUSTOMER.name())
                                 .eq("deleted", 0)
-                                .eq("source_presence", "PRESENT"));
+                                .and(q -> q.eq("source_presence", "PRESENT").or().eq("binding_status", "EXCLUDED")));
         List<ExternalMappingSeed> seeds = new ArrayList<>();
         Set<UUID> partyIds = new LinkedHashSet<>();
         Set<String> customerCodes = new LinkedHashSet<>();
@@ -2675,11 +2701,12 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 internalCustomersByCode(tenantId, customerCodes);
         for (ExternalMappingSeed seed : seeds) {
             SourceBindingEntity binding = seed.binding();
-            InternalCustomerEntity customer = customersByPartyId.get(seed.partyId());
+            InternalCustomerEntity customer = seed.partyId() == null ? null : customersByPartyId.get(seed.partyId());
             if (customer == null) {
                 customer = customersByCode.get(seed.sourceObjectNo());
             }
             String problem = customerMappingProblem(binding, customer);
+            boolean ignored = customerSyncExcluded(binding) && "EXCLUDED".equals(binding.bindingStatus);
             boolean resolved = problem == null;
             result.add(
                     new ExternalObjectMappingCommand(
@@ -2692,13 +2719,14 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                             "CUSTOMER",
                             customer == null ? null : customer.getId(),
                             customer == null ? null : customer.getCustomerCode(),
-                            resolved ? "ACTIVE" : "CONFLICT",
+                            ignored ? "IGNORED" : resolved ? "ACTIVE" : "CONFLICT",
                             runId,
                             instant(binding.syncedAt),
                             null,
                             binding.sourcePayloadHash,
-                            problem,
-                            resolved ? "CRM订货宝客户同步映射" : "客户关联待处理，相关订单暂缓；修复后自动恢复"));
+                            ignored ? binding.resolutionErrorCode : problem,
+                            ignored ? binding.resolutionErrorMessage
+                                    : resolved ? "CRM订货宝客户同步映射" : "客户关联待处理，相关订单暂缓；修复后自动恢复"));
         }
         return result;
     }

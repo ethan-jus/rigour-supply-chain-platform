@@ -504,8 +504,7 @@ public final class DhbOrderSyncService {
             MAPPING_LOOKUP_CACHE.set(new ConcurrentHashMap<>());
             UNIT_DICTIONARY_SYNC_CACHE.set(ConcurrentHashMap.newKeySet());
             if (shipmentDependencyRepair != null
-                    && (selectedScope == null
-                            || "SHIPMENT".equals(selectedScope)
+                    && ("SHIPMENT".equals(selectedScope)
                             || replayTarget != null
                                     && Set.of(
                                                     SOURCE_OBJECT_SALES_SHIPMENT,
@@ -604,7 +603,7 @@ public final class DhbOrderSyncService {
                         pageRequest = page.nextRequest();
                     }
                 }
-                if (selectedScope == null || "TRANSFER".equals(selectedScope))
+                if ("TRANSFER".equals(selectedScope))
                     syncTransferOrders(
                             caller,
                             task,
@@ -615,7 +614,7 @@ public final class DhbOrderSyncService {
                             counts,
                             employeeCache,
                             detailExecutor);
-                if (selectedScope == null || "SHIPMENT".equals(selectedScope))
+                if ("SHIPMENT".equals(selectedScope))
                     syncShipments(
                             caller,
                             task,
@@ -629,7 +628,7 @@ public final class DhbOrderSyncService {
                             detailExecutor,
                             retriedShipments,
                             progress);
-                if (incrementalWork != null && (selectedScope == null || "SHIPMENT".equals(selectedScope))) {
+                if (incrementalWork != null && "SHIPMENT".equals(selectedScope)) {
                     progress.accept("正在自动复核已补齐资料的历史发货单");
                     if (shipmentRecoveryReview != null)
                         shipmentRecoveryReview.reconsider(caller.tenantId(), task.connectorId(), Instant.now());
@@ -699,7 +698,7 @@ public final class DhbOrderSyncService {
                                     .contains(selectedScope == null ? "" : selectedScope);
             long remaining =
                     incrementalWork != null && replayTarget == null && selectedScope == null
-                            ? List.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT").stream()
+                            ? List.of("SALES_ORDER", "RECEIPT", "PAYMENT").stream()
                                     .mapToLong(
                                             type ->
                                                     incrementalWork.pendingCount(

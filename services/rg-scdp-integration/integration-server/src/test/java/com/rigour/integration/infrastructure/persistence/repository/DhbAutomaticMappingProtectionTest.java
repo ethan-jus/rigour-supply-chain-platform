@@ -114,6 +114,36 @@ class DhbAutomaticMappingProtectionTest {
         assertThat(preserve(ownedConflict(), command(3L))).isTrue();
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"CUSTOMER_CASUAL_EXCLUDED", "CUSTOMER_MANUALLY_EXCLUDED"})
+    void crmCanRetireOnlyItsOwnCustomerConflict(String reason) {
+        var row = ownedConflict();
+        row.internalDomain = "CRM";
+        row.internalObjectType = "CUSTOMER";
+        assertThat(preserve(row, customerPolicyCommand("IGNORED", reason))).isFalse();
+        row.updatedBy = binary(UUID.randomUUID());
+        assertThat(preserve(row, customerPolicyCommand("IGNORED", reason))).isTrue();
+    }
+
+    @Test
+    void crmCanResumeItsCasualPolicyButCannotRestoreUserDeletedCustomer() {
+        var row = ownedConflict();
+        row.internalDomain = "CRM";
+        row.internalObjectType = "CUSTOMER";
+        row.mappingStatus = "IGNORED";
+        row.conflictReason = "CUSTOMER_CASUAL_EXCLUDED";
+        assertThat(preserve(row, customerPolicyCommand("ACTIVE", null))).isFalse();
+        row.conflictReason = "CUSTOMER_MANUALLY_EXCLUDED";
+        assertThat(preserve(row, customerPolicyCommand("ACTIVE", null))).isTrue();
+    }
+
+    private ExternalObjectMappingCommand customerPolicyCommand(String status, String reason) {
+        var c = reviewed(3L);
+        return new ExternalObjectMappingCommand(c.connectorId(), c.sourceSystem(), "CUSTOMER", "C1", "C1",
+                "CRM", "CUSTOMER", c.internalObjectId(), c.internalObjectNo(), status,
+                c.lastSeenRunId(), c.lastSeenAt(), null, null, reason, "客户同步规则排除");
+    }
+
     private boolean preserve(ExternalObjectMappingEntity row, ExternalObjectMappingCommand command) {
         return MybatisPlusDhbIntegrationStore.preserveExistingMapping(row, command, serviceActor);
     }

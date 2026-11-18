@@ -275,7 +275,7 @@ public final class DhbSyncOrchestrationService {
                                 break;
                             }
                             if (!refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, true)) break;
-                            runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true, true);
+                            runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true);
                         }
                         case VOUCHER_BACKFILL -> {
                             if(bucket.orderTarget==null) throw new IllegalArgumentException("未配置订单同步任务");
@@ -830,13 +830,6 @@ public final class DhbSyncOrchestrationService {
     private void runIncrementalOrderPackageSteps(CallerIdentity caller, TargetBucket bucket,
                                                  int pages, List<DhbSyncOrchestrationStepView> steps,
                                                  java.util.function.Consumer<String> progress, boolean background) {
-        runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, background, false);
-    }
-
-    private void runIncrementalOrderPackageSteps(CallerIdentity caller, TargetBucket bucket,
-                                                 int pages, List<DhbSyncOrchestrationStepView> steps,
-                                                 java.util.function.Consumer<String> progress, boolean background,
-                                                 boolean includeShipments) {
         // 页面与定时增量都可能读取近期修改的历史单据，统一保留切换日前的历史校准。
         var protectedCaller = new CallerIdentity(caller.principalScope(), caller.principalId(),
                 caller.tenantId(), null, null, caller.sessionId(), 0, 0, 0,
@@ -845,7 +838,7 @@ public final class DhbSyncOrchestrationService {
         if (bootstrap.isBefore(Instant.parse("2026-09-03T16:00:00Z")))
             bootstrap = Instant.parse("2026-09-03T16:00:00Z");
         Instant end = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
-        // 金额、删除状态和凭证先追平，避免发货历史补齐拖延当前订单和回款。
+        // 发货和调拨尚未启用业务流程，自动同步只处理订单、收款、付款及删除状态。
         var scopes = List.of("SALES_ORDER", "RECEIPT", "PAYMENT");
         for (String type : scopes) {
             Instant cursor = objectCheckpoints.successfulTo(
@@ -864,14 +857,7 @@ public final class DhbSyncOrchestrationService {
             try { steps.add(orderSyncService.backfillVouchers(protectedCaller, bucket.orderTarget.taskId(), 20, progress)); }
             catch (RuntimeException error) { steps.add(failed("ORDER", "VOUCHER_BACKFILL", error)); }
         }
-        if (includeShipments) {
-            Instant cursor = objectCheckpoints.successfulTo(caller.tenantId(), bucket.key.connectorId(), "SHIPMENT");
-            Instant from = cursor == null ? bootstrap : cursor.minus(INCREMENTAL_OVERLAP);
-            if (from.isBefore(bootstrap)) from = bootstrap;
-            if (from.isBefore(end))
-                steps.add(runIncrementalOrderScope(protectedCaller, bucket, "SHIPMENT", from, end, pages, progress, background));
-            else steps.add(skipped("ORDER", "SHIPMENT", "该对象游标已覆盖增量窗口，无需再次拉取"));
-        }
+
     }
 
     /**
