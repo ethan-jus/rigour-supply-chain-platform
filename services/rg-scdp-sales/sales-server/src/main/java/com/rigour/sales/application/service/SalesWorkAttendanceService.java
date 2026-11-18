@@ -629,7 +629,10 @@ public class SalesWorkAttendanceService {
                                                 row.evidenceStatus()))
                         .toList();
         List<VisitSnapshot> visitRows =
-                visitRepository.findVisitsByWorkDay(tenantId, salesProfileId, workDay.id());
+                visitRepository.findVisitsByWorkDay(tenantId, salesProfileId, workDay.id()).stream()
+                        .filter(visit -> !"CANCELLED".equals(visit.status()))
+                        .sorted(java.util.Comparator.comparing(VisitSnapshot::checkedInAt).thenComparing(VisitSnapshot::id))
+                        .toList();
         Map<UUID, VisitTargetSnapshot> targets = new java.util.HashMap<>();
         for (VisitTargetSnapshot target :
                 visitRepository.findTargetSnapshots(
@@ -669,7 +672,7 @@ public class SalesWorkAttendanceService {
                             visit.checkedOutAt(),
                             dwellMinutes,
                             visitType,
-                            reviewStatus(visit)));
+                            reviewStatus(visit), target.storeAddress()));
         }
         List<TrackTravelSegmentView> segments =
                 travelSegments(visitRows, targets, pointRows, policy.locationIntervalMinutes());

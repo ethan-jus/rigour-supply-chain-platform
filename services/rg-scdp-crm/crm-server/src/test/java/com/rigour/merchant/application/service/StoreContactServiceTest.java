@@ -15,7 +15,7 @@ class StoreContactServiceTest {
     StoreContactStore contacts=mock(StoreContactStore.class);
     StoreContactService service=new StoreContactService(pools,contacts,Clock.systemUTC());
     @Test void publicViewCannotExposeContacts(){assertThatThrownBy(()->service.list("1","PUBLIC")).isInstanceOf(AuthorizationDeniedException.class);verifyNoInteractions(pools,contacts);}
-    @Test void nicknameAloneCannotCreateFormalContact(){assertThatThrownBy(()->service.create("1","MINE",new Create(UUID.randomUUID().toString(),"小李","前台",false,null,"微信昵称"))).isInstanceOf(RequestValidationException.class);verifyNoInteractions(contacts);}
+    @Test void receptionistMayDeclinePhoneWithoutInventingVerifiedContact(){service.create("1","MINE",new Create(UUID.randomUUID().toString(),"前台小李","店员",false,null,"微信昵称"));verify(contacts).create(any(),eq("1"),argThat(c->c.phone()==null&&"微信昵称".equals(c.wechatHint())),any());}
     @Test void validatesPhoneAndKeepsFormattingSeparateFromVerification(){
         assertThat(StoreContactService.phone("138 0000 0000")).isEqualTo("13800000000");assertThat(StoreContactService.phone("0571-88888888")).isEqualTo("057188888888");
         for(String value:new String[]{"123","nickname","00000000000"})assertThatThrownBy(()->StoreContactService.phone(value)).isInstanceOf(RequestValidationException.class);

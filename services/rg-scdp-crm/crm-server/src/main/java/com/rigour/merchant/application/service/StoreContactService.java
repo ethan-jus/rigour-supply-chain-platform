@@ -27,7 +27,7 @@ public class StoreContactService {
     public List<Contact> list(String store,String view){return contacts.list(scope(store,view,false),store);}
     public Contact create(String store,String view,Create c){
         if(c==null)bad("联系人参数不能为空");request(c.requestId());text(c.name(),100,"姓名或称呼");text(c.role(),50,"门店角色");
-        String phone=phone(c.phone());if(c.wechatHint()!=null&&c.wechatHint().length()>200)bad("微信线索不能超过200字");
+        String phone=trim(c.phone())==null?null:phone(c.phone());if(c.wechatHint()!=null&&c.wechatHint().length()>200)bad("微信线索不能超过200字");
         return contacts.create(scope(store,view,true),store,new Create(c.requestId(),c.name().strip(),c.role().strip(),c.primary(),phone,trim(c.wechatHint())),clock.instant());
     }
     public Contact update(String store,String contact,String view,Update c){

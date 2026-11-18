@@ -20,6 +20,8 @@ public class JdbcStoreFactStore implements StoreFactStore {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
 
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    private com.rigour.merchant.application.port.out.StoreVisitFieldworkStore fieldwork;
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final JdbcStoreLifecycleStore lifecycle;
@@ -57,23 +59,38 @@ public class JdbcStoreFactStore implements StoreFactStore {
         }
         jdbc.update("UPDATE crm_visit SET capture_revision=?,capture_synced_at=?,policy_snapshot=COALESCE(policy_snapshot,?) WHERE tenant_id=? AND id=?",
                 e.revision(),ts(e.checkedAt()),json.writeValueAsString(policy),e.tenantId(),e.visitId());
-        if("MANUAL".equals(v.get("review_source")) || Set.of("CANCELLED").contains(Objects.toString(v.get("review_source"),""))) return;
+        if(e.cancelledAt()!=null && !"CANCELLED".equals(v.get("review_source"))) {
+            if(!"IN_PROGRESS".equals(v.get("status_code")) || v.get("submitted_at")!=null)
+                throw new StateConflictException("已提交拜访不能被取消事件覆盖");
+            jdbc.update("UPDATE crm_visit SET verification_state='FAILED',status_code='INVALID',review_source='CANCELLED',review_reason=?,checked_out_at=?,revision=revision+1,updated_at=?,updated_by='SALES_EVIDENCE' WHERE tenant_id=? AND id=?",e.cancellationReason(),ts(e.cancelledAt()),ts(now),e.tenantId(),e.visitId());
+            jdbc.update("UPDATE crm_store_summary SET revision=revision+1,visit_synced_at=? WHERE tenant_id=? AND store_id=?",ts(now),e.tenantId(),e.storeId());
+            jdbc.update("INSERT INTO crm_store_event(id,tenant_id,store_id,ownership_id,object_type,object_id,event_type,actor_user_id,occurred_at,reason,request_id,event_seq) VALUES(?,?,?,?,'VISIT',?,'VISIT_CANCELLED','SALES_EVIDENCE',?,?,?,1)",IdWorker.getId(),e.tenantId(),e.storeId(),e.ownershipId(),e.visitId(),ts(now),e.cancellationReason(),UUID.randomUUID().toString());
+            refresh(e.tenantId(),e.storeId(),now);
+            return;
+        }
+        if(e.fieldwork()!=null && !"CANCELLED".equals(v.get("review_source"))) {
+            if(fieldwork==null)throw new IllegalStateException("拜访资料投影不可用");
+            fieldwork.apply(e,now);
+        }
+        if(Set.of("MANUAL","RISK","CANCELLED").contains(Objects.toString(v.get("review_source"),""))) return;
+        if(jdbc.queryForObject("SELECT COUNT(*) FROM crm_visit_appeal WHERE tenant_id=? AND visit_id=? AND status='PENDING'",Integer.class,e.tenantId(),e.visitId())>0)return;
         // A result submitted before checkout is already pending review; keep that
         // receipt so a later capture heartbeat cannot make the cycle look idle.
         if(e.submittedAt()==null) return;
         var anomalies=VisitEvidenceAssessment.anomalies(policy,e);
         boolean late=v.get("submitted_at")==null && !e.submittedAt().isBefore(instant(v.get("deadline_at")));
-        String status=late?"INVALID":anomalies.isEmpty()?"EFFECTIVE":"SUBMITTED";
+        String verification=late?"FAILED":e.checkedOutAt()==null?"PROCESSING":VisitEvidenceAssessment.state(anomalies);
+        String status="PASSED".equals(verification)?"EFFECTIVE":Set.of("FAILED","INSUFFICIENT").contains(verification)?"INVALID":"SUBMITTED";
         String reason=late?"SUBMISSION_AFTER_DEADLINE":anomalies.isEmpty()?"AUTO_EVIDENCE_COMPLETE":String.join(",",anomalies);
-        boolean changed=!status.equals(v.get("status_code")) || !reason.equals(v.get("review_reason"))
+        boolean changed=!verification.equals(v.get("verification_state")) || !status.equals(v.get("status_code")) || !reason.equals(v.get("review_reason"))
                 || !Objects.equals(e.resultSummary(),v.get("result_summary"));
         if(!changed) return;
         jdbc.update("""
-                UPDATE crm_visit SET status_code=?,result_summary=?,checked_out_at=?,submitted_at=?,
+                UPDATE crm_visit SET verification_state=?,status_code=?,result_summary=?,checked_out_at=?,submitted_at=?,
                 qualified_at=IF(?='EFFECTIVE',checkin_accepted_at,NULL),review_source='AUTOMATIC',
                 review_reason=?,reviewed_at=?,revision=revision+1,updated_at=?,updated_by='SALES_EVIDENCE'
                 WHERE tenant_id=? AND id=?
-                """,status,e.resultSummary(),ts(e.checkedOutAt()),ts(e.submittedAt()),status,reason,ts(now),ts(now),e.tenantId(),e.visitId());
+                """,verification,status,e.resultSummary(),ts(e.checkedOutAt()),ts(e.submittedAt()),status,reason,ts(now),ts(now),e.tenantId(),e.visitId());
         jdbc.update("""
                 UPDATE crm_store_summary SET
                 valid_visit_count=(SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND store_id=? AND status_code='EFFECTIVE'),

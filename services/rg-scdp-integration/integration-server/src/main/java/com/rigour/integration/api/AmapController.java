@@ -49,6 +49,11 @@ public class AmapController {
         authorize(); coordinates(longitude,latitude);
         return ApiResponse.success(geocoder.resolve(longitude,latitude));
     }
+    @GetMapping("/reverse-geocode/gcj02")
+    public ApiResponse<ReverseGeocoder.GeocodeResult> reverseGcj02(@RequestParam BigDecimal longitude,@RequestParam BigDecimal latitude) {
+        authorize(); coordinates(longitude,latitude);
+        return ApiResponse.success(geocoder.resolveGcj02(longitude,latitude));
+    }
     @GetMapping("/coordinates/gps")
     public ApiResponse<AmapPoiClient.Coordinates> convertGps(@RequestParam BigDecimal longitude,@RequestParam BigDecimal latitude) {
         authorize(); coordinates(longitude,latitude);return call(()->pois.convertGps(longitude,latitude));

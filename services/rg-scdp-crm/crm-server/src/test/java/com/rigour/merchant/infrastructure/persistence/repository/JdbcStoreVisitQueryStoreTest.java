@@ -60,4 +60,13 @@ class JdbcStoreVisitQueryStoreTest {
         assertThat(pending.active().id()).isEqualTo(Long.toString(active));
         assertThat(workbench.list(scope(),from,to,"effective","ALL",null,1,20).total()).isZero();
     }
+    @Test void cancelledRecordsRemainAuditableButDoNotCountOrStealTheFirstVisit() {
+        String a=store();long cancelled=visit(a,"2","INVALID",from.plusSeconds(10),true);
+        fixture.jdbc.update("UPDATE crm_visit SET review_source='CANCELLED' WHERE tenant_id=? AND id=?",fixture.tenant,cancelled);
+        visit(a,"2","SUBMITTED",from.plusSeconds(20),true);
+        var result=workbench.list(scope(),from,to,"all","ALL",null,1,20);
+        assertThat(result.total()).isEqualTo(2);assertThat(result.summary().totalVisitCount()).isEqualTo(1);assertThat(result.summary().firstVisitCount()).isEqualTo(1);
+        assertThat(workbench.list(scope(),from,to,"all","CANCELLED",null,1,20).items().getFirst().status()).isEqualTo("CANCELLED");
+        assertThat(workbench.list(scope(),from,to,"first","ALL",null,1,20).total()).isEqualTo(1);
+    }
 }

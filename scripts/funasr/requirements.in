@@ -1,0 +1,7 @@
+funasr-onnx==0.4.11
+onnxruntime==1.23.2
+modelscope==1.40.3
+fastapi
+uvicorn
+python-multipart
+psutil

@@ -8,7 +8,9 @@ import java.util.List;
 import java.util.Set;
 
 public interface StorePoolStore {
-    void initializePolicy(StoreScope scope);
+    com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy currentPolicy(String tenant);
+    List<com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy> policyHistory(String tenant);
+    com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy publishPolicy(StoreScope scope, com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Publish command);
     List<StoreMatch> lookup(StoreScope scope,String keyword,String areaCode);
     Admission admit(StoreScope scope,AmapAdmission command,Poi poi,String typeCode);
     Lead resubmit(StoreScope scope,String id,Resubmit command);

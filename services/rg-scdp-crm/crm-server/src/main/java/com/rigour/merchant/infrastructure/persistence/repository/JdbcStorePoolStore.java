@@ -4,6 +4,7 @@ import com.rigour.merchant.api.v1.model.NearbyModels;
 
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.rigour.merchant.api.v1.model.StoreModels.*;
+import com.rigour.merchant.api.v1.model.StorePoolPolicyModels;
 import com.rigour.merchant.application.port.out.StorePoolStore;
 import com.rigour.merchant.application.service.StoreScope;
 import com.rigour.shared.context.AuthorizationDeniedException;
@@ -22,7 +23,12 @@ public class JdbcStorePoolStore implements StorePoolStore {
     private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
 
     private static final String FROM=" FROM crm_store_summary q JOIN crm_store_master s ON s.tenant_id=q.tenant_id AND s.id=q.store_id LEFT JOIN crm_store_ownership current_o ON current_o.tenant_id=q.tenant_id AND current_o.id=q.current_ownership_id ";
-    private static final String ACTIVITY="CASE WHEN q.activity_status='ACTIVE' AND q.activity_expires_at<=UTC_TIMESTAMP(6) THEN CASE WHEN q.order_history_complete_to>=UTC_TIMESTAMP(6) THEN 'DORMANT' ELSE 'UNKNOWN' END ELSE q.activity_status END";
+    private String activity(StoreScope scope) {
+        var policy=currentPolicy(scope.access().tenantId());
+        if(policy==null)return "'UNKNOWN'";
+        int days=policy.activityDays();
+        return "CASE WHEN q.last_order_at IS NOT NULL AND DATE_ADD(q.last_order_at,INTERVAL "+days+" DAY)>UTC_TIMESTAMP(6) THEN 'ACTIVE' WHEN q.last_order_at IS NOT NULL AND q.cooperation_status='COOPERATED' AND q.order_history_complete_to>=UTC_TIMESTAMP(6) THEN 'DORMANT' ELSE 'UNKNOWN' END";
+    }
     private final JdbcTemplate jdbc;
     public JdbcStorePoolStore(JdbcTemplate jdbc) {this.jdbc=jdbc;}
     private record Filter(String sql,List<Object> args) {}
@@ -48,14 +54,14 @@ public class JdbcStorePoolStore implements StorePoolStore {
         condition(sql,args,"q.geo_region_code",query.region());condition(sql,args,"q.province_code",query.province());
         condition(sql,args,"q.city_code",query.city());condition(sql,args,"q.county_code",query.county());
         condition(sql,args,"q.cooperation_status",query.cooperation());condition(sql,args,"q.customer_tier",query.tier());
-        condition(sql,args,ACTIVITY,query.activity());condition(sql,args,"q.potential_level",query.potential());
+        if(query.activity()!=null&&!query.activity().isBlank())condition(sql,args,activity(scope),query.activity());condition(sql,args,"q.potential_level",query.potential());
         condition(sql,args,"q.business_status",query.businessStatus());
         if("COVERAGE".equals(query.view()))sql.append(" AND q.business_status<>'CLOSED'");
         condition(sql,args,"q.pool_type",query.pool());condition(sql,args,"q.phase",query.phase());
         if(query.protection()!=null&&!query.protection().isBlank()) {
             sql.append(" AND q.pool_type='PRIVATE'");
             switch(query.protection()) {
-                case "DUE_SOON" -> sql.append(" AND current_o.hold_reason IS NULL AND q.deadline_at>UTC_TIMESTAMP(6) AND q.deadline_at<=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL 24 HOUR)");
+                case "DUE_SOON" -> {sql.append(" AND current_o.hold_reason IS NULL AND q.deadline_at>UTC_TIMESTAMP(6) AND q.deadline_at<=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL ? HOUR)");args.add(requiredPolicy(scope.access().tenantId()).dueSoonHours());}
                 case "OVERDUE" -> sql.append(" AND current_o.hold_reason IS NULL AND q.deadline_at<=UTC_TIMESTAMP(6)");
                 case "HELD" -> sql.append(" AND current_o.hold_reason IS NOT NULL");
                 default -> throw new IllegalArgumentException("Unknown protection filter");
@@ -79,7 +85,10 @@ public class JdbcStorePoolStore implements StorePoolStore {
     private String select(StoreScope scope) {
         // Employee IDs originate exclusively in IAM, but remain bound in queries below.
         return "SELECT s.*,q.current_ownership_id,current_o.hold_reason,current_o.hold_until,q.valid_visit_count,q.pool_type,q.owner_employee_id,q.owner_employee_code,q.cooperation_status,q.customer_tier,q.tier_unrated_reason,"
-                + ACTIVITY+" AS effective_activity,q.phase,q.deadline_at,q.last_visit_at,q.last_order_at,q.first_cooperated_at,q.geo_region_code,q.province_code,q.city_code,q.county_code,q.revision AS summary_revision,"
+                + activity(scope)+" AS effective_activity,q.phase,q.deadline_at,q.last_visit_at,q.last_order_at,q.first_cooperated_at,q.geo_region_code,q.province_code,q.city_code,q.county_code,q.revision AS summary_revision,"
+                // Only the current ownership's submitted visits affect the sales-facing receipt.
+                + "(SELECT v.visited_at FROM crm_visit v WHERE v.tenant_id=q.tenant_id AND v.ownership_id=q.current_ownership_id AND v.submitted_at IS NOT NULL ORDER BY v.visited_at DESC,v.id DESC LIMIT 1) AS last_submitted_visit_at,"
+                + "(SELECT "+StoreVisitDisplaySql.STATE+" FROM crm_visit v WHERE v.tenant_id=q.tenant_id AND v.ownership_id=q.current_ownership_id AND v.submitted_at IS NOT NULL ORDER BY v.visited_at DESC,v.id DESC LIMIT 1) AS last_submitted_visit_status,"
                 + "(SELECT MAX(o.cooldown_until) FROM crm_store_ownership o WHERE o.tenant_id=q.tenant_id AND o.store_id=q.store_id AND o.owner_employee_id=?) AS cooldown_until,"
                 + "(SELECT CONVERT(i.external_id USING utf8mb4) FROM crm_store_identity i WHERE i.tenant_id=q.tenant_id AND i.store_id=q.store_id AND i.provider_code='AMAP' AND i.status_code='ACTIVE' ORDER BY i.verified_at DESC,i.id DESC LIMIT 1) AS primary_poi"+FROM;
     }
@@ -225,16 +234,30 @@ public class JdbcStorePoolStore implements StorePoolStore {
                 nodes.containsKey(province)?nodes.get(province).name():null,nodes.containsKey(city)?nodes.get(city).name():null,nodes.containsKey(county)?nodes.get(county).name():null,
                 rs.getString("geo_region_code"),rs.getBigDecimal("longitude"),rs.getBigDecimal("latitude"),rs.getString("coordinate_system"),rs.getString("record_status"),rs.getString("pool_type"),ownerId,ownerName,
                 rs.getString("cooperation_status"),rs.getString("customer_tier"),rs.getString("tier_unrated_reason"),rs.getString("effective_activity"),rs.getString("potential_level"),
-                instant(rs,"last_visit_at"),instant(rs,"last_order_at"),rs.getString("phase"),instant(rs,"deadline_at"),cooldown,blocked,rs.getLong("summary_revision"),rs.getString("current_ownership_id"),rs.getString("hold_reason"),instant(rs,"hold_until"),rs.getObject("valid_visit_count")==null?null:rs.getLong("valid_visit_count"),rs.getString("business_status"),rs.getString("business_status_reason"),instant(rs,"first_cooperated_at"));
+                instant(rs,"last_visit_at"),instant(rs,"last_order_at"),rs.getString("phase"),instant(rs,"deadline_at"),cooldown,blocked,rs.getLong("summary_revision"),rs.getString("current_ownership_id"),rs.getString("hold_reason"),instant(rs,"hold_until"),rs.getObject("valid_visit_count")==null?null:rs.getLong("valid_visit_count"),rs.getString("business_status"),rs.getString("business_status_reason"),instant(rs,"first_cooperated_at"),instant(rs,"last_submitted_visit_at"),rs.getString("last_submitted_visit_status"));
     }
     private static Instant instant(ResultSet rs,String name)throws SQLException {Timestamp t=rs.getTimestamp(name);return t==null?null:t.toInstant();}
     private void lock(StoreScope scope,String id) {
         var rows=jdbc.queryForList("SELECT id FROM crm_store_master WHERE tenant_id=? AND id=? FOR UPDATE",Long.class,scope.access().tenantId(),id);
         if(rows.isEmpty())throw new AuthorizationDeniedException("store-not-visible");
     }
-    private Map<String,Object> policy(StoreScope scope) {
-        var rows=jdbc.queryForList("SELECT * FROM crm_pool_policy WHERE tenant_id=? AND status_code='PUBLISHED' AND effective_from<=UTC_TIMESTAMP(6) ORDER BY effective_from DESC,id DESC LIMIT 1",scope.access().tenantId());
-        if(rows.isEmpty())throw new StateConflictException("公海规则尚未启用，请由管理员完成启用配置");return rows.getFirst();
+    private StorePoolPolicyModels.Policy requiredPolicy(String tenant) {
+        var policy=currentPolicy(tenant);
+        if(policy==null)throw new StateConflictException("客户保护规则尚未配置，请联系管理员发布规则");
+        return policy;
+    }
+    @Override public StorePoolPolicyModels.Policy currentPolicy(String tenant) {
+        // The applicable version is checked live; only immutable version content is cached.
+        var ids=jdbc.queryForList("SELECT id FROM crm_pool_policy WHERE tenant_id=? AND status_code='PUBLISHED' AND effective_from<=UTC_TIMESTAMP(6) ORDER BY effective_from DESC,id DESC LIMIT 1",String.class,tenant);
+        if(ids.isEmpty())return null;
+        return queryCache.read(tenant,"pool-policy",ids.getFirst(),3600,new tools.jackson.core.type.TypeReference<>(){},
+                ()->jdbc.queryForObject("SELECT * FROM crm_pool_policy WHERE tenant_id=? AND id=?",this::policyRow,tenant,ids.getFirst()));
+    }
+    private StorePoolPolicyModels.Policy policyRow(ResultSet r,int n)throws SQLException {
+        return new StorePoolPolicyModels.Policy(r.getString("id"),r.getInt("policy_version"),r.getInt("first_visit_hours"),r.getInt("followup_days"),r.getInt("cooperating_days"),r.getInt("return_cooldown_hours"),r.getInt("activity_days"),r.getInt("due_soon_hours"),r.getString("description"),instant(r,"published_at"),r.getString("published_by"));
+    }
+    @Override public List<StorePoolPolicyModels.Policy> policyHistory(String tenant) {
+        return jdbc.query("SELECT * FROM crm_pool_policy WHERE tenant_id=? AND status_code='PUBLISHED' ORDER BY policy_version DESC LIMIT 100",this::policyRow,tenant);
     }
     @Override
     @Transactional
@@ -248,10 +271,10 @@ public class JdbcStorePoolStore implements StorePoolStore {
         }
         if(current.revision()!=command.revision())throw new StateConflictException("门店状态已变化，请刷新后重试");
         if(current.claimBlockedReason()!=null)throw new StateConflictException(current.claimBlockedReason());
-        var policy=policy(scope);long ownership=IdWorker.getId();Instant now=Instant.now();
-        Instant deadline=now.plusSeconds(((Number)policy.get("first_visit_hours")).longValue()*3600);
+        var policy=requiredPolicy(scope.access().tenantId());long ownership=IdWorker.getId();Instant now=Instant.now();
+        Instant deadline=now.plusSeconds(policy.firstVisitHours()*3600L);
         jdbc.update("INSERT INTO crm_store_ownership(id,tenant_id,store_id,owner_employee_id,department_id_at_start,acquire_type,started_at,policy_id,phase,deadline_at,request_id,created_at,updated_at,created_by,updated_by) VALUES(?,?,?,?,?,'CLAIM',?,?,'FIRST_VISIT',?,?,?,?,?,?)",
-                ownership,scope.access().tenantId(),id,scope.access().employeeId(),scope.access().departmentId(),Timestamp.from(now),policy.get("id"),Timestamp.from(deadline),command.requestId(),Timestamp.from(now),Timestamp.from(now),scope.access().userId(),scope.access().userId());
+                ownership,scope.access().tenantId(),id,scope.access().employeeId(),scope.access().departmentId(),Timestamp.from(now),policy.id(),Timestamp.from(deadline),command.requestId(),Timestamp.from(now),Timestamp.from(now),scope.access().userId(),scope.access().userId());
         jdbc.update("UPDATE crm_store_summary SET current_ownership_id=?,owner_employee_id=?,owner_employee_code=?,ownership_revision=1,phase='FIRST_VISIT',deadline_at=?,revision=revision+1,updated_at=? WHERE tenant_id=? AND store_id=?",
                 ownership,scope.access().employeeId(),scope.access().employeeCode(),Timestamp.from(deadline),Timestamp.from(now),scope.access().tenantId(),id);
         event(scope,id,ownership,"OWNERSHIP",ownership,"CLAIMED",command.requestId(),null);
@@ -442,10 +465,24 @@ public class JdbcStorePoolStore implements StorePoolStore {
     }
     @Override
     @Transactional
-    public void initializePolicy(StoreScope scope) {
-        long id=IdWorker.getId();
-        jdbc.update("INSERT INTO crm_pool_policy(id,tenant_id,policy_version,first_visit_hours,followup_days,cooperating_days,return_cooldown_hours,status_code,effective_from,published_at,published_by,description,created_at,updated_at,created_by,updated_by) VALUES(?,?,1,24,7,60,48,'PUBLISHED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?,'首次启用已确认的24小时/7天/60天及48小时冷却规则',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?,?) ON DUPLICATE KEY UPDATE id=id",
-                id,scope.access().tenantId(),scope.access().userId(),scope.access().userId(),scope.access().userId());
+    public StorePoolPolicyModels.Policy publishPolicy(StoreScope scope,StorePoolPolicyModels.Publish c) {
+        if(!"crm:store:manage".equals(scope.access().action()))throw new AuthorizationDeniedException("crm:store:manage");
+        admissionLock(scope);String tenant=scope.access().tenantId();
+        var replay=jdbc.query("SELECT * FROM crm_pool_policy WHERE tenant_id=? AND request_id=?",this::policyRow,tenant,c.requestId());
+        if(!replay.isEmpty()) {
+            var p=replay.getFirst();
+            if(p.version()!=c.expectedVersion()+1 || p.firstVisitHours()!=c.firstVisitHours() || p.followupDays()!=c.followupDays()
+                    || p.cooperatingDays()!=c.cooperatingDays() || p.returnCooldownHours()!=c.returnCooldownHours()
+                    || p.activityDays()!=c.activityDays() || p.dueSoonHours()!=c.dueSoonHours() || !Objects.equals(p.description(),c.description()))
+                throw new StateConflictException("请求标识已用于其他规则发布");
+            return p;
+        }
+        var latest=jdbc.queryForObject("SELECT COALESCE(MAX(policy_version),0) FROM crm_pool_policy WHERE tenant_id=?",Integer.class,tenant);
+        if(latest!=c.expectedVersion())throw new StateConflictException("规则已被其他管理员更新，请重新加载后发布");
+        long id=IdWorker.getId();queryCache.changed(tenant);
+        jdbc.update("INSERT INTO crm_pool_policy(id,tenant_id,policy_version,first_visit_hours,followup_days,cooperating_days,return_cooldown_hours,activity_days,due_soon_hours,request_id,status_code,effective_from,published_at,published_by,description,created_at,updated_at,created_by,updated_by) VALUES(?,?,?,?,?,?,?,?,?,?,'PUBLISHED',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?,?)",
+                id,tenant,latest+1,c.firstVisitHours(),c.followupDays(),c.cooperatingDays(),c.returnCooldownHours(),c.activityDays(),c.dueSoonHours(),c.requestId(),scope.access().userId(),c.description(),scope.access().userId(),scope.access().userId());
+        return jdbc.queryForObject("SELECT * FROM crm_pool_policy WHERE tenant_id=? AND id=?",this::policyRow,tenant,id);
     }
     @Override
     public List<Event> events(StoreScope scope,String id) {
@@ -510,18 +547,20 @@ public class JdbcStorePoolStore implements StorePoolStore {
         rememberCommand(scope,c.requestId(),c);
     }
     private void applyBusinessStatus(StoreScope scope,String id,Row current,String status,String reason,String requestId,int eventSeq) {
-        if(!"ACTIVE".equals(current.recordStatus()))throw new StateConflictException("归档或合并记录不能修改经营状态，请先核验档案");
-        if(current.businessStatus().equals(status))throw new StateConflictException("经营状态没有变化");
-        String tenant=scope.access().tenantId(),actor=scope.access().userId();
+        applyBusinessStatus(scope.access().tenantId(),id,scope.access().userId(),scope.access().employeeId(),current.recordStatus(),current.businessStatus(),current.businessStatusReason(),current.currentOwnershipId(),status,reason,requestId,eventSeq);
+    }
+    void applyBusinessStatus(String tenant,String id,String actor,String employee,String recordStatus,String beforeStatus,String beforeReason,String ownershipId,String status,String reason,String requestId,int eventSeq) {
+        if(!"ACTIVE".equals(recordStatus))throw new StateConflictException("归档或合并记录不能修改经营状态，请先核验档案");
+        if(beforeStatus.equals(status))throw new StateConflictException("经营状态没有变化");
         jdbc.update("UPDATE crm_store_master SET business_status=?,business_status_reason=? WHERE tenant_id=? AND id=?",status,reason,tenant,id);
         jdbc.update("UPDATE crm_store_summary SET business_status=? WHERE tenant_id=? AND store_id=?",status,tenant,id);
-        Long ownership=current.currentOwnershipId()==null?null:Long.valueOf(current.currentOwnershipId());
+        Long ownership=ownershipId==null?null:Long.valueOf(ownershipId);
         if("CLOSED".equals(status)&&ownership!=null) {
             jdbc.update("UPDATE crm_store_ownership o JOIN crm_pool_policy p ON p.tenant_id=o.tenant_id AND p.id=o.policy_id SET o.ended_at=UTC_TIMESTAMP(6),o.end_reason='STORE_CLOSED',o.cooldown_until=DATE_ADD(UTC_TIMESTAMP(6),INTERVAL p.return_cooldown_hours HOUR),o.revision=o.revision+1,o.updated_at=UTC_TIMESTAMP(6),o.updated_by=? WHERE o.tenant_id=? AND o.id=? AND o.ended_at IS NULL",actor,tenant,ownership);
             jdbc.update("UPDATE crm_store_summary SET current_ownership_id=NULL,owner_employee_id=NULL,owner_employee_code=NULL,ownership_revision=NULL,phase=NULL,deadline_at=NULL WHERE tenant_id=? AND store_id=?",tenant,id);
         }
         jdbc.update("INSERT INTO crm_store_event(id,tenant_id,store_id,ownership_id,object_type,object_id,event_type,actor_user_id,actor_employee_id,occurred_at,request_id,event_seq,reason,before_data,after_data) VALUES(?,?,?,?,'STORE',?,'BUSINESS_STATUS_CHANGED',?,?,UTC_TIMESTAMP(6),?,?,?,JSON_OBJECT('businessStatus',?,'businessStatusReason',?,'ownershipId',?),JSON_OBJECT('businessStatus',?,'businessStatusReason',?,'ownershipEnded',?))",
-                IdWorker.getId(),tenant,id,ownership,id,actor,scope.access().employeeId(),requestId,eventSeq,reason,current.businessStatus(),current.businessStatusReason(),current.currentOwnershipId(),status,reason,"CLOSED".equals(status)&&ownership!=null);
+                IdWorker.getId(),tenant,id,ownership,id,actor,employee,requestId,eventSeq,reason,beforeStatus,beforeReason,ownershipId,status,reason,"CLOSED".equals(status)&&ownership!=null);
     }
     private boolean replayed(StoreScope scope,String request,String event,String type,String object,Object command) {
         var rows=jdbc.queryForList("SELECT event_type,object_type,object_id,actor_user_id,JSON_EXTRACT(after_data,'$.command') command_payload FROM crm_store_event WHERE tenant_id=? AND request_id=? AND event_seq=1",scope.access().tenantId(),request);

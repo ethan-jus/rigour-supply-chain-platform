@@ -26,7 +26,7 @@ class StoreVisitCaptureServiceTest {
     final CrmStoreVisitClient crm=mock(CrmStoreVisitClient.class);
     final StoreVisitCaptureService service=new StoreVisitCaptureService(context,days,store,crm,Clock.fixed(now,ZoneOffset.UTC),visits);
     final LocationEvidence location=new LocationEvidence(new BigDecimal("120.1"),new BigDecimal("30.1"),BigDecimal.ONE,"GPS");
-    final StoreVisitCaptureService.Command command=new StoreVisitCaptureService.Command("capture_request_12345","100","200",day,location);
+    final StoreVisitCaptureService.Command command=new StoreVisitCaptureService.Command("capture_request_12345","100","200",day,location,null);
 
     @BeforeEach void setup() throws Exception {
         var setter=AuthorizationContext.class.getDeclaredMethod("set",CallerIdentity.class);setter.setAccessible(true);
@@ -47,7 +47,7 @@ class StoreVisitCaptureServiceTest {
     @Test void repeatedCreationUsesSameCaptureAndOriginalCrmTime() {
         var first=service.create(command);var retry=service.create(command);
         assertThat(retry.captureId()).isEqualTo(first.captureId());assertThat(first.visitId()).isEqualTo("300");
-        verify(store,times(2)).create(eq(tenant),eq(profile),eq(day),eq(first.captureId()),argThat(c->c.checkedInAt().equals(now)&&c.storeId().equals("100")),eq(location));
+        verify(store,times(2)).create(eq(tenant),eq(profile),eq(day),eq(first.captureId()),argThat(c->c.checkedInAt().equals(now)&&c.storeId().equals("100")),eq(location),isNull());
     }
     @Test void existingActiveVisitRejectsBeforeCreatingCrmFact() {
         var active=mock(SalesWorkVisitRepository.VisitSnapshot.class);when(active.id()).thenReturn(UUID.randomUUID());
@@ -56,7 +56,7 @@ class StoreVisitCaptureServiceTest {
         verifyNoInteractions(crm,store);
     }
     @Test void concurrentCaptureConflictCancelsOnlyUnsubmittedCrmFact() {
-        doThrow(new StateConflictException("并发签到")).when(store).create(any(),any(),any(),any(),any(),any());
+        doThrow(new StateConflictException("并发签到")).when(store).create(any(),any(),any(),any(),any(),any(),any());
         assertThatThrownBy(()->service.create(command)).hasMessageContaining("并发签到");
         verify(crm).cancel(eq("100"),eq("300"),argThat(c->c.revision()==1&&c.reason().contains("冲突")));
     }
@@ -66,7 +66,7 @@ class StoreVisitCaptureServiceTest {
         when(snapshot.captureRef()).thenReturn(UUID.nameUUIDFromBytes((tenant+":crm-capture:"+command.requestId()).getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString());
         doReturn(snapshot).when(crm).context("100","300");
         assertThatThrownBy(()->service.create(command)).hasMessageContaining("重新发起");
-        verify(store,never()).create(any(),any(),any(),any(),any(),any());
+        verify(store,never()).create(any(),any(),any(),any(),any(),any(),any());
     }
 
 }

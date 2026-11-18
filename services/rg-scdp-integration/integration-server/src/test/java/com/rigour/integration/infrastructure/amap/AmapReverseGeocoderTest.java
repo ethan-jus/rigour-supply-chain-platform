@@ -100,6 +100,28 @@ class AmapReverseGeocoderTest {
         server.verify();
     }
 
+    @Test
+    void gcj02PunchCoordinatesAreNotConvertedAgainAndCacheKeepsCoordinateSystemsSeparate() {
+        RestClient.Builder builder = RestClient.builder();
+        MockRestServiceServer server = MockRestServiceServer.bindTo(builder).build();
+        Wgs84Gcj02Converter converter = mock(Wgs84Gcj02Converter.class);
+        var longitude = new BigDecimal("116.431200");
+        var latitude = new BigDecimal("39.888300");
+        when(converter.convert(longitude, latitude)).thenReturn(new Wgs84Gcj02Converter.Coordinates(new BigDecimal("116.437"), new BigDecimal("39.890")));
+        AmapReverseGeocoder geocoder = new AmapReverseGeocoder(builder.build(), properties("test-key"), JsonMapper.builder().build(), converter);
+        String response = """
+                {"status":"1","regeocode":{"formatted_address":"北京市东城区夕照寺街16号","addressComponent":{}}}
+                """;
+        server.expect(requestTo(containsString("/geocode/regeo"))).andExpect(queryParam("location", "116.431200,39.888300")).andRespond(withSuccess(response, MediaType.APPLICATION_JSON));
+        server.expect(requestTo(containsString("/geocode/regeo"))).andExpect(queryParam("location", "116.437,39.890")).andRespond(withSuccess(response, MediaType.APPLICATION_JSON));
+        assertThat(geocoder.resolveGcj02(longitude, latitude).status()).isEqualTo("RESOLVED");
+        assertThat(geocoder.resolveGcj02(longitude, latitude).formattedAddress()).isEqualTo("北京市东城区夕照寺街16号");
+        verifyNoInteractions(converter);
+        geocoder.resolve(longitude, latitude);
+        verify(converter).convert(longitude, latitude);
+        server.verify();
+    }
+
     private static AmapProperties properties(String key) {
         AmapProperties properties = new AmapProperties();
         properties.setWebKey(key);

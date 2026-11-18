@@ -32,7 +32,22 @@ public class StorePoolService {
     public StoreScope scopeForStore(String action,String id) {
         var scope=scope(action);store.detail(scope,id);return scope;
     }
-    public void initializePolicy(){store.initializePolicy(scope("crm:store:manage"));}
+    public com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy poolPolicy() {
+        return store.currentPolicy(references.access("crm:store:manage").tenantId());
+    }
+    public List<com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy> poolPolicyHistory() {
+        return store.policyHistory(references.access("crm:store:manage").tenantId());
+    }
+    public com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy publishPoolPolicy(com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Publish c) {
+        if(c==null)throw new RequestValidationException("请填写客户保护规则");
+        request(c.requestId());required(c.description(),500,"修改说明");
+        if(c.expectedVersion()<0 || c.firstVisitHours()<1 || c.firstVisitHours()>65535
+                || c.followupDays()<1 || c.followupDays()>65535 || c.cooperatingDays()<1 || c.cooperatingDays()>65535
+                || c.returnCooldownHours()<1 || c.returnCooldownHours()>65535
+                || c.activityDays()<1 || c.activityDays()>65535 || c.dueSoonHours()<1 || c.dueSoonHours()>65535)
+            throw new RequestValidationException("各期限须为 1–65535 的整数");
+        return store.publishPolicy(scope("crm:store:manage"),c);
+    }
     public Context maintenanceContext(String id){id(id);return scopeForStore("crm:store:manage",id).context();}
     public List<Event> events(String id,String view){id(id);listView(view);store.detail(scope(action(view)),id);return store.events(scope("crm:store:history-read"),id);}
     public void update(String id,Update c){

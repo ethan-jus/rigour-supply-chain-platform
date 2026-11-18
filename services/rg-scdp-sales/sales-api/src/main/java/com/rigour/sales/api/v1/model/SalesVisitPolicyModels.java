@@ -7,8 +7,13 @@ public final class SalesVisitPolicyModels {
     private SalesVisitPolicyModels() {}
     public record CaptureRules(boolean requireLocationOnOpen,Integer maximumLocationAccuracyMeters,
             boolean automaticRecording,boolean allowPhotoImport,boolean allowRecordingImport,
-            Boolean automaticCheckout) {
+            Boolean automaticCheckout, Integer automaticCheckoutRadiusMeters) {
         public CaptureRules { if (automaticCheckout == null) automaticCheckout = false; }
+        public int checkoutRadius(int arrivalRadius) { return automaticCheckoutRadiusMeters == null ? arrivalRadius : automaticCheckoutRadiusMeters; }
+        public CaptureRules(boolean requireLocationOnOpen,Integer maximumLocationAccuracyMeters,
+                boolean automaticRecording,boolean allowPhotoImport,boolean allowRecordingImport,Boolean automaticCheckout) {
+            this(requireLocationOnOpen,maximumLocationAccuracyMeters,automaticRecording,allowPhotoImport,allowRecordingImport,automaticCheckout,null);
+        }
         public CaptureRules(boolean requireLocationOnOpen,Integer maximumLocationAccuracyMeters,
                 boolean automaticRecording,boolean allowPhotoImport,boolean allowRecordingImport) {
             this(requireLocationOnOpen,maximumLocationAccuracyMeters,automaticRecording,allowPhotoImport,allowRecordingImport,false);

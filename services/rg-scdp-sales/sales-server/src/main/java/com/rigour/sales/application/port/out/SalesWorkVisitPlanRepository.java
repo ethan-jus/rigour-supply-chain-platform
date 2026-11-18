@@ -38,6 +38,8 @@ public interface SalesWorkVisitPlanRepository {
 
     int cancelPlannedPlan(UUID tenantId, UUID planId, long expectedVersion, Instant now);
 
+    int completeOwnAction(UUID tenantId, UUID salesProfileId, UUID planId, Instant now);
+
     int markInProgress(UUID tenantId, UUID salesProfileId, UUID planId, Instant now);
 
     int markCompletedByVisit(UUID tenantId, UUID visitId, Instant now);
@@ -55,6 +57,6 @@ public interface SalesWorkVisitPlanRepository {
             String customerName, String storeName, String storeAddress,
             BigDecimal longitude, BigDecimal latitude,
             String objective, String status, UUID visitId, long version,
-            UUID createdBy, Instant createdAt, Instant updatedAt) {
+            UUID createdBy, Instant createdAt, Instant updatedAt, String crmStoreId, String actionCode) {
     }
 }

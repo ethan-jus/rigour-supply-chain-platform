@@ -21,6 +21,9 @@ import java.util.*;
 @Repository
 public class JdbcTenantDictionaryRepository implements BusinessDictionaryStore {
     private final JdbcTemplate jdbc;
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+    @org.springframework.beans.factory.annotation.Autowired(required=false)
+    public void queryCache(com.rigour.shared.cache.QueryCache value) { queryCache = value; }
     private final ObjectMapper json = new ObjectMapper();
 
     public JdbcTenantDictionaryRepository(JdbcTemplate jdbc) {
@@ -55,7 +58,7 @@ public class JdbcTenantDictionaryRepository implements BusinessDictionaryStore {
 
     @Override
     public Optional<DictView> findByCode(String code) {
-        return list(null, code).stream().findFirst();
+        return jdbc.query("SELECT * FROM data_dictionary WHERE tenant_key IN ('GLOBAL',?) AND dictionary_code=? AND deleted=0 ORDER BY (tenant_key='GLOBAL') ASC LIMIT 1",this::dictionary,tenant(),code).stream().findFirst();
     }
 
     @Override
@@ -74,6 +77,14 @@ public class JdbcTenantDictionaryRepository implements BusinessDictionaryStore {
     @Override
     public List<DictItemView> items(String code) {
         if (findByCode(code).isEmpty()) return List.of();
+        String tenant = tenant();
+        // Keep GLOBAL and override revisions separately: a baseline update must invalidate an override too.
+        var versions = jdbc.queryForList("SELECT tenant_key,revision FROM data_dictionary WHERE tenant_key IN ('GLOBAL',?) AND dictionary_code=? AND deleted=0 ORDER BY tenant_key",tenant,code);
+        return queryCache.read(tenant,"dictionary-items",List.of(code,versions),3600,
+                new tools.jackson.core.type.TypeReference<List<DictItemView>>() {}, () -> loadItems(code));
+    }
+
+    private List<DictItemView> loadItems(String code) {
         var merged = new LinkedHashMap<String, DictItemView>();
         jdbc.query(
                         "SELECT * FROM data_dictionary_item WHERE tenant_key IN ('GLOBAL',?) AND"

@@ -48,8 +48,12 @@ public class StoreWorkService {
         var s=scope(store,"crm:store:visit-write");checkExpiry(s,store);return visits.submit(s,store,visit,c,clock.instant());
     }
     public Visit cancel(String store,String visit,CancelVisit c){id(visit);if(c==null)throw new RequestValidationException("取消参数不能为空");text(c.reason(),1000,"取消原因");return visits.cancel(scope(store,"crm:store:visit-write"),store,visit,c,clock.instant());}
+    public Visit invalidate(String store,String visit,InvalidateVisit c){
+        id(visit);if(c==null)throw new RequestValidationException("风控参数不能为空");text(c.reason(),1000,"无效原因");
+        return visits.invalidate(scope(store,"crm:store:visit-review"),store,visit,c,clock.instant());
+    }
     public Visit review(String store,String visit,ReviewVisit c){
-        id(visit);if(c==null||!Set.of("EFFECTIVE","INVALID","VOID").contains(c.decision()==null?"":c.decision()))throw new RequestValidationException("核验结论无效");text(c.reason(),1000,"核验依据");
+        id(visit);if(c==null||!Set.of("EFFECTIVE","INVALID").contains(c.decision()==null?"":c.decision()))throw new RequestValidationException("核验结论无效");text(c.reason(),1000,"核验依据");
         return visits.review(scope(store,"crm:store:visit-review"),store,visit,c,clock.instant());
     }
     public List<Visit> visits(String store,String view){pools.detail(store,view);return visits.visits(scope(store,"crm:store:history-read"),store);}

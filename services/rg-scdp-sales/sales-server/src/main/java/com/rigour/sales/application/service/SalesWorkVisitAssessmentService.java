@@ -8,7 +8,6 @@ import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.context.RequestContext;
 import com.rigour.shared.outbox.OutboxMessage;
 import com.rigour.shared.outbox.OutboxStore;
-import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -18,21 +17,19 @@ import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.databind.ObjectMapper;
 
 /**
- * 基于服务端硬证据判定拜访有效性。证据完整且没有异常时自动确认有效；任何缺口都保留在主管复核队列。
+ * 基于服务端硬证据判定拜访有效性。证据完整且没有异常时自动确认有效；技术处理未完成时等待证据重试。
  * 客户端上报的“已完成”或录音时长不直接作为最终事实。
  */
 @Service
 public class SalesWorkVisitAssessmentService {
 
     private static final String AUTO_REASON = "AUTO_EVIDENCE_COMPLETE";
-    private static final Set<String> POSITIVE_AI_RECOMMENDATIONS = Set.of("AUTO_CONFIRM", "EFFECTIVE");
 
     private final SalesWorkManagementRepository repository;
     private final OutboxStore outboxStore;
@@ -117,20 +114,7 @@ public class SalesWorkVisitAssessmentService {
                 anomalies.add("RECORDING_TOO_SHORT");
             }
         }
-        if (facts.aiAsrEnabled() || facts.aiRelevanceEnabled() || facts.aiDuplicateEnabled()) {
-            if (!facts.aiResultAdopted()) {
-                anomalies.add("AI_PENDING");
-            } else if (!POSITIVE_AI_RECOMMENDATIONS.contains(facts.aiRecommendation())) {
-                anomalies.add("AI_REVIEW_REQUIRED");
-            } else if (belowThreshold(facts.aiConfidenceScore(), facts.aiAutoConfirmThreshold())) {
-                anomalies.add("AI_LOW_CONFIDENCE");
-            }
-        }
         return List.copyOf(anomalies);
-    }
-
-    private static boolean belowThreshold(BigDecimal confidence, BigDecimal threshold) {
-        return threshold != null && (confidence == null || confidence.compareTo(threshold) < 0);
     }
 
     private void appendOutbox(CallerIdentity actor, UUID visitId, Instant finalizedAt) {

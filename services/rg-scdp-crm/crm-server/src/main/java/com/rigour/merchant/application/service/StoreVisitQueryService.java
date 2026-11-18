@@ -16,7 +16,7 @@ public class StoreVisitQueryService {
     public Page list(LocalDate from,LocalDate to,String kind,String status,String keyword,int page,int size) {
         if(from==null||to==null||from.isAfter(to)||ChronoUnit.DAYS.between(from,to)>366||page<1||page>100000||size<1||size>100
             ||keyword!=null&&keyword.length()>100||!Set.of("all","effective","first").contains(kind)
-            ||!Set.of("ALL","IN_PROGRESS","PENDING_SUBMIT","SUBMITTED","EFFECTIVE","INVALID","VOID").contains(status))
+            ||!Set.of("ALL","IN_PROGRESS","PENDING_SUBMIT","SUBMITTED","PROCESSING","INSUFFICIENT","ERROR","APPEALED","EFFECTIVE","INVALID","VOID","CANCELLED").contains(status))
             throw new RequestValidationException("拜访查询条件无效");
         var scope=pools.scope("crm:store:history-read");
         if(scope.access().employeeId()==null)throw new RequestValidationException("当前账号未关联员工");

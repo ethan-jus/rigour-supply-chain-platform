@@ -77,7 +77,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
         lock(s,store);var v=visit(s,store,id);if(!Objects.equals(s.access().employeeId(),v.salespersonId()))throw new AuthorizationDeniedException("visit-owner");
         if("INVALID".equals(v.status())&&Objects.equals(v.reviewReason(),c.reason()))return v;
         if(!"IN_PROGRESS".equals(v.status())||c.revision()!=v.revision())throw new StateConflictException("仅能取消尚未提交的本次拜访");
-        jdbc.update("UPDATE crm_visit SET status_code='INVALID',review_reason=?,review_source='CANCELLED',revision=revision+1,updated_at=?,updated_by=? WHERE tenant_id=? AND id=?",c.reason(),ts(now),s.access().userId(),tenant(s),id);
+        jdbc.update("UPDATE crm_visit SET verification_state='FAILED',status_code='INVALID',review_reason=?,review_source='CANCELLED',revision=revision+1,updated_at=?,updated_by=? WHERE tenant_id=? AND id=?",c.reason(),ts(now),s.access().userId(),tenant(s),id);
         var cycle=lifecycle.current(tenant(s),store);if(cycle!=null&&cycle.id().equals(v.ownershipId()))bump(cycle,now);
         event(s,store,v.ownershipId(),Long.parseLong(id),"VISIT_CANCELLED",c.reason(),now);return visit(s,store,id);
     }
@@ -85,9 +85,23 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
         queryCache.changed(s.access().tenantId());
         lock(s,store);var v=visit(s,store,id);
         if(v.revision()!=c.revision())throw new StateConflictException("拜访版本已变化");
-        boolean revoke="VOID".equals(c.decision());
-        if(revoke?!"EFFECTIVE".equals(v.status()):!"SUBMITTED".equals(v.status()))throw new StateConflictException("拜访状态不允许本次核验");
-        jdbc.update("UPDATE crm_visit SET review_source='MANUAL',status_code=?,qualified_at=IF(?='EFFECTIVE',checkin_accepted_at,NULL),reviewed_at=?,reviewer_user_id=?,review_reason=?,revision=revision+1,updated_at=?,updated_by=? WHERE tenant_id=? AND id=?",c.decision(),c.decision(),ts(now),s.access().userId(),c.reason(),ts(now),s.access().userId(),tenant(s),id);
+        var appeals=jdbc.queryForList("SELECT id FROM crm_visit_appeal WHERE tenant_id=? AND visit_id=? AND status='PENDING' FOR UPDATE",tenant(s),id);
+        if(appeals.size()!=1||!Set.of("EFFECTIVE","INVALID").contains(c.decision()))throw new StateConflictException("仅能处理销售已提交的拜访申诉");
+        jdbc.update("UPDATE crm_visit_appeal SET status='RESOLVED',reviewed_at=?,reviewer_user_id=?,decision=?,review_note=? WHERE tenant_id=? AND id=?",ts(now),s.access().userId(),c.decision(),c.reason(),tenant(s),appeals.getFirst().get("id"));
+        decide(s,store,v,c.decision(),c.reason(),"MANUAL",now);
+        return visit(s,store,id);
+    }
+    @Override @Transactional public Visit invalidate(StoreScope s,String store,String id,InvalidateVisit c,Instant now){
+        queryCache.changed(s.access().tenantId());
+        lock(s,store);var v=visit(s,store,id);
+        if("RISK".equals(v.reviewSource())&&"INVALID".equals(v.status())&&v.revision()==c.revision()+1&&Objects.equals(v.reviewReason(),c.reason()))return v;
+        if(v.revision()!=c.revision())throw new StateConflictException("拜访版本已变化");
+        if(!"EFFECTIVE".equals(v.status()))throw new StateConflictException("仅能将有效拜访标记为无效");
+        decide(s,store,v,"INVALID",c.reason(),"RISK",now);
+        return visit(s,store,id);
+    }
+    private void decide(StoreScope s,String store,Visit v,String decision,String reason,String source,Instant now){
+        jdbc.update("UPDATE crm_visit SET review_source=?,verification_state=IF(?='EFFECTIVE','PASSED','FAILED'),status_code=?,qualified_at=IF(?='EFFECTIVE',checkin_accepted_at,NULL),reviewed_at=?,reviewer_user_id=?,review_reason=?,revision=revision+1,updated_at=?,updated_by=? WHERE tenant_id=? AND id=?",source,decision,decision,decision,ts(now),s.access().userId(),reason,ts(now),s.access().userId(),tenant(s),v.id());
         jdbc.update("UPDATE crm_store_summary SET valid_visit_count=(SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND store_id=? AND status_code='EFFECTIVE'),first_valid_visit_at=(SELECT MIN(visited_at) FROM crm_visit WHERE tenant_id=? AND store_id=? AND status_code='EFFECTIVE'),last_visit_at=(SELECT MAX(visited_at) FROM crm_visit WHERE tenant_id=? AND store_id=? AND status_code='EFFECTIVE'),visit_synced_at=?,revision=revision+1,updated_at=? WHERE tenant_id=? AND store_id=?",tenant(s),store,tenant(s),store,tenant(s),store,ts(now),ts(now),tenant(s),store);
         var cycle=lifecycle.current(tenant(s),store);
         if(cycle!=null&&cycle.id().equals(v.ownershipId())) {
@@ -99,8 +113,7 @@ public class JdbcStoreVisitStore implements StoreVisitStore {
             jdbc.update("UPDATE crm_store_ownership SET phase=?,deadline_at=?,last_valid_visit_id=?,last_valid_visit_at=?,revision=revision+1,updated_at=?,next_check_at=? WHERE tenant_id=? AND id=?",window.phase(),ts(window.deadline()),visitId,ts(visitAt),ts(now),ts(now),tenant(s),cycle.id());
             jdbc.update("UPDATE crm_store_summary SET phase=?,deadline_at=?,ownership_revision=? WHERE tenant_id=? AND store_id=?",window.phase(),ts(window.deadline()),cycle.revision()+1,tenant(s),store);
         }
-        event(s,store,v.ownershipId(),Long.parseLong(id),"VISIT_"+c.decision(),c.reason(),now);
-        return visit(s,store,id);
+        jdbc.update("INSERT INTO crm_store_event(id,tenant_id,store_id,ownership_id,object_type,object_id,event_type,actor_user_id,actor_employee_id,occurred_at,request_id,event_seq,reason,before_data,after_data) VALUES(?,?,?,?,'VISIT',?,?,?,?,?,?,1,?,JSON_OBJECT('status',?,'revision',?),JSON_OBJECT('status',?,'source',?,'revision',?))",IdWorker.getId(),tenant(s),store,v.ownershipId(),v.id(),"RISK".equals(source)?"VISIT_INVALIDATED":"VISIT_"+decision,s.access().userId(),s.access().employeeId(),ts(now),UUID.randomUUID().toString(),reason,v.status(),v.revision(),decision,source,v.revision()+1);
     }
     @Override public List<Visit> visits(StoreScope s,String store){return queryVisits(s,store,null);}
     private List<Visit> queryVisits(StoreScope s,String store,String id){

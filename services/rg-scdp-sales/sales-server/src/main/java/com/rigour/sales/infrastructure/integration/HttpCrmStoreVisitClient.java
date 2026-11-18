@@ -41,6 +41,17 @@ public class HttpCrmStoreVisitClient implements CrmStoreVisitClient {
         if(response==null||!"OK".equals(response.code())||response.data()==null)throw new StateConflictException("拜访事实查询暂不可用");
         return response.data();
     }
+    public com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Accepted validateFieldwork(String store,String visit,com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Draft draft){
+        var uri=URI.create(base+"/api/v1/crm/stores/"+store+"/visits/"+visit+"/fieldwork/validate");
+        var r=client.post().uri(uri).headers(h->OutboundContextHeaders.caller(signer,"POST",uri,AuthorizationContext.requireCurrent()).forEach(h::set)).body(draft)
+            .retrieve().onStatus(status->status.value()==400||status.value()==409,(request,response)->{
+                String message="拜访信息校验失败，请刷新后确认";
+                try{var body=new tools.jackson.databind.ObjectMapper().readTree(response.getBody());String detail=body.path("message").asText();String code=body.path("code").asText();boolean publicError=response.getStatusCode().value()==400?"VALIDATION_FAILED".equals(code):"CONFLICT".equals(code);if(publicError&&!detail.isBlank()&&detail.length()<=200&&!detail.contains("\n"))message=detail;}catch(RuntimeException ignored){}
+                if(response.getStatusCode().value()==400)throw new com.rigour.shared.core.exception.RequestValidationException(message);
+                throw new StateConflictException(message);
+            }).body(new ParameterizedTypeReference<ApiResponse<com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Accepted>>(){});
+        if(r==null||!"OK".equals(r.code())||r.data()==null)throw new StateConflictException("拜访信息校验未完成，请重试");return r.data();
+    }
     public Visit checkIn(String store,CheckIn c){return post(store+"/visits",c);}
     public Visit cancel(String store,String visit,CancelVisit c){return post(store+"/visits/"+visit+"/cancel",c);}
     private Visit post(String path,Object command){var uri=URI.create(base+"/api/v1/crm/stores/"+path);var r=client.post().uri(uri).headers(h->OutboundContextHeaders.caller(signer,"POST",uri,AuthorizationContext.requireCurrent()).forEach(h::set)).body(command).retrieve().body(new ParameterizedTypeReference<ApiResponse<Visit>>(){});if(r==null||!"OK".equals(r.code())||r.data()==null)throw new StateConflictException("CRM拜访受理未确认，请重试原请求");return r.data();}

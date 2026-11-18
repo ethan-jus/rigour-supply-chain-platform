@@ -60,4 +60,13 @@ class HttpCrmStoreVisitClientTest {
         assertThatThrownBy(()->client.ownVisits(java.time.LocalDate.now(),java.time.LocalDate.now(),"all","ALL",null,1,20)).isInstanceOf(com.rigour.shared.core.exception.StateConflictException.class);
     }
 
+    @Test void fieldworkValidationPreservesIntentionalFieldFeedbackOnly() {
+        var draft=new com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Draft(1,"OPEN",null,"TYPE","CONTACTED",List.of(),true,List.of(),null,null,null,null);
+        status=400;body="{\"code\":\"VALIDATION_FAILED\",\"message\":\"请选择接待人\"}";
+        assertThatThrownBy(()->client.validateFieldwork("100","300",draft)).isInstanceOf(com.rigour.shared.core.exception.RequestValidationException.class).hasMessage("请选择接待人");
+        status=409;body="{\"code\":\"CONFLICT\",\"message\":\"门店资料已更新，请刷新后确认\"}";
+        assertThatThrownBy(()->client.validateFieldwork("100","300",draft)).isInstanceOf(com.rigour.shared.core.exception.StateConflictException.class).hasMessage("门店资料已更新，请刷新后确认");
+        status=400;body="{\"code\":\"UNKNOWN\",\"message\":\"private upstream diagnostic\"}";
+        assertThatThrownBy(()->client.validateFieldwork("100","300",draft)).hasMessageNotContaining("private");
+    }
 }

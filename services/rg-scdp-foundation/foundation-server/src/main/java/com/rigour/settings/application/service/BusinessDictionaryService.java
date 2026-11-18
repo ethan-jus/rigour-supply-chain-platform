@@ -103,6 +103,13 @@ public class BusinessDictionaryService {
         return result;
     }
 
+    public List<EffectiveDictView> effectiveBatch(List<String> codes) {
+        if(codes==null||codes.isEmpty()||codes.size()>20)throw badRequest("请提供1至20本字典");
+        // Authorize every member before reading any content, including cache hits.
+        codes.forEach(value->requireResolvePermission(code(value,"dictionaryCode",true)));
+        return codes.stream().distinct().map(this::effective).toList();
+    }
+
     public EffectiveDictView effective(String dictionaryCode) {
         EffectiveDictView all = resolve(dictionaryCode);
         return new EffectiveDictView(
@@ -174,6 +181,9 @@ public class BusinessDictionaryService {
                 && AuthorizationContext.hasPermission("order:payment:read")) return;
         if (Set.of("CRM_STORE_TYPE", "CRM_STORE_BUSINESS_STATUS").contains(code)
                 && STORE_CLASSIFICATION_READERS.stream().anyMatch(AuthorizationContext::hasPermission)) return;
+        if (Set.of("CRM_STORE_BUSINESS_STATUS", "STORE_BUSINESS_TYPE", "BUSINESS_LINE", "CUSTOMER_INTENTION_LEVEL",
+                "CUSTOMER_COOP_STATUS", "VISIT_CONTACT_OUTCOME", "VISIT_NO_CONTACT_REASON", "VISIT_NEXT_ACTION", "STORE_CONTACT_ROLE").contains(code)
+                && (AuthorizationContext.hasPermission("crm:store:visit-write") || AuthorizationContext.hasPermission("sales:visit:own:write"))) return;
         if (PAYROLL_DICTIONARIES.contains(code)
                 && (AuthorizationContext.hasPermission("hr:payroll:read")
                         || AuthorizationContext.hasPermission("hr:payroll-rule:read"))) return;

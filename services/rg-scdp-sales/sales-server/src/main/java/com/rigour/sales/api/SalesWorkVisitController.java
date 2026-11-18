@@ -81,6 +81,18 @@ public final class SalesWorkVisitController {
         return ApiResponse.success(service.captureRules(visitId));
     }
 
+    @PostMapping(SalesWorkApi.VISIT_COMPLETE_PATH)
+    public ApiResponse<VisitView> completeVisit(@PathVariable("visitId") UUID visitId,
+            @RequestBody com.rigour.sales.api.v1.model.SalesWorkApiModels.CompleteVisitCommand command) {
+        return ApiResponse.success(service.completeVisit(visitId, command));
+    }
+
+    @PostMapping(SalesWorkApi.VISIT_CANCEL_PATH)
+    public ApiResponse<VisitView> cancelVisit(@PathVariable("visitId") UUID visitId,
+            @RequestBody com.rigour.sales.api.v1.model.SalesWorkApiModels.CancelVisitCommand command) {
+        return ApiResponse.success(service.cancelVisit(visitId, command));
+    }
+
     @PostMapping(SalesWorkApi.VISIT_CHECK_OUT_PATH)
     public ApiResponse<VisitView> checkOutVisit(@PathVariable("visitId") UUID visitId,
                                                 @RequestBody CheckOutVisitCommand command) {

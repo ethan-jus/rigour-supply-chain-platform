@@ -3,6 +3,7 @@ import com.rigour.merchant.api.v1.model.StoreWorkModels.*;
 import com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context;
 public interface CrmStoreVisitClient {
     com.rigour.merchant.api.v1.model.StoreVisitQueryModels.Page ownVisits(java.time.LocalDate from,java.time.LocalDate to,String kind,String status,String keyword,int page,int size);
+    com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Accepted validateFieldwork(String store,String visit,com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Draft draft);
     Visit checkIn(String store,CheckIn command);
     String evidenceAccess(String store,String visit);
     Context context(String store,String visit);

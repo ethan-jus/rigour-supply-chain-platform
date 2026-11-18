@@ -18,7 +18,7 @@ public final class StoreModels {
             String cooperationStatus, String customerTier, String tierUnratedReason,
             String activityStatus, String potentialLevel, Instant lastVisitAt, Instant lastOrderAt,
             String phase, Instant deadlineAt, Instant cooldownUntil, String claimBlockedReason,
-            long revision, String currentOwnershipId, String holdReason, Instant holdUntil, Long validVisitCount, String businessStatus, String businessStatusReason, Instant firstCooperatedAt) {}
+            long revision, String currentOwnershipId, String holdReason, Instant holdUntil, Long validVisitCount, String businessStatus, String businessStatusReason, Instant firstCooperatedAt, Instant lastSubmittedVisitAt, String lastSubmittedVisitStatus) {}
     public record StoreMatch(String id,String name,String address,String areaCode,String provinceName,String cityName,
             String countyName,String recordStatus,String businessStatus,String poolType) {}
     public record Page(long total, List<Row> items, String nextCursor) {}

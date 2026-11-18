@@ -38,6 +38,17 @@ public final class EffectiveDictionaryClient {
         this.serviceName = serviceName;
     }
 
+    public List<EffectiveDictView> effectiveBatch(String tenantId,List<String> codes) {
+        UUID.fromString(tenantId);
+        if(codes==null||codes.isEmpty()||codes.size()>20||codes.stream().anyMatch(code->code==null||!code.matches("[A-Z][A-Z0-9_]{0,49}")))throw new IllegalArgumentException("字典编码无效");
+        var uri=UriComponentsBuilder.fromUriString(baseUrl).path(BusinessDictionaryApi.BASE_PATH+"/effective-batch").queryParam("dictionaryCodes",String.join(",",codes)).build().encode().toUri();
+        try {
+            var response=client.get().uri(uri).headers(h->com.rigour.shared.context.OutboundContextHeaders.service(signer,"GET",uri,serviceName,tenantId,"business-settings:dict:read").forEach(h::set)).retrieve().body(new ParameterizedTypeReference<ApiResponse<List<EffectiveDictView>>>(){});
+            if(response==null||!"OK".equals(response.code())||response.data()==null||!response.data().stream().map(d->d.dictionary().dictionaryCode()).collect(java.util.stream.Collectors.toSet()).equals(Set.copyOf(codes)))throw new IllegalStateException("Invalid dictionary batch");
+            return response.data();
+        }catch(RuntimeException error){throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE,"业务字典暂不可核验，请稍后重试",List.of());}
+    }
+
     public Set<String> activeCodes(String tenantId, String dictionaryCode) {
         return com.rigour.settings.client.DictionaryItems.activeCodes(effective(tenantId, dictionaryCode));
     }

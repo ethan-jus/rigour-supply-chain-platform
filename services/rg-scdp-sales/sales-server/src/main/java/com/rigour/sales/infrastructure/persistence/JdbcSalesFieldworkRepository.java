@@ -40,7 +40,7 @@ public class JdbcSalesFieldworkRepository implements SalesFieldworkRepository {
         LEFT JOIN (
             SELECT v.tenant_id,v.sales_profile_id,COUNT(*) visit_count
             FROM sales_visit v JOIN sales_work_day day ON day.tenant_id=v.tenant_id AND day.id=v.work_day_id
-            WHERE v.tenant_id=? AND day.business_date=? GROUP BY v.tenant_id,v.sales_profile_id
+            WHERE v.status<>'CANCELLED' AND v.tenant_id=? AND day.business_date=? GROUP BY v.tenant_id,v.sales_profile_id
         ) v ON v.tenant_id=p.tenant_id AND v.sales_profile_id=p.id
         LEFT JOIN (
             SELECT c.tenant_id,c.work_day_id,COUNT(*) pending_count FROM sales_fieldwork_case c

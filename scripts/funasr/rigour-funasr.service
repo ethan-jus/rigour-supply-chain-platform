@@ -1,0 +1,28 @@
+[Unit]
+Description=Rigour private FunASR CPU transcription
+After=network.target
+
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/rigour-funasr
+EnvironmentFile=/etc/rigour-funasr.env
+Environment=RIGOUR_ASR_MODELS=/opt/rigour-funasr/models
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=2
+Environment=NUMBA_CACHE_DIR=/tmp/rigour-numba
+ExecStart=/opt/rigour-funasr/.venv/bin/uvicorn server:app --host 127.0.0.1 --port 18087 --workers 1 --no-access-log
+Restart=on-failure
+RestartSec=5
+MemoryHigh=1200M
+MemoryMax=1500M
+CPUQuota=100%
+TasksMax=64
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

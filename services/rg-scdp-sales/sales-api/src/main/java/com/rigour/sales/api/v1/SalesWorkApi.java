@@ -62,6 +62,9 @@ public interface SalesWorkApi {
     String ACTIVITY_SUMMARY_PATH = BASE_PATH + "/me/activity-summary";
     String VISIT_PATH = BASE_PATH + "/me/visits/{visitId}";
     String VISIT_CHECK_OUT_PATH = BASE_PATH + "/me/visits/{visitId}/check-out";
+    String VISIT_COMPLETE_PATH = VISIT_PATH + "/complete";
+    String VISIT_CANCEL_PATH = VISIT_PATH + "/cancel";
+    String FOLLOWUP_COMPLETE_PATH = VISIT_PLANS_PATH + "/{planId}/complete";
     String VISIT_RESULT_PATH = BASE_PATH + "/me/visits/{visitId}/result";
     String VISIT_RECORDINGS_PATH = BASE_PATH + "/me/visits/{visitId}/recordings";
     String VISIT_EVIDENCE_PATH = BASE_PATH + "/me/visits/{visitId}/evidence";
@@ -130,6 +133,17 @@ public interface SalesWorkApi {
     @PostMapping(VISIT_CHECK_OUT_PATH)
     ApiResponse<VisitView> checkOutVisit(@PathVariable("visitId") UUID visitId,
                                          @RequestBody CheckOutVisitCommand command);
+
+    @PostMapping(VISIT_COMPLETE_PATH)
+    ApiResponse<VisitView> completeVisit(@PathVariable("visitId") UUID visitId,
+            @RequestBody com.rigour.sales.api.v1.model.SalesWorkApiModels.CompleteVisitCommand command);
+
+    @PostMapping(VISIT_CANCEL_PATH)
+    ApiResponse<VisitView> cancelVisit(@PathVariable("visitId") UUID visitId,
+            @RequestBody com.rigour.sales.api.v1.model.SalesWorkApiModels.CancelVisitCommand command);
+
+    @PostMapping(FOLLOWUP_COMPLETE_PATH)
+    ApiResponse<com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitPlanView> completeOwnAction(@PathVariable("planId") UUID planId);
 
     @PutMapping(VISIT_RESULT_PATH)
     ApiResponse<VisitView> submitVisitResult(@PathVariable("visitId") UUID visitId,

@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 @Configuration(proxyBeanMethods=false)
-@ConditionalOnProperty(name="rigour.sales.fieldwork.ai-enabled",havingValue="true")
+@ConditionalOnProperty(name="rigour.sales.fieldwork.asr-enabled",havingValue="true")
 public class SalesRecordingAnalysisConfiguration {
     @Bean
     ThreadPoolTaskScheduler salesRecordingAnalysisScheduler() {

@@ -170,6 +170,31 @@ class SalesWorkReopenAndTrackIntegrationTests {
         assertThat(fieldEvidence.capture(UUID.randomUUID(),current)).isEmpty();
     }
 
+    @Test
+    void cancelledVisitsDoNotEnterTrackNumbersOrTravelSegments() {
+        UUID policy=UUID.randomUUID(), version=UUID.randomUUID();
+        jdbc.update("INSERT INTO sales_visit_policy(id,tenant_id,policy_code,policy_name,status,created_at,updated_at) VALUES(?,?,'TRACK','轨迹测试','ACTIVE',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",bin(policy),bin(tenantId));
+        jdbc.update("INSERT INTO sales_visit_policy_version(id,tenant_id,policy_id,version_no,publish_status,check_in_radius_meters,minimum_dwell_minutes,required_photo_count,created_by,created_at) VALUES(?,?,?,1,'PUBLISHED',100,0,1,?,UTC_TIMESTAMP(6))",bin(version),bin(tenantId),bin(policy),bin(userId));
+        LocalDate date=LocalDate.of(2026,11,13);
+        UUID last=historyCapture(profileId,100,date,79L,"10:00:00",version);
+        UUID first=historyCapture(profileId,100,date,77L,"08:00:00",version);
+        UUID cancelled=historyCapture(profileId,100,date,78L,"09:00:00",version);
+        for (UUID visit : List.of(last,first,cancelled)) {
+            jdbc.update("UPDATE sales_visit SET checked_out_at=DATE_ADD(checked_in_at,INTERVAL 10 MINUTE) WHERE id=?",bin(visit));
+            jdbc.update("INSERT INTO sales_visit_target_snapshot(id,tenant_id,visit_id,target_type,store_name,store_address,store_longitude,store_latitude,captured_at) VALUES(?,?,?,'STORE','测试门店','测试地址',116,40,UTC_TIMESTAMP(6))",bin(UUID.randomUUID()),bin(tenantId),bin(visit));
+        }
+        jdbc.update("UPDATE sales_visit SET status='CANCELLED' WHERE id=?",bin(cancelled));
+        var track=attendanceService.track(date);
+        assertThat(track.visits()).extracting(v->v.visitId()).containsExactly(first,last);
+        assertThat(track.visits()).extracting(v->v.sequence()).containsExactly(1,2);
+        assertThat(track.segments()).hasSize(1);
+        assertThat(track.segments().getFirst().fromVisitId()).isEqualTo(first);
+        assertThat(track.segments().getFirst().toVisitId()).isEqualTo(last);
+        assertThat(track.segments().getFirst().fromSequence()).isEqualTo(1);
+        assertThat(track.segments().getFirst().toSequence()).isEqualTo(2);
+        assertThat(track.distanceAvailable()).isFalse();
+    }
+
     private UUID historyCapture(UUID profile,long hrId,LocalDate date,Long store,String time,UUID policy) {
         var dayIds=jdbc.query("SELECT id FROM sales_work_day WHERE tenant_id=? AND sales_profile_id=? AND business_date=?",(r,n)->r.getBytes(1),bin(tenantId),bin(profile),date);
         byte[] day;

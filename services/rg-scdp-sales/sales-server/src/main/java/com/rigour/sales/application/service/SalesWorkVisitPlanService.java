@@ -76,6 +76,20 @@ public class SalesWorkVisitPlanService {
         return new VisitPlanListView(date, items);
     }
 
+    @Transactional
+    public VisitPlanView completeOwnAction(UUID planId) {
+        CallerIdentity caller=requireCaller("sales:visit:own:write");
+        var identity=contextService.resolveIdentity(caller,clock.instant());
+        var plan=repository.findOwnPlan(caller.tenantId(),identity.profile().id(),planId,true)
+                .orElseThrow(()->invalid("跟进计划不存在"));
+        if(plan.actionCode()==null||"VISIT".equals(plan.actionCode()))throw invalid("到店计划请完成现场拜访");
+        if("COMPLETED".equals(plan.status()))return ownView(plan);
+        if(repository.completeOwnAction(caller.tenantId(),identity.profile().id(),planId,clock.instant())!=1)
+            throw invalid("计划状态已变化，请刷新后重试");
+        appendAudit(caller,"SALES_FOLLOWUP_COMPLETED",planId,Map.of("actionCode",plan.actionCode()));
+        return ownView(repository.findOwnPlan(caller.tenantId(),identity.profile().id(),planId,false).orElseThrow());
+    }
+
     public ManagementVisitPlanPageView managementPlans(
             LocalDate from, LocalDate to, String status, int page, int pageSize) {
         CallerIdentity caller = requireCaller("sales:visit-plan:read");
@@ -230,7 +244,7 @@ public class SalesWorkVisitPlanService {
     private static VisitPlanView ownView(VisitPlanRow row) {
         return new VisitPlanView(row.id(), row.plannedDate(), row.targetType(), row.customerId(),
                 row.storeId(), row.customerName(), row.storeName(), row.storeAddress(),
-                row.longitude(), row.latitude(), row.objective(), row.status(), row.visitId(), row.version());
+                row.longitude(), row.latitude(), row.objective(), row.status(), row.visitId(), row.version(), row.crmStoreId(), row.actionCode());
     }
 
     private static ManagementVisitPlanView managementView(VisitPlanRow row) {

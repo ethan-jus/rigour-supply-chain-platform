@@ -23,7 +23,8 @@ public class JdbcStoreLifecycleStore implements StoreLifecycleStore {
 
     private static final String CYCLES = "SELECT o.*,p.first_visit_hours,p.followup_days,p.cooperating_days,p.return_cooldown_hours FROM crm_store_ownership o JOIN crm_pool_policy p ON p.tenant_id=o.tenant_id AND p.id=o.policy_id";
     private final JdbcTemplate jdbc;
-    public JdbcStoreLifecycleStore(JdbcTemplate jdbc) { this.jdbc=jdbc; }
+    private final JdbcStorePoolStore policies;
+    public JdbcStoreLifecycleStore(JdbcTemplate jdbc,JdbcStorePoolStore policies) { this.jdbc=jdbc;this.policies=policies; }
     @Override public List<Cycle> pending(int limit, Instant now) {
         return jdbc.query(CYCLES+" WHERE o.ended_at IS NULL AND o.next_check_at<=? ORDER BY o.next_check_at,o.id LIMIT ?",this::cycle,ts(now),Math.min(limit,100));
     }
@@ -70,7 +71,7 @@ public class JdbcStoreLifecycleStore implements StoreLifecycleStore {
         if(window.expired(now)) {
             boolean pendingCapture=jdbc.queryForObject("SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND ownership_id=? AND capture_ref IS NOT NULL AND status_code='IN_PROGRESS' AND (capture_synced_at IS NULL OR capture_synced_at<?)",Long.class,c.tenant(),c.id(),ts(window.deadline()))>0;
             if(pendingCapture)return finish(c,before,setHold(c,now,"SOURCE_UNAVAILABLE"));
-            boolean pendingVisit=jdbc.queryForObject("SELECT COUNT(*) FROM crm_visit WHERE tenant_id=? AND ownership_id=? AND status_code='SUBMITTED' AND checkin_accepted_at<? AND submitted_at<?",Long.class,c.tenant(),c.id(),ts(window.deadline()),ts(window.deadline()))>0;
+            boolean pendingVisit=jdbc.queryForObject("SELECT COUNT(*) FROM crm_visit v WHERE v.tenant_id=? AND v.ownership_id=? AND (v.status_code='SUBMITTED' OR EXISTS(SELECT 1 FROM crm_visit_appeal a WHERE a.tenant_id=v.tenant_id AND a.visit_id=v.id AND a.status='PENDING')) AND v.checkin_accepted_at<? AND v.submitted_at<?",Long.class,c.tenant(),c.id(),ts(window.deadline()),ts(window.deadline()))>0;
             if(pendingVisit||facts.pendingAuthorization())return finish(c,before,setHold(c,now,pendingVisit?"PENDING_REVIEW":"PENDING_ORDER"));
             jdbc.update("UPDATE crm_store_ownership SET ended_at=?,end_reason=?,cooldown_until=?,hold_reason=NULL,hold_until=NULL WHERE tenant_id=? AND id=?",ts(now),window.expiryReason(),ts(now.plusSeconds(c.policy().cooldownHours()*3600L)),c.tenant(),c.id());
             jdbc.update("UPDATE crm_store_summary SET current_ownership_id=NULL,owner_employee_id=NULL,owner_employee_code=NULL,ownership_revision=NULL,phase=NULL,deadline_at=NULL WHERE tenant_id=? AND store_id=? AND current_ownership_id=?",c.tenant(),c.storeId(),c.id());
@@ -82,7 +83,9 @@ public class JdbcStoreLifecycleStore implements StoreLifecycleStore {
         return finish(c,before,new RefreshResult(c.id(),"PROTECTED",window.phase(),window.deadline(),null));
     }
     public void projectOrders(String tenant,String store,Instant first,Instant last,Instant now) {
-        jdbc.update("UPDATE crm_store_summary q JOIN crm_store_master s ON s.tenant_id=q.tenant_id AND s.id=q.store_id SET q.cooperation_status=IF(s.historical_cooperation_confirmed OR ? IS NOT NULL,'COOPERATED','NEVER'),q.first_cooperated_at=IF(s.historical_cooperation_confirmed,IF(s.historical_first_cooperated_at IS NULL,NULL,LEAST(s.historical_first_cooperated_at,COALESCE(?,s.historical_first_cooperated_at))),?),q.last_order_at=?,q.order_synced_at=?,q.activity_status=IF(? IS NOT NULL AND ?>?,'ACTIVE','UNKNOWN'),q.activity_expires_at=? WHERE q.tenant_id=? AND q.store_id=?",ts(first),ts(first),ts(first),ts(last),ts(now),ts(last),ts(last==null?null:last.plusSeconds(60*86400L)),ts(now),ts(last==null?null:last.plusSeconds(60*86400L)),tenant,store);
+        var policy=policies.currentPolicy(tenant);
+        if(policy==null)throw new com.rigour.shared.core.exception.StateConflictException("客户保护规则尚未配置");
+        jdbc.update("UPDATE crm_store_summary q JOIN crm_store_master s ON s.tenant_id=q.tenant_id AND s.id=q.store_id SET q.cooperation_status=IF(s.historical_cooperation_confirmed OR ? IS NOT NULL,'COOPERATED','NEVER'),q.first_cooperated_at=IF(s.historical_cooperation_confirmed,IF(s.historical_first_cooperated_at IS NULL,NULL,LEAST(s.historical_first_cooperated_at,COALESCE(?,s.historical_first_cooperated_at))),?),q.last_order_at=?,q.order_synced_at=?,q.activity_status=IF(? IS NOT NULL AND ?>?,'ACTIVE','UNKNOWN'),q.activity_expires_at=? WHERE q.tenant_id=? AND q.store_id=?",ts(first),ts(first),ts(first),ts(last),ts(now),ts(last),ts(last==null?null:last.plusSeconds(policy.activityDays()*86400L)),ts(now),ts(last==null?null:last.plusSeconds(policy.activityDays()*86400L)),tenant,store);
     }
     private Map<String,Object> visibleState(Cycle c) {
         return jdbc.queryForMap("SELECT q.current_ownership_id,q.owner_employee_id,q.phase,q.deadline_at,q.cooperation_status,q.first_cooperated_at,q.last_order_at,q.activity_status,q.activity_expires_at,q.valid_visit_count,q.first_valid_visit_at,q.last_visit_at,o.hold_reason FROM crm_store_summary q LEFT JOIN crm_store_ownership o ON o.tenant_id=q.tenant_id AND o.id=q.current_ownership_id WHERE q.tenant_id=? AND q.store_id=?",c.tenant(),c.storeId());

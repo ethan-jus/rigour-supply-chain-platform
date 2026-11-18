@@ -65,14 +65,23 @@ public class AmapReverseGeocoder implements ReverseGeocoder {
 
     @Override
     public GeocodeResult resolve(BigDecimal longitude, BigDecimal latitude) {
+        return resolveCoordinates(longitude, latitude, false);
+    }
+
+    @Override
+    public GeocodeResult resolveGcj02(BigDecimal longitude, BigDecimal latitude) {
+        return resolveCoordinates(longitude, latitude, true);
+    }
+
+    private GeocodeResult resolveCoordinates(BigDecimal longitude, BigDecimal latitude, boolean gcj02) {
         if (!StringUtils.hasText(properties.getWebKey())) {
             return GeocodeResult.keyMissing();
         }
-        String key=longitude.stripTrailingZeros().toPlainString()+","+latitude.stripTrailingZeros().toPlainString();
+        String key=(gcj02 ? "GCJ02:" : "WGS84:")+longitude.stripTrailingZeros().toPlainString()+","+latitude.stripTrailingZeros().toPlainString();
         CachedGeocode cached=cache.compute(key,(ignored, previous) -> {
             long now=System.nanoTime();
             if(previous!=null && now-previous.expiresAtNanos()<0) return previous;
-            GeocodeResult result=resolveUncached(longitude,latitude);
+            GeocodeResult result=resolveUncached(longitude,latitude,gcj02);
             long ttl="RESOLVED".equals(result.status())?300_000_000_000L:15_000_000_000L;
             return new CachedGeocode(result,System.nanoTime()+ttl);
         });
@@ -85,10 +94,10 @@ public class AmapReverseGeocoder implements ReverseGeocoder {
     /** 同坐标并发请求合并，缓存仅保留有限个真实坐标地址，不套用其他门店地址。 */
     private record CachedGeocode(GeocodeResult result,long expiresAtNanos) { }
 
-    private GeocodeResult resolveUncached(BigDecimal longitude, BigDecimal latitude) {
+    private GeocodeResult resolveUncached(BigDecimal longitude, BigDecimal latitude, boolean gcj02) {
         long startedAt = System.nanoTime();
         try {
-            Wgs84Gcj02Converter.Coordinates amap = coordinateConverter.convert(longitude, latitude);
+            Wgs84Gcj02Converter.Coordinates amap = gcj02 ? new Wgs84Gcj02Converter.Coordinates(longitude, latitude) : coordinateConverter.convert(longitude, latitude);
             GeocodeResult result = reverseGeocode(amap);
             log.info("临时打卡逆地理编码成功 endpoint=/geocode/regeo elapsedMs={}",
                     (System.nanoTime() - startedAt) / 1_000_000);

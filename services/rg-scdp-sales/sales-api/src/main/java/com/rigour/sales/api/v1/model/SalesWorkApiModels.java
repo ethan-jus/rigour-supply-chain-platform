@@ -133,7 +133,7 @@ public final class SalesWorkApiModels {
             UUID planId, LocalDate plannedDate, String targetType,
             UUID customerId, UUID storeId, String customerName, String storeName,
             String storeAddress, BigDecimal longitude, BigDecimal latitude,
-            String objective, String status, UUID visitId, long version) {
+            String objective, String status, UUID visitId, long version, String crmStoreId, String actionCode) {
     }
 
     public record VisitPlanListView(LocalDate date, List<VisitPlanView> items) {
@@ -188,12 +188,17 @@ public final class SalesWorkApiModels {
 
     /** 拜访结果采集：实际接触时填写KP资料；关门、KP不在等未接触场景必须填写现场说明。 */
     public record VisitResultCommand(
-            String contactOutcome, String kpName, String kpPhone, String intentionLevel, String resultNote) {
+            String contactOutcome, String kpName, String kpPhone, String intentionLevel, String resultNote,
+            com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Draft fieldwork) {
+        public VisitResultCommand(String contactOutcome,String kpName,String kpPhone,String intentionLevel,String resultNote){this(contactOutcome,kpName,kpPhone,intentionLevel,resultNote,null);}
     }
+
+    public record CompleteVisitCommand(VisitResultCommand result, CheckOutVisitCommand checkout) {}
+    public record CancelVisitCommand(String reason) {}
 
     public record RecordingClipView(
             UUID clipId, UUID sessionId, String clientClipId, int clipIndex, long objectSizeBytes,
-            Long clientDurationMs, String uploadStatus, Instant createdAt) {
+            Long clientDurationMs, String uploadStatus, Instant createdAt, Long durationMs, boolean durationEstimated) {
     }
 
     /** 短录音只登记审计元数据，不保存音频字节，也不计入有效录音时长。 */
@@ -264,7 +269,7 @@ public final class SalesWorkApiModels {
             UUID visitId, int sequence, UUID storeId, String storeName,
             BigDecimal longitude, BigDecimal latitude, String status,
             Instant checkedInAt, Instant checkedOutAt, int dwellMinutes,
-            String visitType, String reviewStatus) {
+            String visitType, String reviewStatus, String storeAddress) {
     }
 
     /** 相邻两次拜访之间的行程；仅累计连续可靠采样，不补门店之间的直线距离。 */

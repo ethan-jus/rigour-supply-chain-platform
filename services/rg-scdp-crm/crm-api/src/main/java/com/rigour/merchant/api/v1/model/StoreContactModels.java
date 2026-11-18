@@ -7,8 +7,8 @@ public final class StoreContactModels {
     private StoreContactModels() {}
     public record Method(String id,String type,String value,String status,String verificationMethod,
                          Instant verifiedAt,String verifiedBy,long revision) {}
-    // Populated only by a future authenticated Integration projection, never by manual entry.
-    public record WecomRelation(String identityScope,String externalUserId,String employeeId,
+    // Only authenticated official projections can produce these relations; external identifiers stay server-side.
+    public record WecomRelation(String employeeId,String employeeName,
                                 String status,Instant addedAt) {}
     public record Contact(String id,String name,long personRevision,String role,boolean primary,
                           String status,long revision,List<Method> methods,List<WecomRelation> wecomRelations) {}

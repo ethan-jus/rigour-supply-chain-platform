@@ -29,6 +29,8 @@ mybatis-plus:
     banner: false
 
 rigour:
+  query-cache:
+    enabled: ${QUERY_CACHE_ENABLED:true}
   context:
     trust:
       active-key-id: v1

@@ -37,6 +37,15 @@ class SalesVisitPolicyPublicationTest {
         assertThat(service.upsertVisitPolicy(command).versionNo()).isEqualTo(4);
         verify(repository).saveVisitCaptureRules(tenant,version,command.captureRules());
     }
+    @Test void independentDepartureRadiusPersistsAndLegacyFallsBackToArrival(){
+        var separate=new CaptureRules(false,100,true,false,false,true,800);
+        service.upsertVisitPolicy(command(3,separate));verify(repository).saveVisitCaptureRules(tenant,version,separate);
+        assertThat(separate.checkoutRadius(500)).isEqualTo(800);assertThat(rules.checkoutRadius(500)).isEqualTo(500);
+    }
+    @Test void departureCannotBeInsideArrivalOrAboveMaximum(){
+        for(int radius:new int[]{499,5001})assertThatThrownBy(()->service.upsertVisitPolicy(command(3,new CaptureRules(false,100,true,false,false,true,radius)))).hasMessageContaining("自动离店距离");
+        verifyNoInteractions(repository);
+    }
     @Test void staleEditorCannotPublishAnotherVersion() {
         assertThatThrownBy(()->service.upsertVisitPolicy(command(2,rules))).hasMessageContaining("政策已更新");
         verify(repository,never()).saveVisitCaptureRules(any(),any(),any());

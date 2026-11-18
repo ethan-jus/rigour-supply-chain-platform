@@ -16,7 +16,7 @@ import org.testcontainers.junit.jupiter.*;
 
 import java.util.*;
 
-@SpringBootTest
+@SpringBootTest(properties="rigour.query-cache.enabled=false")
 @ActiveProfiles("test")
 @Testcontainers
 class TenantDictionaryIntegrationTest {
@@ -73,6 +73,39 @@ class TenantDictionaryIntegrationTest {
                                 "business-settings:dict:read",
                                 "business-settings:dict:write",
                                 "business-settings:dict:sync")));
+    }
+
+    @Autowired com.rigour.settings.infrastructure.persistence.repository.JdbcTenantDictionaryRepository repository;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
+    @Test void dictionaryCacheTracksBaselineTenantCommitAndRollbackWithoutSharingPermissions(){
+        var values=new java.util.HashMap<String,byte[]>();
+        var cacheStore=new com.rigour.shared.cache.CacheStore(){
+            public Optional<byte[]> get(String tenant,String key){return Optional.ofNullable(values.get(tenant+key));}
+            public void put(String tenant,String key,byte[] value,java.time.Duration ttl){values.put(tenant+key,value);}
+            public void evict(String tenant,String key){values.remove(tenant+key);}
+            public boolean tryLock(String tenant,String key,String token,java.time.Duration ttl){return true;}
+            public void unlock(String tenant,String key,String token){}
+        };
+        var versions=new com.rigour.shared.cache.CacheVersions(){public long current(String tenant){return 0;}public void changed(String tenant){throw new UnsupportedOperationException();}public boolean dirty(String tenant){return org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()&&!org.springframework.transaction.support.TransactionSynchronizationManager.isCurrentTransactionReadOnly();}};
+        repository.queryCache(new com.rigour.shared.cache.QueryCache(cacheStore,versions,()->AuthorizationContext.requireCurrent().tenantId().toString(),()->false,null,"dictionary-test",100000,4));
+        try {
+            var first=service.effective("STORE_CONTACT_ROLE");var owner=first.items().stream().filter(i->"OWNER".equals(i.dictionaryItemCode())).findFirst().orElseThrow();
+            service.effective("STORE_CONTACT_ROLE");assertThat(values).hasSize(1);
+            service.updateItem(owner.id(),new DictItemCommand("STORE_CONTACT_ROLE",null,"OWNER","经营者",null,10,owner.revision(),true));
+            assertThat(service.effective("STORE_CONTACT_ROLE").items()).anyMatch(i->"经营者".equals(i.dictionaryItemName()));
+            var changed=service.effective("STORE_CONTACT_ROLE").items().stream().filter(i->"OWNER".equals(i.dictionaryItemCode())).findFirst().orElseThrow();
+            new org.springframework.transaction.support.TransactionTemplate(transactionManager).execute(status->{
+                service.updateItem(changed.id(),new DictItemCommand("STORE_CONTACT_ROLE",null,"OWNER","不应持久化",null,10,changed.revision(),true));
+                assertThat(service.effective("STORE_CONTACT_ROLE").items()).anyMatch(i->"不应持久化".equals(i.dictionaryItemName()));status.setRollbackOnly();return null;
+            });
+            assertThat(service.effective("STORE_CONTACT_ROLE").items()).anyMatch(i->"经营者".equals(i.dictionaryItemName()));
+            actor(UUID.randomUUID(),"TENANT");assertThat(service.effective("STORE_CONTACT_ROLE").items()).anyMatch(i->"老板".equals(i.dictionaryItemName()));
+            actor(tenant,"TENANT");
+            jdbc.update("UPDATE data_dictionary SET revision=revision+1 WHERE tenant_key='GLOBAL' AND dictionary_code='STORE_CONTACT_ROLE'");int count=values.size();service.effective("STORE_CONTACT_ROLE");assertThat(values.size()).isGreaterThan(count);
+            TestAuthorizationContext.set(new CallerIdentity("TENANT",user,tenant,user,null,UUID.randomUUID(),0,0,0,Set.of(),Set.of("crm:store:visit-write")));
+            assertThat(service.effectiveBatch(List.of("STORE_CONTACT_ROLE","VISIT_NEXT_ACTION"))).hasSize(2);
+            assertThatThrownBy(()->service.effectiveBatch(List.of("STORE_CONTACT_ROLE","PAYROLL_STATUS"))).isInstanceOf(AuthorizationDeniedException.class);
+        }finally{repository.queryCache(com.rigour.shared.cache.QueryCache.disabled());}
     }
 
     @Test

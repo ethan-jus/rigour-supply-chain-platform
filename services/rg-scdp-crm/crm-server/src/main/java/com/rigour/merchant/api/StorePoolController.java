@@ -67,6 +67,10 @@ public class StorePoolController {
     public ApiResponse<List<Poi>> poiCandidates(@PathVariable String id,@RequestParam String keyword,@RequestParam String areaCode){return ApiResponse.success(service.poiCandidates(id,keyword,areaCode));}
     @GetMapping("/{id}/maintenance-context")
     public ApiResponse<Context> maintenanceContext(@PathVariable String id){return ApiResponse.success(service.maintenanceContext(id));}
-    @PostMapping("/policy/initialize")
-    public ApiResponse<Void> initialize(){service.initializePolicy();return ApiResponse.success(null);}
+    @GetMapping("/policy")
+    public ApiResponse<com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy> policy(){return ApiResponse.success(service.poolPolicy());}
+    @GetMapping("/policy/history")
+    public ApiResponse<List<com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy>> policyHistory(){return ApiResponse.success(service.poolPolicyHistory());}
+    @PutMapping("/policy")
+    public ApiResponse<com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Policy> publishPolicy(@RequestBody com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Publish command){return ApiResponse.success(service.publishPoolPolicy(command));}
 }

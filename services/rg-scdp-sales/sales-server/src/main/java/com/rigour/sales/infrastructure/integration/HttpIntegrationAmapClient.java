@@ -46,6 +46,9 @@ public class HttpIntegrationAmapClient implements AmapPoiClient, TemporaryChecki
     public Coordinates convertGps(BigDecimal longitude,BigDecimal latitude) {
         return get("/coordinates/gps",Map.of("longitude",longitude,"latitude",latitude),new ParameterizedTypeReference<>(){});
     }
+    public Address reverseGcj02(BigDecimal longitude,BigDecimal latitude) {
+        return get("/reverse-geocode/gcj02",Map.of("longitude",longitude,"latitude",latitude),new ParameterizedTypeReference<>(){});
+    }
     public GeocodeResult resolve(BigDecimal longitude,BigDecimal latitude) {
         try { return get("/reverse-geocode",Map.of("longitude",longitude,"latitude",latitude),new ParameterizedTypeReference<>(){}); }
         catch(AmapPoiException e) { return GeocodeResult.failed(e.reason()); }

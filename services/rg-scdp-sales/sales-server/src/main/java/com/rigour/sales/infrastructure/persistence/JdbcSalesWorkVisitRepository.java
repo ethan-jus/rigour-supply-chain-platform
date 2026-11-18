@@ -146,6 +146,7 @@ public class JdbcSalesWorkVisitRepository implements SalesWorkVisitRepository {
                        COALESCE(SUM(CASE WHEN NOT EXISTS (
                            SELECT 1 FROM sales_visit previous
                             WHERE previous.tenant_id=visit.tenant_id
+                              AND previous.status<>'CANCELLED'
                               AND previous.sales_profile_id=visit.sales_profile_id
                               AND previous.store_id=visit.store_id
                               AND previous.checked_in_at < visit.checked_in_at
@@ -153,6 +154,7 @@ public class JdbcSalesWorkVisitRepository implements SalesWorkVisitRepository {
                        COALESCE(SUM(CASE WHEN EXISTS (
                            SELECT 1 FROM sales_visit previous
                             WHERE previous.tenant_id=visit.tenant_id
+                              AND previous.status<>'CANCELLED'
                               AND previous.sales_profile_id=visit.sales_profile_id
                               AND previous.store_id=visit.store_id
                               AND previous.checked_in_at < visit.checked_in_at
@@ -161,7 +163,7 @@ public class JdbcSalesWorkVisitRepository implements SalesWorkVisitRepository {
                   FROM sales_visit visit
                   JOIN sales_work_day work_day
                     ON work_day.tenant_id=visit.tenant_id AND work_day.id=visit.work_day_id
-                 WHERE visit.tenant_id=? AND visit.sales_profile_id=?
+                 WHERE visit.status<>'CANCELLED' AND visit.tenant_id=? AND visit.sales_profile_id=?
                    AND work_day.business_date BETWEEN ? AND ?
                 """, (rs, row) -> new VisitActivitySummaryRow(
                         rs.getLong("total_visit_count"), rs.getLong("completed_visit_count"),

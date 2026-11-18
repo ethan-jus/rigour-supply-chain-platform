@@ -426,8 +426,9 @@ class SalesWorkRecordingServiceTest {
         when(mediaVerifier.verify("audio/aac", bytes))
                 .thenReturn(Verification.verified(294_656L, "audio/m4a", "native-decoded"));
 
-        service.uploadClip(visitId, new MockMultipartFile("file", "native.aac", "audio/aac", bytes),
+        var result=service.uploadClip(visitId, new MockMultipartFile("file", "native.aac", "audio/aac", bytes),
                 "native-clock-drift", null, recordedFrom, now, "APP_RECORDER");
+        assertThat(result.durationMs()).isEqualTo(294_656L);assertThat(result.durationEstimated()).isFalse();
 
         verify(recordingRepository).insertClip(any(), eq(tenantId), eq(sessionId),
                 eq("native-clock-drift"), eq(0), any(), eq("audio/m4a"), eq(3L), any(),
@@ -455,8 +456,9 @@ class SalesWorkRecordingServiceTest {
         when(mediaVerifier.verify("audio/aac", bytes))
                 .thenReturn(Verification.structurallyValid(35_000L, "audio/m4a"));
 
-        service.uploadClip(visitId, new MockMultipartFile("file", "native.aac", "audio/aac", bytes),
+        var result=service.uploadClip(visitId, new MockMultipartFile("file", "native.aac", "audio/aac", bytes),
                 "native-pending", null, now.minusSeconds(35), now, "APP_RECORDER");
+        assertThat(result.durationMs()).isEqualTo(35_000L);assertThat(result.durationEstimated()).isTrue();
 
         verify(recordingRepository).insertClip(any(), any(), any(), eq("native-pending"),
                 anyInt(), any(), any(), anyLong(), any(), any(), isNull(), isNull(),

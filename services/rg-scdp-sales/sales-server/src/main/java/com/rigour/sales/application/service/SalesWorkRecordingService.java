@@ -104,13 +104,13 @@ public class SalesWorkRecordingService {
         this.analysis = analysis;
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public RecordingClipView uploadClip(UUID visitId, MultipartFile file, String clientClipId, Long durationMs,
                                         Instant recordedFrom, Instant recordedTo) {
         return uploadClip(visitId,file,clientClipId,durationMs,recordedFrom,recordedTo,null);
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public RecordingClipView uploadClip(UUID visitId,MultipartFile file,String clientClipId,Long durationMs,
             Instant recordedFrom,Instant recordedTo,String captureSource) {
         CallerIdentity caller = requireCaller("sales:recording:own:write");
@@ -129,7 +129,7 @@ public class SalesWorkRecordingService {
         VisitSnapshot visit = visitRepository
                 .findVisit(caller.tenantId(), identity.profile().id(), visitId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
-        if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status())) {
+        if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status()) && !"CANCELLED".equals(visit.status())) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE, "当前拜访状态不允许上传录音", List.of());
         }
         var visitPolicy=queryRepository.findVisitPolicy(caller.tenantId(),visit.visitPolicyVersionId())
@@ -177,7 +177,7 @@ public class SalesWorkRecordingService {
                         decodedDurationMs,recordedFrom,recordedTo,"TOO_SHORT",receivedAt);
                 appendAudit(caller,"SALES_RECORDING_CLIP_DISCARDED_SHORT",visitId,Map.of("clientClipId",normalizedClientClipId,"durationMs",decodedDurationMs.toString(),"reason","DECODED_TOO_SHORT"));
             }
-            return new RecordingClipView(null,null,normalizedClientClipId,0,0L,decodedDurationMs,"DISCARDED_NOT_STORED",receivedAt);
+            return new RecordingClipView(null,null,normalizedClientClipId,0,0L,decodedDurationMs,"DISCARDED_NOT_STORED",receivedAt,decodedDurationMs,false);
         }
         if (decodedDurationMs != null
                 && decodedDurationMs + MINIMUM_CLIP_CODEC_PADDING_TOLERANCE_MS
@@ -229,7 +229,7 @@ public class SalesWorkRecordingService {
             appendAudit(caller, "SALES_RECORDING_DUPLICATE_AUDIO_DETECTED", visitId, Map.of(
                     "reasonCode", "DUPLICATE_AUDIO_HASH",
                     "attemptedClientClipId", normalizedClientClipId));
-            if ("CHECKED_OUT".equals(visit.status())) assessmentService.assess(caller, visitId);
+            if (!"CANCELLED".equals(visit.status())) assessmentService.assess(caller, visitId);
             return clipView(duplicateAudio.get());
         }
         if (decodedContentHash != null) {
@@ -240,7 +240,7 @@ public class SalesWorkRecordingService {
                 appendAudit(caller, "SALES_RECORDING_DUPLICATE_AUDIO_DETECTED", visitId, Map.of(
                         "reasonCode", "DUPLICATE_DECODED_CONTENT",
                         "attemptedClientClipId", normalizedClientClipId));
-                if ("CHECKED_OUT".equals(visit.status())) assessmentService.assess(caller, visitId);
+                if (!"CANCELLED".equals(visit.status())) assessmentService.assess(caller, visitId);
                 return clipView(duplicateDecodedContent.get());
             }
             recordingRepository.findClipByDecodedContentHashOutsideSession(
@@ -285,13 +285,15 @@ public class SalesWorkRecordingService {
                 "clipIndex", Integer.toString(clipIndex),
                 "objectSizeBytes", Long.toString(bytes.length),
                 "verifyStatus", verifyStatus));
-        if ("CHECKED_OUT".equals(visit.status())) assessmentService.assess(caller, visitId);
+        // Publish every accepted clip: completion can commit while this upload is in flight.
+        // READ_COMMITTED ensures the versioned outbox contains the latest committed visit facts.
+        if (!"CANCELLED".equals(visit.status())) assessmentService.assess(caller, visitId);
         if (visitPolicy.aiAsrEnabled() && "APP_RECORDER".equals(captureSource)) {
             analysis.enqueue(caller.tenantId(), visitId, clipId, receivedAt);
         }
         return new RecordingClipView(clipId, sessionId, normalizedClientClipId,
                 clipIndex, bytes.length, durationMs,
-                "RECEIVED", receivedAt);
+                "RECEIVED", receivedAt, decodedDurationMs != null ? decodedDurationMs : durationMs != null ? durationMs : Duration.between(recordedFrom,recordedTo).toMillis(), decodedDurationMs == null);
     }
 
     public record RecordingPlayback(String mediaType, byte[] bytes) {}
@@ -356,7 +358,7 @@ public class SalesWorkRecordingService {
         VisitSnapshot visit = visitRepository
                 .findVisit(caller.tenantId(), identity.profile().id(), visitId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
-        if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status())) {
+        if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status()) && !"CANCELLED".equals(visit.status())) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE,
                     "当前拜访状态不允许登记短录音", List.of());
         }
@@ -396,7 +398,8 @@ public class SalesWorkRecordingService {
 
     private static RecordingClipView clipView(RecordingClipRow row) {
         return new RecordingClipView(row.id(), row.sessionId(), row.clientClipId(), row.clipIndex(),
-                row.objectSizeBytes(), row.clientDurationMs(), row.uploadStatus(), row.createdAt());
+                row.objectSizeBytes(), row.clientDurationMs(), row.uploadStatus(), row.createdAt(),
+                row.verifiedDurationMs() != null ? row.verifiedDurationMs() : row.clientDurationMs() != null ? row.clientDurationMs() : Duration.between(row.recordedFrom(),row.recordedTo()).toMillis(), row.verifiedDurationMs() == null);
     }
 
     private static String normalizeClientClipId(String value) {

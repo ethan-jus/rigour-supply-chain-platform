@@ -22,8 +22,13 @@ public final class StoreVisitCaptureModels {
         }
     }
     public record CaptureRules(boolean requireLocationOnOpen, Integer maximumLocationAccuracyMeters,
-            boolean automaticRecording, boolean allowPhotoImport, boolean allowRecordingImport, Boolean automaticCheckout) {
+            boolean automaticRecording, boolean allowPhotoImport, boolean allowRecordingImport, Boolean automaticCheckout, Integer automaticCheckoutRadiusMeters) {
         public CaptureRules { if (automaticCheckout == null) automaticCheckout = false; }
+        public int checkoutRadius(int arrivalRadius) { return automaticCheckoutRadiusMeters == null ? arrivalRadius : automaticCheckoutRadiusMeters; }
+        public CaptureRules(boolean requireLocationOnOpen,Integer maximumLocationAccuracyMeters,
+                boolean automaticRecording,boolean allowPhotoImport,boolean allowRecordingImport,Boolean automaticCheckout) {
+            this(requireLocationOnOpen,maximumLocationAccuracyMeters,automaticRecording,allowPhotoImport,allowRecordingImport,automaticCheckout,null);
+        }
         public CaptureRules(boolean requireLocationOnOpen,Integer maximumLocationAccuracyMeters,
                 boolean automaticRecording,boolean allowPhotoImport,boolean allowRecordingImport) {
             this(requireLocationOnOpen,maximumLocationAccuracyMeters,automaticRecording,allowPhotoImport,allowRecordingImport,false);
@@ -46,5 +51,16 @@ public final class StoreVisitCaptureModels {
             String captureRef,String employeeCode,String policyId,long revision,Instant checkedAt,
             Instant checkedInAt,Instant checkedOutAt,Instant submittedAt,String contactOutcome,String resultSummary,
             long verifiedPhotoCount,Long verifiedRecordingDurationMs,String recordingEvidenceStatus,
-            String aiRecommendation,BigDecimal aiConfidenceScore,boolean aiResultAdopted) {}
+            String aiRecommendation,BigDecimal aiConfidenceScore,boolean aiResultAdopted,StoreVisitFieldworkModels.Accepted fieldwork,Instant cancelledAt,String cancellationReason,String transcriptionStatus) {
+        public Evidence(String tenantId,String storeId,String ownershipId,String visitId,String captureRef,String employeeCode,String policyId,long revision,Instant checkedAt,
+                Instant checkedInAt,Instant checkedOutAt,Instant submittedAt,String contactOutcome,String resultSummary,long verifiedPhotoCount,Long verifiedRecordingDurationMs,String recordingEvidenceStatus,
+                String aiRecommendation,BigDecimal aiConfidenceScore,boolean aiResultAdopted,StoreVisitFieldworkModels.Accepted fieldwork) {
+            this(tenantId,storeId,ownershipId,visitId,captureRef,employeeCode,policyId,revision,checkedAt,checkedInAt,checkedOutAt,submittedAt,contactOutcome,resultSummary,verifiedPhotoCount,verifiedRecordingDurationMs,recordingEvidenceStatus,aiRecommendation,aiConfidenceScore,aiResultAdopted,fieldwork,null,null,null);
+        }
+        public Evidence(String tenantId,String storeId,String ownershipId,String visitId,String captureRef,String employeeCode,String policyId,long revision,Instant checkedAt,
+                Instant checkedInAt,Instant checkedOutAt,Instant submittedAt,String contactOutcome,String resultSummary,long verifiedPhotoCount,Long verifiedRecordingDurationMs,String recordingEvidenceStatus,
+                String aiRecommendation,BigDecimal aiConfidenceScore,boolean aiResultAdopted) {
+            this(tenantId,storeId,ownershipId,visitId,captureRef,employeeCode,policyId,revision,checkedAt,checkedInAt,checkedOutAt,submittedAt,contactOutcome,resultSummary,verifiedPhotoCount,verifiedRecordingDurationMs,recordingEvidenceStatus,aiRecommendation,aiConfidenceScore,aiResultAdopted,null);
+        }
+    }
 }

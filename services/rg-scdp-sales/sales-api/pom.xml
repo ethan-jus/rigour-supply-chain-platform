@@ -13,6 +13,7 @@
     <name>sales-api</name>
     <description>Sales Work版本化调用接口和API模型，不包含业务实现</description>
     <dependencies>
+        <dependency><groupId>com.rigour</groupId><artifactId>crm-api</artifactId></dependency>
         <dependency>
             <groupId>com.rigour</groupId>
             <artifactId>shared-core</artifactId>

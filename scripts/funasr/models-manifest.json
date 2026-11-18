@@ -1,0 +1,35 @@
+{
+  "asr": {
+    "repository": "damo/speech_paraformer-large-vad-punc_asr_nat-zh-cn-16k-common-vocab8404-onnx",
+    "sha256": {
+      "model_quant.onnx": "80fa5c8a87f5ae77ea2dc233ad220b9415343c8681d538e59f019f2acc837694",
+      "configuration.json": "6e4e5234d4f657eb5530fbda198915b9f219aedbaa13a7b59b62819f43022af3",
+      "README.md": "b04a730df2bb7740f5365900a909c2804b38728640c527160e5d7f1999941f41",
+      "tokens.json": "2b20c2b12572d682afff84ce1c8d560f67b8b32a4c1f21567411d141ed352127",
+      "am.mvn": "29b3c740a2c0cfc6b308126d31d7f265fa2be74f3bb095cd2f143ea970896ae5",
+      "config.yaml": "4f35265cc3c6dd906a2668b62847183e441310d82df6438bace9b8f6dab3bf7d",
+      "quickstart.md": "986614e0e63deefb94b8f7b089b1ef43eb2fcfe20abd5fdeadafe2a82ee560b5"
+    }
+  },
+  "speaker": {
+    "repositories": [
+      "https://github.com/modelscope/3D-Speaker",
+      "https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-segmentation-models"
+    ],
+    "sha256": {
+      "campplus.onnx": "f682b514c05d947ee3fa91cd6ec6c5c7543479a128373fa29b1faedccd21fd11",
+      "segmentation.onnx": "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079"
+    }
+  },
+  "punctuation": {
+    "repository": "damo/punc_ct-transformer_zh-cn-common-vocab272727-onnx",
+    "sha256": {
+      "model_quant.onnx": "e6cd8399bf7d0e75f8d9af4a107310e1968ecab1d50135e765b8f0265b27a83d",
+      "configuration.json": "16097d3034818080e39331fa08909dffe75189f5c986f74155afd90b5f531ee4",
+      "README.md": "8c358b90a63a8b4f970568717a5faa2ec8491b4e518a9b2175dced5fa3c21874",
+      "tokens.json": "c960ab87bccea4aa15cf49a59f71973c2c330b46668048cd8da253749ec71ee3",
+      "config.yaml": "a56ec10925b06fa976ad51af373396be2b13e1eb8dc62a5426b5adebaba7071d",
+      "quickstart.md": "986614e0e63deefb94b8f7b089b1ef43eb2fcfe20abd5fdeadafe2a82ee560b5"
+    }
+  }
+}

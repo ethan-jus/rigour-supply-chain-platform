@@ -38,6 +38,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Set;
 import java.util.UUID;
+import java.util.List;
+import java.util.Map;
 import javax.imageio.ImageIO;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -115,6 +117,7 @@ class SalesWorkVisitIntegrationTests {
     @Autowired private com.rigour.sales.application.port.out.StoreVisitCaptureStore captureStore;
     @Autowired private com.rigour.sales.application.port.out.SalesWorkRecordingRepository recordingRows;
     @Autowired private com.rigour.sales.application.port.out.SalesRecordingAnalysisRepository analysisRows;
+    @Autowired private com.rigour.sales.application.service.SalesRecordingAnalysisService analysisService;
     @Autowired private com.rigour.sales.application.port.out.SalesFieldworkReviewRepository caseRows;
     @Autowired private com.rigour.sales.application.service.SalesFieldworkReviewService caseService;
 
@@ -204,6 +207,7 @@ class SalesWorkVisitIntegrationTests {
         var day=attendanceService.checkIn(new CheckInCommand("asr-day","client",now,location("120.1000000","30.2000000"),null,"ONLINE"));
         var visit=visitService.createVisit(new CreateVisitCommand("asr-visit",day.id(),null,"MY_STORE",storeId,null,
                 location("120.1000000","30.2000000"),now,"asr-device"));
+        jdbc.update("UPDATE sales_visit SET status='CHECKED_OUT' WHERE id=?",bin(visit.id()));
         var recordingSession=recordingRows.ensureSession(UUID.randomUUID(),tenantId,visit.id(),now);
         var clip=UUID.randomUUID();
         recordingRows.insertClip(clip,tenantId,recordingSession,"asr-clip",1,tenantId+"/asr-test.aac","audio/aac",10,"a".repeat(64),null,
@@ -213,22 +217,125 @@ class SalesWorkVisitIntegrationTests {
         assertThat(analysisRows.list(tenantId,visit.id())).hasSize(1);
         var first=analysisRows.claim(now.plusSeconds(1),UUID.randomUUID(),now.plusSeconds(180)).orElseThrow();
         assertThat(analysisRows.claim(now.plusSeconds(1),UUID.randomUUID(),now.plusSeconds(180))).isEmpty();
-        analysisRows.processing(first,"12345","request",now.plusSeconds(2));
-        analysisRows.transcribed(first,"过期回调不应写入",java.util.List.of(),"expired",now.plusSeconds(3));
-        assertThat(analysisRows.list(tenantId,visit.id()).getFirst().status()).isEqualTo("PROCESSING");
-        var polling=analysisRows.claim(now.plusSeconds(12),UUID.randomUUID(),now.plusSeconds(200)).orElseThrow();
-        var segments=java.util.List.of(new com.rigour.sales.application.port.out.SalesAudioAiClient.TranscriptSegment(100,1400,"需要更换台呢",null));
-        analysisRows.transcribed(polling,"需要更换台呢",segments,"poll",now.plusSeconds(13));
-        var summary=analysisRows.claim(now.plusSeconds(14),UUID.randomUUID(),now.plusSeconds(200)).orElseThrow();
-        analysisRows.deferred(summary,"SUMMARY_FAILED",true,now.plusSeconds(15));
-        assertThat(analysisRows.list(tenantId,visit.id()).getFirst().transcript()).isEqualTo("需要更换台呢");
-        assertThat(analysisRows.list(tenantId,visit.id()).getFirst().segments()).isEqualTo(segments);
+        var replacement=analysisRows.claim(now.plusSeconds(181),UUID.randomUUID(),now.plusSeconds(400)).orElseThrow();
+        analysisRows.transcribed(first,new com.rigour.sales.application.port.out.SalesSpeechTranscriber.Result("过期回调不应写入",List.of(),"test-model","expired","speaker-test",List.of()),now.plusSeconds(182));
+        assertThat(analysisRows.list(tenantId,visit.id()).getFirst().transcript()).isNull();
+        analysisRows.deferred(replacement,"ASR_UNAVAILABLE",true,now.plusSeconds(183));
+        assertThat(analysisRows.list(tenantId,visit.id()).getFirst().status()).isEqualTo("FAILED");
+        assertThat(analysisRows.retry(UUID.randomUUID(),visit.id(),clip,now.plusSeconds(184))).isZero();
+        assertThat(analysisRows.retry(tenantId,visit.id(),clip,now.plusSeconds(184))).isEqualTo(1);
+        var retried=analysisRows.claim(now.plusSeconds(185),UUID.randomUUID(),now.plusSeconds(400)).orElseThrow();
+        var segments=List.of(new com.rigour.sales.application.port.out.SalesAudioAiClient.TranscriptSegment(100,1400,"需要更换台呢",null));
+        analysisRows.transcribed(retried,new com.rigour.sales.application.port.out.SalesSpeechTranscriber.Result("需要更换台呢",segments,"paraformer-int8","request","speaker-test",List.of()),now.plusSeconds(186));
+        var saved=analysisRows.list(tenantId,visit.id()).getFirst();
+        assertThat(saved.transcript()).isEqualTo("需要更换台呢");
+        assertThat(saved.segments()).isEqualTo(segments);
+        assertThat(saved.status()).isEqualTo("SUCCEEDED");
+        assertThat(saved.summaryStatus()).isEqualTo("NOT_REQUESTED");
+        assertThat(saved.summary()).isNull();
+        assertThat(jdbc.queryForObject("SELECT asr_model FROM sales_recording_analysis WHERE tenant_id=? AND clip_id=?",String.class,bin(tenantId),bin(clip))).isEqualTo("paraformer-int8");
         assertThat(analysisRows.list(UUID.randomUUID(),visit.id())).isEmpty();
-        assertThat(analysisRows.retry(tenantId,visit.id(),clip,now.plusSeconds(16))).isEqualTo(1);
-        var retried=analysisRows.claim(now.plusSeconds(17),UUID.randomUUID(),now.plusSeconds(200)).orElseThrow();
-        analysisRows.summarized(retried,"客户需要更换台呢","test-model","summary",now.plusSeconds(18));
-        assertThat(analysisRows.list(tenantId,visit.id()).getFirst().summaryStatus()).isEqualTo("SUCCEEDED");
-        assertThat(analysisRows.list(tenantId,visit.id()).getFirst().status()).isEqualTo("SUCCEEDED");
+        assertThat(analysisRows.claim(now.plusSeconds(401),UUID.randomUUID(),now.plusSeconds(600))).isEmpty();
+        assertThat(analysisRows.retry(tenantId,visit.id(),clip,now.plusSeconds(402))).isZero();
+        var ownResult=analysisService.read(visit.id(),false);
+        assertThat(analysisService.read(visit.id(),true)).isEqualTo(ownResult);
+        var original=AuthorizationContext.requireCurrent();
+        var otherUser=UUID.randomUUID();
+        setAnalysisCaller(tenantId,otherUser,original.permissions());
+        try {
+            // 管理员可查看他人的同一份原文，个人接口不允许越权。
+            assertThat(analysisService.read(visit.id(),true)).isEqualTo(ownResult);
+            assertThatThrownBy(() -> analysisService.read(visit.id(),false)).isInstanceOf(BusinessException.class);
+            setAnalysisCaller(UUID.randomUUID(),otherUser,original.permissions());
+            assertThatThrownBy(() -> analysisService.read(visit.id(),true)).isInstanceOf(BusinessException.class);
+            setAnalysisCaller(tenantId,otherUser,Set.of("sales:recording:own:read"));
+            assertThatThrownBy(() -> analysisService.read(visit.id(),true))
+                    .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        } finally {
+            setCaller();
+        }
+        assertThat(analysisRows.list(tenantId,visit.id())).containsExactly(saved);
+        assertThat(analysisRows.claim(now.plusSeconds(500),UUID.randomUUID(),now.plusSeconds(700))).isEmpty();
+
+    }
+
+    @Test
+    void speakerContextIsVisitScopedOrderedAndCommittedWithTranscript() {
+        var now=Instant.now();
+        var day=attendanceService.checkIn(new CheckInCommand("speaker-day","client",now,location("120.1000000","30.2000000"),null,"ONLINE"));
+        var visit=visitService.createVisit(new CreateVisitCommand("speaker-visit",day.id(),null,"MY_STORE",storeId,null,
+                location("120.1000000","30.2000000"),now,"speaker-device"));
+        var recordingSession=recordingRows.ensureSession(UUID.randomUUID(),tenantId,visit.id(),now);
+        var first=UUID.randomUUID();var second=UUID.randomUUID();
+        for(int index=0;index<2;index++) {
+            var clip=index==0?first:second;
+            recordingRows.insertClip(clip,tenantId,recordingSession,"speaker-"+index,index,tenantId+"/speaker-"+index+".aac","audio/aac",10,
+                    String.valueOf(index).repeat(64),null,300000L,300000L,"VERIFIED",now.minusSeconds(600-index*300),now.minusSeconds(300-index*300),now);
+        }
+        // Upload completion order differs from recording order.
+        analysisRows.enqueue(tenantId,visit.id(),second,now);
+        analysisRows.enqueue(tenantId,visit.id(),first,now);
+        assertThat(analysisRows.claim(now.plusSeconds(1),UUID.randomUUID(),now.plusSeconds(180))).isEmpty();
+        jdbc.update("UPDATE sales_visit SET status='CHECKED_OUT' WHERE id=?",bin(visit.id()));
+        com.rigour.sales.application.port.out.SalesRecordingAnalysisRepository.Job firstJob;
+        try(var workers=java.util.concurrent.Executors.newFixedThreadPool(4)) {
+            var gate=new java.util.concurrent.CountDownLatch(1);
+            var futures=java.util.stream.IntStream.range(0,4).mapToObj(index->workers.submit(()->{
+                gate.await();return analysisRows.claim(now.plusSeconds(1),UUID.randomUUID(),now.plusSeconds(180));
+            })).toList();
+            gate.countDown();
+            var claimed=new java.util.ArrayList<com.rigour.sales.application.port.out.SalesRecordingAnalysisRepository.Job>();
+            for(var future:futures)future.get().ifPresent(claimed::add);
+            assertThat(claimed).hasSize(1);firstJob=claimed.getFirst();
+        } catch(Exception error) {throw new IllegalStateException(error);}
+        assertThat(firstJob.clipId()).isEqualTo(first);
+        assertThat(firstJob.speakers()).isEmpty();
+        assertThat(analysisRows.claim(now.plusSeconds(2),UUID.randomUUID(),now.plusSeconds(180))).isEmpty();
+        var vector=java.util.stream.IntStream.range(0,192).mapToObj(i->i==0?1.0:0.0).toList();
+        var profiles=List.of(new com.rigour.sales.application.port.out.SalesSpeechTranscriber.SpeakerProfile(0,vector));
+        var lines=List.of(new com.rigour.sales.application.port.out.SalesAudioAiClient.TranscriptSegment(100,1400,"A的原文",0));
+        var result=new com.rigour.sales.application.port.out.SalesSpeechTranscriber.Result("A的原文",lines,"paraformer-int8","request","speaker-test",profiles);
+        var tx=new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        assertThatThrownBy(()->tx.execute(status->{analysisRows.transcribed(firstJob,result,now.plusSeconds(3));throw new IllegalStateException("rollback");}))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(jdbc.queryForObject("SELECT version FROM sales_visit_speaker_context WHERE tenant_id=? AND visit_id=?",Long.class,bin(tenantId),bin(visit.id()))).isZero();
+        assertThat(analysisRows.list(tenantId,visit.id()).getFirst().transcript()).isNull();
+        analysisRows.transcribed(firstJob,result,now.plusSeconds(4));
+        var secondJob=analysisRows.claim(now.plusSeconds(5),UUID.randomUUID(),now.plusSeconds(180)).orElseThrow();
+        assertThat(secondJob.clipId()).isEqualTo(second);
+        assertThat(secondJob.speakerVersion()).isEqualTo(1);
+        assertThat(secondJob.speakers()).isEqualTo(profiles);
+        analysisRows.transcribed(secondJob,result,now.plusSeconds(6));
+        // An old callback cannot roll the visit profiles or either clip back.
+        analysisRows.transcribed(firstJob,new com.rigour.sales.application.port.out.SalesSpeechTranscriber.Result("过期",List.of(),"old","old","old",List.of()),now.plusSeconds(7));
+        assertThat(analysisRows.list(tenantId,visit.id())).allSatisfy(a->assertThat(a.segments().getFirst().speakerId()).isZero());
+        assertThat(jdbc.queryForObject("SELECT version FROM sales_visit_speaker_context WHERE tenant_id=? AND visit_id=?",Long.class,bin(tenantId),bin(visit.id()))).isEqualTo(2);
+        assertThat(count("SELECT COUNT(*) FROM sales_visit_speaker_context WHERE tenant_id=?",UUID.randomUUID())).isZero();
+        var voices=new com.rigour.sales.infrastructure.persistence.JdbcSalesVoiceProfileRepository(jdbc,new tools.jackson.databind.ObjectMapper());
+        var enrollment=new com.rigour.sales.application.port.out.SalesVoiceEnrollmentClient.Enrollment("pyannote3-campplus-zh-v1",vector,12000);
+        var registered=voices.save(tenantId,profileId,"陈小明",0,enrollment,now);
+        assertThat(registered.registered()).isTrue();
+        voices.identifyVisits();
+        assertThat(analysisRows.speakers(tenantId,visit.id()).getFirst().name()).isEqualTo("陈小明");
+        assertThat(analysisRows.speakers(UUID.randomUUID(),visit.id())).isEmpty();
+        assertThatThrownBy(()->voices.save(tenantId,profileId,"不应覆盖",0,enrollment,now)).isInstanceOf(com.rigour.shared.core.exception.StateConflictException.class);
+        voices.delete(tenantId,profileId,"陈小明",registered.revision(),now.plusSeconds(8));voices.identifyVisits();
+        assertThat(voices.read(tenantId,profileId,"陈小明").registered()).isFalse();
+        assertThat(analysisRows.speakers(tenantId,visit.id()).getFirst().name()).isEqualTo("A");
+        // A visiting colleague is identified from the same tenant's registry, not the recording owner's profile.
+        var colleague=UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO sales_profile(id,tenant_id,employee_id,sales_no,status,effective_from,created_at,updated_at)
+                VALUES(?,?,?,'S-COLLEAGUE','ACTIVE',UTC_TIMESTAMP(6)-INTERVAL 1 DAY,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
+                """,bin(colleague),bin(tenantId),bin(UUID.randomUUID()));
+        voices.save(tenantId,colleague,"同行销售",0,enrollment,now);
+        voices.identifyVisits();
+        assertThat(analysisRows.speakers(tenantId,visit.id()).getFirst().name()).isEqualTo("同行销售");
+        voices.delete(tenantId,colleague,"同行销售",1,now.plusSeconds(9));
+        voices.save(UUID.randomUUID(),colleague,"其他公司",0,enrollment,now);
+        voices.identifyVisits();
+        assertThat(analysisRows.speakers(tenantId,visit.id()).getFirst().name()).isEqualTo("A");
+        assertThat(analysisService.read(visit.id(),false)).isEqualTo(analysisService.read(visit.id(),true));
     }
 
     @Test
@@ -249,6 +356,15 @@ class SalesWorkVisitIntegrationTests {
         assertThat(managementService.reviewQueue(day.businessDate(),day.businessDate(),1,20).total()).isZero();
         assertThatThrownBy(() -> attendanceService.managementTrack(profileId, day.businessDate()))
                 .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+    }
+
+    @Test
+    void automaticDepartureUsesIndependentRadiusWhileArrivalStillUsesItsOwnRule(){
+        jdbc.update("UPDATE sales_visit_policy_version SET capture_rules_json=? WHERE id=?", "{\"automaticCheckout\":true,\"automaticCheckoutRadiusMeters\":800,\"maximumLocationAccuracyMeters\":100,\"requireLocationOnOpen\":false,\"automaticRecording\":false,\"allowPhotoImport\":false,\"allowRecordingImport\":false}",bin(visitPolicyVersionId));
+        var day=attendanceService.checkIn(new CheckInCommand("radius-day","client",Instant.now(),location("120.1000000","30.2000000"),null,"ONLINE"));
+        var visit=visitService.createVisit(new CreateVisitCommand("radius-in",day.id(),null,"MY_STORE",storeId,null,location("120.1000000","30.2000000"),Instant.now(),"radius-in-event"));
+        assertThat(visitService.autoDepartureContext(visit.id()).radiusMeters()).isEqualTo(800);
+        assertThatThrownBy(()->visitService.autoCheckOutVisit(visit.id(),new CheckOutVisitCommand("radius-mid",Instant.now(),new LocationEvidence(new BigDecimal("120.1065"),new BigDecimal("30.2000"),new BigDecimal("10"),"APP_NATIVE"),"radius-mid"))).hasMessageContaining("尚未确认离开");
     }
 
     @Test
@@ -778,32 +894,54 @@ class SalesWorkVisitIntegrationTests {
     }
 
     @Test
+    void structuredCrmSubmissionIsValidatedPersistedAndEnqueuedAtomicallyAndRetryKeepsOriginalTime(){
+        var policy=UUID.randomUUID();var capture=UUID.randomUUID();var now=Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        var day=attendanceService.checkIn(new CheckInCommand("structured-day","client",now,location("120.1","30.2"),null,"ONLINE"));
+        captureStore.create(tenantId,profileId,day.id(),capture,new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("200","100","300","TEST1",capture.toString(),policy.toString(),now,"测试店","地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS",new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy(policy.toString(),500)),location("120.1","30.2"),null);
+        var draft=new com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Draft(7,"OPEN",null,"TYPE","CONTACTED",List.of("4"),false,List.of(new com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Progress("LINE",null,"COOPERATED")),null,null,null,null);
+        var command=new VisitResultCommand("CONTACTED",null,null,null,null,draft);
+        assertThatThrownBy(()->visitService.submitVisitResult(capture,new VisitResultCommand("CONTACTED",null,null,"NONE","旧客户端"))).hasMessageContaining("完整拜访信息");
+        assertThatThrownBy(()->visitService.submitVisitResult(capture,command)).hasMessageContaining("门头照");
+        evidenceService.uploadStorefrontPhoto(capture,new MockMultipartFile("file","store.jpg","image/jpeg",jpegBytes(Color.GREEN)),"structured-photo","APP_CAMERA",now,new BigDecimal("120.1"),new BigDecimal("30.2"),BigDecimal.TEN);
+        org.mockito.Mockito.when(crmVisit.validateFieldwork("100","200",draft)).thenThrow(new com.rigour.shared.core.exception.RequestValidationException("请选择接待人"));
+        assertThatThrownBy(()->visitService.submitVisitResult(capture,command)).hasMessageContaining("接待人");
+        assertThat(captureStore.fieldwork(tenantId,capture,false)).isNull();
+        var accepted=new com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Accepted(draft,userId.toString(),"employee",Map.of("VISIT_CONTACT_OUTCOME:CONTACTED","已沟通","CRM_STORE_BUSINESS_STATUS:OPEN","营业中","STORE_BUSINESS_TYPE:TYPE","商业娱乐","BUSINESS_LINE:LINE","高德业务","CUSTOMER_COOP_STATUS:COOPERATED","已合作"),List.of());
+        org.mockito.Mockito.doReturn(accepted).when(crmVisit).validateFieldwork("100","200",draft);
+        var first=visitService.submitVisitResult(capture,command);var retry=visitService.submitVisitResult(capture,command);
+        assertThat(retry.resultSubmittedAt()).isEqualTo(first.resultSubmittedAt());assertThat(captureStore.fieldwork(tenantId,capture,false)).isEqualTo(accepted);
+        assertThat(latestCrmEvidence(capture).fieldwork()).isEqualTo(accepted);
+        assertThat(latestCrmEvidence(capture).resultSummary()).contains("已沟通","营业中","高德业务：已合作").doesNotContain("负责人");
+        assertThatThrownBy(()->visitService.submitVisitResult(capture,new VisitResultCommand("CONTACTED",null,null,null,"不能覆盖",draft))).hasMessageContaining("重复修改");
+    }
+
+    @Test
     void crmCaptureReusesPhotoAssessmentAndKeepsFinalBusinessFactOutOfSales() {
         var crmPolicyId=UUID.randomUUID();
         var day=attendanceService.checkIn(new CheckInCommand("crm-day-test","crm-test-client",Instant.now(),location("120.1000000","30.2000000"),null,"ONLINE"));
         var captureId=UUID.randomUUID();
         var captureContext=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("200","100","300","TEST1",captureId.toString(),crmPolicyId.toString(),Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS),"测试店","测试地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS",new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy(crmPolicyId.toString(),500));
-        captureStore.create(tenantId,profileId,day.id(),captureId,captureContext,location("120.1000000","30.2000000"));
-        captureStore.create(tenantId,profileId,day.id(),captureId,captureContext,location("120.1000000","30.2000000"));
+        captureStore.create(tenantId,profileId,day.id(),captureId,captureContext,location("120.1000000","30.2000000"),null);
+        captureStore.create(tenantId,profileId,day.id(),captureId,captureContext,location("120.1000000","30.2000000"),null);
         assertThat(jdbc.queryForObject("SELECT source_system FROM sales_visit_policy_version WHERE tenant_id=? AND id=?",String.class,bin(tenantId),bin(crmPolicyId))).isEqualTo("CRM");
         assertThat(jdbc.queryForObject("SELECT publish_status FROM sales_visit_policy_version WHERE tenant_id=? AND id=?",String.class,bin(tenantId),bin(crmPolicyId))).isEqualTo("SNAPSHOT");
         var visit=visitService.visit(captureId);
         assertThat(captureStore.link(tenantId,captureId).visitId()).isEqualTo("200");
         org.mockito.Mockito.when(crmVisit.context("100","200")).thenReturn(new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("200","100","300","TEST1",visit.id().toString(),crmPolicyId.toString(),Instant.now(),"测试店","测试地址",BigDecimal.ONE,BigDecimal.ONE,"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS"));
-        var noPhone=visitService.submitVisitResult(visit.id(),new VisitResultCommand("CONTACTED","前台",null,"HIGH","现场沟通，未取得联系方式"));
+        var noPhone=visitService.submitVisitResult(visit.id(),preparedFieldwork(captureId,"100","200",null));
         assertThat(noPhone.kpPhone()).isNull();
         assertThat(noPhone.resultSubmittedAt()).isNotNull();
-        org.mockito.Mockito.verifyNoInteractions(crmVisit);
+        org.mockito.Mockito.verify(crmVisit).validateFieldwork(org.mockito.ArgumentMatchers.eq("100"),org.mockito.ArgumentMatchers.eq("200"),org.mockito.ArgumentMatchers.any());
         visitService.checkOutVisit(visit.id(),new CheckOutVisitCommand("crm-checkout-test",Instant.now(),location("120.1000000","30.2000000"),"crm-device-out"));
         var pending=latestCrmEvidence(captureId);
-        assertThat(pending.verifiedPhotoCount()).isZero();assertThat(pending.submittedAt()).isNotNull();
+        assertThat(pending.verifiedPhotoCount()).isEqualTo(1);assertThat(pending.submittedAt()).isNotNull();
         assertThat(managementService.reviewQueue(day.businessDate(),day.businessDate(),1,20).total()).isZero();
         evidenceService.uploadStorefrontPhoto(visit.id(),new MockMultipartFile("file","store.jpg","image/jpeg",jpegBytes(Color.BLUE)),"crm-photo-test","APP_CAMERA",Instant.now(),new BigDecimal("120.1"),new BigDecimal("30.2"),BigDecimal.TEN);
         var effective=latestCrmEvidence(captureId);
-        assertThat(effective.verifiedPhotoCount()).isEqualTo(1);assertThat(effective.revision()).isGreaterThan(pending.revision());
+        assertThat(effective.verifiedPhotoCount()).isEqualTo(2);assertThat(effective.revision()).isGreaterThan(pending.revision());
         assertThat(effective.checkedInAt()).isEqualTo(pending.checkedInAt());
         org.mockito.Mockito.when(crmVisit.evidenceAccess("100","200")).thenReturn(visit.id().toString());
-        assertThat(managementService.reviewEvidence(visit.id()).photos()).hasSize(1);
+        assertThat(managementService.reviewEvidence(visit.id()).photos()).hasSize(2);
         assertThatThrownBy(()->managementService.reviewVisit(visit.id(),new ReviewVisitCommand("EFFECTIVE","TEST","测试"))).hasMessageContaining("CRM");
         org.mockito.Mockito.when(crmVisit.evidenceAccess("100","200")).thenThrow(new com.rigour.shared.context.AuthorizationDeniedException("crm:store:history-read"));
         assertThatThrownBy(()->managementService.reviewEvidence(visit.id())).isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
@@ -816,14 +954,52 @@ class SalesWorkVisitIntegrationTests {
         var day=attendanceService.checkIn(new CheckInCommand("crm-rollback-day","crm-test-client",Instant.now(),location("120.1000000","30.2000000"),null,"ONLINE"));
         var capture=UUID.randomUUID();
         var context=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("201","101","301","TEST1",capture.toString(),visitPolicyVersionId.toString(),Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS),"测试店","地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS",new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy(visitPolicyVersionId.toString(),500));
-        captureStore.create(tenantId,profileId,day.id(),capture,context,location("120.1000000","30.2000000"));
+        captureStore.create(tenantId,profileId,day.id(),capture,context,location("120.1000000","30.2000000"),null);
+        var command=preparedFieldwork(capture,"101","201",null);
+        jdbc.update("DELETE FROM sales_outbox_event WHERE tenant_id=?",bin(tenantId));
         var tx=new org.springframework.transaction.support.TransactionTemplate(new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
         assertThatThrownBy(()->tx.execute(status->{
-            visitService.submitVisitResult(capture,new VisitResultCommand("CONTACTED","测试联系人","13800000000","HIGH","测试回滚"));
+            visitService.submitVisitResult(capture,command);
             throw new IllegalStateException("rollback");
         })).hasMessage("rollback");
         assertThat(jdbc.queryForObject("SELECT result_submitted_at FROM sales_visit WHERE tenant_id=? AND id=?",Timestamp.class,bin(tenantId),bin(capture))).isNull();
         assertThat(count("SELECT COUNT(*) FROM sales_outbox_event WHERE tenant_id=? AND event_type='CrmVisitEvidenceChanged'",tenantId)).isZero();
+    }
+
+    @org.springframework.test.context.bean.override.mockito.MockitoSpyBean
+    private com.rigour.sales.application.port.out.RecordingMediaVerifier mediaVerifier;
+
+    @Test void uploadStartedBeforeCheckoutPublishesCommittedCheckoutAndVerifiedRecording() throws Exception {
+        jdbc.update("UPDATE sales_visit_policy_version SET recording_enabled=1,minimum_recording_seconds=0 WHERE id=?",bin(visitPolicyVersionId));
+        var now=Instant.now();
+        var day=attendanceService.checkIn(new CheckInCommand("race-day","client",now,location("120.1000000","30.2000000"),null,"ONLINE"));
+        var capture=UUID.randomUUID();
+        var context=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("208","108","308","TEST1",capture.toString(),visitPolicyVersionId.toString(),now.minusSeconds(60).truncatedTo(java.time.temporal.ChronoUnit.MICROS),"测试店","地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS",new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy(visitPolicyVersionId.toString(),500));
+        captureStore.create(tenantId,profileId,day.id(),capture,context,location("120.1000000","30.2000000"),null);
+        visitService.submitVisitResult(capture,preparedFieldwork(capture,"108","208",null));
+        var entered=new java.util.concurrent.CountDownLatch(1);
+        var release=new java.util.concurrent.CountDownLatch(1);
+        org.mockito.Mockito.doAnswer(invocation->{
+            entered.countDown();
+            if(!release.await(15,java.util.concurrent.TimeUnit.SECONDS))throw new IllegalStateException("upload gate timed out");
+            return com.rigour.sales.application.port.out.RecordingMediaVerifier.Verification.verified(35000L,"audio/m4a","pcm-sha256-v1:"+"d".repeat(64));
+        }).when(mediaVerifier).verify(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.any(byte[].class));
+        try(var executor=java.util.concurrent.Executors.newSingleThreadExecutor()) {
+            var upload=executor.submit(()->{
+                try {setCaller();return recordingService.uploadClip(capture,new MockMultipartFile("file","race.m4a","audio/m4a",new byte[]{1,2,3}),"race-clip",35000L,now.minusSeconds(35),now);}
+                finally {clearCaller();}
+            });
+            try {
+                assertThat(entered.await(10,java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+                visitService.checkOutVisit(capture,new CheckOutVisitCommand("race-checkout",Instant.now(),location("120.1000000","30.2000000"),"race-out"));
+            } finally {release.countDown();}
+            upload.get(15,java.util.concurrent.TimeUnit.SECONDS);
+        }
+        var payload=latestCrmEvidence(capture);
+        assertThat(payload.checkedOutAt()).isNotNull();
+        assertThat(payload.submittedAt()).isNotNull();
+        assertThat(payload.recordingEvidenceStatus()).isEqualTo("TECHNICALLY_VERIFIED");
+        assertThat(payload.verifiedRecordingDurationMs()).isEqualTo(35000);
     }
 
     @Autowired private com.rigour.sales.application.port.out.CrmVisitEvidenceOutbox crmEvidenceOutbox;
@@ -832,8 +1008,8 @@ class SalesWorkVisitIntegrationTests {
         var day=attendanceService.checkIn(new CheckInCommand("crm-delivery-day","crm-test-client",Instant.now(),location("120.1000000","30.2000000"),null,"ONLINE"));
         var capture=UUID.randomUUID();
         var context=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context("202","102","302","TEST1",capture.toString(),visitPolicyVersionId.toString(),Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS),"测试店","地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS",new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy(visitPolicyVersionId.toString(),500));
-        captureStore.create(tenantId,profileId,day.id(),capture,context,location("120.1000000","30.2000000"));
-        visitService.submitVisitResult(capture,new VisitResultCommand("CONTACTED","测试联系人","13800000000","HIGH","测试重试"));
+        captureStore.create(tenantId,profileId,day.id(),capture,context,location("120.1000000","30.2000000"),null);
+        visitService.cancelVisit(capture,new com.rigour.sales.api.v1.model.SalesWorkApiModels.CancelVisitCommand("误入门店"));
         var status=new java.util.concurrent.atomic.AtomicInteger(503);
         var received=new java.util.concurrent.CopyOnWriteArrayList<String>();
         var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
@@ -845,9 +1021,87 @@ class SalesWorkVisitIntegrationTests {
             assertThat(jdbc.queryForObject("SELECT retry_count FROM sales_outbox_event WHERE tenant_id=? AND event_type='CrmVisitEvidenceChanged'",Integer.class,bin(tenantId))).isEqualTo(1);
             status.set(200);jdbc.update("UPDATE sales_outbox_event SET next_retry_at=NULL WHERE tenant_id=?",bin(tenantId));worker.tick();
             assertThat(jdbc.queryForObject("SELECT publish_status FROM sales_outbox_event WHERE tenant_id=? AND event_type='CrmVisitEvidenceChanged'",String.class,bin(tenantId))).isEqualTo("PUBLISHED");
+            jdbc.update("UPDATE sales_visit SET crm_last_enqueued_at=? WHERE tenant_id=? AND id=?",timestamp(Instant.now().minusSeconds(60)),bin(tenantId),bin(capture));
+            worker.tick();
+            assertThat(count("SELECT COUNT(*) FROM sales_outbox_event WHERE tenant_id=? AND event_type='CrmVisitEvidenceChanged'",tenantId)).isEqualTo(1);
             var own=received.stream().filter(value->value.contains(tenantId.toString())).toList();assertThat(own).hasSize(2);assertThat(own.get(0)).isEqualTo(own.get(1));
             assertThat(count("SELECT COUNT(*) FROM sales_visit WHERE tenant_id=?",tenantId)).isEqualTo(1);
         } finally { server.stop(0); }
+    }
+
+
+    private VisitResultCommand preparedFieldwork(UUID capture,String store,String visit,String action) {
+        var now=Instant.now();
+        evidenceService.uploadStorefrontPhoto(capture,new MockMultipartFile("file","store.jpg","image/jpeg",jpegBytes(Color.GREEN)),"prepared-photo-"+capture,"APP_CAMERA",now,new BigDecimal("120.1"),new BigDecimal("30.2"),BigDecimal.TEN);
+        var draft=new com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Draft(7,"OPEN",null,"TYPE","CONTACTED",List.of("4"),true,List.of(),null,null,action,action==null?null:java.time.LocalDate.now().plusDays(1));
+        var labels=new java.util.HashMap<String,String>();labels.put("VISIT_CONTACT_OUTCOME:CONTACTED","已沟通");if(action!=null)labels.put("VISIT_NEXT_ACTION:"+action,"发送方案");
+        var accepted=new com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Accepted(draft,userId.toString(),"employee",labels,List.of());
+        org.mockito.Mockito.doReturn(accepted).when(crmVisit).validateFieldwork(store,visit,draft);
+        return new VisitResultCommand("CONTACTED",null,null,null,"现场沟通",draft);
+    }
+
+    private UUID createLifecycleCapture(String request) { return createLifecycleCapture(request,null,"200"); }
+
+    private UUID createLifecycleCapture(String request,UUID plan,String crmVisit) {
+        var now=Instant.now().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
+        var day=plan==null?attendanceService.checkIn(new CheckInCommand(request,"client",now,location("120.1","30.2"),null,"ONLINE")):attendanceService.workDay(java.time.LocalDate.now());
+        var capture=UUID.randomUUID();
+        captureStore.create(tenantId,profileId,day.id(),capture,new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Context(crmVisit,"100","300","TEST1",capture.toString(),visitPolicyVersionId.toString(),now,"跟进测试店","地址",new BigDecimal("120.1"),new BigDecimal("30.2"),"GCJ02",BigDecimal.ZERO,1,"IN_PROGRESS",new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy(visitPolicyVersionId.toString(),500)),location("120.1","30.2"),plan);
+        return capture;
+    }
+
+    @Test void cancelWithoutFormIsIdempotentAndReleasesTheActiveVisit() {
+        var capture=createLifecycleCapture("cancel-day");
+        var command=new com.rigour.sales.api.v1.model.SalesWorkApiModels.CancelVisitCommand("误入门店");
+        var cancelled=visitService.cancelVisit(capture,command);
+        assertThat(cancelled.status()).isEqualTo("CANCELLED");assertThat(cancelled.resultSubmittedAt()).isNull();
+        var summary=visitService.activitySummary(java.time.LocalDate.now().minusDays(1),java.time.LocalDate.now().plusDays(1));
+        assertThat(summary.totalVisitCount()).isZero();assertThat(summary.completedVisitCount()).isZero();
+        var event=latestCrmEvidence(capture);assertThat(event.cancelledAt()).isNotNull();assertThat(event.cancellationReason()).isEqualTo("误入门店");
+        visitService.cancelVisit(capture,command);
+        assertThat(latestCrmEvidence(capture).revision()).isEqualTo(event.revision());
+        assertThat(count("SELECT COUNT(*) FROM sales_visit WHERE tenant_id=? AND status='CHECKED_IN'",tenantId)).isZero();
+        assertThat(count("SELECT COUNT(*) FROM sales_visit_plan WHERE tenant_id=?",tenantId)).isZero();
+        evidenceService.uploadStorefrontPhoto(capture,new MockMultipartFile("file","saved.jpg","image/jpeg",jpegBytes(Color.BLUE)),"cancelled-photo","APP_CAMERA",cancelled.checkedOutAt(),new BigDecimal("120.1"),new BigDecimal("30.2"),BigDecimal.TEN);
+        var discarded=new com.rigour.sales.api.v1.model.SalesWorkApiModels.DiscardRecordingClipCommand("cancelled-tail",1000L,cancelled.checkedInAt(),cancelled.checkedInAt().plusSeconds(1),"TOO_SHORT");
+        recordingService.discardClip(capture,discarded);
+        assertThat(visitService.visit(capture).status()).isEqualTo("CANCELLED");
+        assertThatThrownBy(()->visitService.submitVisitResult(capture,new VisitResultCommand("CONTACTED",null,null,null,null))).isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+    }
+
+    @Test void completeRollsBackOnInvalidLocationAndCreatesOneExecutableFollowupOnRetry() {
+        var capture=createLifecycleCapture("complete-day");var command=preparedFieldwork(capture,"100","200","PROPOSAL");
+        var invalid=new CheckOutVisitCommand("complete-far",Instant.now(),location("121.1","31.2"),"far-event");
+        assertThatThrownBy(()->visitService.completeVisit(capture,new com.rigour.sales.api.v1.model.SalesWorkApiModels.CompleteVisitCommand(command,invalid))).isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        assertThat(captureStore.fieldwork(tenantId,capture,false)).isNull();
+        assertThat(count("SELECT COUNT(*) FROM sales_visit_plan WHERE tenant_id=?",tenantId)).isZero();
+        var checkout=new CheckOutVisitCommand("complete-near",Instant.now(),location("120.1","30.2"),"near-event");
+        var complete=new com.rigour.sales.api.v1.model.SalesWorkApiModels.CompleteVisitCommand(command,checkout);
+        var first=visitService.completeVisit(capture,complete);var retry=visitService.completeVisit(capture,complete);
+        assertThat(first.status()).isEqualTo("CHECKED_OUT");assertThat(retry.checkedOutAt()).isEqualTo(first.checkedOutAt());
+        var plans=visitPlanService.ownPlans(command.fieldwork().nextContactDate()).items();assertThat(plans).hasSize(1);
+        var plan=plans.getFirst();assertThat(plan.crmStoreId()).isEqualTo("100");assertThat(plan.actionCode()).isEqualTo("PROPOSAL");assertThat(plan.storeName()).isEqualTo("跟进测试店");
+        assertThat(visitPlanService.completeOwnAction(plan.planId()).status()).isEqualTo("COMPLETED");
+        assertThat(visitPlanService.completeOwnAction(plan.planId()).version()).isEqualTo(1);
+        assertThatThrownBy(()->visitService.cancelVisit(capture,new com.rigour.sales.api.v1.model.SalesWorkApiModels.CancelVisitCommand("取消"))).hasMessageContaining("尚未提交");
+    }
+
+    @Test void physicalFollowupReturnsToPlannedOnCancellationAndCompletesWithItsOwnVisit() {
+        var origin=createLifecycleCapture("plan-day");var result=preparedFieldwork(origin,"100","200","VISIT");
+        visitService.completeVisit(origin,new com.rigour.sales.api.v1.model.SalesWorkApiModels.CompleteVisitCommand(result,new CheckOutVisitCommand("origin-end",Instant.now(),location("120.1","30.2"),"origin-end")));
+        var plan=visitPlanService.ownPlans(result.fieldwork().nextContactDate()).items().getFirst();
+        assertThatThrownBy(()->visitPlanService.completeOwnAction(plan.planId())).hasMessageContaining("到店");
+        assertThatThrownBy(()->createLifecycleCapture("plan-day",UUID.randomUUID(),"201")).isInstanceOf(com.rigour.shared.core.exception.StateConflictException.class);
+        var cancelled=createLifecycleCapture("plan-day",plan.planId(),"201");
+        assertThat(visitPlanService.ownPlans(plan.plannedDate()).items().getFirst().status()).isEqualTo("IN_PROGRESS");
+        jdbc.update("UPDATE sales_visit_policy_version SET capture_rules_json=? WHERE id=?", "{\"automaticCheckout\":true,\"automaticCheckoutRadiusMeters\":800,\"maximumLocationAccuracyMeters\":100,\"requireLocationOnOpen\":false,\"automaticRecording\":false,\"allowPhotoImport\":false,\"allowRecordingImport\":false}",bin(visitPolicyVersionId));
+        visitService.autoCheckOutVisit(cancelled,new CheckOutVisitCommand("auto-leave",Instant.now(),new LocationEvidence(new BigDecimal("120.12"),new BigDecimal("30.2"),BigDecimal.TEN,"APP_NATIVE"),"auto-leave"));
+        visitService.cancelVisit(cancelled,new com.rigour.sales.api.v1.model.SalesWorkApiModels.CancelVisitCommand("误选"));
+        assertThat(visitPlanService.ownPlans(plan.plannedDate()).items().getFirst().status()).isEqualTo("PLANNED");
+        var retry=createLifecycleCapture("plan-day",plan.planId(),"202");
+        var complete=new com.rigour.sales.api.v1.model.SalesWorkApiModels.CompleteVisitCommand(preparedFieldwork(retry,"100","202",null),new CheckOutVisitCommand("plan-end",Instant.now(),location("120.1","30.2"),"plan-end"));
+        visitService.completeVisit(retry,complete);
+        assertThat(visitPlanService.ownPlans(plan.plannedDate()).items().getFirst().status()).isEqualTo("COMPLETED");
     }
 
     private com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Evidence latestCrmEvidence(UUID capture) {
@@ -874,6 +1128,17 @@ class SalesWorkVisitIntegrationTests {
                         1, 1, 1, NULL, ?, NULL, NULL, NULL, ?, ?)
                 """, bin(visitPolicyVersionId), bin(tenantId), bin(visitPolicyId),
                 timestamp(now.minusSeconds(60)), bin(userId), timestamp(now));
+    }
+
+    private void setAnalysisCaller(UUID tenant, UUID user, Set<String> permissions) {
+        try {
+            var caller=new CallerIdentity("TENANT",user,tenant,user,null,UUID.randomUUID(),1,1,1,Set.of("SALES"),permissions);
+            Method set=AuthorizationContext.class.getDeclaredMethod("set",CallerIdentity.class);
+            set.setAccessible(true);
+            set.invoke(null,caller);
+        } catch (ReflectiveOperationException error) {
+            throw new IllegalStateException(error);
+        }
     }
 
     private void setCaller() {

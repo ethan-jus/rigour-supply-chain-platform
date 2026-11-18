@@ -27,6 +27,9 @@ public class StoreFactService {
                 || e.submittedAt()!=null && (e.submittedAt().isAfter(e.checkedAt()) || e.submittedAt().isBefore(e.checkedInAt()))
                 || e.checkedOutAt()!=null && (e.checkedOutAt().isBefore(e.checkedInAt()) || e.checkedOutAt().isAfter(e.checkedAt())))
             throw new RequestValidationException("采集结果参数无效");
+        if(e.cancelledAt()!=null && (e.submittedAt()!=null || e.cancelledAt().isBefore(e.checkedInAt()) || e.cancelledAt().isAfter(e.checkedAt())
+                || e.cancellationReason()==null || e.cancellationReason().isBlank() || e.cancellationReason().length()>200))
+            throw new RequestValidationException("取消拜访参数无效");
         authorize(e.tenantId(),"crm:store:visit-source-write");
         store.acceptEvidence(e,clock.instant());
     }

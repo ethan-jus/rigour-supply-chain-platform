@@ -41,6 +41,8 @@ class AmapControllerTest {
         actor("SERVICE", Set.of());
         assertThatThrownBy(() -> controller.reverse(BigDecimal.ONE, BigDecimal.ONE))
                 .isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> controller.reverseGcj02(BigDecimal.ONE, BigDecimal.ONE))
+                .isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(pois, geocoder);
     }
 

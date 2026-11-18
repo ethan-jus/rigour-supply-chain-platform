@@ -274,7 +274,7 @@ class CrmApplicationTests {
                                  WHERE table_schema = DATABASE() AND table_name LIKE 'crm\\_%'
                                 """,
                                 Integer.class))
-                .isEqualTo(46);
+                .isEqualTo(53);
         assertThat(
                         jdbcTemplate.queryForList(
                                 """
@@ -301,6 +301,12 @@ class CrmApplicationTests {
                         "crm_contact_method",
                         "crm_contact_change",
                         "crm_visit_contact",
+                        "crm_visit_fieldwork",
+                        "crm_wecom_identity",
+                        "crm_wecom_sync",
+                        "crm_wecom_relation",
+                        "crm_wecom_link_change",
+                        "crm_store_business_progress",
                         "crm_address",
                         "crm_source_binding",
                         "crm_source_identity_alias",

@@ -12,6 +12,7 @@ public final class StoreWorkModels {
     }
     public record SubmitVisit(long revision, String resultSummary, List<String> photoRefs) {}
     public record CancelVisit(long revision,String reason) {}
+    public record InvalidateVisit(long revision, String reason) {}
     public record ReviewVisit(long revision, String decision, String reason) {}
     public record Visit(String id, String storeId, String ownershipId, String salespersonId,
             String status, Instant visitedAt, Instant submittedAt, Instant qualifiedAt,

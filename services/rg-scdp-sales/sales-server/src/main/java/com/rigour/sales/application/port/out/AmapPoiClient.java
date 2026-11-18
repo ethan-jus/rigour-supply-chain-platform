@@ -18,6 +18,9 @@ public interface AmapPoiClient {
     NearbyPoi detail(String poiId);
 
     Coordinates convertGps(BigDecimal longitude, BigDecimal latitude);
+    Address reverseGcj02(BigDecimal longitude, BigDecimal latitude);
+    record Address(String status, String address, String formattedAddress) {}
+
     record Coordinates(BigDecimal longitude,BigDecimal latitude,String coordinateSystem) {}
 
     record NearbyPoi(String poiId, String name, String address, String type, String typeCode,

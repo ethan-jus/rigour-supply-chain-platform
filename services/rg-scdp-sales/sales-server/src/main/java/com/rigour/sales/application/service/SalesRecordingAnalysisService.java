@@ -30,7 +30,7 @@ public class SalesRecordingAnalysisService {
 
     public SalesRecordingAnalysisService(SalesRecordingAnalysisRepository repository, SalesWorkVisitRepository visits,
             SalesWorkContextService context, SalesFieldworkService fieldwork, AuditSink audit, Clock clock,
-            @Value("${rigour.sales.fieldwork.ai-enabled:false}") boolean enabled) {
+            @Value("${rigour.sales.fieldwork.asr-enabled:false}") boolean enabled) {
         this.repository=repository;this.visits=visits;this.context=context;this.fieldwork=fieldwork;
         this.audit=audit;this.clock=clock;this.enabled=enabled;
     }
@@ -70,7 +70,7 @@ public class SalesRecordingAnalysisService {
         return new Visit(visitId,enabled,repository.list(caller.tenantId(),visitId).stream().map(row ->
                 new Clip(row.clipId(),row.clipIndex(),row.status(),row.transcript(),
                         row.segments().stream().map(s->new Segment(s.startMs(),s.endMs(),s.text(),s.speakerId())).toList(),
-                        row.summaryStatus(),row.summary(),row.summaryModel(),row.errorCode(),row.updatedAt())).toList());
+                        row.summaryStatus(),row.summary(),row.summaryModel(),row.errorCode(),row.updatedAt())).toList(),repository.speakers(caller.tenantId(),visitId));
     }
 
     private void audit(CallerIdentity caller, UUID visitId, String action, Map<String,String> detail) {

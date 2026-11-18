@@ -45,6 +45,7 @@ public class CrmVisitDeliveryScheduler {
         // Existing captures are seeded once; unfinished captures publish checkpoints for safe expiry.
         var captures=jdbc.queryForList("""
                 SELECT v.tenant_id,v.id FROM sales_visit v WHERE v.crm_visit_id IS NOT NULL
+                AND v.status<>'CANCELLED'
                 AND (v.crm_last_enqueued_at IS NULL OR ((v.checked_out_at IS NULL OR v.result_submitted_at IS NULL)
                 AND v.crm_last_enqueued_at<?))
                 AND NOT EXISTS(SELECT 1 FROM sales_outbox_event e WHERE e.tenant_id=v.tenant_id AND e.aggregate_id=v.id

@@ -7,6 +7,8 @@ public interface ReverseGeocoder {
 
     GeocodeResult resolve(BigDecimal longitude, BigDecimal latitude);
 
+    GeocodeResult resolveGcj02(BigDecimal longitude, BigDecimal latitude);
+
     record GeocodeResult(
             String status,
             String address,

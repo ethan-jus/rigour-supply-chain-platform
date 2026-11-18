@@ -47,6 +47,9 @@ public interface BusinessDictionaryApi {
      * @param dictionaryCode 字典编码
      * @return 最终命中的字典和其全部有效条目
      */
+    @GetMapping("/effective-batch")
+    ApiResponse<List<EffectiveDictView>> effectiveBatch(@RequestParam List<String> dictionaryCodes);
+
     @GetMapping("/effective")
     ApiResponse<EffectiveDictView> effective(@RequestParam String dictionaryCode);
 

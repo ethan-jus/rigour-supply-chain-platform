@@ -12,7 +12,7 @@ import org.springframework.stereotype.Service;
 /** 新入口只创建采集工作区，证据处理继续复用销售现有服务。 */
 @Service
 public class StoreVisitCaptureService {
-    public record Command(String requestId,String storeId,String ownershipId,UUID workDayId,LocationEvidence location){}
+    public record Command(String requestId,String storeId,String ownershipId,UUID workDayId,LocationEvidence location,UUID visitPlanId){}
     public record Created(String visitId,UUID captureId,String storeId,String ownershipId){}
     private final SalesWorkContextService context;private final SalesWorkAttendanceRepository days;private final StoreVisitCaptureStore store;private final CrmStoreVisitClient crm;private final Clock clock;private final SalesWorkVisitRepository visits;
     public StoreVisitCaptureService(SalesWorkContextService context,SalesWorkAttendanceRepository days,StoreVisitCaptureStore store,CrmStoreVisitClient crm,Clock clock,SalesWorkVisitRepository visits){this.context=context;this.days=days;this.store=store;this.crm=crm;this.clock=clock;this.visits=visits;}
@@ -28,13 +28,33 @@ public class StoreVisitCaptureService {
         var snapshot=crm.context(c.storeId(),v.id());
         if(!Objects.equals(snapshot.employeeCode(),identity.profile().employeeCode())||!capture.toString().equals(snapshot.captureRef())||!"GCJ02".equals(snapshot.coordinateSystem()))throw new StateConflictException("采集人与CRM拜访不一致");
         if(!"IN_PROGRESS".equals(snapshot.status())&&store.link(actor.tenantId(),capture)==null)throw new StateConflictException("原签到已结束或取消，请重新发起拜访");
-        try{store.create(actor.tenantId(),identity.profile().id(),c.workDayId(),capture,snapshot,c.location());}
+        try{store.create(actor.tenantId(),identity.profile().id(),c.workDayId(),capture,snapshot,c.location(),c.visitPlanId());}
         catch(StateConflictException conflict){crm.cancel(c.storeId(),v.id(),new CancelVisit(snapshot.revision(),"采集工作区创建冲突，本次签到取消"));throw conflict;}
         return new Created(v.id(),capture,c.storeId(),c.ownershipId());
     }
     public void requireEvidenceAccess(UUID tenant,UUID capture){
         var link=store.link(tenant,capture);if(link==null)return;
         if(!capture.toString().equals(crm.evidenceAccess(link.storeId(),link.visitId())))throw new AuthorizationDeniedException("crm:store:history-read");
+    }
+    @org.springframework.beans.factory.annotation.Autowired private SalesWorkManagementRepository evidence;
+    public com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Accepted readFieldwork(UUID capture){
+        AuthorizationContext.requirePermission("sales:visit:own:read");var actor=AuthorizationContext.requireCurrent();
+        var identity=context.resolveIdentity(actor,clock.instant());
+        visits.findVisit(actor.tenantId(),identity.profile().id(),capture).orElseThrow(()->new StateConflictException("拜访不存在"));
+        requireEvidenceAccess(actor.tenantId(),capture);return store.fieldwork(actor.tenantId(),capture,false);
+    }
+    public boolean cancel(UUID tenant,UUID capture,String reason,java.time.Instant now){return store.cancel(tenant,capture,reason,now);}
+    public boolean saveFieldwork(UUID tenant,UUID capture,com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Draft draft){
+        var link=store.link(tenant,capture);if(link==null)throw new RequestValidationException("仅门店拜访支持结构化信息");
+        var old=store.fieldwork(tenant,capture,true);
+        if(old!=null){if(!old.draft().equals(draft))throw new StateConflictException("拜访信息已提交，不能重复修改");return false;}
+        if(draft.nextContactDate()!=null && draft.nextContactDate().isBefore(java.time.LocalDate.now(clock.withZone(java.time.ZoneId.of("Asia/Shanghai")))))
+            throw new RequestValidationException("跟进日期不能早于今天");
+        var facts=evidence.findVisitAssessment(tenant,capture).orElseThrow(()->new StateConflictException("拜访规则缺失"));
+        if(facts.verifiedStorefrontPhotoCount()<Math.max(1,facts.requiredPhotoCount()))throw new RequestValidationException("请拍摄并上传至少"+Math.max(1,facts.requiredPhotoCount())+"张门头照");
+        var accepted=crm.validateFieldwork(link.storeId(),link.visitId(),draft);
+        if(!draft.equals(accepted.draft())||!Objects.equals(accepted.actorUserId(),AuthorizationContext.requireCurrent().userId().toString()))throw new StateConflictException("拜访信息校验响应不一致");
+        store.fieldwork(tenant,capture,accepted);return true;
     }
     public boolean isCapture(UUID tenant,UUID capture) { return store.link(tenant,capture)!=null; }
 }

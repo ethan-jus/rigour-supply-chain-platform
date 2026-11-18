@@ -56,7 +56,7 @@ class JdbcStorePoolStoreTest {
         jdbc=new JdbcTemplate(ds);store=new JdbcStorePoolStore(jdbc);tx=new TransactionTemplate(new DataSourceTransactionManager(ds));
     }
     @AfterAll static void stopContainer(){if(MYSQL.isRunning())MYSQL.stop();}
-    @BeforeEach void tenant(){tenant=UUID.randomUUID().toString();inTx(()->{store.initializePolicy(national("crm:store:manage","1"));return null;});}
+    @BeforeEach void tenant(){tenant=UUID.randomUUID().toString();inTx(()->{store.publishPolicy(national("crm:store:manage","1"),new com.rigour.merchant.api.v1.model.StorePoolPolicyModels.Publish(0,UUID.randomUUID().toString(),24,7,60,48,60,24,"测试初始规则"));return null;});}
     <T>T inTx(Supplier<T> operation){return tx.execute(status->operation.get());}
     StoreAccessView.Grant nationalGrant(){return new StoreAccessView.Grant("ALL",List.of(),false,true,List.of());}
     StoreAccessView.Grant self(String city){return new StoreAccessView.Grant("SELF",List.of("10"),false,false,List.of(new StoreAccessView.Area(VERSION,city)));}
@@ -76,6 +76,33 @@ class JdbcStorePoolStoreTest {
     Query workQuery(String view,String pool,String status,String phase,String protection){
         return new Query(view,null,null,null,null,null,null,null,null,null,null,20,null,pool,status,phase,protection);
     }
+    @Test void recentSubmittedVisitIsVisibleWithoutPretendingItIsEffectiveAndResetsOnReclaim(){
+        String id=create("330105","待核验门店");
+        claim(id,national("crm:pool:claim","2"));
+        var reader=national("crm:pool:private-read","2");
+        var original=store.detail(reader,id);
+        assertThat(original.lastSubmittedVisitAt()).isNull();
+        jdbc.update("""
+                INSERT INTO crm_visit(id,tenant_id,created_at,updated_at,created_by,updated_by,store_id,ownership_id,
+                salesperson_id,status_code,visited_at,accepted_at,checkin_accepted_at,submitted_at,
+                checkin_longitude,checkin_latitude,checkin_coordinate_system,distance_meters,store_snapshot,validation_policy_version,request_id)
+                VALUES(9001,?,NOW(6),NOW(6),'test','test',?,?,2,'SUBMITTED',NOW(6),NOW(6),NOW(6),NOW(6),120,30,'GCJ02',0,'{}','test','visit-test')
+                """,tenant,id,original.currentOwnershipId());
+        var pending=store.list(reader,query("PRIVATE",null)).items().getFirst();
+        assertThat(pending.lastSubmittedVisitAt()).isNotNull();
+        assertThat(pending.lastSubmittedVisitStatus()).isEqualTo("PROCESSING");
+        assertThat(pending.lastVisitAt()).isNull();
+        assertThat(pending.validVisitCount()).isEqualTo(original.validVisitCount());
+        jdbc.update("UPDATE crm_visit SET status_code='INVALID' WHERE tenant_id=? AND id=9001",tenant);
+        assertThat(store.detail(reader,id).lastSubmittedVisitStatus()).isEqualTo("INVALID");
+        jdbc.update("UPDATE crm_visit SET submitted_at=NULL WHERE tenant_id=? AND id=9001",tenant);
+        assertThat(store.detail(reader,id).lastSubmittedVisitAt()).isNull();
+        jdbc.update("UPDATE crm_visit SET submitted_at=NOW(6) WHERE tenant_id=? AND id=9001",tenant);
+        inTx(()->{store.release(national("crm:pool:release","2"),id,new Release(UUID.randomUUID().toString(),store.detail(reader,id).revision(),"重新分配"));return null;});
+        claim(id,national("crm:pool:claim","3"));
+        assertThat(store.detail(national("crm:pool:private-read","3"),id).lastSubmittedVisitAt()).isNull();
+    }
+
     @Test void libraryIncludesInactiveArchivesButOperationalViewsAndClaimsDoNot(){
         String publicId=create("330105","公海档案"),privateId=create("330105","私海档案"),closed=create("330105","停业档案");
         claim(privateId,hangzhou("crm:pool:claim","2"));
@@ -519,7 +546,7 @@ class JdbcStorePoolStoreTest {
 
     @Test void temporaryClosureBlocksNewVisitAndOrderButDoesNotEraseExistingVisits() {
         String id=create("330105","暂停作业门店");claim(id,hangzhou("crm:pool:claim","2"));
-        var lifecycle=new JdbcStoreLifecycleStore(jdbc);var visits=new JdbcStoreVisitStore(jdbc,store,lifecycle);
+        var lifecycle=new JdbcStoreLifecycleStore(jdbc,store);var visits=new JdbcStoreVisitStore(jdbc,store,lifecycle);
         var owner=hangzhou("crm:store:visit-write","2");var row=store.detail(owner,id);var cycle=lifecycle.current(tenant,id);
         var now=java.time.Instant.now();
         var policy=new com.rigour.merchant.api.v1.model.StoreVisitCaptureModels.Policy("test",300);
@@ -534,7 +561,7 @@ class JdbcStorePoolStoreTest {
     }
     @Test void closureInvalidatesAnAlreadyReadRecoveryCandidate() {
         String id=create("330105","停业回收竞争");claim(id,hangzhou("crm:pool:claim","2"));
-        var lifecycle=new JdbcStoreLifecycleStore(jdbc);var candidate=lifecycle.current(tenant,id);
+        var lifecycle=new JdbcStoreLifecycleStore(jdbc,store);var candidate=lifecycle.current(tenant,id);
         changeStatus(id,hangzhou("crm:store:status-write","2"),"CLOSED",false);
         var now=java.time.Instant.now().plusSeconds(86400);
         var facts=new com.rigour.order.api.v1.model.StoreOrderFacts(tenant,id,candidate.id(),now,"TEST",List.of(),false,null,null);

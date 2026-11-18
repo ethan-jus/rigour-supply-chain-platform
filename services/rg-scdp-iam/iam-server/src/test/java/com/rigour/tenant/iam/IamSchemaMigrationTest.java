@@ -38,7 +38,7 @@ class IamSchemaMigrationTest {
         Flyway flyway = migration(true, "latest");
         flyway.migrate();
         flyway.validate();
-        assertEquals("154", flyway.info().current().getVersion().getVersion());
+        assertEquals("157", flyway.info().current().getVersion().getVersion());
         assertEquals(1, scalar("SELECT COUNT(*) FROM flyway_schema_history WHERE version='120' AND type='SQL_BASELINE'"));
         try (var connection = DriverManager.getConnection(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
              var statement = connection.createStatement();
@@ -48,6 +48,7 @@ class IamSchemaMigrationTest {
             while (result.next()) unexpected.add(result.getString(1) + "." + result.getString(2) + ": " + result.getString(3));
             assertEquals(java.util.List.of(), unexpected);
         }
+        assertEquals(2, scalar("SELECT COUNT(*) FROM iam_resource WHERE display_name='拜访申诉' AND resource_code IN ('SUPPLY_CHAIN.PAGE.SALES_VISIT_REVIEW','SUPPLY_CHAIN.PAGE.SALES_EXCEPTION_REVIEW')"));
         assertEquals(2, scalar("SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND permission_code IN ('sales:risk:read','sales:risk:write')"));
         assertEquals(0, flyway.migrate().migrationsExecuted);
     }
@@ -63,10 +64,10 @@ class IamSchemaMigrationTest {
             statement.execute("INSERT INTO migration_sentinel VALUES(42)");
         }
         Flyway upgraded = migration(true, "latest");
-        assertEquals(22, upgraded.migrate().migrationsExecuted);
+        assertEquals(25, upgraded.migrate().migrationsExecuted);
         upgraded.validate();
-        assertEquals(historyCount + 22, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
-        assertEquals("154", upgraded.info().current().getVersion().getVersion());
+        assertEquals(historyCount + 25, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
+        assertEquals("157", upgraded.info().current().getVersion().getVersion());
         assertEquals(checksum, scalar("SELECT checksum FROM flyway_schema_history WHERE version='120'"));
         assertEquals(0, scalar("SELECT COUNT(*) FROM flyway_schema_history WHERE type='SQL_BASELINE'"));
         assertEquals(42, scalar("SELECT id FROM migration_sentinel"));

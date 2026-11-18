@@ -26,7 +26,7 @@ public class JdbcStoreContactStore implements StoreContactStore {
     private final ObjectMapper json=new ObjectMapper();
     public JdbcStoreContactStore(JdbcTemplate jdbc,JdbcStorePoolStore pools){this.jdbc=jdbc;this.pools=pools;}
     private String tenant(StoreScope s){return s.access().tenantId();}
-    private void access(StoreScope s,String store,boolean write){
+    void access(StoreScope s,String store,boolean write){
         var row=pools.detail(s,store);
         boolean manager="crm:store:manage".equals(s.access().action());
         if(!manager&&!"PRIVATE".equals(row.poolType()))throw new AuthorizationDeniedException("store-contact-private-access");
@@ -41,7 +41,18 @@ public class JdbcStoreContactStore implements StoreContactStore {
     @Override public List<Contact> list(StoreScope s,String store){access(s,store,false);return rows(s,store);}
     private List<Contact> rows(StoreScope s,String store){
         return jdbc.query("SELECT p.id,p.name,p.revision person_revision,r.role_name,r.is_primary,r.status_code,r.revision FROM crm_store_contact r JOIN crm_contact_person p ON p.tenant_id=r.tenant_id AND p.id=r.contact_id WHERE r.tenant_id=? AND r.store_id=? ORDER BY r.status_code,r.is_primary DESC,p.id",
-            (r,n)->new Contact(r.getString("id"),r.getString("name"),r.getLong("person_revision"),r.getString("role_name"),r.getBoolean("is_primary"),r.getString("status_code"),r.getLong("revision"),methods(s,r.getString("id")),List.of()),tenant(s),store);
+            (r,n)->new Contact(r.getString("id"),r.getString("name"),r.getLong("person_revision"),r.getString("role_name"),r.getBoolean("is_primary"),r.getString("status_code"),r.getLong("revision"),methods(s,r.getString("id")),wecom(s,r.getString("id"))),tenant(s),store);
+    }
+    private List<WecomRelation> wecom(StoreScope s,String person){
+        return jdbc.query("SELECT DISTINCT r.employee_id,r.employee_name,r.added_at FROM crm_wecom_identity i JOIN crm_wecom_relation r ON r.tenant_id=i.tenant_id AND r.identity_id=i.id WHERE i.tenant_id=? AND i.contact_id=? AND r.active=1 ORDER BY r.added_at",(r,n)->new WecomRelation(r.getString("employee_id"),r.getString("employee_name"),"ACTIVE",r.getTimestamp("added_at").toInstant()),tenant(s),person);
+    }
+    // Called only after the caller's official identity relation and target-store write access are locked and verified.
+    Contact linkWecom(StoreScope s,String store,String person,String role,String reason,String request,Instant now){
+        lockPerson(s,person);var before=rows(s,store);var old=before.stream().filter(p->p.id().equals(person)).findFirst();
+        if(old.isPresent()&&"ACTIVE".equals(old.get().status()))return old.get();
+        if(old.isPresent())jdbc.update("UPDATE crm_store_contact SET status_code='ACTIVE',role_name=?,revision=revision+1,updated_at=?,updated_by=? WHERE tenant_id=? AND store_id=? AND contact_id=?",role,Timestamp.from(now),s.access().userId(),tenant(s),store,person);
+        else relation(s,store,person,role,false,now);
+        var result=contact(s,store,person);audit(s,store,person,"LINK_WECOM",request,hash("LINK_WECOM",store,person,role,reason),reason,before,result,now);return result;
     }
     private List<Method> methods(StoreScope s,String person){
         return jdbc.query("SELECT * FROM crm_contact_method WHERE tenant_id=? AND contact_id=? ORDER BY id",(r,n)->new Method(r.getString("id"),r.getString("method_type"),r.getString("method_value"),r.getString("status_code"),r.getString("verification_method"),r.getTimestamp("verified_at")==null?null:r.getTimestamp("verified_at").toInstant(),r.getString("verified_by"),r.getLong("revision")),tenant(s),person);
@@ -63,7 +74,7 @@ public class JdbcStoreContactStore implements StoreContactStore {
         if(replay!=null)return json.readValue(replay,Contact.class);
         var before=rows(s,store);String id=Long.toString(IdWorker.getId());
         jdbc.update("INSERT INTO crm_contact_person(id,tenant_id,name,created_at,updated_at,created_by,updated_by) VALUES(?,?,?,?,?,?,?)",id,tenant(s),c.name(),Timestamp.from(now),Timestamp.from(now),s.access().userId(),s.access().userId());
-        relation(s,store,id,c.role(),c.primary(),now);method(s,id,"PHONE",c.phone(),now);
+        relation(s,store,id,c.role(),c.primary(),now);if(c.phone()!=null)method(s,id,"PHONE",c.phone(),now);
         if(c.wechatHint()!=null&&!c.wechatHint().isBlank())method(s,id,"WECHAT_HINT",c.wechatHint(),now);
         var result=contact(s,store,id);audit(s,store,id,"CREATE",c.requestId(),key,"手工采集，联系方式待核实",before,result,now);return result;
     }

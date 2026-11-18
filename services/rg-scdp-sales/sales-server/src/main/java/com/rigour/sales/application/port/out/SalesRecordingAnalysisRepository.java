@@ -10,16 +10,14 @@ import java.util.UUID;
 public interface SalesRecordingAnalysisRepository {
     void enqueue(UUID tenantId, UUID visitId, UUID clipId, Instant now);
     Optional<Job> claim(Instant now, UUID leaseId, Instant leaseUntil);
-    void processing(Job job, String taskId, String requestId, Instant now);
-    void transcribed(Job job, String transcript, List<TranscriptSegment> segments, String requestId, Instant now);
-    void summarized(Job job, String summary, String model, String requestId, Instant now);
+    void transcribed(Job job, SalesSpeechTranscriber.Result result, Instant now);
     void deferred(Job job, String errorCode, boolean terminal, Instant now);
-    void waiting(Job job, Instant now);
+    List<com.rigour.sales.api.v1.model.SalesRecordingAnalysisModels.Speaker> speakers(UUID tenantId,UUID visitId);
     List<Analysis> list(UUID tenantId, UUID visitId);
     int retry(UUID tenantId, UUID visitId, UUID clipId, Instant now);
 
     record Job(UUID tenantId, UUID visitId, UUID clipId, UUID leaseId, String objectKey,
-               String status, String taskId, String transcript, int attempts, Instant createdAt) {}
+               int attempts, long speakerVersion, List<SalesSpeechTranscriber.SpeakerProfile> speakers) {}
     record Analysis(UUID clipId, int clipIndex, String status, String transcript,
                     List<TranscriptSegment> segments, String summaryStatus, String summary,
                     String summaryModel, String errorCode, Instant updatedAt) {}

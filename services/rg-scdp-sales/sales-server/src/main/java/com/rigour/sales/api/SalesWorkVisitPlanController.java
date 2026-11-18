@@ -37,6 +37,11 @@ public final class SalesWorkVisitPlanController {
         return ApiResponse.success(service.ownPlans(date));
     }
 
+    @PostMapping(SalesWorkApi.FOLLOWUP_COMPLETE_PATH)
+    public ApiResponse<com.rigour.sales.api.v1.model.SalesWorkApiModels.VisitPlanView> completeOwnAction(@PathVariable("planId") UUID planId) {
+        return ApiResponse.success(service.completeOwnAction(planId));
+    }
+
     @GetMapping(SalesWorkManagementApi.VISIT_PLANS_PATH)
     public ApiResponse<ManagementVisitPlanPageView> managementPlans(
             @RequestParam("from") LocalDate from,

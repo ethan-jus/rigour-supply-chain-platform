@@ -10,6 +10,12 @@ import java.util.Set;
 /** Final customer visit rules live in CRM; media technical verification stays at capture source. */
 public final class VisitEvidenceAssessment {
     private VisitEvidenceAssessment() {}
+    public static String state(List<String> reasons) {
+        if(reasons.isEmpty())return "PASSED";
+        if(reasons.stream().anyMatch(r->Set.of("VISIT_TIME_INVALID","CONTACT_NOT_CONFIRMED","DWELL_TOO_SHORT","RECORDING_TOO_SHORT","SUBMISSION_AFTER_DEADLINE").contains(r)))return "FAILED";
+        if(reasons.contains("RECORDING_PENDING")||reasons.contains("STOREFRONT_PHOTO_MISSING")||reasons.contains("RESULT_MISSING"))return "PROCESSING";
+        return "INSUFFICIENT";
+    }
     public static List<String> anomalies(Policy policy,Evidence facts) {
         List<String> reasons=new ArrayList<>();
         if(facts.checkedInAt()==null || facts.checkedOutAt()==null || facts.checkedOutAt().isBefore(facts.checkedInAt()))
@@ -22,17 +28,9 @@ public final class VisitEvidenceAssessment {
         if(facts.verifiedPhotoCount()<Math.max(1,policy.requiredPhotoCount())) reasons.add("STOREFRONT_PHOTO_MISSING");
         if(policy.recordingEnabled()) {
             if(!"TECHNICALLY_VERIFIED".equals(facts.recordingEvidenceStatus()) || facts.verifiedRecordingDurationMs()==null)
-                reasons.add("RECORDING_UNVERIFIED");
+                reasons.add("REVIEW_REQUIRED".equals(facts.recordingEvidenceStatus())?"RECORDING_UNVERIFIED":"RECORDING_PENDING");
             else if(facts.verifiedRecordingDurationMs()<policy.minimumRecordingSeconds()*1000L)
                 reasons.add("RECORDING_TOO_SHORT");
-        }
-        if(policy.aiAsrEnabled() || policy.aiRelevanceEnabled() || policy.aiDuplicateEnabled()) {
-            if(!facts.aiResultAdopted()) reasons.add("AI_PENDING");
-            else if(!Set.of("AUTO_CONFIRM","EFFECTIVE").contains(facts.aiRecommendation()==null?"":facts.aiRecommendation()))
-                reasons.add("AI_REVIEW_REQUIRED");
-            else if(policy.aiAutoConfirmThreshold()!=null && (facts.aiConfidenceScore()==null
-                    || facts.aiConfidenceScore().compareTo(policy.aiAutoConfirmThreshold())<0))
-                reasons.add("AI_LOW_CONFIDENCE");
         }
         return List.copyOf(reasons);
     }

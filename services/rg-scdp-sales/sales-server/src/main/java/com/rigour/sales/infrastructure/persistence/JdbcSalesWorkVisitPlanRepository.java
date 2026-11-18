@@ -20,8 +20,12 @@ public class JdbcSalesWorkVisitPlanRepository implements SalesWorkVisitPlanRepos
     private static final String PLAN_SELECT = """
             SELECT plan.id, plan.sales_profile_id, profile.sales_no, plan.planned_date,
                    plan.target_type, plan.customer_id, plan.store_id,
-                   store.customer_name, store.store_name, store.store_address,
-                   store.longitude, store.latitude, plan.objective, plan.status,
+                   store.customer_name,
+                   COALESCE(JSON_UNQUOTE(JSON_EXTRACT(plan.target_snapshot_json,'$.name')),store.store_name) AS store_name,
+                   COALESCE(JSON_UNQUOTE(JSON_EXTRACT(plan.target_snapshot_json,'$.address')),store.store_address) AS store_address,
+                   COALESCE(JSON_EXTRACT(plan.target_snapshot_json,'$.longitude'),store.longitude) AS longitude,
+                   COALESCE(JSON_EXTRACT(plan.target_snapshot_json,'$.latitude'),store.latitude) AS latitude,
+                   plan.crm_store_id, plan.action_code, plan.objective, plan.status,
                    visit.id AS visit_id, plan.version, plan.created_by,
                    plan.created_at, plan.updated_at
               FROM sales_visit_plan plan
@@ -164,6 +168,12 @@ public class JdbcSalesWorkVisitPlanRepository implements SalesWorkVisitPlanRepos
     }
 
     @Override
+    public int completeOwnAction(UUID tenantId, UUID salesProfileId, UUID planId, Instant now) {
+        return jdbc.update("UPDATE sales_visit_plan SET status='COMPLETED',version=version+1,updated_at=? WHERE tenant_id=? AND sales_profile_id=? AND id=? AND status='PLANNED' AND source_capture_id IS NOT NULL AND action_code<>'VISIT'",
+                timestamp(now),bin(tenantId),bin(salesProfileId),bin(planId));
+    }
+
+    @Override
     public int markInProgress(UUID tenantId, UUID salesProfileId, UUID planId, Instant now) {
         return jdbc.update("""
                 UPDATE sales_visit_plan
@@ -215,7 +225,7 @@ public class JdbcSalesWorkVisitPlanRepository implements SalesWorkVisitPlanRepos
                 rs.getString("store_address"), rs.getBigDecimal("longitude"),
                 rs.getBigDecimal("latitude"), rs.getString("objective"), rs.getString("status"),
                 uuid(rs, "visit_id"), rs.getLong("version"), uuid(rs, "created_by"),
-                instant(rs.getTimestamp("created_at")), instant(rs.getTimestamp("updated_at")));
+                instant(rs.getTimestamp("created_at")), instant(rs.getTimestamp("updated_at")), rs.getString("crm_store_id"), rs.getString("action_code"));
     }
 
     private static UUID uuid(ResultSet rs, String column) throws SQLException {

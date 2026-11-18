@@ -239,6 +239,8 @@ public class SalesWorkAdminService {
         var rules=command.captureRules();
         if(rules!=null) {
             Integer maximum=rules.maximumLocationAccuracyMeters();
+            Integer departure=rules.automaticCheckoutRadiusMeters();
+            if(departure!=null && (departure<1 || departure>5000 || Boolean.TRUE.equals(rules.automaticCheckout()) && departure<command.checkInRadiusMeters())) throw invalid("自动离店距离不得小于到店范围，且不能超过5000米");
             if(maximum!=null && (maximum<1 || maximum>1000)) throw invalid("定位精度上限应为1至1000米");
             if(rules.automaticRecording() && !command.recordingEnabled()) throw invalid("自动录音需要启用录音要求");
         }

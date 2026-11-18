@@ -20,7 +20,7 @@ public class JdbcCustomerWorkbenchStore implements CustomerWorkbenchStore {
     private final JdbcTemplate jdbc;
     public JdbcCustomerWorkbenchStore(JdbcTemplate jdbc){this.jdbc=jdbc;}
     private static final String BASE=" FROM crm_store_summary q JOIN crm_store_master s ON s.tenant_id=q.tenant_id AND s.id=q.store_id ";
-    private static final String CONTACT_MISSING=" NOT EXISTS (SELECT 1 FROM crm_store_contact c JOIN crm_contact_method m ON m.tenant_id=c.tenant_id AND m.contact_id=c.contact_id WHERE c.tenant_id=q.tenant_id AND c.store_id=q.store_id AND c.status_code='ACTIVE' AND m.method_type='PHONE' AND m.status_code='VERIFIED') AND COALESCE(q.wecom_active_contact_count,0)=0 ";
+    private static final String CONTACT_MISSING=" NOT EXISTS (SELECT 1 FROM crm_store_contact c JOIN crm_contact_method m ON m.tenant_id=c.tenant_id AND m.contact_id=c.contact_id WHERE c.tenant_id=q.tenant_id AND c.store_id=q.store_id AND c.status_code='ACTIVE' AND m.method_type='PHONE' AND m.status_code='VERIFIED') AND NOT EXISTS (SELECT 1 FROM crm_store_contact wc JOIN crm_wecom_identity wi ON wi.tenant_id=wc.tenant_id AND wi.contact_id=wc.contact_id JOIN crm_wecom_relation wr ON wr.tenant_id=wi.tenant_id AND wr.identity_id=wi.id WHERE wc.tenant_id=q.tenant_id AND wc.store_id=q.store_id AND wc.status_code='ACTIVE' AND wr.active=1) ";
     private record Filter(String sql,List<Object> args) {}
     private static Filter mine(StoreScope scope) {
         var access=StoreScopeSql.compile(scope);var args=new ArrayList<Object>();

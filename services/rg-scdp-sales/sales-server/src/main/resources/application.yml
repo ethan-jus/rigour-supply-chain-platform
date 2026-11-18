@@ -131,3 +131,9 @@ sales:
       connection-timeout-ms: 5000
       socket-timeout-ms: 30000
       server-side-encryption: true
+
+# Private inference endpoint; credentials are injected by the service runtime.
+rigour.sales.fieldwork:
+  asr-enabled: ${RIGOUR_SALES_ASR_ENABLED:false}
+  asr-base-url: ${RIGOUR_SALES_ASR_BASE_URL:http://rigour-speech-recognition}
+  asr-token: ${RIGOUR_SALES_ASR_TOKEN:}

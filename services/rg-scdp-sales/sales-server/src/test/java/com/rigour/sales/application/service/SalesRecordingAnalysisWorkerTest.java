@@ -10,31 +10,35 @@ import java.util.*;
 import org.junit.jupiter.api.Test;
 
 class SalesRecordingAnalysisWorkerTest {
-    private final Instant now=Instant.parse("2026-11-12T08:00:00Z");
+    private final Instant now=Instant.parse("2026-11-17T08:00:00Z");
     private final SalesRecordingAnalysisRepository repository=mock(SalesRecordingAnalysisRepository.class);
-    private final SalesAudioAiClient ai=mock(SalesAudioAiClient.class);
-    private final SalesAudioSource source=mock(SalesAudioSource.class);
-    private final SalesRecordingAnalysisWorker worker=new SalesRecordingAnalysisWorker(repository,ai,source,Clock.fixed(now,ZoneOffset.UTC));
-    private Job next(String status,String text){
-        var job=new Job(UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),"private/audio",status,"task",text,0,now.minusSeconds(60));
-        when(repository.claim(any(),any(),any())).thenReturn(Optional.of(job),Optional.empty());return job;
+    private final SalesSpeechTranscriber speech=mock(SalesSpeechTranscriber.class);
+    private final SalesRecordingAnalysisWorker worker=new SalesRecordingAnalysisWorker(repository,speech,Clock.fixed(now,ZoneOffset.UTC));
+    private Job next(){
+        var job=new Job(UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),UUID.randomUUID(),"private/audio",0,0,List.of());
+        when(repository.claim(any(),any(),any())).thenReturn(Optional.of(job));return job;
     }
-    @Test void originalTranscriptAndActualTimeOffsetsAreSavedBeforeAnySummary(){
-        var job=next("PROCESSING",null);
+    @Test void savesOriginalTranscriptOffsetsAndModel(){
+        var job=next();
         var lines=List.of(new TranscriptSegment(2400,5100,"客户询问台呢规格",null));
-        when(ai.describeTranscriptionTask("task")).thenReturn(new AsrTaskStatus("task",AsrState.SUCCEEDED,"客户询问台呢规格",null,"request",null,lines));
-        worker.process();verify(repository).transcribed(job,"客户询问台呢规格",lines,"request",now);verify(ai,never()).summarize(any());
+        when(speech.transcribe(job.tenantId(),job.objectKey(),job.speakers())).thenReturn(new SalesSpeechTranscriber.Result("客户询问台呢规格",lines,"paraformer-int8","request","speaker-test",List.of()));
+        worker.process();verify(repository).transcribed(eq(job),argThat(result->result.transcript().equals("客户询问台呢规格") && result.segments().equals(lines)),eq(now));
+        verify(repository,never()).deferred(any(),any(),anyBoolean(),any());
     }
-    @Test void summaryFailureRetainsTheSuccessfulAsrJobAndRetriesOnlyTheSummary(){
-        var job=next("SUCCEEDED","已保存原文");when(ai.summarize(job.transcript())).thenThrow(new AiClientException("SUMMARY_TIMEOUT"));
-        worker.process();verify(repository).deferred(job,"SUMMARY_TIMEOUT",false,now);verify(ai,never()).createDetailedTranscriptionTask(any());verify(ai,never()).describeTranscriptionTask(any());
+    @Test void transientFailureIsRetriedWithoutLosingTheJob(){
+        var job=next();when(speech.transcribe(any(),any(),any())).thenThrow(new AiClientException("ASR_BUSY"));
+        worker.process();verify(repository).deferred(job,"ASR_BUSY",false,now);
     }
-    @Test void transientPollingFailureDoesNotCreateASecondProviderTask(){
-        var job=next("PROCESSING",null);when(ai.describeTranscriptionTask("task")).thenThrow(new AiClientException("ASR_TIMEOUT"));
-        worker.process();verify(repository).deferred(job,"ASR_TIMEOUT",false,now);verify(ai,never()).createDetailedTranscriptionTask(any());verifyNoInteractions(source);
+    @Test void unreadableAudioIsTerminalUntilExplicitRetry(){
+        var job=next();when(speech.transcribe(any(),any(),any())).thenThrow(new AiClientException("ASR_HTTP_422"));
+        worker.process();verify(repository).deferred(job,"ASR_HTTP_422",true,now);
     }
-    @Test void providerFailureIsTerminalUntilExplicitRetry(){
-        var job=next("PROCESSING",null);when(ai.describeTranscriptionTask("task")).thenReturn(new AsrTaskStatus("task",AsrState.FAILED,null,"NO_AUDIO","request",null));
-        worker.process();verify(repository).deferred(job,"ASR_TASK_FAILED",true,now);verify(ai,never()).summarize(any());
+    @Test void unexpectedFailureDoesNotPersistSensitiveExceptionText(){
+        var job=next();when(speech.transcribe(any(),any(),any())).thenThrow(new IllegalStateException("secret response"));
+        worker.process();verify(repository).deferred(job,"ASR_TEMPORARILY_UNAVAILABLE",false,now);
+    }
+    @Test void idleWorkerDoesNotContactProvider(){
+        when(repository.claim(any(),any(),any())).thenReturn(Optional.empty());
+        worker.process();verifyNoInteractions(speech);
     }
 }

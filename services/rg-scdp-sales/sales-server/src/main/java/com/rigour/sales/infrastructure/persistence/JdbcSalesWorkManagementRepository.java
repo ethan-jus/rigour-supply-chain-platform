@@ -61,14 +61,14 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                                          THEN 1 ELSE 0 END), 0) AS pending_review_visit_count,
                        COALESCE(SUM(CASE WHEN NOT EXISTS (
                            SELECT 1 FROM sales_visit previous
-                            WHERE previous.tenant_id=current_visit.tenant_id
+                            WHERE previous.status<>'CANCELLED' AND previous.tenant_id=current_visit.tenant_id
                               AND previous.sales_profile_id=current_visit.sales_profile_id
                               AND previous.store_id=current_visit.store_id
                               AND previous.checked_in_at < current_visit.checked_in_at
                        ) THEN 1 ELSE 0 END), 0) AS first_visit_count,
                        COALESCE(SUM(CASE WHEN EXISTS (
                            SELECT 1 FROM sales_visit previous
-                            WHERE previous.tenant_id=current_visit.tenant_id
+                            WHERE previous.status<>'CANCELLED' AND previous.tenant_id=current_visit.tenant_id
                               AND previous.sales_profile_id=current_visit.sales_profile_id
                               AND previous.store_id=current_visit.store_id
                               AND previous.checked_in_at < current_visit.checked_in_at
@@ -78,7 +78,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                   JOIN sales_work_day work_day
                     ON work_day.tenant_id=current_visit.tenant_id
                    AND work_day.id=current_visit.work_day_id
-                 WHERE current_visit.sales_profile_id IN (SELECT id FROM permitted_profiles) AND current_visit.tenant_id=? AND work_day.business_date BETWEEN ? AND ?
+                 WHERE current_visit.status<>'CANCELLED' AND current_visit.sales_profile_id IN (SELECT id FROM permitted_profiles) AND current_visit.tenant_id=? AND work_day.business_date BETWEEN ? AND ?
                 """, (rs, row) -> new VisitTotals(rs.getLong("total_visit_count"),
                         rs.getLong("completed_visit_count"), rs.getLong("effective_visit_count"),
                         rs.getLong("pending_review_visit_count"), rs.getLong("first_visit_count"),
@@ -115,14 +115,14 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                          JOIN sales_work_day visit_day
                            ON visit_day.tenant_id=current_visit.tenant_id
                           AND visit_day.id=current_visit.work_day_id
-                        WHERE current_visit.tenant_id=profile.tenant_id
+                        WHERE current_visit.status<>'CANCELLED' AND current_visit.tenant_id=profile.tenant_id
                           AND current_visit.sales_profile_id=profile.id
                           AND visit_day.business_date BETWEEN ? AND ?) AS total_visit_count,
                        (SELECT COUNT(*) FROM sales_visit current_visit
                          JOIN sales_work_day visit_day
                            ON visit_day.tenant_id=current_visit.tenant_id
                           AND visit_day.id=current_visit.work_day_id
-                        WHERE current_visit.tenant_id=profile.tenant_id
+                        WHERE current_visit.status<>'CANCELLED' AND current_visit.tenant_id=profile.tenant_id
                           AND current_visit.sales_profile_id=profile.id
                           AND current_visit.checked_out_at IS NOT NULL
                           AND visit_day.business_date BETWEEN ? AND ?) AS completed_visit_count,
@@ -130,7 +130,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                          JOIN sales_work_day visit_day
                            ON visit_day.tenant_id=current_visit.tenant_id
                           AND visit_day.id=current_visit.work_day_id
-                        WHERE current_visit.tenant_id=profile.tenant_id
+                        WHERE current_visit.status<>'CANCELLED' AND current_visit.tenant_id=profile.tenant_id
                           AND current_visit.sales_profile_id=profile.id
                           AND current_visit.finalized_at IS NOT NULL
                           AND current_visit.final_reason_code='EFFECTIVE'
@@ -139,7 +139,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                          JOIN sales_work_day visit_day
                            ON visit_day.tenant_id=current_visit.tenant_id
                           AND visit_day.id=current_visit.work_day_id
-                        WHERE current_visit.tenant_id=profile.tenant_id
+                        WHERE current_visit.status<>'CANCELLED' AND current_visit.tenant_id=profile.tenant_id
                           AND current_visit.sales_profile_id=profile.id
                           AND current_visit.checked_out_at IS NOT NULL
                           AND current_visit.finalized_at IS NULL
@@ -148,11 +148,11 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                          JOIN sales_work_day visit_day
                            ON visit_day.tenant_id=current_visit.tenant_id
                           AND visit_day.id=current_visit.work_day_id
-                        WHERE current_visit.tenant_id=profile.tenant_id
+                        WHERE current_visit.status<>'CANCELLED' AND current_visit.tenant_id=profile.tenant_id
                           AND current_visit.sales_profile_id=profile.id
                           AND visit_day.business_date BETWEEN ? AND ?
                           AND NOT EXISTS (SELECT 1 FROM sales_visit previous
-                                           WHERE previous.tenant_id=current_visit.tenant_id
+                                           WHERE previous.status<>'CANCELLED' AND previous.tenant_id=current_visit.tenant_id
                                              AND previous.sales_profile_id=current_visit.sales_profile_id
                                              AND previous.store_id=current_visit.store_id
                                              AND previous.checked_in_at < current_visit.checked_in_at))
@@ -161,11 +161,11 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                          JOIN sales_work_day visit_day
                            ON visit_day.tenant_id=current_visit.tenant_id
                           AND visit_day.id=current_visit.work_day_id
-                        WHERE current_visit.tenant_id=profile.tenant_id
+                        WHERE current_visit.status<>'CANCELLED' AND current_visit.tenant_id=profile.tenant_id
                           AND current_visit.sales_profile_id=profile.id
                           AND visit_day.business_date BETWEEN ? AND ?
                           AND EXISTS (SELECT 1 FROM sales_visit previous
-                                      WHERE previous.tenant_id=current_visit.tenant_id
+                                      WHERE previous.status<>'CANCELLED' AND previous.tenant_id=current_visit.tenant_id
                                         AND previous.sales_profile_id=current_visit.sales_profile_id
                                         AND previous.store_id=current_visit.store_id
                                         AND previous.checked_in_at < current_visit.checked_in_at))
@@ -174,7 +174,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                          JOIN sales_work_day visit_day
                            ON visit_day.tenant_id=current_visit.tenant_id
                           AND visit_day.id=current_visit.work_day_id
-                        WHERE current_visit.tenant_id=profile.tenant_id
+                        WHERE current_visit.status<>'CANCELLED' AND current_visit.tenant_id=profile.tenant_id
                           AND current_visit.sales_profile_id=profile.id
                           AND visit_day.business_date BETWEEN ? AND ?) AS unique_store_count
                        ,(SELECT COUNT(DISTINCT assignment.store_id)
@@ -242,7 +242,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                            AND assessment.review_type='AUTOMATIC_ASSESSMENT'
                          ORDER BY assessment.assigned_at DESC LIMIT 1) AS anomaly_codes,
                        CASE WHEN EXISTS (SELECT 1 FROM sales_visit previous
-                                          WHERE previous.tenant_id=current_visit.tenant_id
+                                          WHERE previous.status<>'CANCELLED' AND previous.tenant_id=current_visit.tenant_id
                                             AND previous.sales_profile_id=current_visit.sales_profile_id
                                             AND previous.store_id=current_visit.store_id
                                             AND previous.checked_in_at < current_visit.checked_in_at)
@@ -257,7 +257,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                   JOIN sales_visit_policy_version policy
                     ON policy.tenant_id=current_visit.tenant_id
                    AND policy.id=current_visit.visit_policy_version_id
-                 WHERE current_visit.sales_profile_id IN (SELECT id FROM permitted_profiles) AND current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
+                 WHERE current_visit.status<>'CANCELLED' AND current_visit.sales_profile_id IN (SELECT id FROM permitted_profiles) AND current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
                    AND current_visit.finalized_at IS NULL AND current_visit.crm_visit_id IS NULL
                    AND work_day.business_date BETWEEN ? AND ?
                  ORDER BY current_visit.checked_out_at, current_visit.id
@@ -282,7 +282,7 @@ public class JdbcSalesWorkManagementRepository implements SalesWorkManagementRep
                 SELECT COUNT(*) FROM sales_visit current_visit
                   JOIN sales_work_day work_day
                     ON work_day.tenant_id=current_visit.tenant_id AND work_day.id=current_visit.work_day_id
-                 WHERE current_visit.sales_profile_id IN (SELECT id FROM permitted_profiles) AND current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
+                 WHERE current_visit.status<>'CANCELLED' AND current_visit.sales_profile_id IN (SELECT id FROM permitted_profiles) AND current_visit.tenant_id=? AND current_visit.checked_out_at IS NOT NULL
                    AND current_visit.finalized_at IS NULL AND current_visit.crm_visit_id IS NULL
                    AND work_day.business_date BETWEEN ? AND ?
                 """, Long.class, scopeArgs(tenantId, scope, bin(tenantId), Date.valueOf(from), Date.valueOf(to)));

@@ -102,7 +102,7 @@ public class SalesWorkEvidenceService {
         SalesWorkContextService.SalesIdentity identity = contextService.resolveIdentity(caller, receivedAt);
         VisitSnapshot visit = visitRepository.findVisit(caller.tenantId(), identity.profile().id(), visitId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
-        if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status())) {
+        if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status()) && !"CANCELLED".equals(visit.status())) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE,
                     "当前拜访状态不允许拍摄门头照", List.of());
         }

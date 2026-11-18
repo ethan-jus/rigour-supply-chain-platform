@@ -17,8 +17,8 @@ public class JdbcStoreVisitQueryStore implements StoreVisitQueryStore {
     public JdbcStoreVisitQueryStore(JdbcTemplate jdbc){this.jdbc=jdbc;}
     private static final String OWN=" FROM crm_visit v WHERE v.tenant_id=? AND v.salesperson_id=? ";
     private static final String PERIOD=" AND v.visited_at>=? AND v.visited_at<? ";
-    private static final String FIRST=" NOT EXISTS (SELECT 1 FROM crm_visit p WHERE p.tenant_id=v.tenant_id AND p.salesperson_id=v.salesperson_id AND p.store_id=v.store_id AND (p.visited_at<v.visited_at OR (p.visited_at=v.visited_at AND p.id<v.id))) ";
-    private static final String STATE=" CASE WHEN v.checked_out_at IS NOT NULL AND v.submitted_at IS NULL AND v.status_code='IN_PROGRESS' THEN 'PENDING_SUBMIT' ELSE v.status_code END ";
+    private static final String FIRST=" COALESCE(v.review_source,'')<>'CANCELLED' AND NOT EXISTS (SELECT 1 FROM crm_visit p WHERE COALESCE(p.review_source,'')<>'CANCELLED' AND p.tenant_id=v.tenant_id AND p.salesperson_id=v.salesperson_id AND p.store_id=v.store_id AND (p.visited_at<v.visited_at OR (p.visited_at=v.visited_at AND p.id<v.id))) ";
+    private static final String STATE=StoreVisitDisplaySql.STATE;
     private static final String FIELDS="v.id,v.store_id,v.capture_ref,v.store_snapshot,"+STATE+" display_status,v.visited_at,v.checked_out_at,v.review_reason";
     private static String text(tools.jackson.databind.JsonNode node,String key){var value=node.get(key);return value==null||value.isNull()?"":value.asText();}
     private static Row row(ResultSet r,StoreScope scope)throws SQLException {
@@ -39,7 +39,7 @@ public class JdbcStoreVisitQueryStore implements StoreVisitQueryStore {
         // A personal visit grants only its immutable snapshot, never another owner's current customer data.
         var args=new ArrayList<Object>(List.of(scope.access().tenantId(),scope.access().employeeId(),Timestamp.from(from),Timestamp.from(to)));
         String period=OWN+PERIOD;
-        var summary=jdbc.queryForObject("SELECT COUNT(*) total,COALESCE(SUM(v.status_code='EFFECTIVE'),0) effective,COALESCE(SUM("+FIRST+"),0) first_count"+period,
+        var summary=jdbc.queryForObject("SELECT COALESCE(SUM(COALESCE(v.review_source,'')<>'CANCELLED'),0) total,COALESCE(SUM(v.status_code='EFFECTIVE'),0) effective,COALESCE(SUM("+FIRST+"),0) first_count"+period,
             (r,n)->new Summary(r.getLong("total"),r.getLong("effective"),r.getLong("first_count")),args.toArray());
         String filter=period;
         if("effective".equals(kind))filter+=" AND v.status_code='EFFECTIVE'";

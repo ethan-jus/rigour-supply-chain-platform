@@ -45,6 +45,10 @@ public class BusinessDictionaryController implements BusinessDictionaryApi {
     }
 
     @Override
+    @GetMapping("/effective-batch")
+    public ApiResponse<List<EffectiveDictView>> effectiveBatch(@RequestParam List<String> dictionaryCodes) { return ApiResponse.success(service.effectiveBatch(dictionaryCodes)); }
+
+    @Override
     @GetMapping("/effective")
     public ApiResponse<EffectiveDictView> effective(@RequestParam String dictionaryCode) {
         return ApiResponse.success(service.effective(dictionaryCode));

@@ -50,6 +50,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.Objects;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -250,12 +251,12 @@ public class SalesWorkVisitService {
         return visitView(caller.tenantId(), identity.profile().id(), visitId);
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public VisitView checkOutVisit(UUID visitId, CheckOutVisitCommand command) {
         return checkOutVisit(visitId,command,false);
     }
 
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public VisitView autoCheckOutVisit(UUID visitId, CheckOutVisitCommand command) {
         return checkOutVisit(visitId,command,true);
     }
@@ -271,7 +272,7 @@ public class SalesWorkVisitService {
                 .orElseThrow(()->new BusinessException(ErrorCode.SALES_VISIT_TARGET_INVALID));
         var rules=policy.captureRules();
         return new com.rigour.sales.api.v1.model.SalesWorkApiModels.AutoDepartureContext(
-                rules!=null && rules.automaticCheckout(),visit.status(),policy.checkInRadiusMeters(),
+                rules!=null && rules.automaticCheckout(),visit.status(),rules==null ? policy.checkInRadiusMeters() : rules.checkoutRadius(policy.checkInRadiusMeters()),
                 rules==null ? null : rules.maximumLocationAccuracyMeters(),target.longitude(),target.latitude());
     }
 
@@ -281,6 +282,7 @@ public class SalesWorkVisitService {
         Instant receivedAt = clock.instant();
         SalesWorkContextService.SalesIdentity identity = contextService.resolveIdentity(caller, receivedAt);
 
+        visitRepository.lockSalesProfile(caller.tenantId(), identity.profile().id());
         String key = key(command.idempotencyKey());
         String operation=automatic ? "VISIT_AUTO_CHECK_OUT" : "VISIT_CHECK_OUT";
         Reservation reservation = reserve(caller, operation, key, command);
@@ -315,7 +317,7 @@ public class SalesWorkVisitService {
         if (automatic) {
             if (!"APP_NATIVE".equals(command.location().source()) || command.location().accuracyMeters()==null
                     || command.location().accuracyMeters().signum()<=0) throw new BusinessException(ErrorCode.SALES_LOCATION_INVALID);
-            if (distance-command.location().accuracyMeters().doubleValue()<=policy.checkInRadiusMeters())
+            if (distance-command.location().accuracyMeters().doubleValue()<=policy.captureRules().checkoutRadius(policy.checkInRadiusMeters()))
                 throw new BusinessException(ErrorCode.SALES_VISIT_OUTSIDE_RADIUS,"尚未确认离开门店范围",List.of());
             if (command.clientOccurredAt().isBefore(visit.checkedInAt()) || command.clientOccurredAt().isAfter(receivedAt.plusSeconds(60)))
                 throw badRequest("自动离店时间不在本次拜访范围内");
@@ -355,6 +357,39 @@ public class SalesWorkVisitService {
                 "dwellMinutes", Long.toString(dwellMinutes),"reason",automatic ? "OUTSIDE_STORE_RADIUS" : "MANUAL"));
         assessmentService.assess(caller, visitId);
         complete(caller, operation, key, visitId.toString());
+        return visitView(caller.tenantId(), identity.profile().id(), visitId);
+    }
+
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public VisitView completeVisit(UUID visitId, com.rigour.sales.api.v1.model.SalesWorkApiModels.CompleteVisitCommand command) {
+        if (command == null || command.result() == null) throw badRequest("请填写拜访信息");
+        var caller = requireCaller("sales:visit:own:write");
+        var identity = contextService.resolveIdentity(caller, clock.instant());
+        visitRepository.lockSalesProfile(caller.tenantId(), identity.profile().id());
+        var visit = visitRepository.findVisit(caller.tenantId(), identity.profile().id(), visitId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
+        submitVisitResult(visitId, command.result());
+        // An automatic checkout may have completed while the form was being filled.
+        if ("CHECKED_OUT".equals(visit.status())) return visitView(caller.tenantId(), identity.profile().id(), visitId);
+        return checkOutVisit(visitId, command.checkout(), false);
+    }
+
+    @Transactional
+    public VisitView cancelVisit(UUID visitId, com.rigour.sales.api.v1.model.SalesWorkApiModels.CancelVisitCommand command) {
+        var caller = requireCaller("sales:visit:own:write");
+        if (command == null) throw badRequest("取消参数不能为空");
+        String reason = required(command.reason(), "取消原因", 200);
+        var identity = contextService.resolveIdentity(caller, clock.instant());
+        visitRepository.lockSalesProfile(caller.tenantId(), identity.profile().id());
+        var visit = visitRepository.findVisit(caller.tenantId(), identity.profile().id(), visitId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
+        if ("CANCELLED".equals(visit.status())) return visitView(caller.tenantId(), identity.profile().id(), visitId);
+        if (visit.resultSubmittedAt() != null || !("CHECKED_IN".equals(visit.status()) || "CHECKED_OUT".equals(visit.status())))
+            throw badRequest("仅能取消尚未提交的拜访");
+        if (!crmCapture.cancel(caller.tenantId(), visitId, reason, clock.instant()))
+            throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE);
+        appendAudit(caller, "SALES_VISIT_CANCELLED", visitId, Map.of("reason", reason));
+        assessmentService.assess(caller, visitId);
         return visitView(caller.tenantId(), identity.profile().id(), visitId);
     }
 
@@ -441,7 +476,7 @@ public class SalesWorkVisitService {
     }
 
     /** 拜访结果采集：实际接触与未接触场景采用不同校验；进行中或已签退均可补录。 */
-    @Transactional
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public VisitView submitVisitResult(UUID visitId, VisitResultCommand command) {
         CallerIdentity caller = requireCaller("sales:visit:own:write");
         if (visitId == null || command == null) {
@@ -458,22 +493,34 @@ public class SalesWorkVisitService {
         // when the receptionist declines to share a name or phone number.
         String kpName = contacted ? (crmVisit ? bounded(command.kpName(),128) : required(command.kpName(), "kpName", 128)) : null;
         String kpPhone = contacted ? (crmVisit ? bounded(command.kpPhone(),32) : required(command.kpPhone(), "kpPhone", 32)) : null;
-        String intention = contacted
+        boolean structured = command.fieldwork()!=null;
+        if(structured && (!crmVisit || !contactOutcome.equals(command.fieldwork().contactOutcome())))throw targetInvalid("拜访沟通结果不一致");
+        String intention = contacted && !structured
                 ? required(command.intentionLevel(), "intentionLevel", 24).toUpperCase(Locale.ROOT)
                 : null;
-        if (contacted && !INTENTION_LEVELS.contains(intention)) {
+        if (contacted && !structured && !INTENTION_LEVELS.contains(intention)) {
             throw targetInvalid("intentionLevel仅支持HIGH/MEDIUM/LOW/NONE");
         }
         String resultNote = bounded(command.resultNote(), 1024);
-        if ((!contacted || crmVisit) && !StringUtils.hasText(resultNote)) {
+        if (!structured && (!contacted || crmVisit) && !StringUtils.hasText(resultNote)) {
             throw targetInvalid("请填写本次拜访的现场说明");
         }
         Instant receivedAt = clock.instant();
         SalesWorkContextService.SalesIdentity identity = contextService.resolveIdentity(caller, receivedAt);
+        visitRepository.lockSalesProfile(caller.tenantId(), identity.profile().id());
         VisitSnapshot visit = visitRepository.findVisit(caller.tenantId(), identity.profile().id(), visitId)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_VISIT_NOT_FOUND));
         if (!"CHECKED_IN".equals(visit.status()) && !"CHECKED_OUT".equals(visit.status())) {
             throw new BusinessException(ErrorCode.SALES_VISIT_INVALID_STATE, "当前拜访状态不允许录入结果", List.of());
+        }
+        if(crmVisit && !structured)throw targetInvalid("请填写完整拜访信息");
+        if(structured){
+            if(visit.resultSubmittedAt()!=null && (!Objects.equals(visit.resultNote(),resultNote)||!Objects.equals(visit.contactOutcome(),contactOutcome)))throw targetInvalid("拜访结果已提交，不能重复修改");
+            if(!crmCapture.saveFieldwork(caller.tenantId(),visitId,command.fieldwork())){
+                var saved=visitView(caller.tenantId(),identity.profile().id(),visitId);
+                if(!Objects.equals(saved.resultNote(),resultNote)||!Objects.equals(saved.contactOutcome(),contactOutcome))throw targetInvalid("拜访结果已提交，不能重复修改");
+                return saved;
+            }
         }
         if (visitRepository.updateVisitResult(caller.tenantId(), identity.profile().id(), visitId,
                 contactOutcome, kpName, kpPhone, intention, resultNote, receivedAt) != 1) {
