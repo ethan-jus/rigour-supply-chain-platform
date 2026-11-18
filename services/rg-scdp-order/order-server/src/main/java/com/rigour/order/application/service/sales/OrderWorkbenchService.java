@@ -61,4 +61,25 @@ public final class OrderWorkbenchService {
                 from.atStartOfDay(BUSINESS_ZONE).toInstant(),
                 to.plusDays(1).atStartOfDay(BUSINESS_ZONE).toInstant(), begin, step);
     }
+    public CustomerSummary customerSummary(String employee, LocalDate from, LocalDate to) {
+        validate(employee, "orders", from, to, 0, 1);
+        return store.customerSummary(AuthorizationContext.requireCurrent().tenantId().toString(), employee.trim(), start(from), start(to.plusDays(1)));
+    }
+    public Customers customers(String employee, String kind, LocalDate from, LocalDate to, String keyword, int begin, int step) {
+        validate(employee, "orders", from, to, begin, step);
+        if (kind == null || !Set.of("PURCHASING", "NEW", "RETURNING", "COOPERATED").contains(kind)
+                || keyword == null || keyword.length() > 100)
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "客户统计条件无效", java.util.List.of());
+        return store.customers(AuthorizationContext.requireCurrent().tenantId().toString(), employee.trim(), kind, start(from), start(to.plusDays(1)), keyword.trim(), begin, step);
+    }
+    public Page customerOrders(String employee, String customerKey, int begin, int step) {
+        var caller = AuthorizationContext.requireCurrent();
+        if (caller.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
+        AuthorizationContext.requirePermission("order:read");
+        if (employee == null || employee.isBlank() || employee.length() > 80 || begin < 0 || step < 1 || step > 100)
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "客户订单查询条件无效", java.util.List.of());
+        if (customerKey == null || !customerKey.matches("[CS][1-9][0-9]{0,18}"))
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "客户标识无效", java.util.List.of());
+        return store.customerOrders(AuthorizationContext.requireCurrent().tenantId().toString(), employee.trim(), customerKey, begin, step);
+    }
 }

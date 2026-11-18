@@ -10,4 +10,7 @@ public interface OrderWorkbenchStore {
     void requireSelf(String employee, String action);
     Page details(String tenant, String employee, String action, String kind,
                  Instant from, Instant until, int begin, int step);
+    CustomerSummary customerSummary(String tenant, String employee, Instant from, Instant until);
+    Customers customers(String tenant, String employee, String kind, Instant from, Instant until, String keyword, int begin, int step);
+    Page customerOrders(String tenant, String employee, String customerKey, int begin, int step);
 }

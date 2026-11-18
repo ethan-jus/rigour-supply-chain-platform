@@ -64,4 +64,23 @@ class OrderWorkbenchServiceTest {
         assertThatThrownBy(() -> service.summary("self", from, to)).isInstanceOf(AuthorizationDeniedException.class);
     }
 
+    @Test void customerMetricsUseOrderMenuPermissionAndValidateAllFiltersBeforeQuerying() {
+        caller("crm:pool:private-read");
+        assertThatThrownBy(() -> service.customerSummary("self",from,to)).isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> service.customers("self","NEW",from,to,"",0,20)).isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> service.customerOrders("self","C1",0,20)).isInstanceOf(AuthorizationDeniedException.class);
+        verifyNoInteractions(store);
+        caller("order:read");
+        service.customerSummary(" self ",from,to);
+        verify(store).customerSummary(eq(tenant.toString()),eq("self"),any(),any());
+        service.customers("self","RETURNING",from,to," 台球 ",0,20);
+        verify(store).customers(eq(tenant.toString()),eq("self"),eq("RETURNING"),any(),any(),eq("台球"),eq(0),eq(20));
+        service.customerOrders("self","C1",0,20);
+        verify(store).customerOrders(tenant.toString(),"self","C1",0,20);
+        clearInvocations(store);
+        assertThatThrownBy(() -> service.customers("self","INVALID",from,to,"",0,20)).isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        assertThatThrownBy(() -> service.customerOrders("self","C1 OR 1=1",0,20)).isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        assertThatThrownBy(() -> service.customerOrders("self","C1",-1,20)).isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        verifyNoInteractions(store);
+    }
 }

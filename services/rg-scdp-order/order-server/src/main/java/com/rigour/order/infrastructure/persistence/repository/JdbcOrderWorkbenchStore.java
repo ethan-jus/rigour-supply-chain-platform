@@ -148,4 +148,74 @@ public class JdbcOrderWorkbenchStore implements OrderWorkbenchStore {
         return new Page(total.total(), total.amount(), rows);
     }
 
+    private static final String CUSTOMER_KEY = "CASE WHEN o.customer_id IS NOT NULL THEN CONCAT('C',o.customer_id) ELSE CONCAT('S',o.store_id) END";
+    private record CustomerQuery(String sql, List<Object> args) {}
+    /** 公司首单仅用于分类；返回值与金额始终限制在当前动作的角色数据范围内。 */
+    private CustomerQuery customerQuery(String tenant, String employee, OrderDataScope.Predicate scope, Instant from, Instant until) {
+        String sql = "WITH history AS (SELECT o.*, " + CUSTOMER_KEY + " customer_key,"
+                + " MIN(o.order_date) OVER(PARTITION BY " + CUSTOMER_KEY + ") first_at,"
+                + " ROW_NUMBER() OVER(PARTITION BY " + CUSTOMER_KEY + " ORDER BY o.order_date,o.id) company_sequence"
+                + " FROM order_sales_order o WHERE o.tenant_id=? AND o.deleted=0"
+                + " AND o.order_status_code IN ('SUBMITTED','COMPLETED') AND o.order_date IS NOT NULL"
+                + " AND (o.customer_id IS NOT NULL OR o.store_id IS NOT NULL)),"
+                + " customers AS (SELECT o.customer_key,MAX(o.customer_name_snapshot) name,COUNT(*) order_count,"
+                + " MAX(o.order_date) last_order_at,MIN(o.first_at) first_at,"
+                + " SUM(CASE WHEN o.order_date>=? AND o.order_date<? THEN 1 ELSE 0 END) period_orders,"
+                + " MAX(CASE WHEN o.company_sequence=1 AND o.order_date>=? AND o.order_date<? THEN 1 ELSE 0 END) newly"
+                + " FROM history o WHERE o.owner_employee_code=? AND " + scope.sql() + " GROUP BY o.customer_key) ";
+        var args = new ArrayList<Object>(List.of(tenant,Timestamp.from(from),Timestamp.from(until),Timestamp.from(from),Timestamp.from(until),employee));
+        args.addAll(scope.args());
+        return new CustomerQuery(sql,args);
+    }
+    @Override @Transactional(readOnly = true)
+    public CustomerSummary customerSummary(String tenant, String employee, Instant from, Instant until) {
+        var scope = scopes.predicate("order:read", "o.", null);
+        return queryCache.read(tenant,"workbench-customers",List.of(employee,scope,from,until),10,
+                new tools.jackson.core.type.TypeReference<CustomerSummary>() {}, () -> {
+            var query = customerQuery(tenant,employee,scope,from,until);
+            var args = new ArrayList<>(query.args()); args.add(Timestamp.from(from));
+            return jdbc.queryForObject(query.sql() + "SELECT COUNT(*) cooperated,"
+                    + " COALESCE(SUM(CASE WHEN period_orders>0 THEN 1 ELSE 0 END),0) purchasing,"
+                    + " COALESCE(SUM(newly),0) newly,"
+                    + " COALESCE(SUM(CASE WHEN period_orders>0 AND first_at<? THEN 1 ELSE 0 END),0) returning FROM customers",
+                    (r,n) -> new CustomerSummary(r.getLong("purchasing"),r.getLong("newly"),r.getLong("returning"),r.getLong("cooperated")),args.toArray());
+        });
+    }
+    @Override @Transactional(readOnly = true)
+    public Customers customers(String tenant, String employee, String kind, Instant from, Instant until, String keyword, int begin, int step) {
+        var scope = scopes.predicate("order:read", "o.", null);
+        var query = customerQuery(tenant,employee,scope,from,until);
+        var args = new ArrayList<>(query.args());
+        String where = " WHERE " + switch(kind) {
+            case "PURCHASING" -> "period_orders>0";
+            case "NEW" -> "newly=1";
+            case "RETURNING" -> "period_orders>0 AND first_at<?";
+            case "COOPERATED" -> "1=1";
+            default -> throw new IllegalArgumentException("客户统计类型无效");
+        };
+        if ("RETURNING".equals(kind)) args.add(Timestamp.from(from));
+        if (!keyword.isBlank()) { where += " AND LOCATE(?,name)>0"; args.add(keyword); }
+        long total = jdbc.queryForObject(query.sql()+"SELECT COUNT(*) FROM customers"+where,Long.class,args.toArray());
+        args.add(step); args.add(begin);
+        var rows = jdbc.query(query.sql()+"SELECT * FROM customers"+where+" ORDER BY last_order_at DESC,customer_key LIMIT ? OFFSET ?",
+                (r,n) -> new CustomerRow(r.getString("customer_key"),r.getString("name"),r.getLong("order_count"),r.getTimestamp("last_order_at").toInstant()),args.toArray());
+        return new Customers(total,rows);
+    }
+    @Override @Transactional(readOnly = true)
+    public Page customerOrders(String tenant, String employee, String customerKey, int begin, int step) {
+        var scope = scopes.predicate("order:read","o.",null);
+        var args = new ArrayList<Object>(List.of(tenant,employee,customerKey.substring(1)));
+        // 区分客户与尚未关联订货客户的统一门店，绝不靠名称拼接历史身份。
+        String identity = customerKey.startsWith("C") ? "o.customer_id=?" : "o.customer_id IS NULL AND o.store_id=?";
+        String where = " FROM order_sales_order o WHERE o.tenant_id=? AND o.owner_employee_code=? AND " + identity
+                + " AND o.deleted=0 AND o.order_status_code IN ('SUBMITTED','COMPLETED') AND " + scope.sql();
+        args.addAll(scope.args());
+        var total = jdbc.queryForObject("SELECT COUNT(*) n,COALESCE(SUM(o.payable_amount),0) amount"+where,
+                (r,n) -> new Page(r.getLong("n"),r.getBigDecimal("amount"),List.of()),args.toArray());
+        args.add(step); args.add(begin);
+        var rows = jdbc.query("SELECT o.*"+where+" ORDER BY o.order_date DESC,o.id DESC LIMIT ? OFFSET ?",
+                (r,n) -> new Row(r.getString("id"),r.getString("id"),r.getString("order_no"),r.getString("customer_name_snapshot"),
+                        r.getTimestamp("order_date")==null?null:r.getTimestamp("order_date").toInstant(),r.getBigDecimal("payable_amount"),r.getString("payment_status_code")),args.toArray());
+        return new Page(total.total(),total.amount(),rows);
+    }
 }

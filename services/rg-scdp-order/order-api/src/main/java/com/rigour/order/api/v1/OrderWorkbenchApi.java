@@ -30,4 +30,21 @@ public interface OrderWorkbenchApi {
             @RequestParam String kind, @RequestParam LocalDate from, @RequestParam LocalDate to,
             @RequestParam(defaultValue = "0") int begin,
             @RequestParam(defaultValue = "20") int step);
+    record CustomerSummary(long purchasing, long newCooperation, long returning, long cooperated) {}
+    record CustomerRow(String key, String name, long orderCount, Instant lastOrderAt) {}
+    record Customers(long total, List<CustomerRow> items) {}
+
+    @GetMapping("/api/v1/orders/workbench/customer-summary")
+    ApiResponse<CustomerSummary> customerSummary(@RequestParam String ownerEmployeeCode,
+            @RequestParam LocalDate from, @RequestParam LocalDate to);
+
+    @GetMapping("/api/v1/orders/workbench/customers")
+    ApiResponse<Customers> customers(@RequestParam String ownerEmployeeCode,
+            @RequestParam String kind, @RequestParam LocalDate from, @RequestParam LocalDate to,
+            @RequestParam(defaultValue = "") String keyword, @RequestParam(defaultValue = "0") int begin,
+            @RequestParam(defaultValue = "20") int step);
+
+    @GetMapping("/api/v1/orders/workbench/customer-orders")
+    ApiResponse<Page> customerOrders(@RequestParam String ownerEmployeeCode, @RequestParam String customerKey,
+            @RequestParam(defaultValue = "0") int begin, @RequestParam(defaultValue = "20") int step);
 }

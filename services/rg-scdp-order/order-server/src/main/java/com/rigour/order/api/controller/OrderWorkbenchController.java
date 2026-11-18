@@ -20,4 +20,13 @@ public final class OrderWorkbenchController implements OrderWorkbenchApi {
             LocalDate from, LocalDate to, int begin, int step) {
         return ApiResponse.success(service.details(ownerEmployeeCode, kind, from, to, begin, step));
     }
+    @Override public ApiResponse<CustomerSummary> customerSummary(String ownerEmployeeCode, LocalDate from, LocalDate to) {
+        return ApiResponse.success(service.customerSummary(ownerEmployeeCode, from, to));
+    }
+    @Override public ApiResponse<Customers> customers(String ownerEmployeeCode, String kind, LocalDate from, LocalDate to, String keyword, int begin, int step) {
+        return ApiResponse.success(service.customers(ownerEmployeeCode, kind, from, to, keyword, begin, step));
+    }
+    @Override public ApiResponse<Page> customerOrders(String ownerEmployeeCode, String customerKey, int begin, int step) {
+        return ApiResponse.success(service.customerOrders(ownerEmployeeCode, customerKey, begin, step));
+    }
 }

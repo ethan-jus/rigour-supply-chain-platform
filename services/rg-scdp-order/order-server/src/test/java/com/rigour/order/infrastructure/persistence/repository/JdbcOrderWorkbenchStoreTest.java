@@ -122,6 +122,9 @@ class JdbcOrderWorkbenchStoreTest {
 
     @Test void configuredSelfScopeIncludesHistoricalOrdersAndRoleChangesApplyBeforeWarmCache() {
         jdbc.execute("ALTER TABLE order_sales_order ADD created_by VARCHAR");
+        jdbc.execute("ALTER TABLE order_sales_order ADD customer_id BIGINT");
+        jdbc.execute("ALTER TABLE order_sales_order ADD store_id BIGINT");
+        jdbc.update("UPDATE order_sales_order SET customer_id=id");
         var iam = mock(com.rigour.tenant.iam.client.SupplyAuthorizationClient.class);
         var callerId = java.util.UUID.randomUUID();
         var tenantId = java.util.UUID.randomUUID();
@@ -151,19 +154,65 @@ class JdbcOrderWorkbenchStoreTest {
             assertThat(store.performanceTotals("tenant","self","order:payment:read",from,until).amount()).isEqualByComparingTo("100");
             assertThat(store.details("tenant","other","order:read","orders",from,until,0,20).items()).isEmpty();
             assertThat(store.summary("other","self","order:read",from,until).orderCount()).isEqualTo(1);
+            assertThat(store.customerSummary("tenant","self",from,until).purchasing()).isEqualTo(2);
+            assertThat(store.customerSummary("tenant","other",from,until).purchasing()).isZero();
+            assertThat(store.customerOrders("tenant","other","C3",0,20).items()).isEmpty();
+            assertThat(store.customers("tenant","self","COOPERATED",from,until,"",0,20).items())
+                    .extracting(r -> r.key()).containsExactly("C1","C5","C2");
             // Broad access is granted only by a changed role, never inferred from the query parameter.
             mode.set("ALL");
+            assertThat(store.customerSummary("tenant","other",from,until).purchasing()).isEqualTo(1);
+            assertThat(store.customerOrders("tenant","other","C3",0,20).total()).isEqualTo(1);
             assertThat(store.summary("tenant","other","order:read",from,until).orderCount()).isEqualTo(1);
             mode.set("SELF");
+            assertThat(store.customerSummary("tenant","other",from,until).purchasing()).isZero();
             assertThat(store.summary("tenant","other","order:read",from,until).orderCount()).isZero();
             mode.set("NONE");
             assertThat(store.summary("tenant","self","order:read",from,until).orderCount()).isZero();
             mode.set("DEPARTMENT");
             assertThat(store.summary("tenant","self","order:read",from,until).orderCount()).isZero();
             mode.set("SELF"); allowed.set(false);
+            assertThatThrownBy(() -> store.customerSummary("tenant","self",from,until))
+                    .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
             assertThatThrownBy(() -> store.summary("tenant","self","order:read",from,until))
                     .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
         } finally { com.rigour.shared.context.TestAuthorizationContext.clear(); }
+    }
+
+    @Test void customerMetricsIncludeUnlinkedHistoryDeduplicateAndUseCompanyFirstOrder() {
+        jdbc.execute("ALTER TABLE order_sales_order ADD customer_id BIGINT");
+        jdbc.execute("ALTER TABLE order_sales_order ADD store_id BIGINT");
+        jdbc.update("UPDATE order_sales_order SET customer_id=11 WHERE id IN (1,2)");
+        jdbc.update("UPDATE order_sales_order SET customer_id=12,order_date=? WHERE id=3",Timestamp.from(from.minusSeconds(86400)));
+        jdbc.update("UPDATE order_sales_order SET customer_id=13 WHERE id=4");
+        order(8,"tenant","self","allowed","SUBMITTED","2026-11-03T00:00:00Z",50,20);
+        order(9,"tenant","self","allowed","SUBMITTED","2026-11-04T00:00:00Z",60,20);
+        order(10,"tenant","self","allowed","COMPLETED","2026-11-05T00:00:00Z",70,0);
+        order(11,"tenant","self","allowed","SUBMITTED","2026-11-06T00:00:00Z",80,0);
+        jdbc.update("UPDATE order_sales_order SET customer_id=12 WHERE id=8");
+        jdbc.update("UPDATE order_sales_order SET customer_id=13 WHERE id IN (9,10)");
+        jdbc.update("UPDATE order_sales_order SET store_id=14 WHERE id=11");
+        var stats=store.customerSummary("tenant","self",from,until);
+        assertThat(stats.purchasing()).isEqualTo(4);
+        assertThat(stats.newCooperation()).isEqualTo(2);
+        assertThat(stats.returning()).isEqualTo(2);
+        assertThat(stats.cooperated()).isEqualTo(4);
+        assertThat(store.customers("tenant","self","NEW",from,until,"",0,20).items())
+                .extracting(r -> r.key()).containsExactly("S14","C13");
+        assertThat(store.customers("tenant","self","RETURNING",from,until,"",0,20).items())
+                .extracting(r -> r.key()).containsExactly("C12","C11");
+        assertThat(store.customers("tenant","self","PURCHASING",from,until,"",0,1).total()).isEqualTo(4);
+        assertThat(store.customers("tenant","self","PURCHASING",from,until,"不存在",0,20).items()).isEmpty();
+        var orders=store.customerOrders("tenant","self","C12",0,20);
+        assertThat(orders.items()).extracting(r -> r.orderId()).containsExactly("8");
+        assertThat(orders.amount()).isEqualByComparingTo("50");
+        assertThat(store.customerOrders("tenant","self","S14",0,20).items()).extracting(r -> r.orderId()).containsExactly("11");
+        assertThat(store.customerOrders("other","self","C11",0,20).items()).isEmpty();
+        enableCache();store.customerSummary("tenant","self",from,until);
+        when(scopes.predicate(anyString(),eq("o."),isNull())).thenReturn(new OrderDataScope.Predicate("1=0",List.of()));
+        assertThat(store.customerSummary("tenant","self",from,until).purchasing()).isZero();
+        assertThat(store.customers("tenant","self","COOPERATED",from,until,"",0,20).items()).isEmpty();
+        assertThat(store.customerOrders("tenant","self","C11",0,20).items()).isEmpty();
     }
 
     long cacheVersion = 1;
