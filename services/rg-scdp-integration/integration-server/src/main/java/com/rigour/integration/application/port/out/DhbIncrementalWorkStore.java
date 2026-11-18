@@ -35,5 +35,10 @@ public interface DhbIncrementalWorkStore {
 
     default void deferShipmentReview(UUID tenant, UUID connector, Item item, Instant nextReview) {}
 
+    /** 字典对应改变后复核受影响的原发货；不创建运输或改写业务金额。 */
+    default int recheckShipmentDictionary(UUID tenant, String sourceField, String sourceValue, Instant now) {
+        return 0;
+    }
+
     long pendingCount(UUID tenant, UUID connector, String type);
 }

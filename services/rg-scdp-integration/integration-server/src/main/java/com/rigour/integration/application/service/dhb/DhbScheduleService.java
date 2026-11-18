@@ -91,6 +91,8 @@ public class DhbScheduleService {
                 continue;
             }
             var j = job.get();
+            if ("UNKNOWN".equals(j.status()))
+                j = worker.reconcile(UUID.fromString(entry.tenant()), j);
             if (Set.of("QUEUED", "RUNNING").contains(j.status())) {
                 if (j.heartbeatAt().isBefore(clock.instant().minusSeconds(90)))
                     schedules.finish(

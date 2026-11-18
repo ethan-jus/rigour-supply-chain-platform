@@ -47,6 +47,17 @@ public interface OrderLogisticsReferences {
 
     List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees(String action);
 
+    /** 按稳定编码核验最小员工身份，供自动同步补齐缺失部门，不读取人事个人资料。 */
+    default List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employeeDepartments(
+            Set<String> codes, String action) {
+        return employees(action).stream().filter(e -> codes.contains(e.employeeCode())).toList();
+    }
+
+    default List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employeeDepartments(
+            com.rigour.shared.context.CallerIdentity caller, Set<String> codes, String action) {
+        throw new UnsupportedOperationException("员工部门最小身份核验尚未配置");
+    }
+
     String city(String code, String action);
 
     String party(String kind, Long id, String city, String action);

@@ -199,6 +199,28 @@ public class JdbcDhbIncrementalWorkStore implements DhbIncrementalWorkStore {
         return value == null ? null : LocalDateTime.ofInstant(value, ZoneOffset.UTC);
     }
 
+    @Override
+    public int recheckShipmentDictionary(UUID tenant, String sourceField, String sourceValue, Instant now) {
+        var fields = switch (sourceField) {
+            case "shipment.deliveryMode" -> List.of("distribution_mode_id", "distribution_mode_name");
+            case "shipment.logistics" -> List.of("logistics_code", "logistics_name");
+            default -> throw new IllegalArgumentException("不支持的发货字典字段");
+        };
+        // 字段只来自上面的白名单，来源值始终绑定。保留人工补录队列的阻塞状态。
+        var matches = new ArrayList<String>();
+        for (String field : fields)
+            for (String part : List.of("detail", "list"))
+                matches.add("JSON_UNQUOTE(JSON_EXTRACT(r.payload_json,'$." + part + "." + field + "'))=?");
+        var args = new ArrayList<Object>(List.of(utc(now), tenant.toString()));
+        for (int i = 0; i < matches.size(); i++) args.add(sourceValue);
+        return jdbc.update("UPDATE integration_dhb_incremental_work w SET w.applied=0,w.retry_at=?"
+                + " WHERE w.tenant_id=? AND w.object_type='SHIPMENT' AND w.retry_policy='AUTO'"
+                + " AND EXISTS (SELECT 1 FROM integration_raw_landing r"
+                + " WHERE r.tenant_id=UUID_TO_BIN(w.tenant_id) AND r.connector_id=UUID_TO_BIN(w.connector_id)"
+                + " AND r.source_object_type='SHIPMENT_CONTENT' AND r.source_id=w.source_id AND ("
+                + String.join(" OR ", matches) + "))", args.toArray());
+    }
+
     private static Instant instant(LocalDateTime value) {
         return value == null ? null : value.toInstant(ZoneOffset.UTC);
     }

@@ -51,6 +51,17 @@ public class HttpBiScheduleCoordinator implements BiScheduleCoordinator {
         return booleanResult(request(tenant, "GET", "/managed", null));
     }
 
+    public List<InterruptedWork> interrupted() {
+        var rows = request(null, "GET", "/interrupted", null);
+        if (!rows.isArray()) throw new IllegalStateException("中断任务列表响应无效");
+        var result = new ArrayList<InterruptedWork>();
+        for (var row : rows) result.add(new InterruptedWork(
+                UUID.fromString(row.path("tenantId").asText()),
+                UUID.fromString(row.path("token").asText()),
+                java.time.Instant.parse(row.path("startedAt").asText())));
+        return result;
+    }
+
     public boolean claim(UUID tenant, long version, UUID token) {
         return booleanResult(
                 request(tenant, "POST", "/claim", Map.of("version", version, "token", token)));

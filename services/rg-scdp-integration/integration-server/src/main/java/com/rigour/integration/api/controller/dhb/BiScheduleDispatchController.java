@@ -42,6 +42,14 @@ public class BiScheduleDispatchController implements BiScheduleDispatchApi {
         return ApiResponse.success(service.managed(authorize(true)));
     }
 
+    public ApiResponse<List<InterruptedWork>> interrupted() {
+        authorize(false);
+        return ApiResponse.success(service.interrupted().stream()
+                .map(e -> new InterruptedWork(UUID.fromString(e.tenant()),
+                        UUID.fromString(e.plan().runningJobId()), e.plan().lastStartedAt()))
+                .toList());
+    }
+
     public ApiResponse<Boolean> claim(Claim c) {
         return ApiResponse.success(service.claim(authorize(true), c.version(), c.token()));
     }

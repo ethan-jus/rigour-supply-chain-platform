@@ -327,6 +327,98 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
                 () -> readEmployees(action));
     }
 
+    @Override
+    public List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employeeDepartments(
+            Set<String> codes, String action) {
+        AuthorizationContext.requirePermission(action);
+        return employeeDepartments(AuthorizationContext.requireCurrent(), codes, action);
+    }
+
+    @Override
+    public List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employeeDepartments(
+            com.rigour.shared.context.CallerIdentity actor, Set<String> codes, String action) {
+        if (!Set.of(
+                        "order:logistics-cost:read",
+                        "order:logistics-cost:write",
+                        "order:logistics-cost:export",
+                        "order:logistics-cost:sync-source")
+                .contains(action))
+            throw new com.rigour.shared.context.AuthorizationDeniedException(action);
+        if (actor == null
+                || !actor.permissions().contains(action) && !actor.permissions().contains("*:*:*"))
+            throw new com.rigour.shared.context.AuthorizationDeniedException(action);
+        if (actor.tenantId() == null || codes == null || codes.size() > 100)
+            throw new IllegalArgumentException("员工部门核验范围无效");
+        if (codes.isEmpty()) return List.of();
+        var sorted = codes.stream().sorted().toList();
+        return LogisticsRequestCache.get(
+                actor.tenantId().toString(),
+                action,
+                "employeeDepartments",
+                sorted,
+                () -> {
+                    var uri =
+                            UriComponentsBuilder.fromUriString(hr)
+                                    .path("/api/v1/hr/employee-identities/resolve")
+                                    .build()
+                                    .toUri();
+                    var service =
+                            new com.rigour.shared.context.CallerIdentity(
+                                    "SERVICE",
+                                    java.util.UUID.nameUUIDFromBytes(
+                                            "order-logistics-department-reader"
+                                                    .getBytes(
+                                                            java.nio.charset.StandardCharsets
+                                                                    .UTF_8)),
+                                    actor.tenantId(),
+                                    null,
+                                    null,
+                                    java.util.UUID.randomUUID(),
+                                    0,
+                                    0,
+                                    0,
+                                    Set.of(),
+                                    Set.of("hr:employee:identity-read"));
+                    var response =
+                            client.post()
+                                    .uri(uri)
+                                    .headers(
+                                            h ->
+                                                    OutboundContextHeaders.caller(
+                                                                    signer, "POST", uri, service)
+                                                            .forEach(h::set))
+                                    .body(sorted)
+                                    .retrieve()
+                                    .body(
+                                            new ParameterizedTypeReference<
+                                                    ApiResponse<
+                                                            List<
+                                                                    EmployeeDepartmentIdentity>>>() {});
+                    if (response == null
+                            || !"OK".equals(response.code())
+                            || response.data() == null)
+                        throw new IllegalStateException("员工部门暂不可核验");
+                    return response.data().stream()
+                            .filter(e -> codes.contains(e.employeeCode()) && e.usable())
+                            .map(
+                                    e ->
+                                            new com.rigour.order.api.v1.model
+                                                    .LogisticsCostEmployeeView(
+                                                    e.employeeCode(),
+                                                    e.employeeName(),
+                                                    e.departmentId(),
+                                                    e.departmentName()))
+                            .toList();
+                });
+    }
+
+    private record EmployeeDepartmentIdentity(
+            String employeeCode,
+            String employeeName,
+            Long departmentId,
+            String departmentName,
+            boolean usable) {}
+
     private List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> readEmployees(
             String action) {
         var uri =

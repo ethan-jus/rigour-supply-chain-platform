@@ -41,6 +41,7 @@ public class BiScheduledRefreshWorker {
             initialDelay = 30000)
     public void consume() {
         for (var e : pending.entrySet()) acknowledge(e.getKey(), e.getValue());
+        reconcileInterrupted();
         List<BiScheduleCoordinator.Work> work;
         try {
             work = coordinator.due();
@@ -76,6 +77,22 @@ public class BiScheduledRefreshWorker {
             }
             pending.put(key, done);
             acknowledge(key, done);
+        }
+    }
+
+    private void reconcileInterrupted() {
+        try {
+            for (var item : coordinator.interrupted()) {
+                var key = new Key(item.tenantId(), item.token());
+                if (pending.containsKey(key)) continue;
+                if (refresh.recoverInterruptedSchedule(item.tenantId().toString(), item.startedAt())) {
+                    var done = new Completion("FAILED", "上次刷新中断，已自动核对并恢复后续计划");
+                    pending.put(key, done);
+                    acknowledge(key, done);
+                }
+            }
+        } catch (RuntimeException unavailable) {
+            log.warn("BI中断任务暂未核实，保留原占位，不重复派发");
         }
     }
 

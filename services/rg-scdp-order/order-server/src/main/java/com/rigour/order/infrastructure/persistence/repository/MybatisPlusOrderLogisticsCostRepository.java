@@ -66,6 +66,112 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         mapper.advanceAnalyticsVersion(tenant);
     }
 
+    private static String missingDepartmentSql() {
+        // MySQL 8.4 会将相关 EXISTS + JSON_TABLE 错误优化为空结果；标量计数保留逐记录关联。
+        return "(SELECT COUNT(*) FROM JSON_TABLE(COALESCE(order_logistics_cost.sources_json,'[]'),'$[*]'"
+                   + " COLUMNS(employee_code VARCHAR(64) PATH '$.employeeCode',department_id BIGINT"
+                   + " PATH '$.departmentId',department_name VARCHAR(128) PATH '$.departmentName'))"
+                   + " d WHERE NULLIF(d.employee_code,'') IS NOT NULL AND (d.department_id IS NULL"
+                   + " OR NULLIF(d.department_name,'') IS NULL))>0";
+    }
+
+    @Override
+    public List<String> departmentTenants() {
+        return mapper
+                .selectMaps(
+                        new QueryWrapper<OrderLogisticsCostEntity>()
+                                .eq("category_code", "LOGISTICS")
+                                .eq("status_code", "ACTIVE")
+                                .eq("deleted", 0)
+                                .apply(missingDepartmentSql())
+                                .select("DISTINCT tenant_id"))
+                .stream()
+                .map(row -> row.get("tenant_id").toString())
+                .toList();
+    }
+
+    @Override
+    public List<DepartmentCandidate> missingDepartments(String tenant, String afterId) {
+        return mapper
+                .selectList(
+                        new QueryWrapper<OrderLogisticsCostEntity>()
+                                .eq("tenant_id", tenant)
+                                .eq("category_code", "LOGISTICS")
+                                .eq("status_code", "ACTIVE")
+                                .eq("deleted", 0)
+                                .gt("id", afterId)
+                                .apply(missingDepartmentSql())
+                                .orderByAsc("id")
+                                .last("LIMIT 100"))
+                .stream()
+                .map(
+                        row ->
+                                new DepartmentCandidate(
+                                        row.getId(),
+                                        row.getRevision(),
+                                        departmentData(row)))
+                .filter(row -> row.data().ledger() != null)
+                .toList();
+    }
+
+    @Override
+    @Transactional
+    public boolean fillDepartments(
+            String tenant,
+            String id,
+            int revision,
+            java.util.Map<String, com.rigour.order.api.v1.model.LogisticsCostEmployeeView>
+                    employees) {
+        // 与其他成本写操作使用同一把租户锁；HR 请求已在事务外批量完成。
+        mapper.ensureGuard(tenant);
+        mapper.lock(tenant);
+        var row =
+                mapper.selectOne(
+                        new QueryWrapper<OrderLogisticsCostEntity>()
+                                .eq("tenant_id", tenant)
+                                .eq("id", id)
+                                .eq("category_code", "LOGISTICS")
+                                .eq("status_code", "ACTIVE")
+                                .eq("deleted", 0)
+                                .eq("revision", revision));
+        if (row == null) return false;
+        var prior = departmentData(row);
+        if (prior.ledger() == null) return false;
+        var ledger =
+                com.rigour.order.application.service.cost.LogisticsDepartmentRefreshService.fill(
+                        prior.ledger(), employees);
+        if (ledger.equals(prior.ledger())) return false;
+        var data = prior.withLedger(ledger, prior.amount());
+        var actor = "SYSTEM";
+        int changed =
+                mapper.update(
+                        null,
+                        new UpdateWrapper<OrderLogisticsCostEntity>()
+                                .eq("tenant_id", tenant)
+                                .eq("id", id)
+                                .eq("revision", revision)
+                                .eq("status_code", "ACTIVE")
+                                .eq("deleted", 0)
+                                .set("data_json", json.writeValueAsString(data))
+                                .set("sources_json", json.writeValueAsString(ledger.sources()))
+                                .set("updated_by", actor)
+                                .set("updated_time", LocalDateTime.now(ZoneOffset.UTC))
+                                .setSql("revision=revision+1"));
+        if (changed == 0) return false;
+        mapper.advanceAnalyticsVersion(tenant);
+        row.setDataJson(json.writeValueAsString(data));
+        row.setSourcesJson(json.writeValueAsString(ledger.sources()));
+        row.setRevision(revision + 1);
+        audit(tenant, view(row), "UPDATE", actor, "按已关联员工补齐缺失部门");
+        return true;
+    }
+
+    private LogisticsCostCommand departmentData(OrderLogisticsCostEntity row) {
+        var data = json.readValue(row.getDataJson(), LogisticsCostCommand.class);
+        return data.ledger() == null ? data : data.withLedger(data.ledger().withSources(Arrays.asList(
+                json.readValue(row.getSourcesJson(), LogisticsCostLedger.Source[].class))), data.amount());
+    }
+
     private QueryWrapper<OrderLogisticsCostEntity> where(
             String tenant, String category, String action) {
         var q =

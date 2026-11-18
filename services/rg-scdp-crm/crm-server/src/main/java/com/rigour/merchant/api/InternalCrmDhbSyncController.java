@@ -16,6 +16,8 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestParam;
+import java.util.List;
 
 /** Integration 统一订货宝编排器调用 CRM 同步的内部入口。 */
 @RestController
@@ -52,6 +54,12 @@ public final class InternalCrmDhbSyncController {
     @GetMapping("/customer-sync-jobs/{jobId}")
     public ApiResponse<CustomerSyncJob> customerJob(@PathVariable UUID jobId) {
         return ApiResponse.success(jobs.get(AuthorizationContext.requireCurrent(),jobId));
+    }
+
+    @GetMapping("/customer-sync-jobs")
+    public ApiResponse<List<CustomerSyncJob>> customerJobs(
+            @RequestParam UUID connectorId, @RequestParam Instant from, @RequestParam Instant to) {
+        return ApiResponse.success(jobs.inWindow(AuthorizationContext.requireCurrent(), connectorId, from, to));
     }
 
     @PostMapping(value = "/sync", consumes = MediaType.APPLICATION_JSON_VALUE,

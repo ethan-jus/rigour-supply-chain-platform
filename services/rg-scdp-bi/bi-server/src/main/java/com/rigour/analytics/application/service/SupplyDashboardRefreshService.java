@@ -210,6 +210,18 @@ public final class SupplyDashboardRefreshService {
                         INVENTORY, INVENTORY_OPERATION, RECONCILIATION)), true)));
     }
 
+    /** 中断任务按失败结束；仅在原租期已过且能够取得本域刷新锁时释放集中计划占位。 */
+    public boolean recoverInterruptedSchedule(String tenantId, Instant startedAt) {
+        var now = clock.instant();
+        if (startedAt == null || !startedAt.plus(lockTtl).plusSeconds(90).isBefore(now))
+            return false;
+        if (!store.acquireRefreshLock(tenantId, LOCK_CODE, now, now.plus(lockTtl)))
+            return false;
+        store.releaseRefreshLock(tenantId, LOCK_CODE, "FAILED", now,
+                "历史定时刷新中断，刷新租期已结束；后续按原计划重新核对来源");
+        return true;
+    }
+
     RefreshRun refreshTenant(String tenantId, String jobCode) {
         return refreshTenant(tenantId, jobCode, RefreshSelection.all());
     }

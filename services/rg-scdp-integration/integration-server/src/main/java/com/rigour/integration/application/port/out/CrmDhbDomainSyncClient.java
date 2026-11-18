@@ -12,7 +12,21 @@ public interface CrmDhbDomainSyncClient {
         throw new UnsupportedOperationException("CRM客户端尚未支持后台客户同步");
     }
     class OutcomeUnknown extends RuntimeException {
-        public OutcomeUnknown(String message, Throwable cause) { super(message, cause); }
+        private final UUID jobId;
+        public OutcomeUnknown(String message, Throwable cause) { this(message, cause, null); }
+        public OutcomeUnknown(String message, Throwable cause, UUID jobId) {
+            super(message, cause); this.jobId = jobId;
+        }
+        public UUID jobId() { return jobId; }
+    }
+
+    default com.rigour.merchant.api.v1.model.CustomerSyncJob customerJob(CallerIdentity caller, UUID jobId) {
+        throw new UnsupportedOperationException("CRM客户端尚未支持核对原任务");
+    }
+
+    default java.util.List<com.rigour.merchant.api.v1.model.CustomerSyncJob> customerJobs(
+            CallerIdentity caller, UUID connector, Instant from, Instant to) {
+        return java.util.List.of();
     }
     default SyncResult sync(CallerIdentity caller, UUID connectorId, UUID sourceTaskId,
                             int maxPages) {

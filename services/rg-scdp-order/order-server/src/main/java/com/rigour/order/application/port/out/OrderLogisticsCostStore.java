@@ -11,6 +11,25 @@ import com.rigour.order.api.v1.model.LogisticsCostSourceView;
 import java.util.List;
 
 public interface OrderLogisticsCostStore {
+    record DepartmentCandidate(String id, int revision, LogisticsCostCommand data) {}
+
+    default List<String> departmentTenants() {
+        return List.of();
+    }
+
+    default List<DepartmentCandidate> missingDepartments(String tenant, String afterId) {
+        return List.of();
+    }
+
+    default boolean fillDepartments(
+            String tenant,
+            String id,
+            int revision,
+            java.util.Map<String, com.rigour.order.api.v1.model.LogisticsCostEmployeeView>
+                    employees) {
+        return false;
+    }
+
     default List<LogisticsCostDetailView> linkedSales(
             String tenant, String orderNo, String action) {
         return List.of();

@@ -100,12 +100,14 @@ public final class OrderLogisticsLedgerService {
     }
 
     private Map<String, LogisticsCostEmployeeView> employeeDirectory(String action) {
-        // 现有HR费用员工目录仅接受租户用户；自动同步继续保留原单归属，不能伪造用户身份取资料。
-        if (!"TENANT".equals(AuthorizationContext.requireCurrent().principalScope()))
-            return Map.of();
+        return employeeIndex(references.employees(action));
+    }
+
+    private Map<String, LogisticsCostEmployeeView> employeeIndex(
+            List<LogisticsCostEmployeeView> rows) {
         Map<String, LogisticsCostEmployeeView> result = new HashMap<>();
         Set<String> conflicts = new HashSet<>();
-        for (var employee : references.employees(action)) {
+        for (var employee : rows) {
             if (employee.employeeCode() == null || employee.employeeCode().isBlank()) continue;
             var previous = result.putIfAbsent(employee.employeeCode(), employee);
             if (previous != null && !previous.equals(employee))
@@ -123,8 +125,10 @@ public final class OrderLogisticsLedgerService {
     }
 
     private List<LogisticsCostSourceView> salesViews(
-            List<OrderDeliveryCostSourceView> documents, String action,
-            Map<String, LogisticsCostEmployeeView> directory, boolean validateCity) {
+            List<OrderDeliveryCostSourceView> documents,
+            String action,
+            Map<String, LogisticsCostEmployeeView> directory,
+            boolean validateCity) {
         List<LogisticsCostSourceView> result = new ArrayList<>();
         boolean needsDepartment =
                 documents.stream()
@@ -138,7 +142,20 @@ public final class OrderLogisticsLedgerService {
                 directory != null
                         ? directory
                         : needsDepartment
-                                ? employeeDirectory(action)
+                                ? employeeIndex(
+                                        references.employeeDepartments(
+                                                documents.stream()
+                                                        .map(
+                                                                OrderDeliveryCostSourceView
+                                                                        ::employeeCode)
+                                                        .filter(
+                                                                code ->
+                                                                        code != null
+                                                                                && !code.isBlank())
+                                                        .collect(
+                                                                java.util.stream.Collectors
+                                                                        .toSet()),
+                                                action))
                                 : Map.<String, LogisticsCostEmployeeView>of();
         var operatingCities =
                 documents.isEmpty() || !validateCity ? Map.<String, String>of() : references.cities(action);

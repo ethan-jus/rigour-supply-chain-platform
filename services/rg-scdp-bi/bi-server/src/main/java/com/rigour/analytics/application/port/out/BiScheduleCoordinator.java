@@ -1,10 +1,15 @@
 package com.rigour.analytics.application.port.out;
 
 import java.util.*;
+import java.time.Instant;
 
 /** 配置和派发状态都在 Integration，BI 仅消费执行请求。 */
 public interface BiScheduleCoordinator {
     record Work(UUID tenantId, long version) {}
+
+    record InterruptedWork(UUID tenantId, UUID token, Instant startedAt) {}
+
+    default List<InterruptedWork> interrupted() { return List.of(); }
 
     List<Work> due();
 

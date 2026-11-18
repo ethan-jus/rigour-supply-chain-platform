@@ -108,6 +108,16 @@ public class BiSchedulePlanService {
         return store.find(tenant.toString(), KEY).isPresent();
     }
 
+    public List<SyncScheduleStore.Entry> interrupted() {
+        // 仅交给原 BI 执行器核对本域刷新锁，Integration 不凭心跳超时解锁。
+        return store.running().stream()
+                .filter(e -> KEY.equals(e.plan().key()))
+                .filter(e -> "UNKNOWN".equals(e.plan().lastStatus()))
+                .filter(e -> e.heartbeatAt() != null
+                        && e.heartbeatAt().isBefore(clock.instant().minusSeconds(90)))
+                .toList();
+    }
+
     public boolean claim(UUID tenant, long version, UUID token) {
         return store.claim(tenant.toString(), KEY, version, token.toString(), clock.instant());
     }

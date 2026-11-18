@@ -29,7 +29,8 @@ class JdbcDhbPageSyncJobStoreTest {
                 new DriverManagerDataSource(
                         MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
         new ResourceDatabasePopulator(
-                        new ClassPathResource("db/migration/V25__dhb_page_sync_jobs.sql"))
+                        new ClassPathResource("db/migration/V25__dhb_page_sync_jobs.sql"),
+                        new ClassPathResource("db/migration/V33__dhb_page_job_dependency.sql"))
                 .execute(ds);
         store = new JdbcDhbPageSyncJobStore(new JdbcTemplate(ds), JsonMapper.builder().build());
     }

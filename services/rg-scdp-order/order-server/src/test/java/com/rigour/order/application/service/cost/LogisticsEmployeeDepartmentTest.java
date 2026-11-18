@@ -38,7 +38,7 @@ class LogisticsEmployeeDepartmentTest {
                         Set.of(),
                         Set.of(read)));
         when(refs.cities(read)).thenReturn(Map.of("WH", "武汉"));
-        when(refs.employees(read))
+        when(refs.employeeDepartments(anySet(), eq(read)))
                 .thenReturn(List.of(new LogisticsCostEmployeeView("EMP1", "同名员工", 10L, "武汉销售部")));
     }
 
@@ -69,7 +69,7 @@ class LogisticsEmployeeDepartmentTest {
                 .thenReturn(List.of(order("SO1", "EMP1", "old")));
         assertThat(service.salesSources(nos, read, true)).hasSize(1);
         verify(refs, never()).cities(anyString());
-        verify(refs, never()).employees(anyString());
+        verify(refs, never()).employeeDepartments(anySet(), anyString());
         when(source.salesByNos(tenant.toString(), nos, read, false))
                 .thenReturn(List.of(order("SO1", "EMP1", "old")));
         service.salesSources(nos, read, false);
@@ -94,7 +94,7 @@ class LogisticsEmployeeDepartmentTest {
         assertThat(result.get(2).departmentName()).isEqualTo("历史部门");
         assertThat(result.get(3).departmentId()).isNull();
         assertThat(result.get(4).departmentId()).isNull();
-        verify(refs, times(1)).employees(read);
+        verify(refs, times(1)).employeeDepartments(anySet(), eq(read));
     }
 
     @Test
@@ -116,6 +116,8 @@ class LogisticsEmployeeDepartmentTest {
                         "武汉销售");
         when(source.sales(tenant.toString(), query, read, null, Set.of("EMP1")))
                 .thenReturn(List.of(order("SO1", "EMP1", null)));
+        when(refs.employees(read))
+                .thenReturn(List.of(new LogisticsCostEmployeeView("EMP1", "同名员工", 10L, "武汉销售部")));
         var result = service.sources(query, read);
         assertThat(result).hasSize(1);
         assertThat(result.getFirst().departmentName()).isEqualTo("武汉销售部");
@@ -125,7 +127,7 @@ class LogisticsEmployeeDepartmentTest {
 
     @Test
     void conflictingDirectoryCodesCannotAssignDepartmentByNameOrNewestRow() {
-        when(refs.employees(read))
+        when(refs.employeeDepartments(anySet(), eq(read)))
                 .thenReturn(
                         List.of(
                                 new LogisticsCostEmployeeView("EMP1", "同名员工", 10L, "武汉销售部"),
@@ -137,7 +139,7 @@ class LogisticsEmployeeDepartmentTest {
     }
 
     @Test
-    void automaticSourceSyncDoesNotImpersonateTenantUserForEmployeeDirectory() {
+    void automaticSourceSyncUsesMinimalIdentityInsteadOfTenantEmployeeDirectory() {
         var principal = UUID.randomUUID();
         TestAuthorizationContext.set(
                 new CallerIdentity(
@@ -154,7 +156,9 @@ class LogisticsEmployeeDepartmentTest {
                         Set.of(read)));
         when(source.salesByNos(tenant.toString(), List.of("SO1"), read, false))
                 .thenReturn(List.of(order("SO1", "EMP1", null)));
-        assertThat(service.salesSources(List.of("SO1"), read, false)).hasSize(1);
+        assertThat(service.salesSources(List.of("SO1"), read, false).getFirst().departmentId())
+                .isEqualTo(10L);
+        verify(refs).employeeDepartments(Set.of("EMP1"), read);
         verify(refs, never()).employees(anyString());
     }
 }

@@ -53,27 +53,27 @@ public final class HttpCrmDhbDomainSyncClient implements CrmDhbDomainSyncClient 
                     && response.getStatusCode().value() != 429) throw lost;
             // 同一个请求编号重试提交由 CRM 持久化去重，不能生成第二个任务。
             try { job = customerJob(caller,requestId,command); }
-            catch (RuntimeException unavailable) { throw new OutcomeUnknown("无法确认 CRM 任务提交结果",unavailable); }
+            catch (RuntimeException unavailable) { throw new OutcomeUnknown("无法确认 CRM 任务提交结果",unavailable,requestId); }
         }
         int errors = 0;
         String lastStage = null;
         while (true) {
             if (!Objects.equals(lastStage,job.stage())) { progress.accept(job.stage()); lastStage=job.stage(); }
             if ("SUCCEEDED".equals(job.status())) {
-                if(job.result()==null) throw new OutcomeUnknown("CRM 未返回任务结果",null);
+                if(job.result()==null) throw new OutcomeUnknown("CRM 未返回任务结果",null,job.jobId());
                 return job.result();
             }
             if ("FAILED".equals(job.status())) throw new IllegalStateException(job.stage());
-            if ("UNKNOWN".equals(job.status())) throw new OutcomeUnknown(job.stage(),null);
+            if ("UNKNOWN".equals(job.status())) throw new OutcomeUnknown(job.stage(),null,job.jobId());
             try { Thread.sleep(2000); }
             catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
-                throw new OutcomeUnknown("等待 CRM 状态被中断，原任务可能仍在运行",interrupted);
+                throw new OutcomeUnknown("等待 CRM 状态被中断，原任务可能仍在运行",interrupted,job.jobId());
             }
             try { job=customerJob(caller,job.jobId(),null); errors=0; }
             catch (RuntimeException unavailable) {
                 progress.accept("暂时无法取得 CRM 进度，正在重连；不会重复提交");
-                if(++errors>=30) throw new OutcomeUnknown("CRM 状态持续不可达，需核对原任务",unavailable);
+                if(++errors>=30) throw new OutcomeUnknown("CRM 状态持续不可达，需核对原任务",unavailable,job.jobId());
             }
         }
     }
@@ -88,6 +88,22 @@ public final class HttpCrmDhbDomainSyncClient implements CrmDhbDomainSyncClient 
         ApiResponse<CustomerSyncJob> response=spec.exchange((request,httpResponse)->SignedDomainRequest.readResponse(
                 httpResponse,new TypeReference<ApiResponse<CustomerSyncJob>>(){},"CRM后台同步"));
         return SignedDomainRequest.required(response,"CRM");
+    }
+
+    @Override
+    public CustomerSyncJob customerJob(CallerIdentity caller, UUID jobId) {
+        return customerJob(caller, jobId, null);
+    }
+
+    @Override
+    public java.util.List<CustomerSyncJob> customerJobs(CallerIdentity caller, UUID connector, Instant from, Instant to) {
+        var uri = UriComponentsBuilder.fromUri(baseUri).path("/internal/v1/crm/dhb/customer-sync-jobs")
+                .queryParam("connectorId", connector).queryParam("from", from).queryParam("to", to).build().encode().toUri();
+        var response = jobClient.get().uri(uri)
+                .headers(h -> SignedDomainRequest.signedHeaders(signer, "GET", uri, caller).forEach(h::set))
+                .exchange((request, httpResponse) -> SignedDomainRequest.readResponse(httpResponse,
+                        new TypeReference<ApiResponse<java.util.List<CustomerSyncJob>>>() {}, "CRM后台同步核对"));
+        return SignedDomainRequest.required(response, "CRM");
     }
 
     @Override

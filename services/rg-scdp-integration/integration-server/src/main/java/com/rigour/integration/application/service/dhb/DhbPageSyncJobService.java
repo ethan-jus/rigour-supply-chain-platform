@@ -2,6 +2,7 @@ package com.rigour.integration.application.service.dhb;
 
 import com.rigour.integration.api.v1.model.*;
 import com.rigour.integration.application.port.out.DhbPageSyncJobStore;
+import com.rigour.integration.application.port.out.CrmDhbDomainSyncClient;
 import com.rigour.shared.context.*;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
@@ -23,6 +24,7 @@ public class DhbPageSyncJobService {
     private final DhbSyncOrchestrationService delegate;
     private final DhbPageSyncJobStore store;
     private final Clock clock;
+    private final CrmDhbDomainSyncClient crm;
     private final ExecutorService workers =
             new ThreadPoolExecutor(
                     2,
@@ -42,10 +44,12 @@ public class DhbPageSyncJobService {
     private final Set<Key> owned = ConcurrentHashMap.newKeySet();
 
     public DhbPageSyncJobService(
-            DhbSyncOrchestrationService delegate, DhbPageSyncJobStore store, Clock clock) {
+            DhbSyncOrchestrationService delegate, DhbPageSyncJobStore store, Clock clock,
+            CrmDhbDomainSyncClient crm) {
         this.delegate = delegate;
         this.store = store;
         this.clock = clock;
+        this.crm = crm;
         heartbeat.scheduleWithFixedDelay(this::beat, 15, 15, TimeUnit.SECONDS);
     }
 
@@ -131,6 +135,9 @@ public class DhbPageSyncJobService {
                                             instanceof
                                             com.rigour.integration.application.port.out
                                                     .CrmDhbDomainSyncClient.OutcomeUnknown;
+                            if (error instanceof CrmDhbDomainSyncClient.OutcomeUnknown lost
+                                    && lost.jobId() != null)
+                                store.dependency(key.tenant(), key.id(), lost.jobId());
                             store.finish(
                                     key.tenant(),
                                     key.id(),
@@ -165,6 +172,37 @@ public class DhbPageSyncJobService {
         return store.latest(caller.tenantId(), connector, scope)
                 .map(j -> observed(caller.tenantId(), j))
                 .orElse(null);
+    }
+
+    public DhbPageSyncJob reconcile(UUID tenant, DhbPageSyncJob job) {
+        if (!"UNKNOWN".equals(job.status()) || owned.contains(new Key(tenant, job.jobId())))
+            return job;
+        try {
+            var caller = DhbSyncOrchestrationService.serviceCaller(tenant);
+            var dependency = job.dependencyJobId();
+            com.rigour.merchant.api.v1.model.CustomerSyncJob remote;
+            if (dependency != null) {
+                remote = crm.customerJob(caller, dependency);
+            } else {
+                // 兼容未记录依赖编号的旧任务：仅采用原执行窗口内唯一的同连接器客户任务。
+                // 不凭“最新一条”猜测；多条、缺失或超长窗口均继续保留待核实。
+                if (job.finishedAt() == null || Duration.between(job.startedAt(), job.finishedAt())
+                        .compareTo(Duration.ofDays(1)) > 0) return job;
+                var candidates = crm.customerJobs(caller, job.connectorId(), job.startedAt(), job.finishedAt());
+                if (candidates.size() != 1) return job;
+                remote = candidates.getFirst();
+            }
+            if (remote == null || !job.connectorId().equals(remote.connectorId())) return job;
+            store.dependency(tenant, job.jobId(), remote.jobId());
+            if (!Set.of("SUCCEEDED", "FAILED").contains(remote.status())) return job;
+            // 客户阶段结束不等于整条业务链成功；余下对象由下一次原计划按游标续处理。
+            store.finish(tenant, job.jobId(), "FAILED", "上次客户同步已结束，后续资料将按原计划继续同步",
+                    null, clock.instant());
+            return store.find(tenant, job.jobId()).orElse(job);
+        } catch (RuntimeException unavailable) {
+            log.warn("原客户同步任务暂未核实，保留原任务 jobId={}", job.jobId());
+            return job;
+        }
     }
 
     private DhbPageSyncJob observed(UUID tenant, DhbPageSyncJob job) {

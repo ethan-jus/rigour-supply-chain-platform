@@ -72,6 +72,12 @@ public class JdbcCustomerSyncJobStore implements CustomerSyncJobStore {
                 == 1;
     }
 
+    public List<CustomerSyncJob> inWindow(UUID tenant, UUID connector, Instant from, Instant to) {
+        return rows("SELECT * FROM crm_customer_sync_job WHERE tenant_id=? AND connector_id=?"
+                        + " AND started_at>=? AND started_at<=? ORDER BY started_at LIMIT 2",
+                tenant.toString(), connector.toString(), utc(from), utc(to));
+    }
+
     public void update(
             UUID tenant, UUID jobId, String status, String stage, SyncResult result, Instant now) {
         jdbc.update(

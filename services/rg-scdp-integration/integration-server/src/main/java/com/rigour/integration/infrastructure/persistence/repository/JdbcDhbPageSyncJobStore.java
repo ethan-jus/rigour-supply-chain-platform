@@ -105,6 +105,12 @@ public class JdbcDhbPageSyncJobStore implements DhbPageSyncJobStore {
                 jobId.toString());
     }
 
+    public void dependency(UUID tenant, UUID jobId, UUID dependencyId) {
+        jdbc.update("UPDATE integration_dhb_page_job SET dependency_job_id=? WHERE tenant_id=? AND job_id=?"
+                        + " AND status IN ('QUEUED','RUNNING','UNKNOWN') AND dependency_job_id IS NULL",
+                dependencyId.toString(), tenant.toString(), jobId.toString());
+    }
+
     public void finish(
             UUID tenant,
             UUID jobId,
@@ -144,7 +150,9 @@ public class JdbcDhbPageSyncJobStore implements DhbPageSyncJobStore {
                                         ? null
                                         : json.readValue(
                                                 r.getString("result_json"),
-                                                DhbSyncOrchestrationResult.class)),
+                                                DhbSyncOrchestrationResult.class),
+                                r.getString("dependency_job_id") == null ? null
+                                        : UUID.fromString(r.getString("dependency_job_id"))),
                 args);
     }
 

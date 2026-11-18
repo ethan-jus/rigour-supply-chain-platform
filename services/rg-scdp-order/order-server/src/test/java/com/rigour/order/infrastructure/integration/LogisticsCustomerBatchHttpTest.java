@@ -223,6 +223,56 @@ class LogisticsCustomerBatchHttpTest {
                         withSuccess("{\"code\":\"OK\",\"data\":{}}", MediaType.APPLICATION_JSON));
     }
 
+    @Test
+    void departmentBatchUsesRestrictedServiceIdentityAndReturnsOnlyRequestedUsableCodes() {
+        var tenant = UUID.randomUUID();
+        caller(tenant);
+        var f = fixture();
+        f.refs().hrAddress("http://hr.test");
+        f.server()
+                .expect(requestTo("http://hr.test/api/v1/hr/employee-identities/resolve"))
+                .andExpect(method(HttpMethod.POST))
+                .andExpect(header(RequestHeaders.TENANT_ID, tenant.toString()))
+                .andExpect(header(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE"))
+                .andExpect(header(RequestHeaders.PERMISSIONS, "hr:employee:identity-read"))
+                .andExpect(content().json("[\"EMP1\",\"EMP2\"]"))
+                .andRespond(
+                        withSuccess(
+                                """
+                                {"code":"OK","data":[
+                                {"employeeCode":"EMP1","employeeName":"李林","departmentId":6,"departmentName":"北京市","usable":true},
+                                {"employeeCode":"EMP2","employeeName":"停用员工","departmentId":7,"usable":false},
+                                {"employeeCode":"OTHER","employeeName":"同名员工","departmentId":9,"usable":true}]}
+                                """,
+                                MediaType.APPLICATION_JSON));
+        var rows =
+                f.refs().employeeDepartments(Set.of("EMP1", "EMP2"), "order:logistics-cost:read");
+        assertThat(rows).hasSize(1);
+        assertThat(rows.getFirst().departmentId()).isEqualTo(6L);
+        assertThat(rows.getFirst().departmentName()).isEqualTo("北京市");
+        f.server().verify();
+    }
+
+    @Test
+    void departmentBatchRejectsUnrelatedActionsAndOversizedScopeBeforeRequest() {
+        caller(UUID.randomUUID());
+        var f = fixture();
+        assertThatThrownBy(() -> f.refs().employeeDepartments(Set.of("EMP1"), "hr:employee:read"))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(
+                        () ->
+                                f.refs()
+                                        .employeeDepartments(
+                                                java.util.stream.IntStream.range(0, 101)
+                                                        .mapToObj(i -> "EMP" + i)
+                                                        .collect(
+                                                                java.util.stream.Collectors
+                                                                        .toSet()),
+                                                "order:logistics-cost:read"))
+                .isInstanceOf(IllegalArgumentException.class);
+        f.server().verify();
+    }
+
     private static void newRequest() {
         RequestContextHolder.setRequestAttributes(
                 new ServletRequestAttributes(new MockHttpServletRequest()));

@@ -10,6 +10,10 @@ public interface CustomerSyncJobStore {
 
     Optional<CustomerSyncJob> find(UUID tenant, UUID jobId);
 
+    default List<CustomerSyncJob> inWindow(UUID tenant, UUID connector, Instant from, Instant to) {
+        return List.of();
+    }
+
     boolean claim(UUID tenant, UUID jobId, Instant now);
 
     void update(

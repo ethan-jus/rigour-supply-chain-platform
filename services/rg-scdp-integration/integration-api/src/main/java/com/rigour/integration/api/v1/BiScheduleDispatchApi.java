@@ -5,11 +5,14 @@ import com.rigour.shared.core.api.ApiResponse;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.*;
+import java.time.Instant;
 
 public interface BiScheduleDispatchApi {
     String BASE = "/internal/v1/integration/sync-schedules/bi";
 
     record Work(UUID tenantId, long version) {}
+
+    record InterruptedWork(UUID tenantId, UUID token, Instant startedAt) {}
 
     record Claim(long version, UUID token) {
         public Claim {
@@ -21,6 +24,9 @@ public interface BiScheduleDispatchApi {
 
     @GetMapping(BASE + "/due")
     ApiResponse<List<Work>> due();
+
+    @GetMapping(BASE + "/interrupted")
+    ApiResponse<List<InterruptedWork>> interrupted();
 
     @GetMapping(BASE + "/managed")
     ApiResponse<Boolean> managed();

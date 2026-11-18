@@ -18,6 +18,11 @@ import org.springframework.stereotype.Service;
 public class DictionarySourceMappingService {
     private final DictionarySourceMappingStore store;
     private final BusinessDictionaryBatchClient client;
+    private com.rigour.integration.application.port.out.DhbIncrementalWorkStore work;
+    @org.springframework.beans.factory.annotation.Autowired
+    void incrementalWork(com.rigour.integration.application.port.out.DhbIncrementalWorkStore value) {
+        work = value;
+    }
     public DictionarySourceMappingService(DictionarySourceMappingStore store, BusinessDictionaryBatchClient client) {
         this.store=store;this.client=client;
     }
@@ -25,6 +30,7 @@ public class DictionarySourceMappingService {
         AuthorizationContext.requirePermission("business-settings:dict:read");
         return store.list(tenant(),code(dictionary));
     }
+    @org.springframework.transaction.annotation.Transactional
     public DictionarySourceMappingView update(Long id, DictionarySourceMappingCommand command) {
         AuthorizationContext.requirePermission("business-settings:dict:write");
         if(command==null || command.revision()<1) throw bad("映射版本无效");
@@ -33,8 +39,14 @@ public class DictionarySourceMappingService {
         var audit=client.sync(caller(),"MAPPING_VALIDATE",List.of(new Observation(dictionary,source.sourceField(),item,item)));
         boolean valid=audit.resolved().stream().anyMatch(r->dictionary.equals(r.targetDictionaryCode()) && item.equals(r.targetItemCode()));
         if(!valid) throw bad("目标必须是可用标准字典项，请刷新后重试");
-        return store.update(tenant(),id,new DictionarySourceMappingCommand(dictionary,item,command.revision()),
+        var saved = store.update(tenant(),id,new DictionarySourceMappingCommand(dictionary,item,command.revision()),
                 AuthorizationContext.requireCurrent().principalId().toString());
+        if (work != null && "DHB".equals(source.sourceSystem())
+                && "DHB_SHIPMENT_LOGISTICS".equals(source.sourceScope())
+                && Set.of("shipment.deliveryMode", "shipment.logistics").contains(source.sourceField()))
+            work.recheckShipmentDictionary(AuthorizationContext.requireCurrent().tenantId(),
+                    source.sourceField(), source.sourceValue(), java.time.Instant.now());
+        return saved;
     }
     public Audit sync(CallerIdentity caller, String sourceType, Collection<Observation> observations) {
         try { return syncObserved(caller,sourceType,observations); }

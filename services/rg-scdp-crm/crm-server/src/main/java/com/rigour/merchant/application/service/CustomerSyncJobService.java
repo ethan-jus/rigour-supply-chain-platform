@@ -152,6 +152,14 @@ public class CustomerSyncJobService {
             }
     }
 
+    public List<CustomerSyncJob> inWindow(CallerIdentity caller, UUID connector, Instant from, Instant to) {
+        CrmMasterDataSyncService.requireScheduledCaller(caller);
+        if (connector == null || from == null || to == null || from.isAfter(to)
+                || Duration.between(from, to).compareTo(Duration.ofDays(1)) > 0)
+            throw new IllegalArgumentException("客户同步核对范围无效");
+        return store.inWindow(caller.tenantId(), connector, from, to);
+    }
+
     @PreDestroy
     public void close() {
         heartbeat.shutdown();

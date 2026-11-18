@@ -19,6 +19,64 @@ class DhbPageSyncJobServiceTest {
     final UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID(), id = UUID.randomUUID();
     final Instant now = Instant.parse("2026-09-22T08:00:00Z");
 
+    @Test
+    void reconcilesOnlyThePersistedDependencyAndLeavesWholeChainFailedForNextIncrementalRun() {
+        var store = mock(DhbPageSyncJobStore.class);
+        var crm = mock(CrmDhbDomainSyncClient.class);
+        var dep = UUID.randomUUID();
+        var job = new DhbPageSyncJob(id, connector, "BUSINESS_CHAIN", "UNKNOWN", "待核实",
+                now.minusSeconds(600), now, now, null, dep);
+        when(crm.customerJob(any(), eq(dep))).thenReturn(new com.rigour.merchant.api.v1.model.CustomerSyncJob(
+                dep, connector, "FAILED", "客户同步失败", now, now, null));
+        when(store.find(tenant, id)).thenReturn(Optional.of(job));
+        var service = new DhbPageSyncJobService(mock(DhbSyncOrchestrationService.class), store,
+                Clock.fixed(now, ZoneOffset.UTC), crm);
+        try {
+            service.reconcile(tenant, job);
+            verify(store).finish(eq(tenant), eq(id), eq("FAILED"), contains("原计划"), isNull(), eq(now));
+            verify(crm, never()).customerJobs(any(), any(), any(), any());
+            verify(crm, never()).syncLatestCustomersInBackground(any(), any(), any(), anyInt(), any(), any());
+        } finally { service.close(); }
+    }
+
+    @Test
+    void ambiguousOrStillRunningRemoteJobDoesNotReleaseOriginalSlot() {
+        var store = mock(DhbPageSyncJobStore.class);
+        var crm = mock(CrmDhbDomainSyncClient.class);
+        var job = new DhbPageSyncJob(id, connector, "BUSINESS_CHAIN", "UNKNOWN", "待核实",
+                now.minusSeconds(600), now, now, null);
+        var remote = new com.rigour.merchant.api.v1.model.CustomerSyncJob(UUID.randomUUID(), connector,
+                "RUNNING", "处理中", now, now, null);
+        when(crm.customerJobs(any(), eq(connector), any(), any()))
+                .thenReturn(List.of(remote, remote), List.of(remote));
+        var service = new DhbPageSyncJobService(mock(DhbSyncOrchestrationService.class), store,
+                Clock.fixed(now, ZoneOffset.UTC), crm);
+        try {
+            service.reconcile(tenant, job);
+            service.reconcile(tenant, job);
+            verify(store, never()).finish(any(), any(), any(), any(), any(), any());
+        } finally { service.close(); }
+    }
+
+    @Test
+    void legacyUniqueRemoteFinalResultReleasesSlotWithoutPretendingChainSucceeded() {
+        var store = mock(DhbPageSyncJobStore.class);
+        var crm = mock(CrmDhbDomainSyncClient.class);
+        var job = new DhbPageSyncJob(id, connector, "BUSINESS_CHAIN", "UNKNOWN", "待核实",
+                now.minusSeconds(600), now, now, null);
+        var remote = new com.rigour.merchant.api.v1.model.CustomerSyncJob(UUID.randomUUID(), connector,
+                "SUCCEEDED", "完成", now, now, null);
+        when(crm.customerJobs(any(), eq(connector), any(), any())).thenReturn(List.of(remote));
+        when(store.find(tenant, id)).thenReturn(Optional.of(job));
+        var service = new DhbPageSyncJobService(mock(DhbSyncOrchestrationService.class), store,
+                Clock.fixed(now, ZoneOffset.UTC), crm);
+        try {
+            service.reconcile(tenant, job);
+            verify(store).dependency(tenant, id, remote.jobId());
+            verify(store).finish(eq(tenant), eq(id), eq("FAILED"), anyString(), isNull(), eq(now));
+        } finally { service.close(); }
+    }
+
     CallerIdentity caller(UUID t) {
         var u = UUID.randomUUID();
         return new CallerIdentity(
@@ -62,7 +120,7 @@ class DhbPageSyncJobServiceTest {
                             return new DhbSyncOrchestrationResult(
                                     id, "SUCCEEDED", "test", now, now, List.of());
                         });
-        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC));
+        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC), mock(com.rigour.integration.application.port.out.CrmDhbDomainSyncClient.class));
         try {
             assertThat(service.start(caller(tenant), id, command()).status()).isEqualTo("RUNNING");
             assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
@@ -82,7 +140,7 @@ class DhbPageSyncJobServiceTest {
         var delegate = mock(DhbSyncOrchestrationService.class);
         var store = mock(DhbPageSyncJobStore.class);
         when(store.find(tenant, id)).thenReturn(Optional.of(job("RUNNING", now.minusSeconds(91))));
-        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC));
+        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC), mock(com.rigour.integration.application.port.out.CrmDhbDomainSyncClient.class));
         try {
             assertThat(service.get(caller(tenant), id).status()).isEqualTo("UNKNOWN");
             verify(store, never()).finish(any(), any(), any(), any(), any(), any());
@@ -108,7 +166,7 @@ class DhbPageSyncJobServiceTest {
                 .thenReturn(
                         new DhbSyncOrchestrationResult(
                                 id, "SUCCEEDED", "MANUAL_SALESPERSON", now, now, List.of()));
-        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC));
+        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC), mock(com.rigour.integration.application.port.out.CrmDhbDomainSyncClient.class));
         try {
             assertThat(service.start(caller(tenant), id, command).scope()).isEqualTo("SALESPERSON");
             verify(delegate).validatePageTarget(any(), eq(command));
@@ -147,7 +205,7 @@ class DhbPageSyncJobServiceTest {
                             return new DhbSyncOrchestrationResult(
                                     id, "SUCCEEDED", "MANUAL_SHIPMENT", now, now, List.of());
                         });
-        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC));
+        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC), mock(com.rigour.integration.application.port.out.CrmDhbDomainSyncClient.class));
         try {
             assertThat(service.start(caller(tenant), id, window).scope()).isEqualTo("SHIPMENT");
             assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
@@ -167,7 +225,7 @@ class DhbPageSyncJobServiceTest {
     void statusLookupIsTenantScopedAndSubmissionRequiresUserPermission() {
         var delegate = mock(DhbSyncOrchestrationService.class);
         var store = mock(DhbPageSyncJobStore.class);
-        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC));
+        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC), mock(com.rigour.integration.application.port.out.CrmDhbDomainSyncClient.class));
         try {
             UUID other = UUID.randomUUID();
             when(store.find(other, id)).thenReturn(Optional.empty());
@@ -189,7 +247,7 @@ class DhbPageSyncJobServiceTest {
         when(store.find(tenant, id)).thenReturn(Optional.of(job("RUNNING", now)));
         when(delegate.runPage(any(), any(), any(), eq(true)))
                 .thenThrow(new CrmDhbDomainSyncClient.OutcomeUnknown("lost", null));
-        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC));
+        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC), mock(com.rigour.integration.application.port.out.CrmDhbDomainSyncClient.class));
         try {
             service.start(caller(tenant), id, command());
             verify(store, timeout(2000))

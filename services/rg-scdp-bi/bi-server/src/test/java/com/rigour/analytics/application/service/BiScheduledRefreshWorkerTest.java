@@ -117,6 +117,33 @@ class BiScheduledRefreshWorkerTest {
                                 null));
     }
 
+    @Test
+    void interruptedRunReleasesOnlyAfterOwningDomainVerifiesExpiredLock() {
+        var token = UUID.randomUUID();
+        var started = Instant.parse("2026-10-26T18:59:32Z");
+        when(coordinator.interrupted()).thenReturn(List.of(
+                new BiScheduleCoordinator.InterruptedWork(tenant, token, started)));
+        when(refresh.recoverInterruptedSchedule(tenant.toString(), started)).thenReturn(true);
+        try (WorkerHandle handle = new WorkerHandle()) {
+            handle.worker.consume();
+            verify(coordinator).complete(eq(tenant), eq(token), eq("FAILED"), contains("恢复后续计划"));
+            verify(refresh, never()).refreshConfiguredTenant(anyString());
+            verifyNoInteractions(costs);
+        }
+    }
+
+    @Test
+    void interruptedRunWithActiveLockOrUnavailableOwnerIsNotAcknowledged() {
+        var token = UUID.randomUUID();
+        var started = Instant.now();
+        when(coordinator.interrupted()).thenReturn(List.of(
+                new BiScheduleCoordinator.InterruptedWork(tenant, token, started)));
+        try (WorkerHandle handle = new WorkerHandle()) {
+            handle.worker.consume();
+            verify(coordinator, never()).complete(any(), any(), any(), any());
+        }
+    }
+
     private class WorkerHandle implements AutoCloseable {
         final BiScheduledRefreshWorker worker =
                 new BiScheduledRefreshWorker(coordinator, refresh, costs);

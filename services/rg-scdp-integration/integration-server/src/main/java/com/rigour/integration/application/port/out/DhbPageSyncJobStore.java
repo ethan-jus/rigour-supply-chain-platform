@@ -19,6 +19,8 @@ public interface DhbPageSyncJobStore {
 
     void heartbeat(UUID tenant, UUID jobId, Instant now);
 
+    default void dependency(UUID tenant, UUID jobId, UUID dependencyId) {}
+
     void finish(
             UUID tenant,
             UUID jobId,

@@ -13,4 +13,10 @@ public record DhbPageSyncJob(
         Instant startedAt,
         Instant heartbeatAt,
         Instant finishedAt,
-        DhbSyncOrchestrationResult result) {}
+        DhbSyncOrchestrationResult result,
+        UUID dependencyJobId) {
+    public DhbPageSyncJob(UUID jobId, UUID connectorId, String scope, String status, String stage,
+            Instant startedAt, Instant heartbeatAt, Instant finishedAt, DhbSyncOrchestrationResult result) {
+        this(jobId, connectorId, scope, status, stage, startedAt, heartbeatAt, finishedAt, result, null);
+    }
+}
