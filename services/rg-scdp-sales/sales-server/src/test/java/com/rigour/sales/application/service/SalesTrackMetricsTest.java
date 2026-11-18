@@ -61,4 +61,15 @@ class SalesTrackMetricsTest {
         var result=SalesTrackMetrics.calculate(List.of(point(0,40,SESSION,"ACCEPTED"),point(60,40.001,SESSION,"ACCEPTED"),point(120,40,SESSION,"ACCEPTED")),1);
         assertThat(result.distanceMeters()).isBetween(221,223); assertThat(result.legs().getFirst().points()).hasSize(3);
     }
+    @Test void isolatedPointOverlappingNeighboursCannotEscapeAnOlderAnchor() {
+        var anchor=point(0,40,SESSION,"ACCEPTED");
+        var before=point(60,40.0001,SESSION,"ACCEPTED");
+        var excursion=point(120,40.00025,SESSION,"ACCEPTED");
+        var after=point(180,40.0001,SESSION,"ACCEPTED");
+        var result=SalesTrackMetrics.calculate(List.of(anchor,before,excursion,after),1);
+        assertThat(result.distanceMeters()).isZero(); assertThat(result.legs()).isEmpty();
+        assertThat(result.rejected()).isEqualTo(1); assertThat(result.trackedMinutes()).isEqualTo(3);
+        var walk=SalesTrackMetrics.calculate(List.of(anchor,before,excursion,point(180,40.0004,SESSION,"ACCEPTED")),1);
+        assertThat(walk.distanceMeters()).isBetween(27,29); assertThat(walk.legs()).hasSize(1);
+    }
 }

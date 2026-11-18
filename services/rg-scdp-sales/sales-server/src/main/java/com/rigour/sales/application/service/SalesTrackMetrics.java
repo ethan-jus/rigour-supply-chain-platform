@@ -33,6 +33,10 @@ final class SalesTrackMetrics {
             if (previous != null && coarseSpike(previous, row, index + 1 < rows.size() ? rows.get(index + 1) : null, maximumGap)) {
                 rejected++; continue;
             }
+            if (!broken && anchor != null && index + 1 < rows.size()
+                    && unconfirmedExcursion(anchor, previous, row, rows.get(index + 1), maximumGap)) {
+                rejected++; continue;
+            }
             if (previous != null) {
                 long elapsed = Duration.between(time(previous), time(row)).getSeconds();
                 double hop = distance(previous, row);
@@ -71,6 +75,20 @@ final class SalesTrackMetrics {
         long following = Duration.between(time(point), time(after)).getSeconds();
         return following > 0 && following <= maximumGap
                 && distance(before, after) <= before.accuracyMeters().doubleValue() + after.accuracyMeters().doubleValue();
+    }
+    // A point can escape an old anchor's accuracy circle while still overlapping both
+    // neighbours. If the next fix returns to the anchor, that isolated excursion is unproven.
+    private static boolean unconfirmedExcursion(LocationPointRow anchor, LocationPointRow before,
+                                                LocationPointRow point, LocationPointRow after, long maximumGap) {
+        if (!valid(after) || !Objects.equals(before.sessionId(), point.sessionId())
+                || !Objects.equals(point.sessionId(), after.sessionId())) return false;
+        long elapsed = Duration.between(time(before), time(point)).getSeconds();
+        long following = Duration.between(time(point), time(after)).getSeconds();
+        return elapsed > 0 && elapsed <= maximumGap && following > 0 && following <= maximumGap
+                && distance(anchor, point) > anchor.accuracyMeters().doubleValue() + point.accuracyMeters().doubleValue()
+                && distance(before, point) <= before.accuracyMeters().doubleValue() + point.accuracyMeters().doubleValue()
+                && distance(point, after) <= point.accuracyMeters().doubleValue() + after.accuracyMeters().doubleValue()
+                && distance(anchor, after) <= anchor.accuracyMeters().doubleValue() + after.accuracyMeters().doubleValue();
     }
     private static boolean valid(LocationPointRow row) {
         return "ACCEPTED".equals(row.qualityStatus()) && row.clientOccurredAt() != null
