@@ -129,8 +129,11 @@ public final class OrderDataScope {
                 and.add(
                         warehouse(
                                 c.warehouses(), alias, proposedWarehouse, candidateField, values));
+            // 本人查询可直接核验订单归属员工；部门/地区范围及写操作仍要求冻结归属。
+            boolean ownRead = "SELF".equals(c.scopeMode()) && action.endsWith(":read");
             boolean ownership =
-                    Set.of("SELF", "DEPARTMENT", "REGION").contains(c.scopeMode())
+                    (!ownRead && "SELF".equals(c.scopeMode()))
+                            || Set.of("DEPARTMENT", "REGION").contains(c.scopeMode())
                             || !Set.of("NONE", "ALL").contains(c.departments().mode())
                             || !Set.of("NONE", "ALL").contains(c.regions().mode())
                             || ("ORDER".equals(c.objectType())

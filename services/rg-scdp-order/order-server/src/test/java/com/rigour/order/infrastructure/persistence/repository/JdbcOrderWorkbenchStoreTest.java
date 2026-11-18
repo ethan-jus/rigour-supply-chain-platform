@@ -120,6 +120,52 @@ class JdbcOrderWorkbenchStoreTest {
                 .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
     }
 
+    @Test void configuredSelfScopeIncludesHistoricalOrdersAndRoleChangesApplyBeforeWarmCache() {
+        jdbc.execute("ALTER TABLE order_sales_order ADD created_by VARCHAR");
+        var iam = mock(com.rigour.tenant.iam.client.SupplyAuthorizationClient.class);
+        var callerId = java.util.UUID.randomUUID();
+        var tenantId = java.util.UUID.randomUUID();
+        var caller = new com.rigour.shared.context.CallerIdentity("TENANT",callerId,tenantId,callerId,null,
+                java.util.UUID.randomUUID(),0,0,0,java.util.Set.of(),java.util.Set.of("order:read","order:payment:read"));
+        com.rigour.shared.context.TestAuthorizationContext.set(caller);
+        var mode = new java.util.concurrent.atomic.AtomicReference<>("SELF");
+        var allowed = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var all = new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit("ALL",List.of());
+        when(iam.authorization(any(),anyString())).thenAnswer(call ->
+                new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView("ACTIVE",tenantId,callerId,"self",
+                        1,1,1,1,java.util.Set.of(call.getArgument(1,String.class)),call.getArgument(1,String.class),allowed.get(),
+                        List.of(new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Clause(
+                                java.util.UUID.fromString("00000000-0000-0000-0000-000000000001"),"ORDER",mode.get(),all,all,all,false)),all,all));
+        try {
+            scopes = new OrderDataScope(iam,jdbc);
+            store = new JdbcOrderWorkbenchStore(jdbc,scopes);
+            enableCache();
+            // Real role policy, no frozen attribution rows; another region is still this employee's data.
+            var summary = store.summary("tenant","self","order:read",from,until);
+            assertThat(summary.tradeAmount()).isEqualByComparingTo("1099");
+            assertThat(summary.pendingAmount()).isEqualByComparingTo("1099");
+            assertThat(store.details("tenant","self","order:read","orders",from,until,0,20).total()).isEqualTo(2);
+            assertThat(store.summary("tenant","other","order:read",from,until).orderCount()).isZero();
+            receipt(1,1,"2026-11-02T00:00:00Z",100,"RECEIVED");
+            assertThat(store.details("tenant","self","order:payment:read","receipts",from,until,0,20).amount()).isEqualByComparingTo("100");
+            assertThat(store.performanceTotals("tenant","self","order:payment:read",from,until).amount()).isEqualByComparingTo("100");
+            assertThat(store.details("tenant","other","order:read","orders",from,until,0,20).items()).isEmpty();
+            assertThat(store.summary("other","self","order:read",from,until).orderCount()).isEqualTo(1);
+            // Broad access is granted only by a changed role, never inferred from the query parameter.
+            mode.set("ALL");
+            assertThat(store.summary("tenant","other","order:read",from,until).orderCount()).isEqualTo(1);
+            mode.set("SELF");
+            assertThat(store.summary("tenant","other","order:read",from,until).orderCount()).isZero();
+            mode.set("NONE");
+            assertThat(store.summary("tenant","self","order:read",from,until).orderCount()).isZero();
+            mode.set("DEPARTMENT");
+            assertThat(store.summary("tenant","self","order:read",from,until).orderCount()).isZero();
+            mode.set("SELF"); allowed.set(false);
+            assertThatThrownBy(() -> store.summary("tenant","self","order:read",from,until))
+                    .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        } finally { com.rigour.shared.context.TestAuthorizationContext.clear(); }
+    }
+
     long cacheVersion = 1;
     void enableCache() {
         var payloads = new java.util.HashMap<String, byte[]>();
