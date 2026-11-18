@@ -68,7 +68,13 @@ public final class OrderDataScope {
             String candidateField,
             boolean draftCreator) {
         return predicate(
-                policy(action), action, alias, proposedWarehouse, candidateField, draftCreator);
+                policy(action), action, alias, proposedWarehouse, candidateField, draftCreator, alias + "owner_employee_code");
+    }
+
+    /** 回款读取的 SELF 指向已确认回款人；其余角色条件及范围上限仍由统一策略决定。 */
+    public Predicate paymentPredicate(String action, String orderAlias, String paymentAlias) {
+        if (!paymentAlias.matches("[a-z_]*[.]?")) throw new IllegalArgumentException("固定别名无效");
+        return predicate(policy(action), action, orderAlias, null, null, false, paymentAlias + "payment_owner_code");
     }
 
     private Predicate predicate(
@@ -77,7 +83,8 @@ public final class OrderDataScope {
             String alias,
             Long proposedWarehouse,
             String candidateField,
-            boolean draftCreator) {
+            boolean draftCreator,
+            String selfEmployeeField) {
         if (!alias.matches("[a-z_]*[.]?")) throw new IllegalArgumentException("固定别名无效");
         if (p == null) return new Predicate("1=1", List.of());
         List<Object> args = new ArrayList<>();
@@ -90,7 +97,7 @@ public final class OrderDataScope {
             switch (c.scopeMode()) {
                 case "SELF" -> {
                     if (p.employeeCode() == null) continue;
-                    String self = alias + "owner_employee_code=?";
+                    String self = selfEmployeeField + "=?";
                     values.add(p.employeeCode());
                     if (draftCreator
                             && Set.of("order:read", "order:update", "order:cancel", "order:delete")

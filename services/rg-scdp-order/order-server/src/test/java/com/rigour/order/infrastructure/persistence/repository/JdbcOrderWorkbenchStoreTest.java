@@ -17,13 +17,14 @@ class JdbcOrderWorkbenchStoreTest {
     @BeforeEach void setup() {
         jdbc = spy(new JdbcTemplate(new DriverManagerDataSource("jdbc:h2:mem:" + java.util.UUID.randomUUID() + ";MODE=MySQL;DB_CLOSE_DELAY=-1")));
         jdbc.execute("CREATE TABLE order_sales_order(id BIGINT, tenant_id VARCHAR, owner_employee_code VARCHAR, region_code VARCHAR, deleted INT, order_status_code VARCHAR, payment_status_code VARCHAR, outbound_status_code VARCHAR, order_date TIMESTAMP, payable_amount DECIMAL(24,6), unpaid_amount DECIMAL(24,6), customer_name_snapshot VARCHAR, order_no VARCHAR)");
-        jdbc.execute("CREATE TABLE order_payment_record(id BIGINT,tenant_id VARCHAR,order_id BIGINT,payment_no VARCHAR,payment_time TIMESTAMP,paid_amount DECIMAL(24,6),payment_status_code VARCHAR,deleted INT)");
+        jdbc.execute("CREATE TABLE order_payment_record(id BIGINT,tenant_id VARCHAR,order_id BIGINT,payment_no VARCHAR,payment_time TIMESTAMP,paid_amount DECIMAL(24,6),payment_status_code VARCHAR,deleted INT,payment_owner_code VARCHAR,payment_owner_evidence VARCHAR)");
         jdbc.execute("ALTER TABLE order_sales_order ADD data_quality_status_code VARCHAR DEFAULT 'COMPLETE'");
         jdbc.execute("ALTER TABLE order_sales_order ADD source_system_code VARCHAR DEFAULT 'DHB'");
         jdbc.execute("CREATE TABLE order_attribution_snapshot(tenant_id VARCHAR,order_id BIGINT,employee_code VARCHAR,state VARCHAR)");
         jdbc.execute("CREATE TABLE order_refund_record(tenant_id VARCHAR,order_id BIGINT,refund_amount DECIMAL(24,6),refund_time TIMESTAMP,refund_status_code VARCHAR,deleted INT)");
         scopes = mock(OrderDataScope.class);
         when(scopes.predicate(anyString(), eq("o."), isNull())).thenReturn(new OrderDataScope.Predicate("o.region_code=?", List.of("allowed")));
+        when(scopes.paymentPredicate(anyString(),eq("o."),eq("p."))).thenReturn(new OrderDataScope.Predicate("o.region_code=?",List.of("allowed")));
         store = new JdbcOrderWorkbenchStore(jdbc, scopes);
         order(1,"tenant","self","allowed","SUBMITTED","2026-11-02T00:00:00Z",100,40);
         order(2,"tenant","self","allowed","COMPLETED","2026-10-02T00:00:00Z",200,60);
@@ -37,7 +38,7 @@ class JdbcOrderWorkbenchStoreTest {
         jdbc.update("INSERT INTO order_sales_order(id,tenant_id,owner_employee_code,region_code,deleted,order_status_code,payment_status_code,outbound_status_code,order_date,payable_amount,unpaid_amount,customer_name_snapshot,order_no) VALUES(?,?,?,?,0,?,'PARTIAL_PAID','PENDING',?,?,?,'门店',?)",id,tenant,employee,region,status,Timestamp.from(Instant.parse(time)),amount,unpaid,"SO-"+id);
     }
     void receipt(int id,int order,String time,int amount,String status) {
-        jdbc.update("INSERT INTO order_payment_record VALUES(?,'tenant',?,?,?, ?,?,0)",id,order,"PAY-"+id,Timestamp.from(Instant.parse(time)),amount,status);
+        jdbc.update("INSERT INTO order_payment_record VALUES(?,'tenant',?,?,?, ?,?,0,(SELECT owner_employee_code FROM order_sales_order WHERE id=?),'confirmed')",id,order,"PAY-"+id,Timestamp.from(Instant.parse(time)),amount,status,order);
     }
     @Test void tradeUsesBusinessMonthAndExcludesDraftCancelledOtherOwnerTenantAndScope() {
         var page = store.details("tenant","self","order:read","orders",from,until,0,20);
@@ -62,13 +63,13 @@ class JdbcOrderWorkbenchStoreTest {
         var page = store.details("tenant","self","order:payment:read","receipts",from,until,0,20);
         assertThat(page.total()).isEqualTo(2); assertThat(page.amount()).isEqualByComparingTo("70");
     }
-    @Test void fullPaymentCountsWholeOrderOnceInSettlementMonthWithAllHistoryAndFrozenOwner() {
+    @Test void fullPaymentCountsConfirmedCollectorContributionOnceInSettlementMonth() {
         receipt(1,2,"2026-10-10T00:00:00Z",150,"RECEIVED");
         receipt(2,2,"2026-10-31T16:00:00Z",50,"CHECKED");
         receipt(3,2,"2026-11-04T00:00:00Z",20,"RECEIVED");
         receipt(4,1,"2026-11-02T00:00:00Z",40,"RECEIVED");
         receipt(5,1,"2026-11-03T00:00:00Z",60,"CHECKED");
-        // Later ownership changes do not transfer already attributed performance.
+        // Later order ownership changes do not transfer confirmed receipt contributions.
         jdbc.update("UPDATE order_sales_order SET owner_employee_code='other' WHERE id=2");
         jdbc.update("INSERT INTO order_attribution_snapshot VALUES('tenant',2,'self','FROZEN')");
         for (int id : List.of(3,4,5,6,7)) receipt(10+id,id,"2026-11-05T00:00:00Z",999,"RECEIVED");
@@ -153,6 +154,12 @@ class JdbcOrderWorkbenchStoreTest {
             assertThat(store.details("tenant","self","order:payment:read","receipts",from,until,0,20).amount()).isEqualByComparingTo("100");
             assertThat(store.performanceTotals("tenant","self","order:payment:read",from,until).amount()).isEqualByComparingTo("100");
             assertThat(store.details("tenant","other","order:read","orders",from,until,0,20).items()).isEmpty();
+            receipt(50,3,"2026-11-02T00:00:00Z",999,"RECEIVED");
+            jdbc.update("UPDATE order_payment_record SET payment_owner_code='self' WHERE id=50");
+            cacheVersion++;
+            assertThat(store.performanceTotals("tenant","self","order:payment:read",from,until).amount()).isEqualByComparingTo("1099");
+            assertThat(store.details("tenant","other","order:payment:read","receipts",from,until,0,20).items()).isEmpty();
+            assertThat(store.details("tenant","self","order:payment:read","receipts",from,until,0,20).total()).isEqualTo(2);
             assertThat(store.summary("other","self","order:read",from,until).orderCount()).isEqualTo(1);
             assertThat(store.customerSummary("tenant","self",from,until).purchasing()).isEqualTo(2);
             assertThat(store.customerSummary("tenant","other",from,until).purchasing()).isZero();
@@ -213,6 +220,25 @@ class JdbcOrderWorkbenchStoreTest {
         assertThat(store.customerSummary("tenant","self",from,until).purchasing()).isZero();
         assertThat(store.customers("tenant","self","COOPERATED",from,until,"",0,20).items()).isEmpty();
         assertThat(store.customerOrders("tenant","self","C11",0,20).items()).isEmpty();
+    }
+
+    @Test void sharedCollectorsReceiveOnlyTheirContributionInSettlementMonthNotOrderOrReceiptMonth() {
+        order(20,"tenant","seller","allowed","COMPLETED","2026-09-01T00:00:00Z",1000,0);
+        receipt(60,20,"2026-10-15T00:00:00Z",300,"RECEIVED");
+        receipt(61,20,"2026-11-05T00:00:00Z",700,"CHECKED");
+        receipt(62,20,"2026-11-05T00:00:00Z",100,"RECEIVED");
+        receipt(63,20,"2026-10-01T00:00:00Z",1000,"CANCELLED");
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code='self' WHERE id=60");
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code='collector-b' WHERE id IN (61,62)");
+        assertThat(store.performanceTotals("tenant","self","order:payment:read",from,until).amount()).isEqualByComparingTo("300");
+        assertThat(store.performanceTotals("tenant","collector-b","order:payment:read",from,until).amount()).isEqualByComparingTo("700");
+        assertThat(store.performanceTotals("tenant","seller","order:payment:read",from,until).total()).isZero();
+        assertThat(store.performanceTotals("tenant","self","order:payment:read",from.minusSeconds(86400*31),from).total()).isZero();
+        var page=store.details("tenant","self","order:payment:read","performance",from,until,0,20);
+        assertThat(page.items()).hasSize(1); assertThat(page.items().getFirst().amount()).isEqualByComparingTo("300");
+        assertThat(page.items().getFirst().occurredAt()).isEqualTo(Instant.parse("2026-11-05T00:00:00Z"));
+        jdbc.update("UPDATE order_payment_record SET payment_owner_evidence=NULL WHERE id=60");
+        assertThat(store.performanceTotals("tenant","self","order:payment:read",from,until).total()).isZero();
     }
 
     long cacheVersion = 1;
