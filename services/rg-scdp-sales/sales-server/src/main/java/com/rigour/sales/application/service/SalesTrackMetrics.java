@@ -41,14 +41,15 @@ final class SalesTrackMetrics {
                     path = new ArrayList<>(); legDistance = 0; anchor = null;
                 } else {
                     pairs++; seconds += elapsed;
-                    // Retain an anchor so frequent sub-accuracy walking steps can accumulate.
+                    // Overlapping accuracy circles do not establish movement. Retain the anchor
+                    // so slow walking can accumulate; draw exactly the path used for distance.
                     double movement = distance(anchor, row);
-                    double uncertainty = Math.max(5, Math.max(anchor.accuracyMeters().doubleValue(), row.accuracyMeters().doubleValue()));
-                    if (movement > uncertainty) { total += movement; legDistance += movement; anchor = row; }
+                    double uncertainty = anchor.accuracyMeters().doubleValue() + row.accuracyMeters().doubleValue();
+                    if (movement > uncertainty) { total += movement; legDistance += movement; anchor = row; path.add(view(row)); }
                 }
             }
-            if (anchor == null) anchor = row;
-            path.add(view(row)); previous = row; broken = false;
+            if (anchor == null) { anchor = row; path.add(view(row)); }
+            previous = row; broken = false;
         }
         if (path.size() > 1) legs.add(new TrackLegView((int)Math.round(legDistance), path));
         return new Result((int)Math.round(total), (int)(seconds / 60), pairs > 0, rejected, List.copyOf(legs), List.copyOf(gaps));
@@ -57,8 +58,7 @@ final class SalesTrackMetrics {
         return "ACCEPTED".equals(row.qualityStatus()) && row.clientOccurredAt() != null
                 && row.longitude() != null && row.latitude() != null
                 && row.longitude().abs().doubleValue() <= 180 && row.latitude().abs().doubleValue() <= 90
-                && row.accuracyMeters() != null && row.accuracyMeters().doubleValue() > 0
-                && row.accuracyMeters().doubleValue() <= 100;
+                && row.accuracyMeters() != null && row.accuracyMeters().doubleValue() > 0;
     }
     private static Instant time(LocationPointRow row) { return row.clientOccurredAt() == null ? row.serverReceivedAt() : row.clientOccurredAt(); }
     private static TrackPointView view(LocationPointRow row) { return new TrackPointView(row.longitude(), row.latitude(), row.accuracyMeters(), row.clientOccurredAt(), row.serverReceivedAt(), row.source(), row.qualityStatus()); }

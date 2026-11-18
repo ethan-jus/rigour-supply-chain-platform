@@ -32,7 +32,22 @@ class SalesTrackMetricsTest {
     @Test void impossibleJumpCreatesGapAndWalkingAccumulatesBeyondAccuracy() {
         var jump=SalesTrackMetrics.calculate(List.of(point(0,40,SESSION,"ACCEPTED"),point(1,41,SESSION,"ACCEPTED")),1);
         assertThat(jump.gaps().getFirst().reason()).isEqualTo("IMPLAUSIBLE_SPEED");assertThat(jump.available()).isFalse();
-        var walk=SalesTrackMetrics.calculate(List.of(point(0,40,SESSION,"ACCEPTED"),point(10,40.00005,SESSION,"ACCEPTED"),point(20,40.0001,SESSION,"ACCEPTED")),1);
-        assertThat(walk.distanceMeters()).isBetween(10,12);
+        var walk=SalesTrackMetrics.calculate(List.of(point(0,40,SESSION,"ACCEPTED"),point(10,40.00005,SESSION,"ACCEPTED"),point(20,40.0002,SESSION,"ACCEPTED")),1);
+        assertThat(walk.distanceMeters()).isBetween(21,23);
+    }
+    @Test void overlappingUncertaintyDoesNotDrawOrAccumulateIndoorDrift() {
+        var result=SalesTrackMetrics.calculate(List.of(point(0,40,SESSION,"ACCEPTED"),point(60,40.00012,SESSION,"ACCEPTED"),point(120,39.99988,SESSION,"ACCEPTED"),point(180,40,SESSION,"ACCEPTED")),1);
+        assertThat(result.available()).isTrue(); assertThat(result.distanceMeters()).isZero();
+        assertThat(result.legs()).isEmpty(); assertThat(result.trackedMinutes()).isEqualTo(3);
+    }
+    @Test void drawnRouteUsesTheSameMovementAnchorsAsMileage() {
+        var result=SalesTrackMetrics.calculate(List.of(point(0,40,SESSION,"ACCEPTED"),point(60,40.00012,SESSION,"ACCEPTED"),point(120,40.0003,SESSION,"ACCEPTED")),1);
+        assertThat(result.legs()).hasSize(1); assertThat(result.legs().getFirst().points()).hasSize(2);
+        assertThat(result.distanceMeters()).isBetween(33,34);
+    }
+    @Test void qualityClassificationFollowsThePublishedPolicyNotAnotherHardcodedLimit() {
+        var a=new LocationPointRow(BigDecimal.valueOf(116),BigDecimal.valueOf(40),BigDecimal.valueOf(120),BASE,BASE,"APP_NATIVE","ACCEPTED",SESSION);
+        var b=new LocationPointRow(BigDecimal.valueOf(116),BigDecimal.valueOf(40.003),BigDecimal.valueOf(120),BASE.plusSeconds(60),BASE,"APP_NATIVE","ACCEPTED",SESSION);
+        assertThat(SalesTrackMetrics.calculate(List.of(a,b),1).distanceMeters()).isBetween(333,334);
     }
 }
