@@ -35,6 +35,12 @@ class StoreVisitCaptureServiceTest {
                 new SalesWorkQueryRepository.IdentityProjection(user,null,"ACTIVE"),
                 new SalesWorkQueryRepository.SalesProfile(profile,null,"E232",null,"ACTIVE",232L,"E232")));
         var workDay=mock(SalesWorkAttendanceRepository.WorkDaySnapshot.class);when(workDay.status()).thenReturn("ACTIVE");
+        when(workDay.businessDate()).thenReturn(LocalDate.of(2026,10,28));
+        when(workDay.timezoneId()).thenReturn("Asia/Shanghai");
+        var policyId=UUID.randomUUID();when(workDay.fieldPolicyVersionId()).thenReturn(policyId);
+        var policy=mock(SalesWorkQueryRepository.FieldPolicy.class);
+        when(policy.businessDayCutoff()).thenReturn(LocalTime.of(6,0));
+        when(context.resolvePolicyVersion(tenant,policyId)).thenReturn(policy);
         when(days.findWorkDay(tenant,profile,day)).thenReturn(Optional.of(workDay));
         var visit=mock(Visit.class);when(visit.id()).thenReturn("300");
         when(crm.checkIn(eq("100"),any())).thenReturn(visit);
@@ -53,6 +59,13 @@ class StoreVisitCaptureServiceTest {
         var active=mock(SalesWorkVisitRepository.VisitSnapshot.class);when(active.id()).thenReturn(UUID.randomUUID());
         when(visits.findActiveVisit(tenant,profile)).thenReturn(Optional.of(active));
         assertThatThrownBy(()->service.create(command)).isInstanceOf(StateConflictException.class);
+        verifyNoInteractions(crm,store);
+    }
+    @Test void expiredBusinessDayRejectsBeforeCreatingCrmFact() {
+        var expired=new StoreVisitCaptureService(context,days,store,crm,
+                Clock.fixed(Instant.parse("2026-10-28T22:00:00Z"),ZoneOffset.UTC),visits);
+        assertThatThrownBy(()->expired.create(command)).isInstanceOf(StateConflictException.class)
+                .hasMessageContaining("上一作业日已截止");
         verifyNoInteractions(crm,store);
     }
     @Test void concurrentCaptureConflictCancelsOnlyUnsubmittedCrmFact() {
