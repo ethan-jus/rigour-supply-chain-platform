@@ -9,12 +9,9 @@ import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterOrderView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView;
-import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
-import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
 import com.rigour.shared.core.api.ApiResponse;
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -121,35 +118,9 @@ public interface OrderRegisterApi {
     ApiResponse<OrderRegisterPaymentView> checkPayment(
             @PathVariable("id") Long id, @RequestBody PaymentCheckCommand command);
 
-    @GetMapping(BASE_PATH + "/statistics/period")
-    ApiResponse<PeriodStatisticsView> periodStatistics(
-            @RequestParam LocalDate dateFrom,
-            @RequestParam LocalDate dateTo,
-            @RequestParam(required = false) String groupBy,
-            @RequestParam(required = false) String regionCode,
-            @RequestParam(required = false) String ownerEmployeeCode,
-            @RequestParam(required = false) Long departmentId,
-            @RequestParam(required = false) Boolean includeSubDepartments,
-            @RequestParam(required = false) Long customerId,
-            @RequestParam(required = false) String customerName,
-            @RequestParam(required = false) String customerCode);
-
     /** 创建人下拉数据源；来自订单真实创建人，去空、去重、稳定排序。 */
     @GetMapping(BASE_PATH + "/creators")
     ApiResponse<List<String>> creators();
-
-    @GetMapping(BASE_PATH + "/statistics/receivables")
-    ApiResponse<OrderRegisterPage<ReceivablesView>> receivables(
-            @RequestParam(defaultValue = "0") int begin,
-            @RequestParam(defaultValue = "20") int step,
-            @RequestParam LocalDate asOfDate,
-            @RequestParam(defaultValue = "true") boolean hasUnpaid,
-            @RequestParam(required = false) String regionCode,
-            @RequestParam(required = false) String ownerEmployeeCode,
-            @RequestParam(required = false) Long departmentId,
-            @RequestParam(required = false) Boolean includeSubDepartments,
-            @RequestParam(required = false) Long customerId,
-            @RequestParam(required = false) String orderNo);
 
     @PostMapping(BASE_PATH + "/number-mappings")
     ApiResponse<OrderNumberMappingResult> mapOrderNumber(
@@ -241,27 +212,4 @@ public interface OrderRegisterApi {
             @RequestParam(required = false) Long productVariantId,
             @RequestParam(required = false) List<Long> productVariantIds);
 
-    @GetMapping(value = BASE_PATH + "/statistics/receivables/export", produces = "text/csv;charset=UTF-8")
-    ResponseEntity<byte[]> exportReceivables(
-            @RequestParam LocalDate asOfDate,
-            @RequestParam(defaultValue = "true") boolean hasUnpaid,
-            @RequestParam(required = false) String regionCode,
-            @RequestParam(required = false) String ownerEmployeeCode,
-            @RequestParam(required = false) Long departmentId,
-            @RequestParam(required = false) Boolean includeSubDepartments,
-            @RequestParam(required = false) Long customerId,
-            @RequestParam(required = false) String orderNo);
-
-    @GetMapping(value = BASE_PATH + "/statistics/period/export", produces = "text/csv;charset=UTF-8")
-    ResponseEntity<byte[]> exportPeriod(
-            @RequestParam LocalDate dateFrom,
-            @RequestParam LocalDate dateTo,
-            @RequestParam(required = false) String groupBy,
-            @RequestParam(required = false) String regionCode,
-            @RequestParam(required = false) String ownerEmployeeCode,
-            @RequestParam(required = false) Long departmentId,
-            @RequestParam(required = false) Boolean includeSubDepartments,
-            @RequestParam(required = false) Long customerId,
-            @RequestParam(required = false) String customerName,
-            @RequestParam(required = false) String customerCode);
 }

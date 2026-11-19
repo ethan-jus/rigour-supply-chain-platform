@@ -8,9 +8,6 @@ import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterOrderView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PaymentCheckCommand;
-import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
-import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodRow;
-import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
 import com.rigour.order.application.port.out.CrmCustomerAreaDisplayClient;
 import com.rigour.order.application.port.out.FundAttachmentUrlResolver;
 import com.rigour.order.application.port.out.HrEmployeeDisplayClient;
@@ -21,8 +18,6 @@ import com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.NumberMappingCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria;
-import com.rigour.order.application.port.out.OrderRegisterStore.PeriodCriteria;
-import com.rigour.order.application.port.out.OrderRegisterStore.ReceivablesCriteria;
 import com.rigour.order.domain.invoice.OrderInvoiceStatus;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
@@ -37,7 +32,6 @@ import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -321,69 +315,10 @@ public class OrderRegisterService {
         return new com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceReport(monthFrom, monthTo, generatedAt, namedRows);
     }
 
-    public PeriodStatisticsView periodStatistics(
-            LocalDate dateFrom,
-            LocalDate dateTo,
-            String groupBy,
-            String regionCode,
-            String ownerEmployeeCode,
-            Long departmentId,
-            Boolean includeSubDepartments,
-            Long customerId,
-            String customerName,
-            String customerCode) {
-        CallerIdentity actor = actor(READ_PERMISSION);
-        if (dateFrom == null || dateTo == null) throw badRequest("统计日期范围不能为空");
-        String normalizedGroup = text(groupBy, 16, "groupBy");
-        if (normalizedGroup != null
-                && !Set.of("region", "customer", "employee").contains(normalizedGroup.toLowerCase())) {
-            throw badRequest("groupBy只支持region、customer、employee");
-        }
-        var criteria =
-                new PeriodCriteria(
-                        dateFrom,
-                        dateTo,
-                        normalizedGroup,
-                        text(regionCode, 128, "regionCode"),
-                        text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        departmentScopeIds(actor, departmentId, includeSubDepartments),
-                        optionalId(customerId, "customerId无效"),
-                        text(customerName, 200, "customerName"),
-                        text(customerCode, 64, "customerCode"));
-        return withPeriodLabels(actor, store.periodStatistics(actor.tenantId().toString(), criteria));
-    }
-
     /** 创建人下拉数据源；返回订单真实创建人（来源创建人优先），去空、去重、稳定排序。 */
     public List<String> creators() {
         CallerIdentity actor = actor(READ_PERMISSION);
         return store.creators(actor.tenantId().toString());
-    }
-
-    public OrderRegisterPage<ReceivablesView> receivables(
-            int begin,
-            int step,
-            LocalDate asOfDate,
-            boolean hasUnpaid,
-            String regionCode,
-            String ownerEmployeeCode,
-            Long departmentId,
-            Boolean includeSubDepartments,
-            Long customerId,
-            String orderNo) {
-        CallerIdentity actor = actor(READ_PERMISSION);
-        if (asOfDate == null) throw badRequest("asOfDate不能为空");
-        var criteria =
-                new ReceivablesCriteria(
-                        asOfDate,
-                        hasUnpaid,
-                        text(regionCode, 128, "regionCode"),
-                        text(ownerEmployeeCode, 50, "ownerEmployeeCode"),
-                        departmentScopeIds(actor, departmentId, includeSubDepartments),
-                        optionalId(customerId, "customerId无效"),
-                        text(orderNo, 80, "orderNo"));
-        var result =
-                store.receivables(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
-        return withRegionNames(actor, result);
     }
 
     public OrderRegisterPage<NumberMappingView> numberMappings(
@@ -426,65 +361,6 @@ public class OrderRegisterService {
         }
         return store.applyNumberMapping(
                 actor.tenantId().toString(), command, actor.principalId().toString());
-    }
-
-    /**
-     * 期间统计分组标签补齐：region 用 CRM 客户归属地区主档展示名，其余分组用仓储已解析的名称。
-     * 补齐失败只回退到编码，不影响统计金额。
-     */
-    private PeriodStatisticsView withPeriodLabels(
-            CallerIdentity actor, PeriodStatisticsView view) {
-        if (view == null || view.rows().isEmpty()) return view;
-        Map<String, String> names = new LinkedHashMap<>();
-        if ("region".equalsIgnoreCase(view.groupBy())) {
-            Set<String> regionCodes = new LinkedHashSet<>();
-            for (PeriodRow row : view.rows()) {
-                if (row != null && row.key() != null && !row.key().isBlank())
-                    regionCodes.add(row.key().strip());
-            }
-            if (!regionCodes.isEmpty()) {
-                try {
-                    for (CrmCustomerAreaDisplayClient.CustomerAreaDisplay display :
-                            crmAreaDisplayClient.resolve(
-                                    crmServiceCaller(actor.tenantId()), regionCodes)) {
-                        if (display == null
-                                || display.areaCode() == null
-                                || display.areaName() == null) continue;
-                        names.put(display.areaCode().strip(), display.areaName().strip());
-                    }
-                } catch (RuntimeException ignored) {
-                    // 展示名补齐失败不阻断期间统计；地区编码仍可正常展示与筛选。
-                }
-            }
-        }
-        List<PeriodRow> rows =
-                view.rows().stream()
-                        .map(row -> withPeriodLabel(row, names))
-                        .toList();
-        return new PeriodStatisticsView(
-                view.dateFrom(),
-                view.dateTo(),
-                view.groupBy(),
-                view.totals(),
-                rows,
-                view.coverage());
-    }
-
-    private static PeriodRow withPeriodLabel(PeriodRow row, Map<String, String> names) {
-        if (row == null) return null;
-        String key = row.key() == null ? null : row.key().strip();
-        String label = row.label();
-        String resolved = key == null || key.isEmpty() ? null : names.get(key);
-        if (resolved != null && !resolved.isBlank()) label = resolved;
-        if (label == null || label.isBlank()) label = key == null || key.isEmpty() ? "未分配" : key;
-        return new PeriodRow(
-                row.key(),
-                label,
-                row.periodOrderAmount(),
-                row.periodReceivedAmount(),
-                row.periodRefundAmount(),
-                row.periodNetReceivedAmount(),
-                row.endingUnpaidAmount());
     }
 
     private <T> OrderRegisterPage<T> withRegionNames(
@@ -559,16 +435,6 @@ public class OrderRegisterService {
                             v.updatedBy(),
                             v.updatedTime(), v.syncedBy(), v.syncedAt(), v.checkedBy(),
                             v.checkedAt(), v.revision(), v.allocatedPaymentAmount(), v.productAllocations()).withPaymentOwner(v.paymentOwner());
-        }
-        if (item instanceof ReceivablesView v) {
-            return (T)
-                    new ReceivablesView(
-                            v.orderId(), v.orderNo(), v.sourceSystemCode(), v.customerId(),
-                            v.customerCode(), v.customerName(), v.regionCode(), name,
-                            v.ownerEmployeeCode(), v.ownerEmployeeName(), v.departmentName(),
-                            v.orderDate(), v.receivableAmount(), v.netReceivedAmount(),
-                            v.unpaidAmount(), v.overpaidAmount(), v.historyComplete(),
-                            v.coverageFrom());
         }
         return item;
     }
@@ -784,7 +650,6 @@ public class OrderRegisterService {
         if (item instanceof OrderRegisterOrderView v) return v.regionCode();
         if (item instanceof OrderRegisterLineView v) return v.regionCode();
         if (item instanceof OrderRegisterPaymentView v) return v.regionCode();
-        if (item instanceof ReceivablesView v) return v.regionCode();
         return null;
     }
 

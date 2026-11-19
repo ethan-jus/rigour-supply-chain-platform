@@ -1,20 +1,14 @@
 package com.rigour.analytics.api.v1;
 
 import com.rigour.analytics.api.v1.model.SupplyDashboardReceiptDetailsView;
-import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostImportCommand;
-import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostImportResultView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardDataTrustView;
-import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveCommand;
-import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOperatingAnalysisView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshRunView;
-import com.rigour.analytics.api.v1.model.SupplyDashboardReconciliationView;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
-import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -26,10 +20,7 @@ public interface AnalyticsSupplyDashboardApi {
     String OPERATING_ANALYSIS_PATH = "/api/v1/analytics/supply/dashboard/operating-analysis";
     String REFRESH_RUNS_PATH = "/api/v1/analytics/supply/dashboard/refresh-runs";
     String TRUST_PATH = "/api/v1/analytics/supply/dashboard/trust";
-    String RECONCILIATION_PATH = "/api/v1/analytics/supply/dashboard/reconciliation";
     String FILTER_OPTIONS_PATH = "/api/v1/analytics/supply/dashboard/filter-options";
-    String CITY_COST_IMPORT_PATH = "/api/v1/analytics/supply/city-cost-records/import";
-    String FEISHU_ARCHIVES_PATH = "/api/v1/analytics/supply/legacy/feishu-archives";
 
     @GetMapping(OVERVIEW_PATH)
     ApiResponse<SupplyDashboardOverviewView> overview(
@@ -71,27 +62,10 @@ public interface AnalyticsSupplyDashboardApi {
     @GetMapping(TRUST_PATH)
     ApiResponse<SupplyDashboardDataTrustView> trust();
 
-    @GetMapping(RECONCILIATION_PATH)
-    ApiResponse<SupplyDashboardReconciliationView> reconciliation(
-            @RequestParam(required = false) Instant from,
-            @RequestParam(required = false) Instant to,
-            @RequestParam(required = false) String regionCode,
-            @RequestParam(required = false) String ownerStaffCode,
-            @RequestParam(required = false) String customerTypeCode,
-            @RequestParam(required = false) Long productCategoryId,
-            @RequestParam(required = false) String sourceSystemCode);
 
     @GetMapping(FILTER_OPTIONS_PATH)
     ApiResponse<SupplyDashboardFilterOptionsView> filterOptions();
 
-    @PostMapping(CITY_COST_IMPORT_PATH)
-    ApiResponse<SupplyDashboardCityCostImportResultView> importCityCosts(
-            @RequestBody SupplyDashboardCityCostImportCommand command);
 
-    @GetMapping(FEISHU_ARCHIVES_PATH)
-    ApiResponse<List<SupplyDashboardFeishuArchiveView>> feishuArchives();
 
-    @PostMapping(FEISHU_ARCHIVES_PATH)
-    ApiResponse<SupplyDashboardFeishuArchiveView> registerFeishuArchive(
-            @RequestBody SupplyDashboardFeishuArchiveCommand command);
 }

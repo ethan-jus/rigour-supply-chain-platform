@@ -11,9 +11,6 @@ import com.rigour.integration.application.port.out.DhbSyncStore;
 import com.rigour.integration.application.port.out.ErpDhbDomainSyncClient;
 import com.rigour.integration.application.port.out.ErpProductProjectionClient;
 import com.rigour.integration.application.port.out.ErpStockOutProjectionClient;
-import com.rigour.integration.application.port.out.FeishuBitableClient;
-import com.rigour.integration.application.port.out.FeishuImportStore;
-import com.rigour.integration.application.port.out.FeishuJsapiClient;
 import com.rigour.integration.application.port.out.HrEmployeeProjectionClient;
 import com.rigour.integration.application.port.out.HrDhbStaffSyncClient;
 import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
@@ -26,12 +23,6 @@ import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationProper
 import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationScheduler;
 import com.rigour.integration.application.service.dhb.DhbSyncOrchestrationService;
 import com.rigour.integration.application.service.dhb.ProductImageObjectKeyFactory;
-import com.rigour.integration.application.service.feishu.FeishuJsapiSignService;
-import com.rigour.integration.application.service.feishu.FeishuAttachmentImportService;
-import com.rigour.integration.application.service.feishu.FeishuImportAsyncRunService;
-import com.rigour.integration.application.service.feishu.FeishuImportBundleService;
-import com.rigour.integration.application.service.feishu.FeishuAttachmentObjectKeyFactory;
-import com.rigour.integration.infrastructure.feishu.FeishuBitableClientAdapter;
 import com.rigour.integration.infrastructure.dhb.DhbClientAdapter;
 import com.rigour.integration.infrastructure.dhb.DhbSecretResolver;
 import com.rigour.integration.infrastructure.dhb.EnvDhbSecretResolver;
@@ -44,18 +35,11 @@ import com.rigour.integration.infrastructure.domain.HttpErpStockOutProjectionCli
 import com.rigour.integration.infrastructure.domain.HttpHrEmployeeProjectionClient;
 import com.rigour.integration.infrastructure.domain.HttpHrDhbStaffSyncClient;
 import com.rigour.integration.infrastructure.domain.HttpOrderSalesOrderProjectionClient;
-import com.rigour.integration.infrastructure.feishu.FeishuJsapiClientAdapter;
 import com.rigour.integration.infrastructure.lease.DhbConnectorLeaseProperties;
 import com.rigour.integration.infrastructure.media.ProductMediaSyncWorker;
 import com.rigour.integration.infrastructure.persistence.mapper.DhbConnectorMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.ExternalObjectMappingMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationDeadLetterMapper;
-import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportBatchMapper;
-import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportIssueMapper;
-import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportRawRowMapper;
-import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportTableMapper;
-import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportTemplateDependencyMapper;
-import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFeishuImportTemplateMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationFieldMappingMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationManualResolutionMapper;
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationOrderMirrorMapper;
@@ -70,7 +54,6 @@ import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncR
 import com.rigour.integration.infrastructure.persistence.mapper.IntegrationSyncTaskMapper;
 import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusDhbIntegrationStore;
 import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusDhbSyncStore;
-import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusFeishuImportStore;
 import com.rigour.integration.infrastructure.persistence.repository.MybatisPlusProductMediaSyncStore;
 import com.rigour.shared.context.TrustedContextSigner;
 import com.rigour.settings.client.BusinessDictionaryBatchClient;
@@ -86,7 +69,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.web.client.RestClient;
@@ -95,8 +77,8 @@ import org.springframework.web.client.RestClient;
 @Configuration(proxyBeanMethods = false)
 @EnableScheduling
 @MapperScan("com.rigour.integration.infrastructure.persistence.mapper")
-@EnableConfigurationProperties({DhbClientProperties.class, FeishuClientProperties.class,
-        FeishuImportProperties.class, ProductMediaProperties.class, DhbConnectorLeaseProperties.class,
+@EnableConfigurationProperties({DhbClientProperties.class,
+        ProductMediaProperties.class, DhbConnectorLeaseProperties.class,
         DhbSyncOrchestrationProperties.class})
 public final class IntegrationInfrastructureConfiguration {
 
@@ -111,87 +93,6 @@ public final class IntegrationInfrastructureConfiguration {
                                       DhbSecretResolver secretResolver,
                                       DhbClientProperties properties) {
         return new DhbClientAdapter(restClientBuilder, secretResolver, properties);
-    }
-
-    @Bean
-    FeishuJsapiClient feishuJsapiClient(RestClient.Builder restClientBuilder,
-                                        FeishuClientProperties properties) {
-        return new FeishuJsapiClientAdapter(restClientBuilder, properties);
-    }
-
-    @Bean
-    FeishuBitableClient feishuBitableClient(RestClient.Builder restClientBuilder,
-                                            FeishuClientProperties properties) {
-        return new FeishuBitableClientAdapter(restClientBuilder, properties);
-    }
-
-    @Bean
-    FeishuJsapiSignService feishuJsapiSignService(
-            FeishuJsapiClient client, FeishuClientProperties properties) {
-        return new FeishuJsapiSignService(client, properties.getAppId(),
-                properties.allowedOriginValues(), properties.isAllowInsecureLan());
-    }
-
-    @Bean
-    FeishuImportStore feishuImportStore(
-            IntegrationFeishuImportBatchMapper batchMapper,
-            IntegrationFeishuImportTableMapper tableMapper,
-            IntegrationFeishuImportIssueMapper issueMapper,
-            IntegrationFeishuImportRawRowMapper rawRowMapper,
-            IntegrationFeishuImportTemplateMapper templateMapper,
-            IntegrationFeishuImportTemplateDependencyMapper templateDependencyMapper,
-            JdbcTemplate jdbcTemplate,
-            PlatformTransactionManager transactionManager,
-            tools.jackson.databind.ObjectMapper objectMapper) {
-        return new MybatisPlusFeishuImportStore(batchMapper, tableMapper, issueMapper, rawRowMapper,
-                templateMapper, templateDependencyMapper, jdbcTemplate, transactionManager, objectMapper);
-    }
-
-    @Bean
-    FeishuImportBundleService feishuImportBundleService(
-            FeishuImportStore store,
-            OrderSalesOrderProjectionClient orderSalesOrderProjectionClient,
-            HrEmployeeProjectionClient hrEmployeeProjectionClient,
-            CrmCustomerProjectionClient crmCustomerProjectionClient,
-            ErpProductProjectionClient erpProductProjectionClient,
-            BusinessDictionaryBatchClient businessDictionaryBatchClient,
-            FeishuAttachmentImportService feishuAttachmentImportService,
-            FeishuImportProperties properties,
-            Clock clock) {
-        return new FeishuImportBundleService(store, orderSalesOrderProjectionClient,
-                hrEmployeeProjectionClient, crmCustomerProjectionClient, erpProductProjectionClient,
-                businessDictionaryBatchClient, feishuAttachmentImportService, properties, clock);
-    }
-
-    @Bean(destroyMethod = "shutdown")
-    ExecutorService feishuImportExecutor(
-            @Value("${rigour.integration.feishu.import-bundle.worker-concurrency:2}") int workerConcurrency) {
-        int concurrency = Math.max(1, Math.min(workerConcurrency, 8));
-        return Executors.newFixedThreadPool(concurrency, runnable -> {
-            Thread thread = new Thread(runnable, "rigour-feishu-import-worker");
-            thread.setDaemon(true);
-            return thread;
-        });
-    }
-
-    @Bean
-    FeishuImportAsyncRunService feishuImportAsyncRunService(
-            FeishuImportBundleService service,
-            FeishuImportStore store,
-            @Qualifier("feishuImportExecutor") ExecutorService feishuImportExecutor,
-            Clock clock) {
-        return new FeishuImportAsyncRunService(service, store, feishuImportExecutor, clock);
-    }
-
-    @Bean
-    FeishuAttachmentImportService feishuAttachmentImportService(
-            FeishuImportStore store,
-            FeishuBitableClient feishuBitableClient,
-            ProductMediaStorage productMediaStorage,
-            FeishuAttachmentObjectKeyFactory feishuAttachmentObjectKeyFactory,
-            FeishuImportProperties properties) {
-        return new FeishuAttachmentImportService(store, feishuBitableClient, productMediaStorage,
-                feishuAttachmentObjectKeyFactory, properties.getDefaultSourceUrl());
     }
 
     @Bean
@@ -426,11 +327,6 @@ public final class IntegrationInfrastructureConfiguration {
     @Bean
     DhbAttachmentObjectKeyFactory dhbAttachmentObjectKeyFactory(ProductMediaProperties properties) {
         return new DhbAttachmentObjectKeyFactory(properties.getFundAttachmentPrefix());
-    }
-
-    @Bean
-    FeishuAttachmentObjectKeyFactory feishuAttachmentObjectKeyFactory(ProductMediaProperties properties) {
-        return new FeishuAttachmentObjectKeyFactory(properties.getFeishuAttachmentPrefix());
     }
 
     @Bean

@@ -5,6 +5,7 @@ import com.rigour.hr.application.port.out.HrEmployeeStore;
 import com.rigour.hr.application.port.out.HrOrganizationStore;
 import com.rigour.hr.application.service.support.HrServiceValidation;
 import com.rigour.hr.application.service.support.HrEmployeeValidation;
+import com.rigour.tenant.iam.client.SupplyAuthorizationContext;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
@@ -34,7 +35,12 @@ public class HrOrganizationService {
     }
 
     public HrDepartmentView saveDepartment(Long id, HrDepartmentCommand c) {
-        CallerIdentity actor = actor(id == null ? "hr:department:create" : "hr:department:update");
+        String action = id == null ? "hr:department:create" : "hr:department:update";
+        if (id == null && c != null && c.parentId() != null
+                && SupplyAuthorizationContext.current().map(SupplyAuthorizationContext::active).orElse(false)) {
+            action = "hr:department:create-child";
+        }
+        CallerIdentity actor = actor(action);
         if (c == null) throw bad("部门参数不能为空");
         if (c.sortOrder() < 0 || c.sortOrder() > 99999) throw bad("排序值应在 0 到 99999 之间");
         if (c.statusCode() == null || !List.of("ACTIVE", "INACTIVE").contains(c.statusCode()))

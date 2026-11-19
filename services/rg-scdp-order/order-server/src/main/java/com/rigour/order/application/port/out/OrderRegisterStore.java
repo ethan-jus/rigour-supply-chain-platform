@@ -7,11 +7,8 @@ import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterOrderView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView;
-import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
-import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -45,13 +42,8 @@ public interface OrderRegisterStore {
             String actorId,
             Instant checkedAt);
 
-    PeriodStatisticsView periodStatistics(String tenantId, PeriodCriteria criteria);
-
     /** 创建人下拉数据源；来自订单真实创建人，去空、去重、稳定排序。 */
     List<String> creators(String tenantId);
-
-    OrderRegisterPage<ReceivablesView> receivables(
-            String tenantId, int begin, int step, ReceivablesCriteria criteria);
 
     OrderRegisterPage<NumberMappingView> numberMappings(
             String tenantId, int begin, int step, NumberMappingCriteria criteria);
@@ -189,30 +181,6 @@ public interface OrderRegisterStore {
             String createdBy, List<Long> productIds, Long productVariantId, List<Long> productVariantIds, Set<String> departmentEmployeeCodes) {
             this(orderNo, customerId, customerName, customerCode, regionCode, ownerEmployeeCode, departmentIds, orderDateFrom, orderDateTo, orderStatusCode, paymentNo, transactionNo, paymentStatusCode, paymentTimeFrom, paymentTimeTo, sortBy, sortDirection, createdBy, productIds, productVariantId, productVariantIds, departmentEmployeeCodes, Map.of());
         }
-    }
-
-    record PeriodCriteria(
-            LocalDate dateFrom,
-            LocalDate dateTo,
-            String groupBy,
-            String regionCode,
-            String ownerEmployeeCode,
-            /** 部门筛选范围：命中订单归属快照 snap.department_id，含子部门时是多值。 */
-            Set<Long> departmentIds,
-            Long customerId,
-            String customerName,
-            String customerCode) {
-    }
-
-    record ReceivablesCriteria(
-            LocalDate asOfDate,
-            boolean hasUnpaid,
-            String regionCode,
-            String ownerEmployeeCode,
-            /** 部门筛选范围：命中订单归属快照 snap.department_id，含子部门时是多值。 */
-            Set<Long> departmentIds,
-            Long customerId,
-            String orderNo) {
     }
 
     record NumberMappingCriteria(String state, String internalOrderNo, String dhbOrderNo) {

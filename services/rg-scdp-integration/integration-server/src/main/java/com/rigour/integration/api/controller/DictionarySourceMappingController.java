@@ -13,15 +13,9 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping(DictionarySourceMappingApi.BASE_PATH)
 public class DictionarySourceMappingController implements DictionarySourceMappingApi {
     private final DictionarySourceMappingService service;
-    private final com.rigour.integration.application.service.feishu.FeishuDictionaryGovernanceService governance;
-    public DictionarySourceMappingController(DictionarySourceMappingService service,
-            com.rigour.integration.application.service.feishu.FeishuDictionaryGovernanceService governance) { this.service=service;this.governance=governance; }
+    public DictionarySourceMappingController(DictionarySourceMappingService service) { this.service=service; }
     @Override @GetMapping
     public ApiResponse<List<DictionarySourceMappingView>> list(@RequestParam String dictionaryCode) { return ApiResponse.success(service.list(dictionaryCode)); }
     @Override @PutMapping("/{id}")
     public ApiResponse<DictionarySourceMappingView> update(@PathVariable Long id,@RequestBody DictionarySourceMappingCommand command) { return ApiResponse.success(service.update(id,command)); }
-    @Override @PostMapping("/rescan")
-    public ApiResponse<com.rigour.integration.api.v1.model.DictionaryRescanResult> rescan(@RequestParam String dictionaryCode) {
-        return ApiResponse.success(governance.rescan(dictionaryCode));
-    }
 }

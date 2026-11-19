@@ -6,14 +6,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.rigour.order.api.v1.model.OrderRegisterModels.HistoryCoverage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
-import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodRow;
-import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
-import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
 import com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria;
-import com.rigour.order.application.port.out.OrderRegisterStore.PeriodCriteria;
-import com.rigour.order.application.port.out.OrderRegisterStore.ReceivablesCriteria;
 import com.rigour.shared.context.TestAuthorizationContext;
 
 import org.flywaydb.core.Flyway;
@@ -28,7 +23,6 @@ import org.testcontainers.mysql.MySQLContainer;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -256,149 +250,17 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
-    void periodTotalsCoverOrderReceivedRefundNetAndEndingUnpaid() {
-        PeriodStatisticsView view = store.periodStatistics(TENANT, period("region", null, null, null, null));
-
-        assertThat(view.dateFrom()).isEqualTo(LocalDate.parse("2026-09-01"));
-        assertThat(view.dateTo()).isEqualTo(LocalDate.parse("2026-09-17"));
-        assertThat(view.groupBy()).isEqualTo("region");
-        assertThat(view.totals().periodOrderAmount()).isEqualByComparingTo("340");
-        // PM-6 挂在 SO-7（8 月订单）上，期间实收按收款时间口径计入，不受订单日期限制。
-        assertThat(view.totals().periodReceivedAmount()).isEqualByComparingTo("205");
-        assertThat(view.totals().periodRefundAmount()).isEqualByComparingTo("20");
-        assertThat(view.totals().periodNetReceivedAmount()).isEqualByComparingTo("185");
-        assertThat(view.totals().endingUnpaidAmount()).isEqualByComparingTo("245");
-    }
-
-    @Test
-    void periodRowsGroupByRegionUseSnapshotAndKeepKeyLabelContract() {
-        PeriodStatisticsView view = store.periodStatistics(TENANT, period("region", null, null, null, null));
-
-        assertThat(view.rows()).extracting(PeriodRow::key).containsExactly("HZ", "BJ", null);
-        assertThat(view.rows()).extracting(PeriodRow::label).containsExactly("HZ", "BJ", null);
-
-        PeriodRow hangzhou = view.rows().get(0);
-        assertThat(hangzhou.periodOrderAmount()).isEqualByComparingTo("260");
-        assertThat(hangzhou.periodReceivedAmount()).isEqualByComparingTo("205");
-        assertThat(hangzhou.periodRefundAmount()).isEqualByComparingTo("20");
-        assertThat(hangzhou.periodNetReceivedAmount()).isEqualByComparingTo("185");
-        assertThat(hangzhou.endingUnpaidAmount()).isEqualByComparingTo("165");
-
-        PeriodRow beijing = view.rows().get(1);
-        assertThat(beijing.periodOrderAmount()).isEqualByComparingTo("50");
-        assertThat(beijing.periodReceivedAmount()).isEqualByComparingTo("0");
-        assertThat(beijing.endingUnpaidAmount()).isEqualByComparingTo("50");
-
-        PeriodRow unassigned = view.rows().get(2);
-        assertThat(unassigned.periodOrderAmount()).isEqualByComparingTo("30");
-        assertThat(unassigned.endingUnpaidAmount()).isEqualByComparingTo("30");
-    }
-
-    @Test
-    void periodRowsGroupByCustomerAndEmployeeResolveReadableLabels() {
-        PeriodStatisticsView customers =
-                store.periodStatistics(TENANT, period("customer", null, null, null, null));
-        assertThat(customers.rows()).extracting(PeriodRow::key).containsExactly("1", "3", "2", "5");
-        assertThat(customers.rows())
-                .extracting(PeriodRow::label)
-                .containsExactly("杭州甲客户", "杭州乙客户", "北京丙客户", "超额客户");
-
-        PeriodStatisticsView employees =
-                store.periodStatistics(TENANT, period("employee", null, null, null, null));
-        assertThat(employees.rows()).extracting(PeriodRow::key).containsExactly("EMP-1", "EMP-2");
-        assertThat(employees.rows()).extracting(PeriodRow::label).containsExactly("张三", "赵六");
-        assertThat(employees.rows().get(0).periodOrderAmount()).isEqualByComparingTo("260");
-        assertThat(employees.rows().get(1).periodOrderAmount()).isEqualByComparingTo("80");
-    }
-
-    @Test
-    void periodFiltersByCustomerAndRegionStillApplyToRowsAndTotals() {
-        PeriodStatisticsView filtered =
-                store.periodStatistics(TENANT, period("region", "HZ", null, "甲", null));
-        assertThat(filtered.totals().periodOrderAmount()).isEqualByComparingTo("200");
-        assertThat(filtered.rows()).extracting(PeriodRow::key).containsExactly("HZ");
-
-        // 员工筛选按订单自身员工字段，分组展示优先冻结快照；SO-6 订单侧 EMP-2、快照侧 HZ/EMP-1。
-        PeriodStatisticsView employeeFiltered =
-                store.periodStatistics(TENANT, period("region", null, "EMP-2", null, null));
-        assertThat(employeeFiltered.totals().periodOrderAmount()).isEqualByComparingTo("140");
-        assertThat(employeeFiltered.rows()).extracting(PeriodRow::key).containsExactly("HZ", "BJ", null);
-        assertThat(employeeFiltered.rows().get(0).periodOrderAmount()).isEqualByComparingTo("60");
-    }
-
-    @Test
-    void periodRejectsInvertedRangeAndIgnoresDeletedOrders() {
-        assertThat(
-                        jdbc.queryForObject(
-                                "SELECT COUNT(*) FROM order_sales_order WHERE tenant_id=? AND deleted=1",
-                                Long.class,
-                                TENANT))
-                .isEqualTo(1L);
-        assertThatThrownBy(
-                        () ->
-                                store.periodStatistics(
-                                        TENANT,
-                                        new PeriodCriteria(
-                                                LocalDate.parse("2026-09-17"),
-                                                LocalDate.parse("2026-09-01"),
-                                                "region",
-                                                null,
-                                                null,
-                                                null,
-                                                null,
-                                                null,
-                                                null)))
-                .hasMessageContaining("dateFrom必须早于dateTo");
-        PeriodStatisticsView view = store.periodStatistics(TENANT, period("region", null, null, null, null));
-        assertThat(view.totals().periodOrderAmount()).isEqualByComparingTo("340");
-    }
-
-    @Test
     void historyCoverageRequiresFinancialEventsBeforeCutover() {
-        HistoryCoverage missing = store.periodStatistics(TENANT, period(null, null, null, null, null)).coverage();
+        HistoryCoverage missing = store.orders(TENANT, 0, 1, new OrderCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null)).coverage();
         assertThat(missing.historyComplete()).isFalse();
         assertThat(missing.missingCount()).isEqualTo(2L);
         assertThat(missing.coverageFrom()).isEqualTo(Instant.parse("2026-09-03T16:00:00Z"));
         assertThat(missing.message()).contains("历史资金事件");
 
         HistoryCoverage covered =
-                store.periodStatistics(TENANT_COVERED, period(null, null, null, null, null)).coverage();
+                store.orders(TENANT_COVERED, 0, 1, new OrderCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null)).coverage();
         assertThat(covered.historyComplete()).isTrue();
         assertThat(covered.missingCount()).isZero();
-    }
-
-    @Test
-    void receivablesTotalsExposeFourAmounts() {
-        var unpaidOnly =
-                store.receivables(
-                        TENANT, 0, 20, new ReceivablesCriteria(LocalDate.parse("2026-09-17"), true, null, null, null, null, null));
-        assertThat(unpaidOnly.total()).isEqualTo(5L);
-        assertThat(unpaidOnly.totals())
-                .containsOnlyKeys(
-                        "receivableAmount", "netReceivedAmount", "unpaidAmount", "overpaidAmount");
-        assertThat(unpaidOnly.totals().get("receivableAmount")).isEqualByComparingTo("440");
-        assertThat(unpaidOnly.totals().get("netReceivedAmount")).isEqualByComparingTo("195");
-        assertThat(unpaidOnly.totals().get("unpaidAmount")).isEqualByComparingTo("245");
-        assertThat(unpaidOnly.totals().get("overpaidAmount")).isEqualByComparingTo("0");
-
-        var all =
-                store.receivables(
-                        TENANT, 0, 20, new ReceivablesCriteria(LocalDate.parse("2026-09-17"), false, null, null, null, null, null));
-        assertThat(all.total()).isEqualTo(6L);
-        assertThat(all.totals().get("receivableAmount")).isEqualByComparingTo("450");
-        assertThat(all.totals().get("netReceivedAmount")).isEqualByComparingTo("210");
-        assertThat(all.totals().get("unpaidAmount")).isEqualByComparingTo("245");
-        assertThat(all.totals().get("overpaidAmount")).isEqualByComparingTo("5");
-
-        ReceivablesView overpaid =
-                all.items().stream()
-                        .filter(item -> "SO-7".equals(item.orderNo()))
-                        .findFirst()
-                        .orElseThrow();
-        assertThat(overpaid.receivableAmount()).isEqualByComparingTo("10");
-        assertThat(overpaid.netReceivedAmount()).isEqualByComparingTo("15");
-        assertThat(overpaid.unpaidAmount()).isEqualByComparingTo("0");
-        assertThat(overpaid.overpaidAmount()).isEqualByComparingTo("5");
     }
 
     @Test
@@ -1311,20 +1173,6 @@ class JdbcOrderRegisterStoreMySqlTest {
                 status);
     }
 
-    private static PeriodCriteria period(
-            String groupBy, String region, String employee, String customerName, String customerCode) {
-        return new PeriodCriteria(
-                LocalDate.parse("2026-09-01"),
-                LocalDate.parse("2026-09-17"),
-                groupBy,
-                region,
-                employee,
-                null,
-                null,
-                customerName,
-                customerCode);
-    }
-
     private static void fixture() {
         long order1 = order("SO-1", 1L, "C-1", "杭州甲客户", "HZ", "EMP-1", "张三", "2026-08-20T02:00:00Z", 100, 0);
         long order2 = order("SO-2", 1L, "C-1", "杭州甲客户", "HZ", "EMP-1", "张三", "2026-09-10T02:00:00Z", 200, 0);
@@ -1386,12 +1234,6 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(payments.total()).isEqualTo(1);
         assertThat(payments.totals().get("receivedAmount")).isEqualByComparingTo("0");
         assertThat(payments.totals().get("checkedAmount")).isEqualByComparingTo("0");
-        var receivables = store.receivables(tenant,0,20,new ReceivablesCriteria(LocalDate.parse("2026-11-04"),false,null,null,null,null,null));
-        assertThat(receivables.total()).isZero();
-        assertThat(receivables.totals().get("receivableAmount")).isEqualByComparingTo("0");
-        var period = store.periodStatistics(tenant,new PeriodCriteria(LocalDate.parse("2026-11-01"),LocalDate.parse("2026-11-04"),"region",null,null,null,null,null,null));
-        assertThat(period.totals().periodOrderAmount()).isEqualByComparingTo("0");
-        assertThat(period.totals().periodReceivedAmount()).isEqualByComparingTo("0");
         assertThat(store.monthlyPerformance(tenant,Instant.parse("2026-11-01T00:00:00Z"),Instant.parse("2026-12-01T00:00:00Z"))).isEmpty();
     }
 

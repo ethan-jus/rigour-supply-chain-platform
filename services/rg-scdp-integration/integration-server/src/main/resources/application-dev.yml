@@ -69,12 +69,6 @@ rigour:
         # 未配置时使用代码默认 2026-09-04T00:00:00+08:00（订单业务分界）。
         # 订货宝当前数据自 2026-08-18 起（2026-09-18 只读核对：8-18 之前订单查询 total=0）。
         scheduled-window-from: "2026-08-18T00:00:00+08:00"
-    feishu:
-      app-id: "cli_aafff3a596b89cdc"
-      allowed-origins: "http://localhost:5200"
-      allow-insecure-lan: true
-      import-bundle:
-        default-source-url: "${RIGOUR_FEISHU_IMPORT_BUNDLE_DEFAULT_SOURCE_URL:https://mcn7tpu25x8w.feishu.cn/base/LUvobJ32Fa1dKesorBhc7VF8nye}"
   business-settings:
     base-url: "${RIGOUR_BUSINESS_SETTINGS_BASE_URL:http://rigour-business-settings-service}"
   hr:

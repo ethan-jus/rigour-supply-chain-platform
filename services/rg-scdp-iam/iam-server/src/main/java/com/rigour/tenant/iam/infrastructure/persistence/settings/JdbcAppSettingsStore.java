@@ -154,7 +154,12 @@ SELECT COUNT(*) FROM iam_user u JOIN iam_tenant t ON t.id=u.tenant_id
             return new Context(false, canBootstrap(actor), "ACTIVE", 0, Set.of());
         long version = readOnce(new ReadKey("version", actor, null), () -> loadAuthorizationVersion(actor));
         // 版本查询释放连接后再读取权限，避免并发请求持有连接并等待第二个连接。
-        return new Context(true, false, "ACTIVE", version, permissions(actor));
+        Set<String> permissions = permissions(actor);
+        Map<String, String> labels = rows(actor).stream()
+                .filter(node -> "BUTTON".equals(node.type()) && node.permissionCode() != null
+                        && permissions.contains(node.permissionCode()) && "ACTIVE".equals(node.status()))
+                .collect(Collectors.toMap(Node::permissionCode, Node::name, (first, other) -> first));
+        return new Context(true, false, "ACTIVE", version, permissions, labels);
     }
 
     private boolean canBootstrap(Actor actor) {
@@ -257,7 +262,7 @@ VALUES(?,?,?,'SUPPLY_BOOTSTRAP_ADMIN','供应链初始化管理员',TRUE)
             if ("BUTTON".equals(node.type())
                     && (node.parentId() == null
                             || !all.containsKey(node.parentId())
-                            || !"PAGE".equals(all.get(node.parentId()).type()))) continue;
+                            || !Set.of("MENU", "PAGE").contains(all.get(node.parentId()).type()))) continue;
             UUID parent = all.containsKey(node.parentId()) ? node.parentId() : null;
             result.put(
                     node.id(),
@@ -390,7 +395,7 @@ SELECT resource_id,display_name_override,icon_key_override,sort_order_override,v
                 name,
                 icon,
                 sort,
-                visible,
+                !"BUTTON".equals(n.type()) && visible,
                 status,
                 n.protectedNode(),
                 n.version(),
@@ -403,32 +408,37 @@ SELECT resource_id,display_name_override,icon_key_override,sort_order_override,v
 
     public Set<String> permissions(Actor actor) {
         if (!initialized(actor) || !eligible(actor)) return Set.of();
-        Map<UUID, Node> nodes =
-                rows(actor).stream().collect(Collectors.toMap(Node::id, Function.identity()));
-        Set<UUID> granted = grantIds(actor);
-        Set<UUID> entitled =
-                catalogRows(actor).stream().map(Node::resourceId).collect(Collectors.toSet());
-        return nodes.values().stream()
-                .filter(n -> granted.contains(n.id()) && entitled.contains(n.resourceId()))
+        return grantedPermissions(actor, grantIds(actor));
+    }
+
+    /** 页面可以声明访问依赖。同一权限存在独立操作节点时，只有操作节点能授予该权限。 */
+    static List<Node> enabledPermissionNodes(List<Node> rows, List<Node> catalog) {
+        Map<UUID, Node> nodes = rows.stream().collect(Collectors.toMap(Node::id, Function.identity()));
+        Set<UUID> entitled = catalog.stream().map(Node::resourceId).collect(Collectors.toSet());
+        Set<String> dedicated = java.util.stream.Stream.concat(catalog.stream(), rows.stream())
+                .filter(n -> "BUTTON".equals(n.type()) && n.permissionCode() != null)
+                .map(Node::permissionCode).collect(Collectors.toSet());
+        return rows.stream()
+                .filter(n -> n.permissionCode() != null && entitled.contains(n.resourceId()))
+                .filter(n -> "BUTTON".equals(n.type()) || !dedicated.contains(n.permissionCode()))
                 .filter(n -> AppMenuTree.enabled(n, nodes))
-                .map(Node::permissionCode)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toUnmodifiableSet());
+                .toList();
+    }
+
+    private List<Node> permissionNodes(Actor actor) {
+        return readOnce(new ReadKey("permissionNodes", actor, null),
+                () -> enabledPermissionNodes(rows(actor), catalogRows(actor)));
+    }
+
+    Set<String> grantedPermissions(Actor actor, Set<UUID> grants) {
+        return permissionNodes(actor).stream()
+                .filter(n -> grants.contains(n.id()))
+                .map(Node::permissionCode).collect(Collectors.toUnmodifiableSet());
     }
 
     public Set<UUID> enabledActionNodes(Actor actor, String action) {
-        Map<UUID, Node> nodes =
-                rows(actor).stream().collect(Collectors.toMap(Node::id, Function.identity()));
-        Set<UUID> entitled =
-                catalogRows(actor).stream().map(Node::resourceId).collect(Collectors.toSet());
-        return nodes.values().stream()
-                .filter(
-                        n ->
-                                action.equals(n.permissionCode())
-                                        && entitled.contains(n.resourceId())
-                                        && AppMenuTree.enabled(n, nodes))
-                .map(Node::id)
-                .collect(Collectors.toSet());
+        return permissionNodes(actor).stream()
+                .filter(n -> action.equals(n.permissionCode())).map(Node::id).collect(Collectors.toSet());
     }
 
     public boolean eligible(Actor actor) {
@@ -517,19 +527,7 @@ SELECT m.member_kind,b.employee_code,b.hr_access_version FROM iam_app_member m
                                                     bin(actor.principalId()),
                                                     bin(excludedRole)
                                                 }));
-        Map<UUID, Node> nodes =
-                rows(actor).stream().collect(Collectors.toMap(Node::id, Function.identity()));
-        Set<UUID> entitled =
-                catalogRows(actor).stream().map(Node::resourceId).collect(Collectors.toSet());
-        return nodes.values().stream()
-                .filter(
-                        n ->
-                                grants.contains(n.id())
-                                        && entitled.contains(n.resourceId())
-                                        && AppMenuTree.enabled(n, nodes))
-                .map(Node::permissionCode)
-                .filter(Objects::nonNull)
-                .collect(Collectors.toSet());
+        return grantedPermissions(actor, grants);
     }
 
     static boolean managementPermissions(Set<String> permissions) {
@@ -713,7 +711,7 @@ SELECT g.menu_node_id FROM iam_app_member m
                                     name,
                                     icon,
                                     c.sortOrder(),
-                                    c.visible(),
+                                    !"BUTTON".equals(c.type()) && c.visible(),
                                     c.status(),
                                     old != null
                                             ? old.protectedNode()
@@ -1009,6 +1007,13 @@ SELECT DISTINCT r.id,r.parent_id,r.resource_type,r.display_name,r.permission_cod
                 while (current != null && allowed.add(current.id()))
                     current = index.get(current.parentId());
             }
+        // 拥有页面或其下级操作时，页面声明的读取权限仍须有效。
+        Set<String> permissions = grantedPermissions(actor, granted);
+        allowed.removeIf(id -> {
+            Node node = index.get(id);
+            return "PAGE".equals(node.type()) && node.permissionCode() != null
+                    && !permissions.contains(node.permissionCode());
+        });
         return navigationChildren(null, all, allowed, true);
     }
 

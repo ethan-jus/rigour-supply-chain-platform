@@ -121,25 +121,6 @@ rigour:
         rate-limit-burst: 5
         # getTokenValue 返回 expires_in；在到期前提前刷新，避免同步过程中使用临界 token。
         token-safety-window: 60s
-    feishu:
-      # DEV的App ID与H5来源在application-dev.yml；个人需要覆盖时使用local。App Secret只能通过
-      # Integration 进程环境注入，不得提交到 Git、Nacos 或日志。
-      app-secret: ${RIGOUR_FEISHU_APP_SECRET:}
-      # 默认关闭动态局域网HTTP来源；生产只允许显式配置的HTTPS来源。
-      allow-insecure-lan: false
-      connect-timeout: ${RIGOUR_FEISHU_CONNECT_TIMEOUT:3s}
-      read-timeout: ${RIGOUR_FEISHU_READ_TIMEOUT:60s}
-      token-safety-window: 60s
-      import-bundle:
-        # 飞书导出文件导入中心只做批次化处理；正式导入前先预检表头、行数和附件缺口。
-        enabled: ${RIGOUR_FEISHU_IMPORT_BUNDLE_ENABLED:true}
-        max-bytes: ${RIGOUR_FEISHU_IMPORT_BUNDLE_MAX_BYTES:104857600}
-        max-sheets: ${RIGOUR_FEISHU_IMPORT_BUNDLE_MAX_SHEETS:100}
-        max-columns: ${RIGOUR_FEISHU_IMPORT_BUNDLE_MAX_COLUMNS:300}
-        max-rows-per-sheet: ${RIGOUR_FEISHU_IMPORT_BUNDLE_MAX_ROWS_PER_SHEET:1000000}
-        sample-rows: ${RIGOUR_FEISHU_IMPORT_BUNDLE_SAMPLE_ROWS:3}
-        # 页面未填写飞书Base/视图地址时使用；只保存定位地址，App Secret 仍走进程环境。
-        default-source-url: ${RIGOUR_FEISHU_IMPORT_BUNDLE_DEFAULT_SOURCE_URL:}
   context:
     trust:
       active-key-id: v1

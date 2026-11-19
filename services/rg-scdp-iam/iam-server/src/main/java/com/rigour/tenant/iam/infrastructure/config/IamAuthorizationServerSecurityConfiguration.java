@@ -173,7 +173,6 @@ public class IamAuthorizationServerSecurityConfiguration {
                 new IamCurrentSessionTokenValidator(jdbcTemplate)));
         http.securityMatcher("/api/**")
                 .authorizeHttpRequests(authorize -> authorize
-                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/feishu/exchange").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/native-app/login").permitAll()
                         .anyRequest().authenticated())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -258,9 +257,7 @@ public class IamAuthorizationServerSecurityConfiguration {
     SecurityFilterChain disabledAuthorizationServerFilterChain(HttpSecurity http) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
-                .requestMatchers(HttpMethod.POST, "/api/v1/auth/feishu/exchange").permitAll()
-                .anyRequest().denyAll())
-                .csrf(csrf -> csrf.ignoringRequestMatchers("/api/v1/auth/feishu/exchange"));
+                .anyRequest().denyAll());
         return http.build();
     }
 }

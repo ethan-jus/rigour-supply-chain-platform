@@ -10,10 +10,10 @@ import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterOrderView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.PaymentCheckCommand;
-import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
-import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
 import com.rigour.order.application.service.sales.OrderRegisterService;
 import com.rigour.shared.core.api.ApiResponse;
+import com.rigour.shared.context.AuthorizationContext;
+import com.rigour.tenant.iam.client.SupplyAuthorizationContext;
 
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
@@ -25,7 +25,6 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.ZoneId;
-import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -190,6 +189,7 @@ public class OrderRegisterController implements OrderRegisterApi {
     @Override
     public ApiResponse<com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceReport> monthlyPerformance(
             String monthFrom, String monthTo) {
+        requireExport("order:monthly-performance:export");
         return ApiResponse.success(service.monthlyPerformance(monthFrom, monthTo));
     }
 
@@ -199,60 +199,8 @@ public class OrderRegisterController implements OrderRegisterApi {
     }
 
     @Override
-    public ApiResponse<PeriodStatisticsView> periodStatistics(
-            LocalDate dateFrom,
-            LocalDate dateTo,
-            String groupBy,
-            String regionCode,
-            String ownerEmployeeCode,
-            Long departmentId,
-            Boolean includeSubDepartments,
-            Long customerId,
-            String customerName,
-            String customerCode) {
-        return ApiResponse.success(
-                service.periodStatistics(
-                        dateFrom,
-                        dateTo,
-                        groupBy,
-                        regionCode,
-                        ownerEmployeeCode,
-                        departmentId,
-                        includeSubDepartments,
-                        customerId,
-                        customerName,
-                        customerCode));
-    }
-
-    @Override
     public ApiResponse<List<String>> creators() {
         return ApiResponse.success(service.creators());
-    }
-
-    @Override
-    public ApiResponse<OrderRegisterPage<ReceivablesView>> receivables(
-            int begin,
-            int step,
-            LocalDate asOfDate,
-            boolean hasUnpaid,
-            String regionCode,
-            String ownerEmployeeCode,
-            Long departmentId,
-            Boolean includeSubDepartments,
-            Long customerId,
-            String orderNo) {
-        return ApiResponse.success(
-                service.receivables(
-                        begin,
-                        step,
-                        asOfDate,
-                        hasUnpaid,
-                        regionCode,
-                        ownerEmployeeCode,
-                        departmentId,
-                        includeSubDepartments,
-                        customerId,
-                        orderNo));
     }
 
     @Override
@@ -298,6 +246,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String invoiceStatusCode,
             String dhbOrderNo,
             Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
+        requireExport("order:export");
         List<OrderRegisterOrderView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -392,6 +341,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             List<Long> productVariantIds,
             Instant paymentTimeFrom,
             Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
+        requireExport("order:line:export");
         List<OrderRegisterLineView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -475,6 +425,7 @@ public class OrderRegisterController implements OrderRegisterApi {
             String sortDirection,
             Long productVariantId,
             List<Long> productVariantIds) {
+        requireExport("order:payment:export");
         List<OrderRegisterPaymentView> rows = new ArrayList<>();
         for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
             var page =
@@ -538,97 +489,10 @@ public class OrderRegisterController implements OrderRegisterApi {
                         .toList());
     }
 
-    @Override
-    public ResponseEntity<byte[]> exportReceivables(
-            LocalDate asOfDate,
-            boolean hasUnpaid,
-            String regionCode,
-            String ownerEmployeeCode,
-            Long departmentId,
-            Boolean includeSubDepartments,
-            Long customerId,
-            String orderNo) {
-        List<ReceivablesView> rows = new ArrayList<>();
-        for (int offset = 0; ; offset += EXPORT_PAGE_STEP) {
-            var page =
-                    service.receivables(
-                            offset,
-                            EXPORT_PAGE_STEP,
-                            asOfDate,
-                            hasUnpaid,
-                            regionCode,
-                            ownerEmployeeCode,
-                            departmentId,
-                            includeSubDepartments,
-                            customerId,
-                            orderNo);
-            rows.addAll(page.items());
-            if (offset + EXPORT_PAGE_STEP >= page.total()) break;
+    private static void requireExport(String permission) {
+        if (SupplyAuthorizationContext.current().map(SupplyAuthorizationContext::active).orElse(false)) {
+            AuthorizationContext.requirePermission(permission);
         }
-        return csv(
-                "receivables.csv",
-                new String[] {
-                    "订单号", "客户名称", "归属地区", "业务员", "下单时间", "截至日应收",
-                    "截至日净回款", "截至日未回款", "溢收金额"
-                },
-                rows.stream()
-                        .map(
-                                r ->
-                                        List.of(
-                                                str(r.orderNo()),
-                                                str(r.customerName()),
-                                                str(r.regionName() == null ? r.regionCode() : r.regionName()),
-                                                str(r.ownerEmployeeName() == null
-                                                        ? r.ownerEmployeeCode()
-                                                        : r.ownerEmployeeName()),
-                                                time(r.orderDate()),
-                                                dec(r.receivableAmount()),
-                                                dec(r.netReceivedAmount()),
-                                                dec(r.unpaidAmount()),
-                                                dec(r.overpaidAmount())))
-                        .toList());
-    }
-
-    @Override
-    public ResponseEntity<byte[]> exportPeriod(
-            LocalDate dateFrom,
-            LocalDate dateTo,
-            String groupBy,
-            String regionCode,
-            String ownerEmployeeCode,
-            Long departmentId,
-            Boolean includeSubDepartments,
-            Long customerId,
-            String customerName,
-            String customerCode) {
-        var view =
-                service.periodStatistics(
-                        dateFrom,
-                        dateTo,
-                        groupBy,
-                        regionCode,
-                        ownerEmployeeCode,
-                        departmentId,
-                        includeSubDepartments,
-                        customerId,
-                        customerName,
-                        customerCode);
-        return csv(
-                "period.csv",
-                new String[] {
-                    "分组", "期间订单额", "期间实收", "期间退款冲销", "期间净回款", "期末未回款"
-                },
-                view.rows().stream()
-                        .map(
-                                r ->
-                                        List.of(
-                                                str(r.label()),
-                                                dec(r.periodOrderAmount()),
-                                                dec(r.periodReceivedAmount()),
-                                                dec(r.periodRefundAmount()),
-                                                dec(r.periodNetReceivedAmount()),
-                                                dec(r.endingUnpaidAmount())))
-                        .toList());
     }
 
     private static ResponseEntity<byte[]> csv(

@@ -17,14 +17,6 @@ spring:
               uri: lb://rigour-tenant-iam-service
               predicates:
                 - Path=/api/v1/iam/**
-            - id: feishu-auth
-              uri: lb://rigour-tenant-iam-service
-              predicates:
-                - Path=/api/v1/auth/feishu/**
-            - id: feishu-platform
-              uri: lb://rigour-integration-migration-service
-              predicates:
-                - Path=/api/v1/platform/feishu/**
             - id: integration-migration
               uri: lb://rigour-integration-migration-service
               predicates:

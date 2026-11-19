@@ -8,16 +8,12 @@ import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterOrderView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView;
-import com.rigour.order.api.v1.model.OrderRegisterModels.PeriodStatisticsView;
-import com.rigour.order.api.v1.model.OrderRegisterModels.ReceivablesView;
 import com.rigour.order.application.port.out.OrderRegisterStore;
 import com.rigour.order.application.port.out.OrderRegisterStore.ApplyNumberMapping;
 import com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.NumberMappingCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria;
-import com.rigour.order.application.port.out.OrderRegisterStore.PeriodCriteria;
-import com.rigour.order.application.port.out.OrderRegisterStore.ReceivablesCriteria;
 import com.rigour.order.domain.sync.HistorySyncRules;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
@@ -373,81 +369,6 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
     }
 
     @Override
-    public PeriodStatisticsView periodStatistics(String tenantId, PeriodCriteria criteria) {
-        Instant from = startOfDay(criteria.dateFrom());
-        Instant to = startOfDay(criteria.dateTo().plusDays(1));
-        if (!from.isBefore(to)) throw badRequest("dateFrom必须早于dateTo");
-        var where = periodWhere(tenantId, criteria);
-        String orderSql =
-                "SELECT COALESCE(SUM(CASE WHEN o.order_date>=? AND o.order_date<? THEN o.payable_amount ELSE 0 END),0) "
-                        + " FROM order_sales_order o WHERE "
-                        + where.sql();
-        var args = new ArrayList<Object>();
-        args.add(Timestamp.from(from));
-        args.add(Timestamp.from(to));
-        args.addAll(where.args());
-        BigDecimal orderAmount = jdbc.queryForObject(orderSql + " LIMIT 1", BigDecimal.class, args.toArray());
-
-        String receivedSql =
-                "SELECT COALESCE(SUM(CASE WHEN p.payment_time>=? AND p.payment_time<? "
-                        + " AND p.payment_status_code IN ('RECEIVED','CHECKED') THEN p.paid_amount ELSE 0 END),0) "
-                        + " FROM order_payment_record p "
-                        + " JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id AND o.deleted=0 "
-                        + " WHERE "
-                        + where.sql();
-        args = new ArrayList<>();
-        args.add(Timestamp.from(from));
-        args.add(Timestamp.from(to));
-        args.addAll(where.args());
-        BigDecimal received = jdbc.queryForObject(receivedSql + " LIMIT 1", BigDecimal.class, args.toArray());
-
-        String refundSql =
-                "SELECT COALESCE(SUM(CASE WHEN r.refund_time>=? AND r.refund_time<? AND r.refund_status_code='CONFIRMED' "
-                        + " THEN r.refund_amount ELSE 0 END),0) "
-                        + " FROM order_refund_record r "
-                        + " JOIN order_sales_order o ON o.tenant_id=r.tenant_id AND o.id=r.order_id AND o.deleted=0 "
-                        + " WHERE "
-                        + where.sql();
-        args = new ArrayList<>();
-        args.add(Timestamp.from(from));
-        args.add(Timestamp.from(to));
-        args.addAll(where.args());
-        BigDecimal refund = jdbc.queryForObject(refundSql + " LIMIT 1", BigDecimal.class, args.toArray());
-
-        String unpaidSql =
-                "SELECT COALESCE(SUM(GREATEST(o.payable_amount "
-                        + " - COALESCE((SELECT SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') "
-                        + "   THEN p.paid_amount ELSE 0 END) FROM order_payment_record p "
-                        + "   WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0 AND p.payment_time<?),0) "
-                        + " + COALESCE((SELECT SUM(r.refund_amount) FROM order_refund_record r "
-                        + "   WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id AND r.deleted=0 "
-                        + "   AND r.refund_status_code='CONFIRMED' AND r.refund_time<?),0),0)),0) "
-                        + " FROM order_sales_order o WHERE o.order_date<? AND "
-                        + where.sql();
-        args = new ArrayList<>();
-        args.add(Timestamp.from(to));
-        args.add(Timestamp.from(to));
-        args.add(Timestamp.from(to));
-        args.addAll(where.args());
-        BigDecimal unpaid = jdbc.queryForObject(unpaidSql + " LIMIT 1", BigDecimal.class, args.toArray());
-
-        List<OrderRegisterModels.PeriodRow> rows =
-                "region".equalsIgnoreCase(criteria.groupBy())
-                                || "customer".equalsIgnoreCase(criteria.groupBy())
-                                || "employee".equalsIgnoreCase(criteria.groupBy())
-                        ? periodRows(tenantId, criteria, from, to)
-                        : List.of();
-        return new PeriodStatisticsView(
-                criteria.dateFrom(),
-                criteria.dateTo(),
-                criteria.groupBy(),
-                new OrderRegisterModels.PeriodTotals(
-                        orderAmount, received, refund, received.subtract(refund), unpaid),
-                rows,
-                historyCoverage(tenantId));
-    }
-
-    @Override
     public List<String> creators(String tenantId) {
         return jdbc.queryForList(
                 "SELECT creator_name FROM ("
@@ -457,102 +378,6 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         + " WHERE creator_name IS NOT NULL ORDER BY creator_name",
                 String.class,
                 tenantId);
-    }
-
-    @Override
-    public OrderRegisterPage<ReceivablesView> receivables(
-            String tenantId, int begin, int step, ReceivablesCriteria criteria) {
-        Instant asOf = startOfDay(criteria.asOfDate().plusDays(1));
-        var where = receivablesWhere(tenantId, criteria);
-        long total =
-                jdbc.queryForObject(
-                        "SELECT COUNT(*) FROM order_sales_order o WHERE "
-                                + where.sql()
-                                + " LIMIT 1",
-                        Long.class,
-                        where.args().toArray());
-        var args = new ArrayList<Object>();
-        args.add(Timestamp.from(asOf));
-        args.add(Timestamp.from(asOf));
-        args.add(Timestamp.from(asOf));
-        args.addAll(where.args());
-        var items =
-                jdbc.query(
-                        "SELECT o.id,o.order_no,o.source_system_code,o.customer_id,"
-                                + " o.customer_code_snapshot,o.customer_name_snapshot,"
-                                + " COALESCE(snap.region_code,o.region_code) AS region_code,"
-                                + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
-                                + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
-                                + " snap.department_name,o.order_date,o.payable_amount,"
-                                + " COALESCE((SELECT SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') "
-                                + "   THEN p.paid_amount ELSE 0 END) FROM order_payment_record p "
-                                + "   WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0 AND p.payment_time<?),0) "
-                                + " - COALESCE((SELECT SUM(r.refund_amount) FROM order_refund_record r "
-                                + "   WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id AND r.deleted=0 "
-                                + "   AND r.refund_status_code='CONFIRMED' AND r.refund_time<?),0) AS net_received "
-                                + " FROM order_sales_order o "
-                                + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
-                                + " WHERE o.order_date<? AND "
-                                + where.sql()
-                                + " ORDER BY o.order_date DESC,o.id DESC LIMIT ? OFFSET ?",
-                        (rs, i) -> {
-                            BigDecimal receivable = decimal(rs, "payable_amount");
-                            BigDecimal net = decimal(rs, "net_received");
-                            BigDecimal unpaid = receivable.subtract(net).max(ZERO);
-                            BigDecimal overpaid = net.subtract(receivable).max(ZERO);
-                            return new ReceivablesView(
-                                    rs.getLong("id"),
-                                    rs.getString("order_no"),
-                                    rs.getString("source_system_code"),
-                                    nullableLong(rs, "customer_id"),
-                                    rs.getString("customer_code_snapshot"),
-                                    rs.getString("customer_name_snapshot"),
-                                    rs.getString("region_code"),
-                                    null,
-                                    rs.getString("owner_employee_code"),
-                                    rs.getString("owner_employee_name"),
-                                    rs.getString("department_name"),
-                                    instant(rs, "order_date"),
-                                    receivable,
-                                    net,
-                                    unpaid,
-                                    overpaid,
-                                    true,
-                                    null);
-                        },
-                        append(args, step, begin).toArray());
-        var totalArgs = new ArrayList<Object>();
-        for (int i = 0; i < 3; i++) totalArgs.add(Timestamp.from(asOf));
-        totalArgs.addAll(where.args());
-        var totalsRow =
-                jdbc.queryForMap(
-                        "SELECT COALESCE(SUM(t.receivable),0) receivable_amount,"
-                                + " COALESCE(SUM(t.net),0) net_received_amount,"
-                                + " COALESCE(SUM(GREATEST(t.receivable-t.net,0)),0) unpaid_amount,"
-                                + " COALESCE(SUM(GREATEST(t.net-t.receivable,0)),0) overpaid_amount"
-                                + " FROM (SELECT o.payable_amount receivable,"
-                                + " COALESCE((SELECT SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') "
-                                + "   THEN p.paid_amount ELSE 0 END) FROM order_payment_record p "
-                                + "   WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0 AND p.payment_time<?),0) "
-                                + " - COALESCE((SELECT SUM(r.refund_amount) FROM order_refund_record r "
-                                + "   WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id AND r.deleted=0 "
-                                + "   AND r.refund_status_code='CONFIRMED' AND r.refund_time<?),0) net "
-                                + " FROM order_sales_order o WHERE o.order_date<? AND "
-                                + where.sql()
-                                + ") t LIMIT 1",
-                        totalArgs.toArray());
-        Map<String, BigDecimal> totals = new LinkedHashMap<>();
-        totals.put("receivableAmount", decimal(totalsRow, "receivable_amount"));
-        totals.put("netReceivedAmount", decimal(totalsRow, "net_received_amount"));
-        totals.put("unpaidAmount", decimal(totalsRow, "unpaid_amount"));
-        totals.put("overpaidAmount", decimal(totalsRow, "overpaid_amount"));
-        return new OrderRegisterPage<>(
-                total,
-                begin,
-                step,
-                items,
-                totals,
-                historyCoverage(tenantId));
     }
 
     @Override
@@ -902,78 +727,6 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         });
     }
 
-    /** 期间统计分组明细；分组口径与合计一致，期末未回款含往期订单但收款截止到期末。 */
-    private List<OrderRegisterModels.PeriodRow> periodRows(
-            String tenantId, PeriodCriteria criteria, Instant from, Instant to) {
-        String key =
-                switch (criteria.groupBy().toLowerCase()) {
-                    case "region" -> "COALESCE(snap.region_code,o.region_code)";
-                    case "employee" -> "COALESCE(snap.employee_code,o.owner_employee_code)";
-                    default -> "o.customer_id";
-                };
-        String label =
-                switch (criteria.groupBy().toLowerCase()) {
-                    case "region" -> "MAX(COALESCE(snap.region_code,o.region_code))";
-                    case "employee" ->
-                            "MAX(COALESCE(snap.employee_name,o.owner_employee_name_snapshot))";
-                    default -> "MAX(o.customer_name_snapshot)";
-                };
-        var where = periodWhere(tenantId, criteria);
-        var args = new ArrayList<Object>();
-        args.add(Timestamp.from(from));
-        args.add(Timestamp.from(to));
-        args.add(Timestamp.from(from));
-        args.add(Timestamp.from(to));
-        args.add(Timestamp.from(from));
-        args.add(Timestamp.from(to));
-        args.add(Timestamp.from(to));
-        args.add(Timestamp.from(to));
-        args.add(Timestamp.from(to));
-        args.addAll(where.args());
-        return jdbc.query(
-                "SELECT "
-                        + key
-                        + " AS group_key,"
-                        + label
-                        + " AS group_label,"
-                        + " COALESCE(SUM(CASE WHEN o.order_date>=? AND o.order_date<? THEN o.payable_amount ELSE 0 END),0) period_order_amount,"
-                        + " COALESCE(SUM(COALESCE((SELECT SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') "
-                        + "   AND p.payment_time>=? AND p.payment_time<? THEN p.paid_amount ELSE 0 END) "
-                        + "   FROM order_payment_record p "
-                        + "   WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0),0)),0) period_received_amount,"
-                        + " COALESCE(SUM(COALESCE((SELECT SUM(CASE WHEN r.refund_status_code='CONFIRMED' "
-                        + "   AND r.refund_time>=? AND r.refund_time<? THEN r.refund_amount ELSE 0 END) "
-                        + "   FROM order_refund_record r "
-                        + "   WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id AND r.deleted=0),0)),0) period_refund_amount,"
-                        + " COALESCE(SUM(GREATEST(o.payable_amount "
-                        + " - COALESCE((SELECT SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') "
-                        + "   THEN p.paid_amount ELSE 0 END) FROM order_payment_record p "
-                        + "   WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0 AND p.payment_time<?),0) "
-                        + " + COALESCE((SELECT SUM(r.refund_amount) FROM order_refund_record r "
-                        + "   WHERE r.tenant_id=o.tenant_id AND r.order_id=o.id AND r.deleted=0 "
-                        + "   AND r.refund_status_code='CONFIRMED' AND r.refund_time<?),0),0)),0) ending_unpaid_amount "
-                        + " FROM order_sales_order o "
-                        + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN' "
-                        + " WHERE o.order_date<? AND "
-                        + where.sql()
-                        + " GROUP BY "
-                        + key
-                        + " ORDER BY period_order_amount DESC,group_key",
-                (rs, i) -> {
-                    BigDecimal received = decimal(rs, "period_received_amount");
-                    BigDecimal refund = decimal(rs, "period_refund_amount");
-                    return new OrderRegisterModels.PeriodRow(
-                            rs.getString("group_key"),
-                            rs.getString("group_label"),
-                            decimal(rs, "period_order_amount"),
-                            received,
-                            refund,
-                            received.subtract(refund),
-                            decimal(rs, "ending_unpaid_amount"));
-                },
-                args.toArray());
-    }
-
     /** 在商品过滤前按整单计算累计权重；累计金额之差吸收分币尾差，筛选和分页不改变分摊。 */
     private static final String LINE_ALLOCATION_JOIN =
             " JOIN (SELECT tenant_id,id,"
@@ -1203,40 +956,6 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         return where;
     }
 
-    private Sql periodWhere(String tenantId, PeriodCriteria c) {
-        var where = new Sql();
-        where.and("o.tenant_id=?", tenantId);
-        where.and("o.deleted=0");
-        where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
-        like(where, "o.region_code", c.regionCode());
-        like(where, "o.owner_employee_code", c.ownerEmployeeCode());
-        inIds(where, "snap.department_id", c.departmentIds());
-        eq(where, "o.customer_id", c.customerId());
-        like(where, "o.customer_name_snapshot", c.customerName());
-        like(where, "o.customer_code_snapshot", c.customerCode());
-        return where;
-    }
-
-    private Sql receivablesWhere(String tenantId, ReceivablesCriteria c) {
-        var where = new Sql();
-        where.and("o.tenant_id=?", tenantId);
-        where.and("o.deleted=0");
-        where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
-        like(where, "o.order_no", c.orderNo());
-        like(where, "o.region_code", c.regionCode());
-        like(where, "o.owner_employee_code", c.ownerEmployeeCode());
-        inIds(where, "snap.department_id", c.departmentIds());
-        eq(where, "o.customer_id", c.customerId());
-        if (c.hasUnpaid())
-            where.and(
-                    "o.payable_amount - COALESCE((SELECT SUM(CASE WHEN p.payment_status_code IN ('RECEIVED','CHECKED') "
-                            + " THEN p.paid_amount ELSE 0 END) FROM order_payment_record p "
-                            + " WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0),0) > 0");
-        var scope = scopes.predicate("order:read", "o.", null);
-        where.and("(" + scope.sql() + ")", scope.args().toArray());
-        return where;
-    }
-
     private HistoryCoverage historyCoverage(String tenantId) {
         return queryCache.read(tenantId, "history-coverage", HistorySyncRules.CUTOVER, 30,
                 new TypeReference<>() {}, () -> loadHistoryCoverage(tenantId));
@@ -1264,10 +983,6 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         if ("ACTIVE".equals(mappingState)) return "MAPPED";
         if ("DINGHUOBAO".equalsIgnoreCase(sourceSystemCode)) return "SOURCE";
         return "PENDING_MAPPING";
-    }
-
-    private static Instant startOfDay(java.time.LocalDate date) {
-        return date.atStartOfDay(BUSINESS_ZONE).toInstant();
     }
 
     private static BigDecimal decimal(java.sql.ResultSet rs, String column) {

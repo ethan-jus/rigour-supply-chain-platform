@@ -4,12 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.rigour.analytics.BiApplication;
-import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostImportCommand;
-import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostImportRecord;
-import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostImportResultView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardDataTrustView;
-import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveCommand;
-import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardReconciliationView;
@@ -51,7 +46,6 @@ import com.rigour.analytics.application.port.out.SupplyDashboardStore.TrustSourc
 import com.rigour.analytics.infrastructure.persistence.mapper.SupplyDashboardQueryMapper;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
-import com.rigour.shared.context.TestAuthorizationContext;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 
@@ -603,39 +597,6 @@ class SupplyDashboardQueryServiceTest {
     }
 
     @Test
-    void cityCostImportNormalizesRowsAndRequiresSourceRecordId() {
-        FakeStore store = new FakeStore();
-        SupplyDashboardCityCostImportService service =
-                new SupplyDashboardCityCostImportService(store, Clock.fixed(NOW, ZoneOffset.UTC));
-        com.rigour.analytics.TestRoleScope.set(caller("analytics:city-cost:write"));
-
-        SupplyDashboardCityCostImportResultView result =
-                service.importRecords(
-                        new SupplyDashboardCityCostImportCommand(
-                                null,
-                                List.of(
-                                        new SupplyDashboardCityCostImportRecord(
-                                                " bj ",
-                                                "北京",
-                                                " marketing ",
-                                                "市场",
-                                                NOW,
-                                                new BigDecimal("120.50"),
-                                                null,
-                                                "fs-1",
-                                                "投放"))));
-
-        assertThat(result.receivedCount()).isEqualTo(1);
-        assertThat(result.upsertedCount()).isEqualTo(1);
-        assertThat(store.importedRows).hasSize(1);
-        assertThat(store.importedRows.getFirst().sourceSystemCode()).isEqualTo("MANUAL_IMPORT");
-        assertThat(store.importedRows.getFirst().regionCode()).isEqualTo("BJ");
-        assertThat(store.importedRows.getFirst().costTypeCode()).isEqualTo("MARKETING");
-        assertThat(store.importedRows.getFirst().budgetAmount())
-                .isEqualByComparingTo(BigDecimal.ZERO);
-    }
-
-    @Test
     void governanceTrustShowsLatestRunAndDelayStatus() {
         FakeStore store = new FakeStore();
         SupplyDashboardGovernanceService service =
@@ -660,20 +621,6 @@ class SupplyDashboardQueryServiceTest {
         assertThat(result.overallStatus()).isIn("OK", "WARN", "CRITICAL");
     }
 
-    @Test
-    void governanceReconciliationNormalizesDhbAliasAndReturnsDiff() {
-        FakeStore store = new FakeStore();
-        SupplyDashboardGovernanceService service =
-                new SupplyDashboardGovernanceService(store, Clock.fixed(NOW, ZoneOffset.UTC));
-        com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
-
-        SupplyDashboardReconciliationView result =
-                service.reconciliation(null, null, null, null, null, null, "dhb");
-
-        assertThat(store.filter.sourceSystemCode()).isEqualTo("DINGHUOBAO");
-        assertThat(result.status()).isEqualTo("DIFF");
-        assertThat(result.items()).extracting("subjectCode").contains("SALES_ORDER", "ERP_PRODUCT");
-    }
 
     @Test
     void governanceFilterOptionsFallsBackToSourceSystems() {
@@ -687,39 +634,6 @@ class SupplyDashboardQueryServiceTest {
         assertThat(result.sourceSystems())
                 .extracting("optionValue")
                 .contains("DINGHUOBAO", "FEISHU", "MANUAL");
-    }
-
-    @Test
-    void feishuArchiveRequiresDedicatedWritePermissionAndValidChecksum() {
-        FakeStore store = new FakeStore();
-        SupplyDashboardGovernanceService service =
-                new SupplyDashboardGovernanceService(store, Clock.fixed(NOW, ZoneOffset.UTC));
-        com.rigour.analytics.TestRoleScope.set(
-                caller("analytics:dashboard:read", "analytics:legacy-archive:write"));
-
-        SupplyDashboardFeishuArchiveView result =
-                service.registerFeishuArchive(
-                        new SupplyDashboardFeishuArchiveCommand(
-                                " feishu_202608 ",
-                                "tbl-1",
-                                "view-1",
-                                "飞书旧看板",
-                                "legacy.xlsx",
-                                "xlsx",
-                                "运营A",
-                                NOW,
-                                NOW.minusSeconds(3600),
-                                10L,
-                                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-                                "cos://archive/legacy.xlsx",
-                                "cos://archive/field.md",
-                                "cos://archive/report.md",
-                                "冻结归档"));
-
-        assertThat(result.archiveCode()).isEqualTo("FEISHU_202608");
-        assertThat(store.archiveWrite.fileFormat()).isEqualTo("XLSX");
-        assertThat(store.archiveWrite.checksumSha256())
-                .isEqualTo("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
     }
 
     private static CallerIdentity caller(String... permissions) {

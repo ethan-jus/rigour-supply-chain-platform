@@ -13,7 +13,4 @@ public interface DictionarySourceMappingApi {
     ApiResponse<List<DictionarySourceMappingView>> list(@RequestParam String dictionaryCode);
     @PutMapping("/{id}")
     ApiResponse<DictionarySourceMappingView> update(@PathVariable Long id, @RequestBody DictionarySourceMappingCommand command);
-    /** 从本租户已有飞书原始行重建映射观察，不重跑业务投影。 */
-    @PostMapping("/rescan")
-    ApiResponse<com.rigour.integration.api.v1.model.DictionaryRescanResult> rescan(@RequestParam String dictionaryCode);
 }

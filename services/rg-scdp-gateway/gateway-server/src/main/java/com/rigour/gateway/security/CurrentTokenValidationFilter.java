@@ -21,8 +21,6 @@ import java.util.concurrent.TimeUnit;
 
 /** 向IAM在线确认会话、安全版本和租户策略版本；开启时失败关闭。 */
 public final class CurrentTokenValidationFilter extends OncePerRequestFilter {
-    public static final String PUBLIC_FEISHU_JSAPI_SIGN_PATH = "/api/v1/platform/feishu/jsapi-sign";
-    public static final String PUBLIC_FEISHU_AUTH_EXCHANGE_PATH = "/api/v1/auth/feishu/exchange";
     public static final String PUBLIC_HUOLALA_START_PATH = "/api/v1/integration/huolala/oauth/start";
     public static final String PUBLIC_HUOLALA_CALLBACK_PATH = "/api/v1/integration/huolala/oauth/callback";
     private static final Logger log = LoggerFactory.getLogger(CurrentTokenValidationFilter.class);
@@ -42,19 +40,8 @@ public final class CurrentTokenValidationFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         if ("GET".equalsIgnoreCase(request.getMethod()) && (PUBLIC_HUOLALA_START_PATH.equals(request.getRequestURI()) || PUBLIC_HUOLALA_CALLBACK_PATH.equals(request.getRequestURI()))) return true;
-        if (isPublicFeishuBootstrap(request)) {
-            log.info("飞书初始化请求通过 Gateway 公共入口 requestId={} method={} path={}",
-                    RequestContext.getRequestId(), request.getMethod(), request.getRequestURI());
-            return true;
-        }
         return !properties.isCurrentTokenValidationEnabled()
                 || request.getRequestURI().startsWith("/actuator/health");
-    }
-
-    private static boolean isPublicFeishuBootstrap(HttpServletRequest request) {
-        return (PUBLIC_FEISHU_JSAPI_SIGN_PATH.equals(request.getRequestURI())
-                || PUBLIC_FEISHU_AUTH_EXCHANGE_PATH.equals(request.getRequestURI()))
-                && "POST".equalsIgnoreCase(request.getMethod());
     }
 
     @Override

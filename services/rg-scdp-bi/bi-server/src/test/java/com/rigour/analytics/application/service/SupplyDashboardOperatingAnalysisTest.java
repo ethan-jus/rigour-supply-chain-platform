@@ -60,7 +60,7 @@ class SupplyDashboardOperatingAnalysisTest {
                 .thenReturn(new OperatingAnalysisData(null, null, null, null));
         var scopes = new BiDataScopeService(mock(com.rigour.analytics.application.port.out.BiDataScopeStore.class));
         service = new SupplyDashboardQueryService(store, Clock.fixed(NOW, ZoneOffset.UTC), scopes);
-        mvc = MockMvcBuilders.standaloneSetup(new AnalyticsSupplyDashboardController(service, null, null, null, scopes))
+        mvc = MockMvcBuilders.standaloneSetup(new AnalyticsSupplyDashboardController(service, null, null, scopes))
                 .setControllerAdvice(new GlobalExceptionHandler()).build();
         com.rigour.analytics.TestRoleScope.set(caller("analytics:dashboard:read"));
     }

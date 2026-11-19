@@ -2,15 +2,11 @@ package com.rigour.tenant.iam.infrastructure.config;
 
 import com.nimbusds.jose.jwk.source.JWKSource;
 import com.nimbusds.jose.proc.SecurityContext;
-import com.rigour.tenant.iam.application.port.out.AccessTokenIssuer;
-import com.rigour.tenant.iam.application.port.out.FeishuIdentityProvider;
-import com.rigour.tenant.iam.application.port.out.FeishuIdentityStore;
 import com.rigour.tenant.iam.application.port.out.IdentifierGenerator;
 import com.rigour.tenant.iam.application.port.out.PasswordHasher;
 import com.rigour.tenant.iam.application.port.out.PasswordIdentityStore;
 import com.rigour.tenant.iam.application.port.out.IdentityAccessReader;
 import com.rigour.tenant.iam.application.service.auth.AuthService;
-import com.rigour.tenant.iam.application.service.auth.FeishuAuthenticationService;
 import com.rigour.tenant.iam.application.service.auth.PasswordAuthenticationPolicy;
 import com.rigour.tenant.iam.application.service.identity.IdentityAccessService;
 import com.rigour.tenant.iam.infrastructure.bootstrap.LocalSigningKeyBootstrapCommand;
@@ -21,8 +17,6 @@ import com.rigour.tenant.iam.infrastructure.bootstrap.SalesAppClientBootstrapCom
 import com.rigour.tenant.iam.infrastructure.bootstrap.SalesAppClientBootstrapProperties;
 import com.rigour.tenant.iam.infrastructure.bootstrap.TenantAdminBootstrapCommand;
 import com.rigour.tenant.iam.infrastructure.bootstrap.TenantAdminBootstrapProperties;
-import com.rigour.tenant.iam.infrastructure.feishu.FeishuIdentityProviderClient;
-import com.rigour.tenant.iam.infrastructure.feishu.JdbcFeishuIdentityStore;
 import com.rigour.tenant.iam.infrastructure.persistence.UuidV7IdentifierGenerator;
 import com.rigour.tenant.iam.infrastructure.persistence.auth.JdbcPasswordIdentityStore;
 import com.rigour.tenant.iam.infrastructure.persistence.auth.JdbcIdentityAccessReader;
@@ -36,7 +30,6 @@ import com.rigour.tenant.iam.infrastructure.security.oidc.JdbcOAuth2Authorizatio
 import com.rigour.tenant.iam.infrastructure.security.oidc.JdbcOAuth2AuthorizationStore;
 import com.rigour.tenant.iam.infrastructure.security.oidc.JdbcRegisteredClientRepository;
 import com.rigour.tenant.iam.infrastructure.security.oidc.JdbcRsaJwkSource;
-import com.rigour.tenant.iam.infrastructure.security.oidc.JwtAccessTokenIssuer;
 import com.rigour.tenant.iam.infrastructure.security.oidc.OidcAuthorizationProperties;
 import com.rigour.tenant.iam.infrastructure.security.oidc.OidcServerProperties;
 import com.rigour.tenant.iam.infrastructure.security.oidc.OidcSigningProperties;
@@ -49,7 +42,6 @@ import com.rigour.tenant.iam.infrastructure.security.session.IamSessionLogoutHan
 import com.rigour.tenant.iam.infrastructure.security.session.PasswordAuthenticationProperties;
 
 import org.mybatis.spring.annotation.MapperScan;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -76,7 +68,6 @@ import org.springframework.security.web.context.HttpSessionSecurityContextReposi
 import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
-import org.springframework.web.client.RestClient;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -90,7 +81,6 @@ import java.time.Clock;
     OidcSigningProperties.class,
     OidcServerProperties.class,
     OidcTokenProperties.class,
-    FeishuAuthenticationProperties.class,
     PasswordAuthenticationProperties.class,
     com.rigour.tenant.iam.infrastructure.security.session.NativeAppAuthenticationProperties.class,
 
@@ -100,51 +90,6 @@ import java.time.Clock;
     LocalSigningKeyBootstrapProperties.class
 })
 public final class IamInfrastructureConfiguration {
-
-    @Bean
-    @ConditionalOnProperty(prefix = "rigour.iam.feishu", name = "enabled", havingValue = "true")
-    FeishuIdentityProvider feishuIdentityProvider(
-            RestClient.Builder builder, FeishuAuthenticationProperties properties) {
-        return new FeishuIdentityProviderClient(builder, properties);
-    }
-
-    @Bean
-    @ConditionalOnProperty(prefix = "rigour.iam.feishu", name = "enabled", havingValue = "true")
-    FeishuIdentityStore feishuIdentityStore(
-            JdbcTemplate jdbcTemplate, PlatformTransactionManager transactionManager) {
-        return new JdbcFeishuIdentityStore(
-                jdbcTemplate, new TransactionTemplate(transactionManager));
-    }
-
-    @Bean
-    @ConditionalOnProperty(prefix = "rigour.iam.feishu", name = "enabled", havingValue = "true")
-    AccessTokenIssuer feishuAccessTokenIssuer(
-            JwtEncoder jwtEncoder,
-            IdentifierGenerator identifierGenerator,
-            OidcServerProperties serverProperties,
-            OidcTokenProperties tokenProperties) {
-        return new JwtAccessTokenIssuer(
-                jwtEncoder, identifierGenerator, serverProperties, tokenProperties);
-    }
-
-    @Bean
-    @ConditionalOnProperty(prefix = "rigour.iam.feishu", name = "enabled", havingValue = "true")
-    FeishuAuthenticationService feishuAuthenticationService(
-            FeishuIdentityProvider identityProvider,
-            FeishuIdentityStore identityStore,
-            AccessTokenIssuer accessTokenIssuer,
-            IdentifierGenerator identifierGenerator,
-            FeishuAuthenticationProperties properties) {
-        properties.validate();
-        return new FeishuAuthenticationService(
-                identityProvider,
-                identityStore,
-                accessTokenIssuer,
-                identifierGenerator,
-                Clock.systemUTC(),
-                properties.getSessionTimeToLive(),
-                properties.getAccessTokenTimeToLive());
-    }
 
     @Bean
     PasswordHasher passwordHasher() {

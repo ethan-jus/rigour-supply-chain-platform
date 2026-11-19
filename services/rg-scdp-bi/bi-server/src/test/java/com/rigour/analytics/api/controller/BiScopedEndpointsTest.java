@@ -24,11 +24,9 @@ class BiScopedEndpointsTest {
     private final SupplyDashboardGovernanceService governance =
             mock(SupplyDashboardGovernanceService.class);
     private final SupplyDashboardRefreshService refresh = mock(SupplyDashboardRefreshService.class);
-    private final SupplyDashboardCityCostImportService costs =
-            mock(SupplyDashboardCityCostImportService.class);
     private final AnalyticsSupplyDashboardController dashboard =
             new AnalyticsSupplyDashboardController(
-                    mock(SupplyDashboardQueryService.class), refresh, costs, governance, scopes);
+                    mock(SupplyDashboardQueryService.class), refresh, governance, scopes);
 
     @BeforeEach
     void setup() {
@@ -84,17 +82,9 @@ class BiScopedEndpointsTest {
     @Test
     void restrictedUserCannotReadReconciliationSourcesOrTriggerTenantJobs() {
         assertThatThrownBy(dashboard::trust).isInstanceOf(AuthorizationDeniedException.class);
-        assertThatThrownBy(dashboard::feishuArchives)
-                .isInstanceOf(AuthorizationDeniedException.class);
-        assertThatThrownBy(() -> dashboard.reconciliation(NOW, NOW, "BJ", "E1", null, null, null))
-                .isInstanceOf(AuthorizationDeniedException.class);
         assertThatThrownBy(() -> dashboard.triggerRefreshRun(null))
                 .isInstanceOf(AuthorizationDeniedException.class);
-        assertThatThrownBy(() -> dashboard.importCityCosts(null))
-                .isInstanceOf(AuthorizationDeniedException.class);
-        assertThatThrownBy(() -> dashboard.registerFeishuArchive(null))
-                .isInstanceOf(AuthorizationDeniedException.class);
-        verifyNoInteractions(governance, refresh, costs);
+        verifyNoInteractions(governance, refresh);
     }
 
     @Test

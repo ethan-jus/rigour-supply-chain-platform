@@ -73,9 +73,6 @@ public class GatewaySecurityConfiguration {
     ) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
-                        .requestMatchers(HttpMethod.POST,
-                                CurrentTokenValidationFilter.PUBLIC_FEISHU_JSAPI_SIGN_PATH,
-                                CurrentTokenValidationFilter.PUBLIC_FEISHU_AUTH_EXCHANGE_PATH).permitAll()
                         .requestMatchers(HttpMethod.GET, CurrentTokenValidationFilter.PUBLIC_HUOLALA_START_PATH, CurrentTokenValidationFilter.PUBLIC_HUOLALA_CALLBACK_PATH).permitAll()
                         .anyRequest().authenticated())
                 .oauth2ResourceServer(resourceServer -> resourceServer
@@ -133,9 +130,6 @@ public class GatewaySecurityConfiguration {
             GatewaySecurityFailureWriter failureWriter) throws Exception {
         http.authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
-                        .requestMatchers(HttpMethod.POST,
-                                CurrentTokenValidationFilter.PUBLIC_FEISHU_JSAPI_SIGN_PATH,
-                        CurrentTokenValidationFilter.PUBLIC_FEISHU_AUTH_EXCHANGE_PATH).permitAll()
                         .requestMatchers(HttpMethod.GET, CurrentTokenValidationFilter.PUBLIC_HUOLALA_START_PATH, CurrentTokenValidationFilter.PUBLIC_HUOLALA_CALLBACK_PATH).permitAll()
                         .anyRequest().denyAll())
                 .csrf(csrf -> csrf.ignoringRequestMatchers("/api/**"))

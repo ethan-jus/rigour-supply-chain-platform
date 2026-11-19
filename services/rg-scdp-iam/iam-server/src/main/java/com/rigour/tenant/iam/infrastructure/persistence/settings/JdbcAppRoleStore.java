@@ -166,11 +166,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
     private List<ScopeRule> rules(Actor a, UUID role, RoleDataScope scope) {
         if (scope.mode() == null) return List.of();
         var grants = grants(a, role);
-        return settings.rows(a).stream()
-                .filter(n -> grants.contains(n.id()))
-                .map(Node::permissionCode)
-                .filter(Objects::nonNull)
-                .distinct()
+        return settings.grantedPermissions(a, grants).stream()
                 .sorted()
                 .map(action -> RoleDataScopes.rule(scope, action))
                 .filter(Objects::nonNull)
@@ -256,11 +252,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
                                 || !AppMenuTree.enabled(nodes.get(node), nodes))
                             throw new RequestValidationException("授权菜单不存在或已停用");
                     Set<String> actions =
-                            c.menuNodeIds().stream()
-                                    .map(nodes::get)
-                                    .map(Node::permissionCode)
-                                    .filter(Objects::nonNull)
-                                    .collect(Collectors.toSet());
+                            settings.grantedPermissions(a, c.menuNodeIds());
                     Set<String> ruleActions = new HashSet<>();
                     for (ScopeRule rule : c.rules()) {
                         if (!ruleActions.add(rule.actionCode())
@@ -373,11 +365,7 @@ public class JdbcAppRoleStore implements AppRoleStore {
         references.requireActive(a.tenantId(), "DEPARTMENT", c.dataScope().departmentIds());
         if (c.menuNodeIds() == null) throw new RequestValidationException("请提交菜单授权");
         List<ScopeRule> rules =
-                settings.rows(a).stream()
-                        .filter(n -> c.menuNodeIds().contains(n.id()))
-                        .map(Node::permissionCode)
-                        .filter(Objects::nonNull)
-                        .distinct()
+                settings.grantedPermissions(a, c.menuNodeIds()).stream()
                         .sorted()
                         .map(action -> RoleDataScopes.rule(c.dataScope(), action))
                         .filter(Objects::nonNull)

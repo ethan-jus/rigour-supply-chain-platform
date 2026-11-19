@@ -2,26 +2,16 @@ package com.rigour.analytics.application.service;
 
 import com.rigour.analytics.api.v1.model.SupplyDashboardDataTrustSourceView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardDataTrustView;
-import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveCommand;
-import com.rigour.analytics.api.v1.model.SupplyDashboardFeishuArchiveView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionsView;
-import com.rigour.analytics.api.v1.model.SupplyDashboardReconciliationItemView;
-import com.rigour.analytics.api.v1.model.SupplyDashboardReconciliationView;
-import com.rigour.analytics.application.model.SupplyDashboardFilter;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore;
-import com.rigour.analytics.application.port.out.SupplyDashboardStore.FeishuArchiveWrite;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore.FilterOption;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore.FilterOptions;
-import com.rigour.analytics.application.port.out.SupplyDashboardStore.ReconciliationItem;
 import com.rigour.analytics.application.port.out.SupplyDashboardStore.TrustSource;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
-import com.rigour.shared.core.api.ErrorCode;
-import com.rigour.shared.core.exception.BusinessException;
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -30,7 +20,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.regex.Pattern;
@@ -40,8 +29,6 @@ import org.springframework.stereotype.Service;
 @Service
 public final class SupplyDashboardGovernanceService {
     private static final String READ_PERMISSION = "analytics:dashboard:read";
-    private static final String LEGACY_READ_PERMISSION = "analytics:legacy-archive:read";
-    private static final String LEGACY_WRITE_PERMISSION = "analytics:legacy-archive:write";
     private static final Pattern CODE = Pattern.compile("[A-Z][A-Z0-9_]{0,63}");
     private static final Pattern CHECKSUM = Pattern.compile("[a-fA-F0-9]{64}");
     private static final Duration TRUST_WARN_DELAY = Duration.ofHours(2);
@@ -78,33 +65,6 @@ public final class SupplyDashboardGovernanceService {
                 sources);
     }
 
-    public SupplyDashboardReconciliationView reconciliation(
-            Instant from, Instant to, String regionCode, String ownerStaffCode,
-            String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
-        CallerIdentity actor = readActor();
-        Instant now = Instant.now(clock);
-        Instant normalizedTo = to == null ? now : to;
-        Instant normalizedFrom = from == null ? monthStart(normalizedTo) : from;
-        if (normalizedFrom.isAfter(normalizedTo)) throw badRequest("from不能晚于to");
-        SupplyDashboardFilter filter = new SupplyDashboardFilter(
-                normalizedFrom,
-                normalizedTo,
-                code(regionCode, "regionCode"),
-                optionalText(ownerStaffCode, 50, "ownerStaffCode"),
-                code(customerTypeCode, "customerTypeCode"),
-                positiveId(productCategoryId, "productCategoryId"),
-                sourceSystemCode(sourceSystemCode));
-        SupplyDashboardStore.ReconciliationData data = store.reconciliation(actor.tenantId().toString(), filter);
-        List<SupplyDashboardReconciliationItemView> items = data.items().stream()
-                .map(SupplyDashboardGovernanceService::reconciliationItem).toList();
-        return new SupplyDashboardReconciliationView(
-                data.from() == null ? normalizedFrom : data.from(),
-                data.to() == null ? normalizedTo : data.to(),
-                data.observedAt() == null ? now : data.observedAt(),
-                overallReconciliationStatus(items),
-                items);
-    }
-
     public SupplyDashboardFilterOptionsView filterOptions() {
         CallerIdentity actor = readActor();
         FilterOptions options = store.filterOptions(actor.tenantId().toString());
@@ -116,55 +76,10 @@ public final class SupplyDashboardGovernanceService {
                 defaultSourceSystems(optionViews(options.sourceSystems())));
     }
 
-    public List<SupplyDashboardFeishuArchiveView> feishuArchives() {
-        CallerIdentity actor = legacyReadActor();
-        return store.feishuArchives(actor.tenantId().toString()).stream()
-                .map(SupplyDashboardGovernanceService::archiveView)
-                .toList();
-    }
-
-    public SupplyDashboardFeishuArchiveView registerFeishuArchive(SupplyDashboardFeishuArchiveCommand command) {
-        CallerIdentity actor = legacyWriteActor();
-        if (command == null) throw badRequest("飞书归档登记不能为空");
-        Instant now = Instant.now(clock);
-        FeishuArchiveWrite write = new FeishuArchiveWrite(
-                requiredCode(command.archiveCode(), "archiveCode"),
-                text(command.tableId(), 120, "tableId"),
-                optionalText(command.viewId(), 120, "viewId"),
-                text(command.tableName(), 120, "tableName"),
-                text(command.fileName(), 255, "fileName"),
-                fileFormat(command.fileFormat()),
-                text(command.exportedBy(), 100, "exportedBy"),
-                requiredTime(command.exportedTime(), "exportedTime"),
-                requiredTime(command.frozenTime(), "frozenTime"),
-                nonNegative(command.recordCount(), "recordCount"),
-                checksum(command.checksumSha256()),
-                optionalText(command.storageUri(), 500, "storageUri"),
-                optionalText(command.fieldMappingUri(), 500, "fieldMappingUri"),
-                optionalText(command.reconciliationReportUri(), 500, "reconciliationReportUri"),
-                optionalText(command.remark(), 1000, "remark"));
-        if (write.exportedTime().isBefore(write.frozenTime())) {
-            throw badRequest("exportedTime不能早于frozenTime");
-        }
-        return archiveView(store.registerFeishuArchive(actor.tenantId().toString(), write, now));
-    }
-
     private static CallerIdentity readActor() {
         CallerIdentity caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
         AuthorizationContext.requirePermission(READ_PERMISSION);
-        return caller;
-    }
-
-    private static CallerIdentity legacyReadActor() {
-        CallerIdentity caller = readActor();
-        AuthorizationContext.requirePermission(LEGACY_READ_PERMISSION);
-        return caller;
-    }
-
-    private static CallerIdentity legacyWriteActor() {
-        CallerIdentity caller = readActor();
-        AuthorizationContext.requirePermission(LEGACY_WRITE_PERMISSION);
         return caller;
     }
 
@@ -240,54 +155,6 @@ public final class SupplyDashboardGovernanceService {
         };
     }
 
-    private static SupplyDashboardReconciliationItemView reconciliationItem(ReconciliationItem item) {
-        long businessBiDiff = number(item.biRowCount()) - number(item.businessRowCount());
-        BigDecimal amountDiff = money(item.biAmount()).subtract(money(item.businessAmount()));
-        // 旧摘要没有来源版本、完整性及排除项证据；不能把零哨兵或 Raw 总量当作可比业务来源。
-        String status = reconciliationStatus(item, businessBiDiff, amountDiff);
-        return new SupplyDashboardReconciliationItemView(
-                item.subjectCode(),
-                item.subjectName(),
-                number(item.sourceRowCount()),
-                number(item.businessRowCount()),
-                number(item.biRowCount()),
-                money(item.sourceAmount()),
-                money(item.businessAmount()),
-                money(item.biAmount()),
-                null,
-                null,
-                businessBiDiff,
-                amountDiff,
-                status,
-                reconciliationDescription(item, status));
-    }
-
-    private static String reconciliationStatus(
-            ReconciliationItem item, long businessBiDiff, BigDecimal amountDiff) {
-        if (number(item.sourceRowCount()) == 0L && number(item.businessRowCount()) == 0L && number(item.biRowCount()) == 0L) {
-            return "EMPTY";
-        }
-        if (businessBiDiff != 0L
-                || amountDiff.abs().compareTo(MONEY_TOLERANCE) > 0) {
-            return "DIFF";
-        }
-        return "UNVERIFIED";
-    }
-
-    private static String reconciliationDescription(ReconciliationItem item, String status) {
-        return switch (status) {
-            case "EMPTY" -> item.subjectName() + "在当前筛选范围内暂无可对账数据";
-            case "DIFF" -> item.subjectName() + "存在业务与 BI 数量或金额差异；来源版本及范围未验证，请进入对账中心复核";
-            default -> item.subjectName() + "业务与 BI 汇总一致；来源仅为历史 Raw 摘要，缺少版本、范围及退款排除证据，当前在线未验证";
-        };
-    }
-
-    private static String overallReconciliationStatus(List<SupplyDashboardReconciliationItemView> items) {
-        if (items.stream().anyMatch(item -> "DIFF".equals(item.status()))) return "DIFF";
-        if (items.stream().allMatch(item -> "EMPTY".equals(item.status()))) return "EMPTY";
-        return "UNVERIFIED";
-    }
-
     private static List<SupplyDashboardFilterOptionView> optionViews(List<FilterOption> items) {
         return items.stream()
                 .filter(item -> item.optionValue() != null && !item.optionValue().isBlank())
@@ -313,111 +180,12 @@ public final class SupplyDashboardGovernanceService {
         return List.copyOf(values.values());
     }
 
-    private static SupplyDashboardFeishuArchiveView archiveView(SupplyDashboardStore.FeishuArchiveRow row) {
-        return new SupplyDashboardFeishuArchiveView(
-                row.id(),
-                row.archiveCode(),
-                row.tableId(),
-                row.viewId(),
-                row.tableName(),
-                row.fileName(),
-                row.fileFormat(),
-                row.exportedBy(),
-                row.exportedTime(),
-                row.frozenTime(),
-                number(row.recordCount()),
-                row.checksumSha256(),
-                row.storageUri(),
-                row.fieldMappingUri(),
-                row.reconciliationReportUri(),
-                row.archiveStatusCode(),
-                row.remark(),
-                row.createdTime(),
-                row.updatedTime());
-    }
-
     private static Instant monthStart(Instant instant) {
         return BiBusinessTime.monthStart(instant);
-    }
-
-    private static String code(String value, String name) {
-        String normalized = upper(value, name);
-        if (normalized == null) return null;
-        if (!CODE.matcher(normalized).matches()) throw badRequest(name + "格式无效");
-        return normalized;
-    }
-
-    private static String requiredCode(String value, String name) {
-        String normalized = code(value, name);
-        if (normalized == null) throw badRequest(name + "不能为空");
-        return normalized;
-    }
-
-    private static String sourceSystemCode(String value) {
-        String normalized = code(value, "sourceSystemCode");
-        if ("DHB".equals(normalized)) return "DINGHUOBAO";
-        return normalized;
-    }
-
-    private static String fileFormat(String value) {
-        String normalized = requiredCode(value, "fileFormat");
-        if (!List.of("CSV", "XLSX").contains(normalized)) throw badRequest("fileFormat只支持CSV或XLSX");
-        return normalized;
-    }
-
-    private static String checksum(String value) {
-        String normalized = text(value, 64, "checksumSha256");
-        if (!CHECKSUM.matcher(normalized).matches()) throw badRequest("checksumSha256必须是64位SHA-256十六进制值");
-        return normalized.toLowerCase(Locale.ROOT);
-    }
-
-    private static String upper(String value, String name) {
-        String normalized = optionalText(value, 64, name);
-        return normalized == null ? null : normalized.toUpperCase(Locale.ROOT);
-    }
-
-    private static String text(String value, int max, String name) {
-        if (value == null) throw badRequest(name + "不能为空");
-        String normalized = value.strip();
-        if (normalized.isEmpty()) throw badRequest(name + "不能为空");
-        if (normalized.length() > max) throw badRequest(name + "长度不能超过" + max);
-        return normalized;
-    }
-
-    private static String optionalText(String value, int max, String name) {
-        if (value == null) return null;
-        String normalized = value.strip();
-        if (normalized.isEmpty()) return null;
-        if (normalized.length() > max) throw badRequest(name + "长度不能超过" + max);
-        return normalized;
-    }
-
-    private static Long positiveId(Long value, String name) {
-        if (value == null) return null;
-        if (value < 1) throw badRequest(name + "必须大于0");
-        return value;
-    }
-
-    private static Long nonNegative(Long value, String name) {
-        if (value == null) throw badRequest(name + "不能为空");
-        if (value < 0) throw badRequest(name + "不能小于0");
-        return value;
-    }
-
-    private static Instant requiredTime(Instant value, String name) {
-        if (value == null) throw badRequest(name + "不能为空");
-        return value;
     }
 
     private static long number(Long value) {
         return value == null ? 0L : value;
     }
 
-    private static BigDecimal money(BigDecimal value) {
-        return (value == null ? BigDecimal.ZERO : value).setScale(2, RoundingMode.HALF_UP);
-    }
-
-    private static BusinessException badRequest(String message) {
-        return new BusinessException(ErrorCode.BAD_REQUEST, message, List.of());
-    }
 }

@@ -15,6 +15,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import com.rigour.tenant.iam.client.SupplyAuthorizationContext;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Set;
@@ -65,7 +66,7 @@ public final class ErpProductSpecificationService {
     }
 
     public InternalProductSpecificationView create(InternalProductSpecificationCommand command) {
-        CallerIdentity actor = actor(WRITE_PERMISSION);
+        CallerIdentity actor = writeActor("erp:specification:create");
         InternalProductSpecificationCommand normalized = normalize(command, false);
         String tenantId = actor.tenantId().toString();
         if (store.existsByCode(tenantId, normalized.specificationCode(), null)) {
@@ -80,7 +81,7 @@ public final class ErpProductSpecificationService {
     }
 
     public InternalProductSpecificationView update(Long id, InternalProductSpecificationCommand command) {
-        CallerIdentity actor = actor(WRITE_PERMISSION);
+        CallerIdentity actor = writeActor("erp:specification:update");
         Long specificationId = ErpServiceValidation.requireId(id, "商品规格ID无效");
         InternalProductSpecificationCommand normalized = normalize(command, true);
         String tenantId = actor.tenantId().toString();
@@ -96,7 +97,7 @@ public final class ErpProductSpecificationService {
     }
 
     public void delete(Long id, int revision) {
-        CallerIdentity actor = actor(WRITE_PERMISSION);
+        CallerIdentity actor = writeActor("erp:specification:delete");
         Long specificationId = ErpServiceValidation.requireId(id, "商品规格ID无效");
         ErpServiceValidation.requireRevision(revision);
         String tenantId = actor.tenantId().toString();
@@ -158,6 +159,11 @@ public final class ErpProductSpecificationService {
             throw badRequest(name + "只能包含字母、数字、下划线或中横线，且长度不能超过50");
         }
         return normalized;
+    }
+
+    private static CallerIdentity writeActor(String action) {
+        return actor(SupplyAuthorizationContext.current().map(SupplyAuthorizationContext::active).orElse(false)
+                ? action : WRITE_PERMISSION);
     }
 
     private static CallerIdentity actor(String permission) {

@@ -2,7 +2,6 @@ package com.rigour.order.api.v1.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 
@@ -355,83 +354,6 @@ public final class OrderRegisterModels {
 
     public record MonthlyPerformanceReport(String monthFrom, String monthTo, Instant generatedAt,
             List<MonthlyPerformanceRow> rows) {}
-
-    /** 期间统计合计；五项口径与分组行一致。 */
-    public record PeriodTotals(
-            BigDecimal periodOrderAmount,
-            BigDecimal periodReceivedAmount,
-            BigDecimal periodRefundAmount,
-            BigDecimal periodNetReceivedAmount,
-            BigDecimal endingUnpaidAmount) {
-        public PeriodTotals {
-            periodOrderAmount = zeroIfNull(periodOrderAmount);
-            periodReceivedAmount = zeroIfNull(periodReceivedAmount);
-            periodRefundAmount = zeroIfNull(periodRefundAmount);
-            periodNetReceivedAmount = zeroIfNull(periodNetReceivedAmount);
-            endingUnpaidAmount = zeroIfNull(endingUnpaidAmount);
-        }
-    }
-
-    /** 期间统计分组行；key 为分组标识（地区编码/客户ID/员工编码），label 为可读名称。 */
-    public record PeriodRow(
-            String key,
-            String label,
-            BigDecimal periodOrderAmount,
-            BigDecimal periodReceivedAmount,
-            BigDecimal periodRefundAmount,
-            BigDecimal periodNetReceivedAmount,
-            BigDecimal endingUnpaidAmount) {
-        public PeriodRow {
-            periodOrderAmount = zeroIfNull(periodOrderAmount);
-            periodReceivedAmount = zeroIfNull(periodReceivedAmount);
-            periodRefundAmount = zeroIfNull(periodRefundAmount);
-            periodNetReceivedAmount = zeroIfNull(periodNetReceivedAmount);
-            endingUnpaidAmount = zeroIfNull(endingUnpaidAmount);
-        }
-    }
-
-    /** 期间经营统计；期末未回款使用结束日当天截至时点，不被期间开始日期排除。 */
-    public record PeriodStatisticsView(
-            LocalDate dateFrom,
-            LocalDate dateTo,
-            String groupBy,
-            PeriodTotals totals,
-            List<PeriodRow> rows,
-            HistoryCoverage coverage) {
-        public PeriodStatisticsView {
-            rows = rows == null ? List.of() : List.copyOf(rows);
-            totals =
-                    totals == null
-                            ? new PeriodTotals(null, null, null, null, null)
-                            : totals;
-        }
-    }
-
-    private static BigDecimal zeroIfNull(BigDecimal value) {
-        return value == null ? BigDecimal.ZERO : value;
-    }
-
-    /** 截至日未回款行；historyComplete=false 表示该订单历史事件不完整。 */
-    public record ReceivablesView(
-            Long orderId,
-            String orderNo,
-            String sourceSystemCode,
-            Long customerId,
-            String customerCode,
-            String customerName,
-            String regionCode,
-            String regionName,
-            String ownerEmployeeCode,
-            String ownerEmployeeName,
-            String departmentName,
-            Instant orderDate,
-            BigDecimal receivableAmount,
-            BigDecimal netReceivedAmount,
-            BigDecimal unpaidAmount,
-            BigDecimal overpaidAmount,
-            boolean historyComplete,
-            Instant coverageFrom) {
-    }
 
     /** 可靠订单号映射命令；旧内部编号必须精确命中一张订单。 */
     public record OrderNumberMappingCommand(

@@ -2,6 +2,7 @@ package com.rigour.tenant.iam.application.service.settings;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -14,7 +15,12 @@ public final class AppSettingsModels {
             boolean canInitialize,
             String mode,
             long version,
-            Set<String> permissions) {}
+            Set<String> permissions,
+            Map<String, String> actionLabels) {
+        public Context(boolean initialized, boolean canInitialize, String mode, long version, Set<String> permissions) {
+            this(initialized, canInitialize, mode, version, permissions, Map.of());
+        }
+    }
 
     public record MenuCommand(
             UUID parentId,
