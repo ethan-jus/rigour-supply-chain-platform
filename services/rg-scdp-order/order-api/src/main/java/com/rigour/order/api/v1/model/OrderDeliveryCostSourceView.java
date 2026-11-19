@@ -18,7 +18,49 @@ public record OrderDeliveryCostSourceView(
         String departmentName,
         String contactName,
         String contactPhone,
-        java.math.BigDecimal documentAmount) {
+        java.math.BigDecimal documentAmount,
+        String shipmentWarehouseName) {
+    public OrderDeliveryCostSourceView(
+            Long id,
+            String documentNo,
+            String cityCode,
+            Long warehouseId,
+            String customerCode,
+            String customerName,
+            String statusCode,
+            String sourceSystem,
+            String originalNo,
+            java.time.LocalDate documentDate,
+            String destinationAddress,
+            String employeeCode,
+            String employeeName,
+            Long departmentId,
+            String departmentName,
+            String contactName,
+            String contactPhone,
+            java.math.BigDecimal documentAmount) {
+        this(
+                id,
+                documentNo,
+                cityCode,
+                warehouseId,
+                customerCode,
+                customerName,
+                statusCode,
+                sourceSystem,
+                originalNo,
+                documentDate,
+                destinationAddress,
+                employeeCode,
+                employeeName,
+                departmentId,
+                departmentName,
+                contactName,
+                contactPhone,
+                documentAmount,
+                null);
+    }
+
     public OrderDeliveryCostSourceView(
             Long id,
             String documentNo,

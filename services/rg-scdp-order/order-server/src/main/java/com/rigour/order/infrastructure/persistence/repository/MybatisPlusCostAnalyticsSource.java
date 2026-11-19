@@ -42,22 +42,21 @@ public class MybatisPlusCostAnalyticsSource {
                     "sources_json");
     private final OrderLogisticsCostMapper mapper;
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
-    private tools.jackson.databind.ObjectMapper json;
+    private final tools.jackson.databind.ObjectMapper json;
 
     @org.springframework.beans.factory.annotation.Autowired
-    void attribution(
-            org.springframework.jdbc.core.JdbcTemplate jdbc,
-            tools.jackson.databind.ObjectMapper json) {
+    void attribution(org.springframework.jdbc.core.JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+    }
+
+    public MybatisPlusCostAnalyticsSource(
+            OrderLogisticsCostMapper mapper, tools.jackson.databind.ObjectMapper json) {
+        this.mapper = mapper;
         this.json = json;
     }
 
-    public MybatisPlusCostAnalyticsSource(OrderLogisticsCostMapper mapper) {
-        this.mapper = mapper;
-    }
-
     public String version(String tenant) {
-        String base = mapper.analyticsVersion(tenant) + ":transport-types-v4-complete-only";
+        String base = mapper.analyticsVersion(tenant) + ":transport-types-v5-readiness";
         if (jdbc == null) return base;
         return base
                 + ":cost-revisions:"
@@ -87,22 +86,14 @@ public class MybatisPlusCostAnalyticsSource {
                 && !cursor.matches("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
             throw new IllegalArgumentException("TEXT_UUID源游标无效");
         String version = version(tenant);
+        var columns = new ArrayList<>(COLUMNS);
+        columns.add(
+                "CASE WHEN status_code='VOID' THEN NULL ELSE "
+                        + MybatisPlusOrderLogisticsCostRepository.missingBusinessSql()
+                        + " END AS transport_missing");
         var query =
                 new QueryWrapper<OrderLogisticsCostEntity>()
-                        .select(
-                                COLUMNS.stream()
-                                        .map(
-                                                c ->
-                                                        "status_code".equals(c)
-                                                                ? "CASE WHEN status_code='VOID'"
-                                                                        + " THEN 'VOID' WHEN "
-                                                                        + MybatisPlusOrderLogisticsCostRepository
-                                                                                .completeBusinessSql()
-                                                                        + " THEN 'CONFIRMED' ELSE"
-                                                                        + " 'DRAFT' END AS"
-                                                                        + " status_code"
-                                                                : c)
-                                        .toArray(String[]::new))
+                        .select(columns.toArray(String[]::new))
                         .eq("tenant_id", tenant)
                         .eq("deleted", 0)
                         .gt(!cursor.isEmpty(), "id", cursor)
@@ -112,6 +103,18 @@ public class MybatisPlusCostAnalyticsSource {
         for (var row : mapper.selectMaps(query)) {
             Map<String, String> values = new LinkedHashMap<>();
             for (String column : COLUMNS) values.put(column, exact(row.get(column)));
+            String missing = exact(row.get("transport_missing"));
+            if (!"VOID".equals(values.get("status_code"))) {
+                boolean complete = missing != null && missing.isEmpty();
+                values.put("status_code", complete ? "CONFIRMED" : "DRAFT");
+                if (missing != null && !complete) {
+                    var data =
+                            (tools.jackson.databind.node.ObjectNode)
+                                    json.readTree(Objects.toString(values.get("data_json"), "{}"));
+                    data.put("_transportMissing", missing);
+                    values.put("data_json", json.writeValueAsString(data));
+                }
+            }
             items.add(values);
         }
         enrichSavedPlatformAllocations(tenant, items);

@@ -4,6 +4,7 @@ import com.rigour.erp.api.v1.model.InternalInventoryWarehouseCommand;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
 import com.rigour.erp.api.v1.model.WarehouseLocationCatalogView;
+import com.rigour.erp.application.port.out.CostReferenceSource;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore.WarehouseSearchCriteria;
 import com.rigour.erp.application.service.support.ErpServiceValidation;
@@ -15,6 +16,7 @@ import com.rigour.shared.context.CallerIdentity;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.code.BusinessCodeGenerator;
 import com.rigour.shared.core.exception.BusinessException;
+import com.rigour.tenant.iam.client.SupplyAuthorizationContext;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +35,7 @@ public final class ErpInventoryWarehouseService {
 
     private final ErpInventoryWarehouseStore store;
     private final BusinessCodeGenerator codeGenerator;
+    private final CostReferenceSource references;
     private WarehouseLocationService locations;
     private com.rigour.erp.application.port.out.WarehouseDepartments departments;
 
@@ -73,14 +76,17 @@ public final class ErpInventoryWarehouseService {
     }
 
     @Autowired
-    public ErpInventoryWarehouseService(ErpInventoryWarehouseStore store) {
-        this(store, new BusinessCodeGenerator());
+    public ErpInventoryWarehouseService(ErpInventoryWarehouseStore store, CostReferenceSource references) {
+        this(store, new BusinessCodeGenerator(), references);
     }
 
     ErpInventoryWarehouseService(
-            ErpInventoryWarehouseStore store, BusinessCodeGenerator codeGenerator) {
+            ErpInventoryWarehouseStore store,
+            BusinessCodeGenerator codeGenerator,
+            CostReferenceSource references) {
         this.store = Objects.requireNonNull(store, "store");
         this.codeGenerator = Objects.requireNonNull(codeGenerator, "codeGenerator");
+        this.references = Objects.requireNonNull(references, "references");
     }
 
     public MasterDataPageView<InternalInventoryWarehouseView> warehouses(
@@ -159,8 +165,10 @@ public final class ErpInventoryWarehouseService {
     }
 
     public InternalInventoryWarehouseView create(InternalInventoryWarehouseCommand command) {
-        CallerIdentity actor = action("erp:warehouse:create");
+        String permission = writePermission("erp:warehouse:create");
+        CallerIdentity actor = actor(permission);
         InternalInventoryWarehouseCommand normalized = normalize(command, false);
+        validateNewRegion(normalized.regionCode(), null, permission);
         String tenantId = actor.tenantId().toString();
         String warehouseCode =
                 codeGenerator.generateUnique(
@@ -180,13 +188,20 @@ public final class ErpInventoryWarehouseService {
 
     public InternalInventoryWarehouseView update(
             Long id, InternalInventoryWarehouseCommand command) {
-        CallerIdentity actor = action("erp:warehouse:update");
+        String permission = writePermission("erp:warehouse:update");
+        CallerIdentity actor = actor(permission);
         InternalInventoryWarehouseCommand normalized = normalize(command, true);
         String tenantId = actor.tenantId().toString();
+        long warehouseId = ErpServiceValidation.requireId(id, "仓库ID无效");
+        if (normalized.regionCode() != null) {
+            var saved = store.warehouseForUpdate(tenantId, warehouseId)
+                    .orElseThrow(() -> notFound("仓库不存在"));
+            validateNewRegion(normalized.regionCode(), saved.regionCode(), permission);
+        }
         InternalInventoryWarehouseView updated =
                 store.update(
                         tenantId,
-                        ErpServiceValidation.requireId(id, "仓库ID无效"),
+                        warehouseId,
                         normalized,
                         actor.principalId().toString());
         log.info(
@@ -200,7 +215,7 @@ public final class ErpInventoryWarehouseService {
     }
 
     public void delete(Long id, int revision) {
-        CallerIdentity actor = action("erp:warehouse:delete");
+        CallerIdentity actor = actor(writePermission("erp:warehouse:delete"));
         ErpServiceValidation.requireRevision(revision);
         Long warehouseId = ErpServiceValidation.requireId(id, "仓库ID无效");
         String tenantId = actor.tenantId().toString();
@@ -275,16 +290,19 @@ public final class ErpInventoryWarehouseService {
         return row.withLocationDisplay(display);
     }
 
-    private static CallerIdentity action(String action) {
+    private void validateNewRegion(String region, String previousRegion, String permission) {
+        if (region == null || region.equalsIgnoreCase(previousRegion)) return;
+        try {
+            references.city(region, permission);
+        } catch (AuthorizationDeniedException e) {
+            throw badRequest("请选择可用的经营城市或总部作为业务归属地区");
+        }
+    }
 
-        return actor(
-                com.rigour.tenant.iam.client.SupplyAuthorizationContext.current()
-                                .map(
-                                        com.rigour.tenant.iam.client.SupplyAuthorizationContext
-                                                ::active)
-                                .orElse(false)
-                        ? action
-                        : WRITE_PERMISSION);
+    private static String writePermission(String action) {
+        return SupplyAuthorizationContext.current().map(SupplyAuthorizationContext::active).orElse(false)
+                ? action
+                : WRITE_PERMISSION;
     }
 
     private static CallerIdentity actor(String permission) {

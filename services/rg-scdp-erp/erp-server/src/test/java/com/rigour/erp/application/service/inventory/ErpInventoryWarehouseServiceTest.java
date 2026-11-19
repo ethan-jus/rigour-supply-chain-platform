@@ -3,6 +3,7 @@ package com.rigour.erp.application.service.inventory;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseCommand;
 import com.rigour.erp.api.v1.model.InternalInventoryWarehouseView;
 import com.rigour.erp.api.v1.model.MasterDataPageView;
+import com.rigour.erp.application.port.out.CostReferenceSource;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore;
 import com.rigour.erp.application.port.out.ErpInventoryWarehouseStore.WarehouseSearchCriteria;
 import com.rigour.shared.context.CallerIdentity;
@@ -34,6 +35,8 @@ class ErpInventoryWarehouseServiceTest {
     private static final String TENANT = TENANT_ID.toString();
     private static final String ACTOR = USER_ID.toString();
 
+    private final CostReferenceSource references = mock(CostReferenceSource.class);
+
     @AfterEach
     void clearContext() {
         TestAuthorizationContext.clear();
@@ -42,7 +45,7 @@ class ErpInventoryWarehouseServiceTest {
     @Test
     void createWarehouseGeneratesCodeAndUsesBusinessDefaults() {
         ErpInventoryWarehouseStore store = mock(ErpInventoryWarehouseStore.class);
-        ErpInventoryWarehouseService service = new ErpInventoryWarehouseService(store, fixedGenerator());
+        ErpInventoryWarehouseService service = new ErpInventoryWarehouseService(store, fixedGenerator(), references);
         TestAuthorizationContext.set(caller("erp:product:write"));
         when(store.existsByCode(TENANT, "WH202608201234")).thenReturn(false);
         when(store.create(eq(TENANT), eq("WH202608201234"), any(), eq(ACTOR)))
@@ -58,6 +61,7 @@ class ErpInventoryWarehouseServiceTest {
         verify(store).create(eq(TENANT), eq("WH202608201234"), command.capture(), eq(ACTOR));
         assertThat(command.getValue().warehouseName()).isEqualTo("上海默认仓");
         assertThat(command.getValue().regionCode()).isEqualTo("SHANGHAI");
+        verify(references).city("SHANGHAI", "erp:product:write");
         assertThat(command.getValue().warehouseTypeCode()).isEqualTo("CITY");
         assertThat(command.getValue().defaultFlag()).isFalse();
         assertThat(command.getValue().statusCode()).isEqualTo("ACTIVE");
@@ -66,7 +70,7 @@ class ErpInventoryWarehouseServiceTest {
     @Test
     void listWarehouseUsesDedicatedFilters() {
         ErpInventoryWarehouseStore store = mock(ErpInventoryWarehouseStore.class);
-        ErpInventoryWarehouseService service = new ErpInventoryWarehouseService(store, fixedGenerator());
+        ErpInventoryWarehouseService service = new ErpInventoryWarehouseService(store, fixedGenerator(), references);
         TestAuthorizationContext.set(caller("erp:product:read"));
         when(store.warehouses(eq(TENANT), eq(0), eq(20), any()))
                 .thenReturn(new MasterDataPageView<>(0, 0, 20, List.of()));
@@ -86,7 +90,7 @@ class ErpInventoryWarehouseServiceTest {
     @Test
     void deleteWarehouseRequiresRevisionForLogicalDelete() {
         ErpInventoryWarehouseStore store = mock(ErpInventoryWarehouseStore.class);
-        ErpInventoryWarehouseService service = new ErpInventoryWarehouseService(store, fixedGenerator());
+        ErpInventoryWarehouseService service = new ErpInventoryWarehouseService(store, fixedGenerator(), references);
         TestAuthorizationContext.set(caller("erp:product:write"));
 
         assertThatThrownBy(() -> service.delete(1L, 0))
@@ -99,19 +103,42 @@ class ErpInventoryWarehouseServiceTest {
         var store = mock(ErpInventoryWarehouseStore.class);
         var source = mock(com.rigour.erp.application.port.out.WarehouseLocationCatalog.class);
         when(source.published("2026")).thenReturn(WarehouseLocationServiceTest.catalog());
-        var service = new ErpInventoryWarehouseService(store, fixedGenerator());
+        var service = new ErpInventoryWarehouseService(store, fixedGenerator(), references);
         service.locationService(new WarehouseLocationService(source));
         TestAuthorizationContext.set(caller("erp:product:write"));
         when(store.create(eq(TENANT), any(), any(), eq(ACTOR))).thenReturn(
-                new InternalInventoryWarehouseView(1L, "WH1", "武汉仓", "HEADQUARTERS", "CITY", false,
+                new InternalInventoryWarehouseView(1L, "WH1", "武汉仓", "COST_HEADQUARTERS", "CITY", false,
                         null, null, null, "ACTIVE", null, 1, ACTOR, Instant.now(), ACTOR, Instant.now()));
-        service.create(new InternalInventoryWarehouseCommand("武汉仓", " HEADQUARTERS ", "CITY", false,
+        service.create(new InternalInventoryWarehouseCommand("武汉仓", " COST_HEADQUARTERS ", "CITY", false,
                 null, null, null, "ACTIVE", null, null, "420102", "2026"));
         var saved = ArgumentCaptor.forClass(InternalInventoryWarehouseCommand.class);
         verify(store).create(eq(TENANT), any(), saved.capture(), eq(ACTOR));
-        assertThat(saved.getValue().regionCode()).isEqualTo("HEADQUARTERS");
+        assertThat(saved.getValue().regionCode()).isEqualTo("COST_HEADQUARTERS");
+        verify(references).city("COST_HEADQUARTERS", "erp:product:write");
         assertThat(saved.getValue().locationAreaCode()).isEqualTo("420102");
         assertThat(saved.getValue().locationAreaVersion()).isEqualTo("2026");
+    }
+
+    @Test
+    void unrelatedEditPreservesHistoricalRegionButReplacingItRequiresSelectableRegion() {
+        var store = mock(ErpInventoryWarehouseStore.class);
+        var service = new ErpInventoryWarehouseService(store, fixedGenerator(), references);
+        TestAuthorizationContext.set(caller("erp:product:write"));
+        var old = new InternalInventoryWarehouseView(1L, "WH1", "旧仓库", "OLD_AREA", "CITY",
+                false, null, null, null, "ACTIVE", null, 1, ACTOR, Instant.now(), ACTOR, Instant.now());
+        when(store.warehouseForUpdate(TENANT, 1L)).thenReturn(java.util.Optional.of(old));
+        when(store.update(eq(TENANT), eq(1L), any(), eq(ACTOR))).thenReturn(old);
+
+        service.update(1L, new InternalInventoryWarehouseCommand("旧仓库", "OLD_AREA", "CITY",
+                false, null, null, null, "ACTIVE", "补充备注", 1));
+        org.mockito.Mockito.verifyNoInteractions(references);
+        when(references.city("NATIONWIDE", "erp:product:write"))
+                .thenThrow(new com.rigour.shared.context.AuthorizationDeniedException("erp:product:write"));
+        assertThatThrownBy(() -> service.update(1L, new InternalInventoryWarehouseCommand(
+                "旧仓库", "NATIONWIDE", "CITY", false, null, null, null, "ACTIVE", null, 1)))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("请选择可用的经营城市或总部");
+        verify(store).update(eq(TENANT), eq(1L), any(), eq(ACTOR));
     }
 
     @Test
@@ -119,7 +146,7 @@ class ErpInventoryWarehouseServiceTest {
         var store = mock(ErpInventoryWarehouseStore.class);
         var source = mock(com.rigour.erp.application.port.out.WarehouseLocationCatalog.class);
         when(source.published("2026")).thenReturn(WarehouseLocationServiceTest.catalog());
-        var service = new ErpInventoryWarehouseService(store, fixedGenerator());
+        var service = new ErpInventoryWarehouseService(store, fixedGenerator(), references);
         service.locationService(new WarehouseLocationService(source));
         TestAuthorizationContext.set(caller("erp:product:write"));
         assertThatThrownBy(() -> service.create(new InternalInventoryWarehouseCommand("仓库", "WH", "CITY", false,
@@ -131,7 +158,7 @@ class ErpInventoryWarehouseServiceTest {
     @Test
     void locationCatalogDoesNotBypassWarehouseReadAuthorization() {
         var source = mock(com.rigour.erp.application.port.out.WarehouseLocationCatalog.class);
-        var service = new ErpInventoryWarehouseService(mock(ErpInventoryWarehouseStore.class), fixedGenerator());
+        var service = new ErpInventoryWarehouseService(mock(ErpInventoryWarehouseStore.class), fixedGenerator(), references);
         service.locationService(new WarehouseLocationService(source));
         TestAuthorizationContext.set(caller("unrelated:read"));
         assertThatThrownBy(() -> service.locationCatalog(null))

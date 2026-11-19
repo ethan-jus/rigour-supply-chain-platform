@@ -34,7 +34,26 @@ public final class OrderLogisticsLedgerService {
                 || begin < 0
                 || begin > 100000) throw bad("收发方查询参数无效");
         if ("CUSTOMER".equals(kind)) references.city(city, action);
-        return references.ledgerParties(kind, code, id, keyword, city, begin, action);
+        var rows = references.ledgerParties(kind, code, id, keyword, city, begin, action);
+        if (!"WAREHOUSE".equals(kind) || rows.isEmpty()) return rows;
+        // 只核验 ERP 已授权返回的仓库；不扩展仓库候选或放宽地区权限。
+        var codes = rows.stream().map(LogisticsLedgerPartyView::cityCode)
+                .filter(c -> c != null && !c.isBlank()).distinct().toList();
+        var checks = codes.isEmpty() ? Map.<String, OrderLogisticsReferences.CityCheck>of()
+                : references.cityChecks(codes, action).stream().collect(java.util.stream.Collectors.toMap(
+                        OrderLogisticsReferences.CityCheck::code, c -> c));
+        return rows.stream().map(row -> {
+            var check = row.cityCode() == null || row.cityCode().isBlank()
+                    ? null : checks.get(row.cityCode());
+            if (row.cityCode() != null && !row.cityCode().isBlank() && check == null)
+                throw new IllegalStateException("经营城市配置核验未完整返回，请稍后重试");
+            String prefix = "仓库“" + row.name() + "”（" + row.code() + "）";
+            String issue = check == null
+                    ? prefix + "未维护业务归属地区，请到 ERP → 库存管理 → 仓库信息补齐业务归属地区后重新选择；填写所在地区或地址不能替代业务归属地区"
+                    : !check.configured() ? prefix + "：" + check.issue()
+                    : !check.allowed() ? prefix + "的业务归属地区（" + row.cityCode() + "）不在当前账号授权范围内，请联系管理员核对该地区的授权" : null;
+            return row.withReferenceIssue(issue);
+        }).toList();
     }
 
     public List<LogisticsCostSourceView> sources(LogisticsLedgerSourceQuery q, String action) {
@@ -73,8 +92,7 @@ public final class OrderLogisticsLedgerService {
                 departmentFilter
                         ? sales.sales(tenant, q, action, warehouseId, departmentCodes)
                         : sales.sales(tenant, q, action, warehouseId);
-        return withUsage(
-                salesViews(documents, action, departmentFilter ? employees : null), q, action);
+        return withUsage(salesViews(documents, action), q, action);
     }
 
     public List<LogisticsCostSourceView> salesSources(
@@ -91,12 +109,12 @@ public final class OrderLogisticsLedgerService {
                         nos,
                         action,
                         historical);
-        return salesViews(documents, action, null, !historical);
+        return salesViews(documents, action, !historical);
     }
 
     private List<LogisticsCostSourceView> salesViews(
             List<OrderDeliveryCostSourceView> documents, String action) {
-        return salesViews(documents, action, null);
+        return salesViews(documents, action, true);
     }
 
     private Map<String, LogisticsCostEmployeeView> employeeDirectory(String action) {
@@ -120,14 +138,6 @@ public final class OrderLogisticsLedgerService {
     private List<LogisticsCostSourceView> salesViews(
             List<OrderDeliveryCostSourceView> documents,
             String action,
-            Map<String, LogisticsCostEmployeeView> directory) {
-        return salesViews(documents, action, directory, true);
-    }
-
-    private List<LogisticsCostSourceView> salesViews(
-            List<OrderDeliveryCostSourceView> documents,
-            String action,
-            Map<String, LogisticsCostEmployeeView> directory,
             boolean validateCity) {
         List<LogisticsCostSourceView> result = new ArrayList<>();
         boolean needsDepartment =
@@ -139,24 +149,24 @@ public final class OrderLogisticsLedgerService {
                                                 && (s.departmentName() == null
                                                         || s.departmentName().isBlank()));
         var employees =
-                directory != null
-                        ? directory
-                        : needsDepartment
-                                ? employeeIndex(
-                                        references.employeeDepartments(
-                                                documents.stream()
-                                                        .map(
-                                                                OrderDeliveryCostSourceView
-                                                                        ::employeeCode)
-                                                        .filter(
-                                                                code ->
-                                                                        code != null
-                                                                                && !code.isBlank())
-                                                        .collect(
-                                                                java.util.stream.Collectors
-                                                                        .toSet()),
-                                                action))
-                                : Map.<String, LogisticsCostEmployeeView>of();
+                needsDepartment
+                        ? references.employeeDepartmentsAt(
+                                AuthorizationContext.requireCurrent(),
+                                documents.stream()
+                                        .filter(
+                                                s ->
+                                                        s.employeeCode() != null
+                                                                && !s.employeeCode().isBlank()
+                                                                && s.documentDate() != null)
+                                        .map(
+                                                s ->
+                                                        new OrderLogisticsReferences.DepartmentAt(
+                                                                s.employeeCode(), s.documentDate()))
+                                        .collect(java.util.stream.Collectors.toSet()),
+                                action)
+                        : Map
+                                .<OrderLogisticsReferences.DepartmentAt, LogisticsCostEmployeeView>
+                                        of();
         var operatingCities =
                 documents.isEmpty() || !validateCity ? Map.<String, String>of() : references.cities(action);
         Map<Long, LogisticsLedgerPartyView> warehouses = new HashMap<>();
@@ -184,7 +194,12 @@ public final class OrderLogisticsLedgerService {
                     customers.put(city, indexed);
                 });
         for (var s : documents) {
-            var employee = s.employeeCode() == null ? null : employees.get(s.employeeCode());
+            var employee =
+                    s.employeeCode() == null
+                            ? null
+                            : employees.get(
+                                    new OrderLogisticsReferences.DepartmentAt(
+                                            s.employeeCode(), s.documentDate()));
             Long departmentId = s.departmentId();
             String departmentName = s.departmentName();
             // 只有缺失的归属才按稳定员工编码补齐，已有历史归属不随员工调岗变化。
@@ -240,7 +255,7 @@ public final class OrderLogisticsLedgerService {
                                     s.warehouseId(),
                                     null,
                                     warehouse == null ? null : warehouse.code(),
-                                    warehouse == null ? null : warehouse.name(),
+                                    warehouse == null ? s.shipmentWarehouseName() : warehouse.name(),
                                     s.customerCode(),
                                     s.customerName(),
                                     s.statusCode(),
@@ -278,7 +293,11 @@ public final class OrderLogisticsLedgerService {
     }
 
     private LogisticsLedgerPartyView party(String kind, String code, String city, String action) {
-        return parties(kind, code, null, null, city, 0, action).stream()
+        // 写入在 resolve 中校验仓库真实归属；无需加载候选项展示提示。
+        var rows = "WAREHOUSE".equals(kind)
+                ? references.ledgerParties(kind, code, null, null, city, 0, action)
+                : parties(kind, code, null, null, city, 0, action);
+        return rows.stream()
                 .filter(p -> Objects.equals(code, p.code()))
                 .findFirst()
                 .orElseThrow(() -> bad("收发方不存在、已停用或无权限：" + code));
@@ -303,7 +322,8 @@ public final class OrderLogisticsLedgerService {
                 ledger.sender().cityCode() == null || ledger.sender().cityCode().isBlank()
                         ? c.cityCode()
                         : ledger.sender().cityCode();
-        references.city(senderCity, action);
+        if (!"WAREHOUSE".equals(ledger.sender().partyTypeCode()))
+            references.city(senderCity, action);
         cities.add(senderCity);
         var sender = resolve(ledger.sender(), senderCity, action, warehouses);
         if (sender.cityCode() != null && !sender.cityCode().isBlank()) {
@@ -516,7 +536,12 @@ public final class OrderLogisticsLedgerService {
                                 + "（"
                                 + ref.code()
                                 + "）”未维护业务归属地区，请到 ERP → 库存管理 → 仓库信息补齐后重新保存；所在地区不能替代业务归属地区");
-            references.city(ref.cityCode(), action);
+            try {
+                references.city(ref.cityCode(), action);
+            } catch (BusinessException e) {
+                if (e.getErrorCode() != ErrorCode.BAD_REQUEST) throw e;
+                throw bad("仓库“" + ref.name() + "”（" + ref.code() + "）的归属配置异常：" + e.getMessage());
+            }
             if (p.cityCode() != null
                     && !p.cityCode().isBlank()
                     && !Objects.equals(ref.cityCode(), p.cityCode()))

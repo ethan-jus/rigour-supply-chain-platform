@@ -224,32 +224,79 @@ class LogisticsCustomerBatchHttpTest {
     }
 
     @Test
-    void departmentBatchUsesRestrictedServiceIdentityAndReturnsOnlyRequestedUsableCodes() {
+    void departmentBatchUsesDatedRestrictedIdentityWithoutEmploymentEligibility() {
         var tenant = UUID.randomUUID();
         caller(tenant);
         var f = fixture();
         f.refs().hrAddress("http://hr.test");
+        var date = java.time.LocalDate.parse("2026-09-10");
+        var key =
+                new com.rigour.order.application.port.out.OrderLogisticsReferences.DepartmentAt(
+                        "EMP1", date);
         f.server()
-                .expect(requestTo("http://hr.test/api/v1/hr/employee-identities/resolve"))
+                .expect(
+                        requestTo(
+                                "http://hr.test/api/v1/hr/employee-identities/department-attributions"))
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(header(RequestHeaders.TENANT_ID, tenant.toString()))
                 .andExpect(header(RequestHeaders.PRINCIPAL_SCOPE, "SERVICE"))
                 .andExpect(header(RequestHeaders.PERMISSIONS, "hr:employee:identity-read"))
-                .andExpect(content().json("[\"EMP1\",\"EMP2\"]"))
+                .andExpect(
+                        content()
+                                .json(
+                                        "[{\"employeeCode\":\"EMP1\",\"businessDate\":\"2026-09-10\"}]"))
                 .andRespond(
                         withSuccess(
                                 """
                                 {"code":"OK","data":[
-                                {"employeeCode":"EMP1","employeeName":"李林","departmentId":6,"departmentName":"北京市","usable":true},
-                                {"employeeCode":"EMP2","employeeName":"停用员工","departmentId":7,"usable":false},
-                                {"employeeCode":"OTHER","employeeName":"同名员工","departmentId":9,"usable":true}]}
+                                {"employeeCode":"EMP1","businessDate":"2026-09-10","employeeName":"离职员工","departmentId":6,"departmentName":"历史部门","basis":"ASSIGNMENT"},
+                                {"employeeCode":"EMP1","businessDate":"2026-10-10","departmentId":9,"departmentName":"调岗后部门"},
+                                {"employeeCode":"OTHER","businessDate":"2026-09-10","departmentId":9,"departmentName":"其他员工部门"}]}
                                 """,
                                 MediaType.APPLICATION_JSON));
         var rows =
-                f.refs().employeeDepartments(Set.of("EMP1", "EMP2"), "order:logistics-cost:read");
-        assertThat(rows).hasSize(1);
-        assertThat(rows.getFirst().departmentId()).isEqualTo(6L);
-        assertThat(rows.getFirst().departmentName()).isEqualTo("北京市");
+                f.refs()
+                        .employeeDepartmentsAt(
+                                AuthorizationContext.requireCurrent(),
+                                Set.of(key),
+                                "order:logistics-cost:read");
+        assertThat(rows).containsOnlyKeys(key);
+        assertThat(rows.get(key).departmentId()).isEqualTo(6L);
+        f.server().verify();
+    }
+
+    @Test
+    void unresolvedOrContradictoryHistoricalAttributionsAreNotAssigned() {
+        caller(UUID.randomUUID());
+        var f = fixture();
+        f.refs().hrAddress("http://hr.test");
+        var date = java.time.LocalDate.parse("2026-09-10");
+        f.server()
+                .expect(
+                        requestTo(
+                                "http://hr.test/api/v1/hr/employee-identities/department-attributions"))
+                .andRespond(
+                        withSuccess(
+                                """
+                                {"code":"OK","data":[
+                                {"employeeCode":"EMP1","businessDate":"2026-09-10","departmentId":6,"departmentName":"旧部门"},
+                                {"employeeCode":"EMP1","businessDate":"2026-09-10","departmentId":9,"departmentName":"冲突部门"},
+                                {"employeeCode":"EMP2","businessDate":"2026-09-10","departmentId":6,"departmentName":"旧部门","issue":"历史不明确"}]}
+                                """,
+                                MediaType.APPLICATION_JSON));
+        assertThat(
+                        f.refs()
+                                .employeeDepartmentsAt(
+                                        AuthorizationContext.requireCurrent(),
+                                        Set.of(
+                                                new com.rigour.order.application.port.out
+                                                        .OrderLogisticsReferences.DepartmentAt(
+                                                        "EMP1", date),
+                                                new com.rigour.order.application.port.out
+                                                        .OrderLogisticsReferences.DepartmentAt(
+                                                        "EMP2", date)),
+                                        "order:logistics-cost:read"))
+                .isEmpty();
         f.server().verify();
     }
 
@@ -257,14 +304,31 @@ class LogisticsCustomerBatchHttpTest {
     void departmentBatchRejectsUnrelatedActionsAndOversizedScopeBeforeRequest() {
         caller(UUID.randomUUID());
         var f = fixture();
-        assertThatThrownBy(() -> f.refs().employeeDepartments(Set.of("EMP1"), "hr:employee:read"))
+        var actor = AuthorizationContext.requireCurrent();
+        var key =
+                new com.rigour.order.application.port.out.OrderLogisticsReferences.DepartmentAt(
+                        "EMP1", java.time.LocalDate.parse("2026-09-10"));
+        assertThatThrownBy(
+                        () ->
+                                f.refs()
+                                        .employeeDepartmentsAt(
+                                                actor, Set.of(key), "hr:employee:read"))
                 .isInstanceOf(AuthorizationDeniedException.class);
         assertThatThrownBy(
                         () ->
                                 f.refs()
-                                        .employeeDepartments(
+                                        .employeeDepartmentsAt(
+                                                actor,
                                                 java.util.stream.IntStream.range(0, 101)
-                                                        .mapToObj(i -> "EMP" + i)
+                                                        .mapToObj(
+                                                                i ->
+                                                                        new com.rigour.order
+                                                                                .application.port
+                                                                                .out
+                                                                                .OrderLogisticsReferences
+                                                                                .DepartmentAt(
+                                                                                "EMP" + i,
+                                                                                key.businessDate()))
                                                         .collect(
                                                                 java.util.stream.Collectors
                                                                         .toSet()),

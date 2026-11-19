@@ -30,6 +30,16 @@ public class DictionarySourceMappingService {
         AuthorizationContext.requirePermission("business-settings:dict:read");
         return store.list(tenant(),code(dictionary));
     }
+    public List<String> mappedShipmentCarrierValues(List<String> values) {
+        AuthorizationContext.requirePermission("order:logistics-cost:read");
+        if (values == null || values.size() > 100 || values.stream().anyMatch(
+                value -> value == null || value.isBlank() || value.length() > 255))
+            throw bad("物流公司来源值无效");
+        return store.mappedShipmentCarriers(tenant(), values.stream().distinct().toList()).stream()
+                .map(DictionarySourceMappingView::sourceValue)
+                .toList();
+    }
+
     @org.springframework.transaction.annotation.Transactional
     public DictionarySourceMappingView update(Long id, DictionarySourceMappingCommand command) {
         AuthorizationContext.requirePermission("business-settings:dict:write");
@@ -43,7 +53,7 @@ public class DictionarySourceMappingService {
                 AuthorizationContext.requireCurrent().principalId().toString());
         if (work != null && "DHB".equals(source.sourceSystem())
                 && "DHB_SHIPMENT_LOGISTICS".equals(source.sourceScope())
-                && Set.of("shipment.deliveryMode", "shipment.logistics").contains(source.sourceField()))
+                && "shipment.deliveryMode".equals(source.sourceField()))
             work.recheckShipmentDictionary(AuthorizationContext.requireCurrent().tenantId(),
                     source.sourceField(), source.sourceValue(), java.time.Instant.now());
         return saved;
@@ -70,7 +80,10 @@ public class DictionarySourceMappingService {
                     o.dictionaryCode(),o.fieldCode(),o.sourceValue());
             if (prepared.containsKey(key)) continue;
             var override=store.find(key).filter(DictionarySourceMappingView::manualOverride);
-            prepared.put(key,override.map(m->new Observation(m.targetDictionaryCode(),o.fieldCode(),m.targetItemCode(),m.targetItemCode(),o.sourceScope())).orElse(o));
+            prepared.put(key, override
+                    .map(m -> new Observation(m.targetDictionaryCode(), o.fieldCode(),
+                            m.targetItemCode(), m.targetItemCode(), o.sourceScope()))
+                    .orElseGet(() -> standardObservation(key, o)));
         }
         Audit audit=client.sync(caller,sourceType,prepared.values());
         List<MappingIssue> issues=new ArrayList<>();List<ResolvedValue> resolved=new ArrayList<>();
@@ -82,6 +95,17 @@ public class DictionarySourceMappingService {
             else issues.add(new MappingIssue(key.dictionary(),key.field(),key.value(),1));
         }
         return new Audit(issues.size(),audit.revisions(),issues,resolved);
+    }
+
+    private static Observation standardObservation(Key key, Observation observation) {
+        if ("DHB_SHIPMENT_LOGISTICS".equals(key.scope())
+                && "COST_DELIVERY_MODE".equals(key.dictionary())
+                && "shipment.deliveryMode".equals(key.field())
+                && "快递".equals(observation.sourceName())) {
+            return new Observation(key.dictionary(), key.field(), "THIRD_PARTY", "THIRD_PARTY",
+                    observation.sourceScope());
+        }
+        return observation;
     }
     private CallerIdentity caller() {
         return BusinessDictionaryBatchClient.serviceCaller("rigour-integration-dictionary-mapping","DICTIONARY_MAPPING",AuthorizationContext.requireCurrent().tenantId());

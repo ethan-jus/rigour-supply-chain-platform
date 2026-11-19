@@ -1204,6 +1204,12 @@ class OrderSalesOrderServiceTest {
                         BigDecimal.ZERO);
 
         @Override
+        public Optional<LogisticsOrder> logisticsOrder(String tenantId, Long id) {
+            return salesOrder(tenantId, id)
+                    .map(row -> new LogisticsOrder(row.orderNo(), row.orderStatusCode()));
+        }
+
+        @Override
         public OrderPageView<SalesOrderSummaryView> salesOrders(
                 String tenantId, int begin, int step, SalesOrderSearchCriteria criteria) {
             this.criteria = criteria;

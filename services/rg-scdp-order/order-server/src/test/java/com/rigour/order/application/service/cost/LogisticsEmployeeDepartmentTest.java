@@ -38,8 +38,12 @@ class LogisticsEmployeeDepartmentTest {
                         Set.of(),
                         Set.of(read)));
         when(refs.cities(read)).thenReturn(Map.of("WH", "武汉"));
-        when(refs.employeeDepartments(anySet(), eq(read)))
-                .thenReturn(List.of(new LogisticsCostEmployeeView("EMP1", "同名员工", 10L, "武汉销售部")));
+        when(refs.employeeDepartmentsAt(any(), anySet(), eq(read)))
+                .thenReturn(
+                        Map.of(
+                                new OrderLogisticsReferences.DepartmentAt(
+                                        "EMP1", java.time.LocalDate.parse("2026-11-10")),
+                                new LogisticsCostEmployeeView("EMP1", "同名员工", 10L, "武汉销售部")));
     }
 
     @AfterEach
@@ -50,7 +54,7 @@ class LogisticsEmployeeDepartmentTest {
     OrderDeliveryCostSourceView order(String code, String employee, String department) {
         return json.readValue(
                 """
-                {"id":1,"documentNo":"%s","cityCode":"WH","employeeCode":%s,"employeeName":"同名员工",
+                {"id":1,"documentDate":"2026-11-10","documentNo":"%s","cityCode":"WH","employeeCode":%s,"employeeName":"同名员工",
                 "departmentId":%s,"departmentName":%s,"contactName":"收货人","contactPhone":"13000000000",
                 "destinationAddress":"收货地址","customerCode":"C1"}
                 """
@@ -69,7 +73,7 @@ class LogisticsEmployeeDepartmentTest {
                 .thenReturn(List.of(order("SO1", "EMP1", "old")));
         assertThat(service.salesSources(nos, read, true)).hasSize(1);
         verify(refs, never()).cities(anyString());
-        verify(refs, never()).employeeDepartments(anySet(), anyString());
+        verify(refs, never()).employeeDepartmentsAt(any(), anySet(), anyString());
         when(source.salesByNos(tenant.toString(), nos, read, false))
                 .thenReturn(List.of(order("SO1", "EMP1", "old")));
         service.salesSources(nos, read, false);
@@ -94,7 +98,7 @@ class LogisticsEmployeeDepartmentTest {
         assertThat(result.get(2).departmentName()).isEqualTo("历史部门");
         assertThat(result.get(3).departmentId()).isNull();
         assertThat(result.get(4).departmentId()).isNull();
-        verify(refs, times(1)).employeeDepartments(anySet(), eq(read));
+        verify(refs, times(1)).employeeDepartmentsAt(any(), anySet(), eq(read));
     }
 
     @Test
@@ -126,12 +130,8 @@ class LogisticsEmployeeDepartmentTest {
     }
 
     @Test
-    void conflictingDirectoryCodesCannotAssignDepartmentByNameOrNewestRow() {
-        when(refs.employeeDepartments(anySet(), eq(read)))
-                .thenReturn(
-                        List.of(
-                                new LogisticsCostEmployeeView("EMP1", "同名员工", 10L, "武汉销售部"),
-                                new LogisticsCostEmployeeView("EMP1", "同名员工", 99L, "其他部门")));
+    void unresolvedHistoricalDepartmentCannotBeGuessedFromEmployeeName() {
+        when(refs.employeeDepartmentsAt(any(), anySet(), eq(read))).thenReturn(Map.of());
         when(source.salesByNos(tenant.toString(), List.of("SO1"), read, false))
                 .thenReturn(List.of(order("SO1", "EMP1", null)));
         assertThat(service.salesSources(List.of("SO1"), read, false).getFirst().departmentId())
@@ -158,7 +158,14 @@ class LogisticsEmployeeDepartmentTest {
                 .thenReturn(List.of(order("SO1", "EMP1", null)));
         assertThat(service.salesSources(List.of("SO1"), read, false).getFirst().departmentId())
                 .isEqualTo(10L);
-        verify(refs).employeeDepartments(Set.of("EMP1"), read);
+        verify(refs)
+                .employeeDepartmentsAt(
+                        any(),
+                        eq(
+                                Set.of(
+                                        new OrderLogisticsReferences.DepartmentAt(
+                                                "EMP1", java.time.LocalDate.parse("2026-11-10")))),
+                        eq(read));
         verify(refs, never()).employees(anyString());
     }
 }

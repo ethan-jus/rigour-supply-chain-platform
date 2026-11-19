@@ -21,4 +21,10 @@ public final class CostCityReferenceController implements CostCityReferenceApi {
     public ApiResponse<List<CostCityView>> cities(String action) {
         return ApiResponse.success(service.cities(action));
     }
+
+    @Override
+    public ApiResponse<List<com.rigour.merchant.api.v1.model.CostCityCheckView>> checks(
+            String action, List<String> codes) {
+        return ApiResponse.success(service.checks(action, codes));
+    }
 }

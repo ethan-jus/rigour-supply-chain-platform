@@ -66,7 +66,24 @@ o.customer_code_snapshot customerCode,o.customer_name_snapshot customerName,o.or
 COALESCE(NULLIF(o.source_system_code,''),'SYSTEM') sourceSystem,o.source_order_no originalNo,DATE(CONVERT_TZ(o.order_date,'+00:00','+08:00')) documentDate,
 NULL destinationAddress,COALESCE(snap.employee_code,o.owner_employee_code) employeeCode,
 COALESCE(snap.employee_name,o.owner_employee_name_snapshot) employeeName,snap.department_id departmentId,snap.department_name departmentName,
-o.contact_name_snapshot contactName,o.contact_phone_snapshot contactPhone,o.payable_amount documentAmount
+o.contact_name_snapshot contactName,o.contact_phone_snapshot contactPhone,o.payable_amount documentAmount,
+CASE WHEN o.selected_warehouse_id IS NULL THEN COALESCE(
+  (SELECT CASE WHEN COUNT(DISTINCT NULLIF(TRIM(i.source_warehouse_name),'')) > 1 THEN '多个发货仓'
+               ELSE MIN(NULLIF(TRIM(i.source_warehouse_name),'')) END
+   FROM order_sales_shipment i
+   WHERE i.tenant_id=o.tenant_id AND i.sales_order_id=o.id AND i.deleted=0 AND i.ship_time IS NOT NULL
+     AND i.shipment_status_code NOT IN ('CANCELLED','VOID')),
+  (SELECT CASE WHEN COUNT(DISTINCT NULLIF(TRIM(i.source_warehouse_name),'')) > 1 THEN '多个发货仓'
+               ELSE MIN(NULLIF(TRIM(i.source_warehouse_name),'')) END
+   FROM order_sales_shipment i
+   WHERE o.source_system_code='DINGHUOBAO' AND i.source_system_code='DINGHUOBAO'
+     AND i.tenant_id=o.tenant_id AND i.sales_order_no_snapshot=o.source_order_no AND i.sales_order_id IS NULL
+     AND i.deleted=0 AND i.ship_time IS NOT NULL AND i.shipment_status_code NOT IN ('CANCELLED','VOID')
+     AND NOT EXISTS (SELECT 1 FROM order_sales_order duplicate_order
+                     WHERE duplicate_order.tenant_id=o.tenant_id AND duplicate_order.id<>o.id
+                       AND duplicate_order.source_system_code=o.source_system_code
+                       AND duplicate_order.source_order_no=o.source_order_no AND duplicate_order.deleted=0))
+) END shipmentWarehouseName
 FROM order_sales_order o
 LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'
 ${ew.customSqlSegment}

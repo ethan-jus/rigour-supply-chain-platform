@@ -19,8 +19,9 @@ public class SalesLogisticsController {
     }
 
     @GetMapping("/{id}")
-    public ApiResponse<Context> context(@PathVariable Long id) {
-        return ApiResponse.success(service.context(id));
+    public ApiResponse<Context> context(
+            @PathVariable Long id, @RequestParam(defaultValue = "false") boolean forSelection) {
+        return ApiResponse.success(service.context(id, forSelection));
     }
 
     @PostMapping("/counts")

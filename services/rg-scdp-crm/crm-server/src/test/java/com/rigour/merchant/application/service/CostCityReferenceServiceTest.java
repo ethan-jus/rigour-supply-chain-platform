@@ -95,6 +95,104 @@ class CostCityReferenceServiceTest {
     }
 
     @Test
+    void warehouseEditorUsesTheSameScopedCityAndHeadquartersDirectory() {
+        String warehouseAction = "erp:warehouse:update";
+        var user = UUID.randomUUID();
+        TestAuthorizationContext.set(new CallerIdentity(
+                "TENANT", user, tenant, user, null, UUID.randomUUID(),
+                0, 0, 0, Set.of(), Set.of(warehouseAction)));
+        when(authorization.authorization(any(), eq(warehouseAction)))
+                .thenReturn(policy(true, List.of("C1", HrCostCityReference.HEADQUARTERS_CODE)));
+
+        assertThat(service.cities(warehouseAction)).extracting(CostCityView::code)
+                .containsExactly("C1", HrCostCityReference.HEADQUARTERS_CODE);
+        assertThatThrownBy(() -> service.cities(null))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        verify(operatingCities).cities(warehouseAction);
+    }
+
+    @Test
+    void checksDistinguishDirtyConfigurationFromValidButUnauthorizedCity() {
+        when(authorization.authorization(any(), eq(action)))
+                .thenReturn(policy(true, List.of("C1")));
+        var rows =
+                service.checks(
+                        action,
+                        List.of(
+                                "C1",
+                                "C2",
+                                "C3",
+                                "DHB_AREA_1027",
+                                HrCostCityReference.HEADQUARTERS_CODE));
+        assertThat(rows)
+                .containsExactly(
+                        new CostCityCheckView("C1", true, true),
+                        new CostCityCheckView("C2", true, false),
+                        new CostCityCheckView(
+                                "C3", false, false, "业务归属地区“C3”（C3）已停用，请在仓库信息中重新选择启用的经营城市或总部"),
+                        new CostCityCheckView(
+                                "DHB_AREA_1027",
+                                false,
+                                false,
+                                "业务归属地区编码（DHB_AREA_1027）不存在，请在仓库信息中重新选择实际经营城市或总部"),
+                        new CostCityCheckView(HrCostCityReference.HEADQUARTERS_CODE, true, false));
+    }
+
+    @Test
+    void dirtyCustomerGroupNamesTheExactRegionAndReason() {
+        when(authorization.authorization(any(), eq(action)))
+                .thenReturn(policy(true, List.of("C1")));
+        when(store.customerAreas(eq(tenant), anyInt(), anyInt(), isNull()))
+                .thenReturn(
+                        new PageView<>(
+                                1,
+                                0,
+                                200,
+                                List.of(
+                                        new DictionaryView(
+                                                UUID.randomUUID(),
+                                                "DHB_AREA_1027",
+                                                "散客",
+                                                "ACTIVE",
+                                                null,
+                                                null,
+                                                null))));
+        var check = service.checks(action, List.of("DHB_AREA_1027")).getFirst();
+        assertThat(check.configured()).isFalse();
+        assertThat(check.allowed()).isFalse();
+        assertThat(check.issue()).contains("散客", "DHB_AREA_1027", "不是经营城市", "仓库信息");
+    }
+
+    @Test
+    void checksDoNotExposeConfigurationWithoutFunctionPermission() {
+        when(authorization.authorization(any(), eq(action)))
+                .thenReturn(policy(false, List.of("C1")));
+        assertThatThrownBy(() -> service.checks(action, List.of("C1")))
+                .isInstanceOf(AuthorizationDeniedException.class);
+        verifyNoInteractions(store, operatingCities);
+        assertThatThrownBy(() -> service.checks("crm:customer:write", List.of("C1")))
+                .isInstanceOf(AuthorizationDeniedException.class);
+    }
+
+    @Test
+    void invalidOrAmbiguousCityConfigurationNeverBecomesAllowed() {
+        when(authorization.authorization(any(), eq(action)))
+                .thenReturn(policy(true, List.of("C1", "C2")));
+        when(operatingCities.cities(action))
+                .thenReturn(
+                        List.of(
+                                new HrCostCityReference("D1", "C1", "1", List.of("1")),
+                                new HrCostCityReference("D2", "C1", "2", List.of("2"))));
+        assertThat(service.checks(action, List.of("C1")))
+                .containsExactly(
+                        new CostCityCheckView(
+                                "C1",
+                                false,
+                                false,
+                                "业务归属地区“C1”（C1）对应多个同名经营城市部门，无法唯一匹配，请先在部门管理中核对同名经营城市"));
+    }
+
+    @Test
     void deniedPolicyDoesNotExposeDirectory() {
         when(authorization.authorization(any(), eq(action)))
                 .thenReturn(policy(false, List.of("C1")));

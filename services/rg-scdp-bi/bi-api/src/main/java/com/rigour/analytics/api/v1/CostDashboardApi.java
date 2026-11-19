@@ -3,6 +3,7 @@ package com.rigour.analytics.api.v1;
 import com.rigour.analytics.api.v1.model.CostDashboardDetail;
 import com.rigour.analytics.api.v1.model.CostDashboardExportCommand;
 import com.rigour.analytics.api.v1.model.CostDashboardExportView;
+import com.rigour.analytics.api.v1.model.CostDashboardPendingTransports;
 import com.rigour.analytics.api.v1.model.CostDashboardQuery;
 import com.rigour.analytics.api.v1.model.CostDashboardRecords;
 import com.rigour.analytics.api.v1.model.CostDashboardReport;
@@ -25,6 +26,11 @@ public interface CostDashboardApi {
 
     @GetMapping(ROOT + "/records")
     ApiResponse<CostDashboardRecords> records(@ModelAttribute CostDashboardQuery query);
+
+    @GetMapping(ROOT + "/pending-transports")
+    ApiResponse<CostDashboardPendingTransports> pendingTransports(
+            @ModelAttribute CostDashboardQuery query,
+            @RequestParam(value = "reason", required = false) String reason);
 
     @GetMapping(ROOT + "/workspace")
     ApiResponse<CostDashboardWorkspace> workspace(@ModelAttribute CostDashboardQuery query);

@@ -52,7 +52,7 @@ final class LogisticsCostValidator {
         optional(route.noSourceReason(), 500, "无单原因");
         optional(route.manualPartyReason(), 500, "手填对象说明");
         dictionary(tenant, "COST_PAYER", route.payerCode(), confirm);
-        dictionary(tenant, "COST_TRANSPORT_METHOD", route.transportMethodCode(), false);
+        dictionary(tenant, "COST_TRANSPORT_KIND", route.transportMethodCode(), false);
         if (confirm && "NONE".equals(mode)) required(route.noSourceReason(), 500, "无来源单据原因");
         List<LogisticsCostSourceView> sources =
                 ids.isEmpty() ? List.of() : store.sources(tenant, route.legCode(), "", ids, action);

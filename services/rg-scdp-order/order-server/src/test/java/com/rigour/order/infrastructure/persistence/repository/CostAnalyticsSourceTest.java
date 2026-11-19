@@ -75,10 +75,14 @@ class CostAnalyticsSourceTest {
             var mapper =
                     new SqlSessionTemplate(factory.getObject())
                             .getMapper(OrderLogisticsCostMapper.class);
-            var source = new MybatisPlusCostAnalyticsSource(mapper);
+            var source =
+                    new MybatisPlusCostAnalyticsSource(
+                            mapper, tools.jackson.databind.json.JsonMapper.builder().build());
             var first = source.page("tenant", "");
             assertThat(first.items()).hasSize(1000);
             assertThat(first.items().getFirst().get("amount")).isEqualTo("0.01");
+            assertThat(first.items().getFirst()).containsEntry("status_code", "DRAFT");
+            assertThat(first.items().getFirst().get("data_json")).contains("ORDER,EVIDENCE");
             var second = source.page("tenant", first.items().getLast().get("id"));
             assertThat(second.items()).hasSize(1);
             assertThat(first.items())
@@ -92,10 +96,10 @@ class CostAnalyticsSourceTest {
                         mapper.lock("tenant");
                         mapper.advanceAnalyticsVersion("tenant");
                         assertThat(source.version("tenant"))
-                                .isEqualTo("2:transport-types-v4-complete-only");
+                                .isEqualTo("2:transport-types-v5-readiness");
                         status.setRollbackOnly();
                     });
-            assertThat(source.version("tenant")).isEqualTo("1:transport-types-v4-complete-only");
+            assertThat(source.version("tenant")).isEqualTo("1:transport-types-v5-readiness");
         } finally {
             ds.destroy();
         }

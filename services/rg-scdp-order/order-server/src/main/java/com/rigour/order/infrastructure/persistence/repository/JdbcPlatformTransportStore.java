@@ -181,7 +181,7 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                     + " VALUES(?,?,?,?,'LOGISTICS','货拉拉运输',?,?,'UNKNOWN','ACTIVE','COMPANY',?,'[]',?,?,'HUOLALA','HLL',?,?)",
                 id,
                 tenant,
-                "LC" + date.replace("-", "") + id.replace("-", "").substring(0, 12),
+                CostDocumentNumber.next(),
                 id,
                 date,
                 amount,

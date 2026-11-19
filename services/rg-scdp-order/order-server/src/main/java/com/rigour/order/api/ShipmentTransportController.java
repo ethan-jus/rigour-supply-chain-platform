@@ -15,6 +15,11 @@ public class ShipmentTransportController {
         this.service = service;
     }
 
+    @PostMapping("/carrier-backfill")
+    public ApiResponse<Integer> backfillCarrier(@RequestBody CarrierBackfill command) {
+        return ApiResponse.success(service.backfillCarrier(command));
+    }
+
     @PostMapping
     public ApiResponse<Source> sync(@RequestBody Command command) {
         return ApiResponse.success(service.sync(command));

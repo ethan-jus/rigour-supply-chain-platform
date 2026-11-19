@@ -17,6 +17,50 @@ import org.springframework.stereotype.Repository;
 public class JdbcDictionarySourceMappingRepository implements DictionarySourceMappingStore {
     private final JdbcTemplate jdbc;
     public JdbcDictionarySourceMappingRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    private static final String MAPPED_DHB_CARRIER = """
+            source_system='DHB' AND source_scope='DHB_SHIPMENT_LOGISTICS'
+                AND dictionary_code='COST_CARRIER' AND source_field='shipment.logistics'
+                AND mapping_status='MAPPED' AND target_dictionary_code='COST_CARRIER'
+                AND target_item_code IS NOT NULL AND target_item_code<>'SELF'
+            """;
+
+    @Override
+    public List<DictionarySourceMappingView> mappedShipmentCarriers(String tenant, List<String> values) {
+        if (values.isEmpty()) return List.of();
+        var parameters = new java.util.ArrayList<Object>();
+        parameters.add(tenant);
+        parameters.addAll(values);
+        return jdbc.query("SELECT * FROM integration_dictionary_mapping WHERE tenant_id=? AND "
+                + MAPPED_DHB_CARRIER + " AND carrier_backfill_revision<revision AND source_value IN ("
+                + String.join(",", java.util.Collections.nCopies(values.size(), "?")) + ")",
+                this::view, parameters.toArray());
+    }
+
+    @Override
+    public List<MappedShipmentCarrier> pendingShipmentCarrierBackfills(long id, int limit) {
+        return jdbc.query("SELECT * FROM integration_dictionary_mapping WHERE id>? AND "
+                + MAPPED_DHB_CARRIER + " AND carrier_backfill_revision<revision ORDER BY id LIMIT ?",
+                (rs, row) -> new MappedShipmentCarrier(rs.getString("tenant_id"), view(rs, row)),
+                id, limit);
+    }
+
+    @Override
+    public boolean lockShipmentCarrierBackfill(String tenant, long id, int revision) {
+        return !jdbc.queryForList("""
+                SELECT id FROM integration_dictionary_mapping
+                WHERE tenant_id=? AND id=? AND revision=? AND carrier_backfill_revision<revision
+                FOR UPDATE
+                """, Long.class, tenant, id, revision).isEmpty();
+    }
+
+    @Override
+    public void completeShipmentCarrierBackfill(String tenant, long id, int revision) {
+        jdbc.update("""
+                UPDATE integration_dictionary_mapping SET carrier_backfill_revision=?
+                WHERE tenant_id=? AND id=? AND revision=? AND carrier_backfill_revision<revision
+                """, revision, tenant, id, revision);
+    }
+
     @Override public List<DictionarySourceMappingView> list(String tenant, String dictionary) {
         return jdbc.query("SELECT * FROM integration_dictionary_mapping WHERE tenant_id=? AND dictionary_code=? ORDER BY mapping_status DESC,source_system,source_scope,source_field,id", this::view, tenant, dictionary);
     }

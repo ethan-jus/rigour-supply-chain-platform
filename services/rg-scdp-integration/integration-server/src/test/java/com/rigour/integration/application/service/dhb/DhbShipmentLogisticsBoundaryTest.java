@@ -12,6 +12,8 @@ import com.rigour.settings.client.BusinessDictionaryBatchClient;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.web.client.RestClientResponseException;
 
@@ -253,6 +255,67 @@ class DhbShipmentLogisticsBoundaryTest {
         verify(store, never()).markRawProcessed(any(), any());
         verifyNoInteractions(erp);
         verify(order, never()).createSalesShipment(any(), any());
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "顺丰, SF, THIRD_PARTY",
+        "极兔速递, JT, THIRD_PARTY",
+        "自营配送, , SELF",
+        "自配送, , SELF",
+        "未知承运方, ,",
+        "自营配送, SF,",
+        ", ,"
+    })
+    void doorDeliveryUsesOnlyTheCurrentShipmentsCarrierEvidence(
+            String carrierName, String verifiedCarrierCode, String expectedMode) {
+        mappedSalesOrder();
+        var detail = new HashMap<String, Object>(Map.of(
+                "ships_id", "D1", "type_id", "10", "status", "receivedin", "orders_num", "DH001",
+                "distribution_mode_id", "85985", "distribution_mode_name", "送货上门",
+                "express_num", "SF001"));
+        if (carrierName != null) detail.put("logistics_name", carrierName);
+        when(client.getShipmentContent(any(), eq("FH001")))
+                .thenReturn(new DhbClient.ShipmentDetail("FH001", detail));
+        var resolutions = new ArrayList<BusinessDictionaryBatchClient.ResolvedValue>();
+        if (verifiedCarrierCode != null)
+            resolutions.add(new BusinessDictionaryBatchClient.ResolvedValue(
+                    "COST_CARRIER", carrierName, "COST_CARRIER", verifiedCarrierCode));
+        when(dictionaries.sync(any(), eq("DHB_SHIPMENT_LOGISTICS"), anyCollection()))
+                .thenReturn(new BusinessDictionaryBatchClient.Audit(0, Map.of(), List.of(), resolutions));
+
+        run();
+
+        var command = ArgumentCaptor.forClass(ShipmentTransportModels.Command.class);
+        verify(order).syncShipmentTransport(any(), command.capture());
+        assertThat(command.getValue().deliveryModeCode()).isEqualTo(expectedMode);
+        assertThat(command.getValue().deliveryModeName()).isEqualTo("送货上门");
+        assertThat(DhbShipmentTransportMapper.map(command.getValue().sourceFields().get("detail")))
+                .containsEntry("distribution_mode_id", "85985");
+        verify(dictionaries, never()).sync(any(), eq("DHB_SHIPMENT_LOGISTICS"),
+                argThat(observations -> observations.stream()
+                        .anyMatch(observation -> "COST_DELIVERY_MODE".equals(observation.dictionaryCode()))));
+    }
+
+    @Test
+    void recognizedExpressProjectsTheResolvedModeAndPreservesTheSourceName() {
+        mappedSalesOrder();
+        when(client.getShipmentContent(any(), eq("FH001")))
+                .thenReturn(new DhbClient.ShipmentDetail("FH001", Map.of(
+                        "ships_id", "D1", "type_id", "10", "status", "receivedin", "orders_num", "DH001",
+                        "distribution_mode_id", "85984", "distribution_mode_name", "快递",
+                        "express_num", "SF001")));
+        when(dictionaries.sync(any(), eq("DHB_SHIPMENT_LOGISTICS"), anyCollection()))
+                .thenReturn(new BusinessDictionaryBatchClient.Audit(0, Map.of(), List.of(), List.of(
+                        new BusinessDictionaryBatchClient.ResolvedValue(
+                                "COST_DELIVERY_MODE", "85984", "COST_DELIVERY_MODE", "THIRD_PARTY"))));
+
+        run();
+
+        var command = ArgumentCaptor.forClass(ShipmentTransportModels.Command.class);
+        verify(order).syncShipmentTransport(any(), command.capture());
+        assertThat(command.getValue().deliveryModeCode()).isEqualTo("THIRD_PARTY");
+        assertThat(command.getValue().deliveryModeName()).isEqualTo("快递");
     }
 
     @Test
@@ -780,13 +843,10 @@ class DhbShipmentLogisticsBoundaryTest {
     }
 
     @Test
-    void wholeOrderSyncCannotReportSuccessWhileManualShipmentWorkRemains() {
+    void orderPackageLeavesShipmentWorkForExplicitShipmentSync() {
         var work = mock(DhbIncrementalWorkStore.class);
         org.springframework.test.util.ReflectionTestUtils.setField(
                 service, "incrementalWork", work);
-        when(work.awaitingManual(eq(tenant), eq(connector), eq("SHIPMENT"), anySet()))
-                .thenReturn(Set.of("FH001"));
-        when(work.pendingCount(tenant, connector, "SHIPMENT")).thenReturn(1L);
         var page = DhbClient.PageRequest.first(100);
         when(client.getOrders(any(), any())).thenReturn(new DhbClient.Page<>(page, 0, List.of()));
         when(client.getReceipts(any(), any())).thenReturn(new DhbClient.Page<>(page, 0, List.of()));
@@ -800,10 +860,10 @@ class DhbShipmentLogisticsBoundaryTest {
                         new SyncRunCommand(from, to, null, null, null, null),
                         500,
                         ignored -> {});
-        assertThat(result.status()).isEqualTo("PARTIAL");
-        assertThat(result.errorMessage()).contains("1 条单据待处理", "手工补录");
-        verify(client).getShipmentContent(any(), any());
-        verify(order).saveShipmentSnapshot(any(), any());
+        assertThat(result.status()).isEqualTo("SUCCEEDED");
+        verify(work, never()).pendingCount(tenant, connector, "SHIPMENT");
+        verify(client, never()).getShipmentContent(any(), any());
+        verify(order, never()).saveShipmentSnapshot(any(), any());
         verify(order, never()).syncShipmentTransport(any(), any());
         verify(order, never()).createSalesOrder(any(), any());
         verifyNoInteractions(erp);

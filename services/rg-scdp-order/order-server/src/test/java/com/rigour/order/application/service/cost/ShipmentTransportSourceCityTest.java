@@ -52,6 +52,10 @@ class ShipmentTransportSourceCityTest {
     }
 
     ShipmentTransportModels.Command command() {
+        return command(null);
+    }
+
+    ShipmentTransportModels.Command command(String deliveryModeName) {
         return new ShipmentTransportModels.Command(
                 UUID.randomUUID(),
                 "S1",
@@ -64,7 +68,7 @@ class ShipmentTransportSourceCityTest {
                 null,
                 "来源承运方",
                 null,
-                null,
+                deliveryModeName,
                 List.of("TRACK1"),
                 null,
                 Map.of("sourceArea", "SOURCE-AREA"),
@@ -98,5 +102,24 @@ class ShipmentTransportSourceCityTest {
         assertThatThrownBy(() -> service.sync(command()))
                 .isInstanceOf(AuthorizationDeniedException.class);
         verifyNoInteractions(store);
+    }
+
+    @Test
+    void expressSourceKeepsTransportChannelWhileSalesOrderLinkIsPending() {
+        when(refs.cities(anyString())).thenReturn(Map.of("CITY1", "经营城市"));
+        var c = command("快递");
+        service.sync(c);
+        var draft = ArgumentCaptor.forClass(LogisticsCostCommand.class);
+        verify(store)
+                .sync(
+                        eq(tenant.toString()),
+                        anyString(),
+                        same(c),
+                        draft.capture(),
+                        isNull(),
+                        isNull());
+        assertThat(draft.getValue().ledger().transportMethodCode()).isEqualTo("EXPRESS");
+        assertThat(draft.getValue().ledger().deliveryModeCode()).isNull();
+        assertThat(draft.getValue().amount()).isNull();
     }
 }

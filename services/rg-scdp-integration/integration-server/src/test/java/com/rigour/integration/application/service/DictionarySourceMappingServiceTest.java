@@ -86,6 +86,23 @@ class DictionarySourceMappingServiceTest {
         assertThat(result.resolved()).hasSize(1);
     }
 
+    @Test void dhbExpressUsesTheStandardDeliveryOptionAndSavesTheOriginalSourceKey() {
+        var key = new DictionarySourceMappingStore.Key(caller.tenantId().toString(), "DHB",
+                "DHB_SHIPMENT_LOGISTICS", "COST_DELIVERY_MODE", "shipment.deliveryMode", "85984");
+        when(store.find(key)).thenReturn(Optional.empty());
+        when(client.sync(any(), eq("DHB_SHIPMENT_LOGISTICS"), any())).thenAnswer(invocation -> {
+            Collection<Observation> sent = invocation.getArgument(2);
+            assertThat(sent).extracting(Observation::sourceValue).containsExactly("THIRD_PARTY");
+            return new Audit(0, Map.of(), List.of(), List.of(new ResolvedValue(
+                    "COST_DELIVERY_MODE", "THIRD_PARTY", "COST_DELIVERY_MODE", "THIRD_PARTY")));
+        });
+        var result = service.sync(caller, "DHB_SHIPMENT_LOGISTICS", List.of(
+                new Observation("COST_DELIVERY_MODE", "shipment.deliveryMode", "85984", "快递")));
+        verify(store).observe(key, "COST_DELIVERY_MODE", "THIRD_PARTY");
+        assertThat(result.resolved()).containsExactly(new ResolvedValue(
+                "COST_DELIVERY_MODE", "85984", "COST_DELIVERY_MODE", "THIRD_PARTY"));
+    }
+
     @Test void mappingStoreFailureReturnsAuditWarningAndDoesNotAbortRawImport() {
         when(store.find(any(DictionarySourceMappingStore.Key.class))).thenThrow(new IllegalStateException("database unavailable"));
         var result=service.sync(caller,"FEISHU_IMPORT",List.of(new Observation("STORE_STATUS","状态","营业","营业")));

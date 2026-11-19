@@ -459,9 +459,9 @@ public final class OrderSalesOrderService {
     }
 
     /** 物流关联只需要授权范围内的原单快照，不解析无关的收款凭证链接和显示名称。 */
-    public SalesOrderDetailView salesOrderForLogistics(Long id) {
+    public OrderSalesOrderStore.LogisticsOrder salesOrderForLogistics(Long id) {
         CallerIdentity caller = actor(READ_PERMISSION);
-        return store.salesOrder(caller.tenantId().toString(), requireId(id, "销售订单ID无效"))
+        return store.logisticsOrder(caller.tenantId().toString(), requireId(id, "销售订单ID无效"))
                 .orElseThrow(() -> notFound("销售订单不存在"));
     }
 

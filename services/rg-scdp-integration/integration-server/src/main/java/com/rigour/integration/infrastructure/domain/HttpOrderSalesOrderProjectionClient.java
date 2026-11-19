@@ -654,6 +654,28 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     }
 
     @Override
+    public int backfillShipmentCarrier(
+            CallerIdentity caller,
+            com.rigour.order.api.v1.model.ShipmentTransportModels.CarrierBackfill command) {
+        requireCaller(caller);
+        URI uri = UriComponentsBuilder.fromUri(baseUri)
+                .path("/api/v1/orders/shipment-transports/carrier-backfill").build().encode().toUri();
+        var response = restClient.post()
+                .uri(uri)
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.APPLICATION_JSON)
+                .headers(headers -> signedHeaders("POST", uri, caller).forEach(headers::set))
+                .header(RequestHeaders.REQUEST_ID, requestId())
+                .body(command)
+                .exchange((request, result) -> SignedDomainRequest.readResponse(
+                        result, new tools.jackson.core.type.TypeReference<ApiResponse<Integer>>() {},
+                        "Order发货物流公司回填"));
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("Order发货物流公司回填失败");
+        return response.data();
+    }
+
+    @Override
     public Long saveShipmentSnapshot(
             CallerIdentity caller,
             com.rigour.order.api.v1.model.SalesShipmentSnapshotCommand command) {

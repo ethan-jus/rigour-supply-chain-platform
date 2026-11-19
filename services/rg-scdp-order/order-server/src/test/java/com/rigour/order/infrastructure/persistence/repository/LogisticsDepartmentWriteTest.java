@@ -30,8 +30,11 @@ class LogisticsDepartmentWriteTest {
                     mock(LogisticsWarehouseDataScope.class),
                     mock(OrderLogisticsReferences.class));
     final String tenant = UUID.randomUUID().toString();
-    final Map<String, LogisticsCostEmployeeView> employee =
-            Map.of("EMP1", new LogisticsCostEmployeeView("EMP1", "李林", 6L, "北京市"));
+    final Map<OrderLogisticsReferences.DepartmentAt, LogisticsCostEmployeeView> employee =
+            Map.of(
+                    new OrderLogisticsReferences.DepartmentAt(
+                            "EMP1", java.time.LocalDate.parse("2026-11-16")),
+                    new LogisticsCostEmployeeView("EMP1", "李林", 6L, "北京市"));
 
     @Test
     void staleRevisionOrVoidCannotUpdateMoneyOrAdvanceVersion() {
@@ -57,7 +60,7 @@ class LogisticsDepartmentWriteTest {
         row.setStatusCode("ACTIVE");
         row.setDataJson(
                 """
-                {"amount":80,"paymentStatusCode":"PAID","remark":"人工备注","ledger":{"schemaVersion":2,
+                {"costDate":"2026-11-16","amount":80,"paymentStatusCode":"PAID","remark":"人工备注","ledger":{"schemaVersion":2,
                 "sources":[{"orderCode":"SO1","employeeCode":"EMP1","employeeName":"李林","linkRoleCode":"COST",
                 "allocations":[{"feeKey":"freight","amount":80}]}]}}
                 """);

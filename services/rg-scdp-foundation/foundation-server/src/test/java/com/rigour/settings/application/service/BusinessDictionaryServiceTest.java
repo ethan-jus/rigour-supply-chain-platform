@@ -85,6 +85,31 @@ class BusinessDictionaryServiceTest {
     }
 
     @Test
+    void carrierSourcePrefersCodeAndFallsBackOnlyToOneValidExactNameOrAlias() {
+        setService();
+        when(store.findByCode("COST_CARRIER")).thenReturn(Optional.of(
+                new DictView(1L, "COST_CARRIER", "物流公司", "COMMON", null, 1)));
+        var jt = new DictItemView(2L, "COST_CARRIER", 1, null, "JT", "极兔速递", null, 10, 1);
+        var sf = new DictItemView(3L, "COST_CARRIER", 1, null, "SF", "顺丰速运", null, 20, 1);
+        var alias = new DictItemView(4L, "COST_CARRIER", 1, null, "JT_ALIAS", "极兔",
+                null, 30, 1, false, "COST_CARRIER", "JT");
+        when(store.items("COST_CARRIER")).thenReturn(List.of(jt, sf, alias));
+        var result = service.syncItems(new DictSyncCommand("COST_CARRIER", List.of(
+                new DictSourceValue("JT", "顺丰速运"),
+                new DictSourceValue("JNT", "极兔速递"),
+                new DictSourceValue("J_AND_T", "极兔"),
+                new DictSourceValue("UNKNOWN", "极兔物流"))));
+        assertThat(result.resolutions()).containsOnlyKeys("JT", "JNT", "J_AND_T");
+        assertThat(result.resolutions().values()).allMatch(value -> "JT".equals(value.itemCode()));
+
+        var duplicate = new DictItemView(5L, "COST_CARRIER", 1, null, "JT_OTHER", "极兔速递",
+                null, 35, 1);
+        when(store.items("COST_CARRIER")).thenReturn(List.of(jt, duplicate));
+        assertThat(service.syncItems(new DictSyncCommand("COST_CARRIER",
+                List.of(new DictSourceValue("JNT", "极兔速递")))).resolutions()).isEmpty();
+    }
+
+    @Test
     void sourceSyncResolvesCanonicalNamesAndLeavesUnknownValuesUnchanged() {
         setService();
         when(store.findByCode("PRODUCT_UNIT")).thenReturn(Optional.of(new DictView(1L,"PRODUCT_UNIT","单位","COMMON",null,3)));
@@ -150,7 +175,9 @@ class BusinessDictionaryServiceTest {
         "erp:cost:rental:read,COST_PREMISES_TYPE",
         "erp:cost:marketing:read,MARKETING_EXPENSE_TYPE",
         "order:logistics-cost:read,COST_LOGISTICS_LEG",
-        "order:logistics-cost:read,COST_TRANSPORT_METHOD",
+        "order:logistics-cost:read,COST_DELIVERY_MODE",
+        "order:logistics-cost:read,COST_TRANSPORT_KIND",
+        "order:logistics-cost:read,COST_CARRIER",
         "order:logistics-cost:read,WAREHOUSE_TYPE",
         "hr:expense:read,REIMBURSEMENT_EXPENSE_TYPE",
         "hr:expense:read,COST_PAYMENT_STATUS",

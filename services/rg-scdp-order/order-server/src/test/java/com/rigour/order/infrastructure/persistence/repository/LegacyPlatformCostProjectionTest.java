@@ -28,8 +28,8 @@ class LegacyPlatformCostProjectionTest {
         db.execute(
                 "CREATE TABLE order_logistics_import_order(tenant_id VARCHAR(64),cost_id"
                     + " VARCHAR(36),business_json LONGTEXT)");
-        source = new MybatisPlusCostAnalyticsSource(mock(OrderLogisticsCostMapper.class));
-        source.attribution(db, json);
+        source = new MybatisPlusCostAnalyticsSource(mock(OrderLogisticsCostMapper.class), json);
+        source.attribution(db);
     }
 
     @AfterEach

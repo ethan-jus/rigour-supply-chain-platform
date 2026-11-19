@@ -18,6 +18,9 @@ import java.util.*;
 /** 只写Order自有事实。先取统一企业锁，再锁成本；与货拉拉同步/手工保存取锁顺序一致。 */
 @Repository
 public class JdbcShipmentTransportStore implements ShipmentTransportStore {
+    private static final String CARRIER_ISSUE = "来源物流公司尚未映射";
+    private static final String DOOR_ISSUE = "订货宝仅标记送货上门";
+    private static final String DELIVERY_MODE_ISSUE = "来源配送方式尚未映射";
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
     private final PlatformTransportStore platform;
@@ -55,7 +58,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         // 单笔补查可能只有发货单号，不能把它当作另一个发货身份重新建运输。
         // 同号已有多个成本或两个正式来源ID冲突时先保留现场，不猜选或覆盖任一金额。
         if (records.size() > 1) throw bad("该发货单已对应多条运输记录，请核对重复记录");
-        String body = json.writeValueAsString(command), fp = fingerprint(body);
+        String channel = transport.ledger().transportMethodCode();
         Map<String, Object> old = records.isEmpty() ? null : records.getFirst();
         if (old != null) {
             String priorId = old.get("source_shipment_id").toString();
@@ -68,8 +71,22 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                     && command.sourceUpdatedAt() != null
                     && command.sourceUpdatedAt().isBefore(previous.sourceUpdatedAt()))
                 return source(old);
-            if (fp.equals(old.get("fingerprint")) && old.get("issue") == null) return source(old);
+            if (command.carrierCode() == null && previous.carrierCode() != null
+                    && !"SELF".equals(command.deliveryModeCode())
+                    && previous.carrierName() != null
+                    && Objects.equals(previous.carrierName(), command.carrierName())
+                    && Objects.equals(previous.deliveryModeName(), command.deliveryModeName())
+                    && Objects.equals(sourceCarrierCode(previous), sourceCarrierCode(command))) {
+                String mode = first(command.deliveryModeCode(), previous.deliveryModeCode());
+                command = command.withCarrierClassification(previous.carrierCode(), mode);
+                transport = transport.withLedger(
+                        transport.ledger().withCarrierClassification(previous.carrierCode(), mode),
+                        transport.amount());
+            }
         }
+        String body = json.writeValueAsString(command);
+        String fp = fingerprint(channel == null ? body : body + "\n" + channel);
+        if (old != null && fp.equals(old.get("fingerprint")) && old.get("issue") == null) return source(old);
         String sourceId = old == null ? UUID.randomUUID().toString() : old.get("id").toString();
         String costId = old == null ? null : Objects.toString(old.get("cost_id"), null);
         // 仅对“无单号、无运费、无人工凭证”的旧记录清理允许补单号后重新建有效运输。
@@ -141,9 +158,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                             + " VALUES(?,?,?,?,'LOGISTICS',?,'DELIVERY','DELIVERY',?,?,?,?,NULL,'UNKNOWN','ACTIVE',?,?,?,?,'DHB',?,?,?,?)",
                         costId,
                         tenant,
-                        "LC"
-                                + data.costDate().toString().replace("-", "")
-                                + costId.replace("-", "").substring(0, 12),
+                        CostDocumentNumber.next(),
                         costId,
                         data.title(),
                         data.cityCode(),
@@ -198,6 +213,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                     // 新来源只更新收发货事实；人工补充的账单、付款、备注、凭证和费用分摊保留。
                     var nextLedger = transport.ledger();
                     var oldLedger = prior.ledger();
+                    String sourceChannel = channel == null ? oldLedger.transportMethodCode() : channel;
                     boolean linkedNow =
                             oldLedger.sources().isEmpty()
                                     && !nextLedger.sources().isEmpty()
@@ -221,6 +237,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                                     || !Objects.equals(
                                             oldLedger.deliveryModeCode(),
                                             nextLedger.deliveryModeCode())
+                                    || !Objects.equals(oldLedger.transportMethodCode(), sourceChannel)
                                     || !Objects.equals(
                                             oldLedger.platformOrderNo(),
                                             nextLedger.platformOrderNo())
@@ -236,7 +253,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                                     nextLedger.carrierCode(),
                                     oldLedger.costMonth(),
                                     null,
-                                    oldLedger.transportMethodCode(),
+                                    sourceChannel,
                                     nextLedger.sender(),
                                     nextLedger.receivingPoints(),
                                     oldLedger.feeItems(),
@@ -295,11 +312,13 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         if (!shipped && costId == null)
             issue = "cancelled".equals(command.sourceStatus()) ? "来源发货已取消" : "待发货，尚未生成运输记录";
         if (shipped && transport.ledger().deliveryModeCode() == null)
-            issue = first(issue, "来源配送方式尚未映射，请维护数据字典的来源映射后重新同步");
+            issue = first(issue, "送货上门".equals(command.deliveryModeName())
+                    ? "订货宝仅标记送货上门，请核对发货单的物流公司后重新同步"
+                    : "来源配送方式尚未映射，请维护数据字典的来源映射后重新同步");
         if (shipped
                 && transport.ledger().carrierCode() == null
                 && !"SELF".equals(transport.ledger().deliveryModeCode()))
-            issue = first(issue, "来源物流公司尚未映射到数据字典，请维护映射后重新同步");
+            issue = first(issue, CARRIER_ISSUE + "到数据字典，请维护映射");
         if (old == null)
             jdbc.update(
                     "INSERT INTO"
@@ -506,6 +525,89 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
     }
 
     @Override
+    public int backfillCarrier(String tenant, String actor, CarrierBackfill command) {
+        platform.lockTenant(tenant);
+        // 跳过已作废、已改为自配送或已填其他公司的运输单据。历史来源和附件继续挂原 ID。
+        var rows = jdbc.queryForList("""
+                SELECT s.id,s.cost_id,s.issue,c.carrier_code,c.delivery_mode_code,
+                    s.latest_json->>'$.deliveryModeName' AS source_mode
+                FROM order_transport_shipment_source s
+                JOIN order_logistics_cost c ON c.tenant_id=s.tenant_id AND c.id=s.cost_id
+                    AND c.source_system='DHB' AND c.status_code='ACTIVE' AND c.deleted=0
+                WHERE s.tenant_id=? AND s.platform_code='DHB'
+                    AND s.latest_json->>'$.sourceStatus' IN ('receivedin','received')
+                    AND (c.delivery_mode_code IS NULL OR c.delivery_mode_code='THIRD_PARTY')
+                    AND (c.carrier_code IS NULL
+                        OR (c.carrier_code=? AND (
+                            s.issue LIKE ? OR s.issue LIKE ?
+                            OR (s.issue LIKE ? AND s.latest_json->>'$.deliveryModeName' IN ('快递','送货上门'))
+                        )))
+                    AND JSON_TYPE(JSON_EXTRACT(c.data_json,'$.ledger'))='OBJECT'
+                    AND COALESCE(NULLIF(c.data_json->>'$.ledger.carrierCode','null'),?)=?
+                    AND COALESCE(NULLIF(s.latest_json->>'$.carrierCode','null'),?)=?
+                    AND NOT EXISTS (
+                        SELECT 1 FROM order_transport_shipment_source other
+                        WHERE other.tenant_id=s.tenant_id AND other.cost_id=s.cost_id
+                            AND other.id<>s.id AND other.latest_json->>'$.sourceStatus' IN ('receivedin','received')
+                            AND (
+                                COALESCE(NULLIF(other.latest_json->>'$.carrierCode','null'),?)<>?
+                                OR (NULLIF(other.latest_json->>'$.carrierCode','null') IS NULL
+                                    AND NULLIF(other.latest_json->>'$.carrierName','null') IS NOT NULL
+                                    AND BINARY other.latest_json->>'$.carrierName'<>s.latest_json->>'$.carrierName')
+                            )
+                    )
+                    AND BINARY COALESCE(
+                        NULLIF(NULLIF(TRIM(s.latest_json->>'$.sourceFields.detail.logistics_code'),''),'null'),
+                        NULLIF(NULLIF(TRIM(s.latest_json->>'$.sourceFields.list.logistics_code'),''),'null'),
+                        NULLIF(NULLIF(TRIM(s.latest_json->>'$.carrierName'),''),'null'))=?
+                ORDER BY s.id LIMIT ? FOR UPDATE
+                """, tenant, command.carrierCode(), CARRIER_ISSUE + "%", DOOR_ISSUE + "%",
+                DELIVERY_MODE_ISSUE + "%", command.carrierCode(), command.carrierCode(),
+                command.carrierCode(), command.carrierCode(),
+                command.carrierCode(), command.carrierCode(), command.sourceValue(), CarrierBackfill.BATCH_SIZE);
+        var updatedCosts = new HashSet<String>();
+        for (var row : rows) {
+            String id = row.get("id").toString();
+            String costId = row.get("cost_id").toString();
+            String oldMode = Objects.toString(row.get("delivery_mode_code"), null);
+            boolean knownDeliveryMode = Set.of("送货上门", "快递").contains(
+                    Objects.toString(row.get("source_mode"), ""));
+            String mode = oldMode == null && knownDeliveryMode ? "THIRD_PARTY" : oldMode;
+            if ((row.get("carrier_code") == null || !Objects.equals(mode, oldMode))
+                    && updatedCosts.add(costId)) {
+                jdbc.update("""
+                        UPDATE order_logistics_cost
+                        SET carrier_code=?,delivery_mode_code=?,
+                            data_json=JSON_SET(data_json,'$.ledger.carrierCode',?,
+                                '$.ledger.deliveryModeCode',?),revision=revision+1,
+                            updated_by=?,updated_time=CURRENT_TIMESTAMP(6)
+                        WHERE tenant_id=? AND id=?
+                        """, command.carrierCode(), mode, command.carrierCode(), mode, actor, tenant, costId);
+                jdbc.update("""
+                        INSERT INTO order_logistics_cost_audit
+                            (tenant_id,entry_id,action_code,actor_id,reason,snapshot_json)
+                        SELECT tenant_id,id,'SOURCE_SYNC',?,'按数据字典补齐订货宝物流公司',data_json
+                        FROM order_logistics_cost WHERE tenant_id=? AND id=?
+                        """, actor, tenant, costId);
+            }
+            String issue = Objects.toString(row.get("issue"), null);
+            if (issue != null && (issue.startsWith(CARRIER_ISSUE) || issue.startsWith(DOOR_ISSUE)
+                    || (knownDeliveryMode && issue.startsWith(DELIVERY_MODE_ISSUE))))
+                issue = null;
+            jdbc.update("""
+                    UPDATE order_transport_shipment_source
+                    SET latest_json=JSON_SET(latest_json,'$.carrierCode',?,
+                        '$.deliveryModeCode',COALESCE(?,NULLIF(latest_json->>'$.deliveryModeCode','null'))),
+                        issue=?,updated_by=?,updated_time=CURRENT_TIMESTAMP(6)
+                    WHERE tenant_id=? AND id=?
+                    """, command.carrierCode(), mode, issue, actor, tenant, id);
+        }
+        if (!updatedCosts.isEmpty())
+            jdbc.update("UPDATE order_logistics_cost_guard SET version=version+1 WHERE tenant_id=?", tenant);
+        return rows.size();
+    }
+
+    @Override
     public Map<String, List<Source>> byCosts(String tenant, List<String> ids) {
         if (ids.isEmpty()) return Map.of();
         var params = new ArrayList<Object>();
@@ -523,6 +625,16 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
             result.computeIfAbsent(Objects.toString(row.get("cost_id")), k -> new ArrayList<>())
                     .add(source(row));
         return result;
+    }
+
+    private static String sourceCarrierCode(Command command) {
+        for (String part : List.of("detail", "list")) {
+            if (command.sourceFields().get(part) instanceof Map<?, ?> payload) {
+                String value = Objects.toString(payload.get("logistics_code"), "").strip();
+                if (!value.isEmpty()) return value;
+            }
+        }
+        return null;
     }
 
     private Source source(Map<String, Object> row) {

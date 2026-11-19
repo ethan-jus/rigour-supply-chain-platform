@@ -18,8 +18,6 @@ import com.rigour.order.infrastructure.persistence.entity.OrderLogisticsCostEnti
 import com.rigour.order.infrastructure.persistence.mapper.OrderLogisticsCostAuditMapper;
 import com.rigour.order.infrastructure.persistence.mapper.OrderLogisticsCostMapper;
 import com.rigour.shared.core.api.ErrorCode;
-import com.rigour.shared.core.code.BusinessCodeGenerator;
-import com.rigour.shared.core.code.BusinessCodeRule;
 import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.stereotype.Repository;
@@ -68,7 +66,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
 
     private static String missingDepartmentSql() {
         // MySQL 8.4 会将相关 EXISTS + JSON_TABLE 错误优化为空结果；标量计数保留逐记录关联。
-        return "(SELECT COUNT(*) FROM JSON_TABLE(COALESCE(order_logistics_cost.sources_json,'[]'),'$[*]'"
+        return "(SELECT COUNT(*) FROM"
+                   + " JSON_TABLE(COALESCE(order_logistics_cost.sources_json,'[]'),'$[*]'"
                    + " COLUMNS(employee_code VARCHAR(64) PATH '$.employeeCode',department_id BIGINT"
                    + " PATH '$.departmentId',department_name VARCHAR(128) PATH '$.departmentName'))"
                    + " d WHERE NULLIF(d.employee_code,'') IS NOT NULL AND (d.department_id IS NULL"
@@ -120,7 +119,9 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             String tenant,
             String id,
             int revision,
-            java.util.Map<String, com.rigour.order.api.v1.model.LogisticsCostEmployeeView>
+            java.util.Map<
+                            OrderLogisticsReferences.DepartmentAt,
+                            com.rigour.order.api.v1.model.LogisticsCostEmployeeView>
                     employees) {
         // 与其他成本写操作使用同一把租户锁；HR 请求已在事务外批量完成。
         mapper.ensureGuard(tenant);
@@ -139,7 +140,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         if (prior.ledger() == null) return false;
         var ledger =
                 com.rigour.order.application.service.cost.LogisticsDepartmentRefreshService.fill(
-                        prior.ledger(), employees);
+                        prior.ledger(), prior.costDate(), employees);
         if (ledger.equals(prior.ledger())) return false;
         var data = prior.withLedger(ledger, prior.amount());
         var actor = "SYSTEM";
@@ -259,7 +260,11 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         + ledgerPath
                         + ".manualName','"
                         + ledgerPath
-                        + ".partyCode','" + ledgerPath + ".displayName','" + ledgerPath + ".address') IS NOT NULL OR"
+                        + ".partyCode','"
+                        + ledgerPath
+                        + ".displayName','"
+                        + ledgerPath
+                        + ".address') IS NOT NULL OR"
                         + " JSON_SEARCH(data_json,'one',{1},NULL,'$.logistics.externalDocuments[*]."
                         + field
                         + "') IS NOT NULL)",
@@ -397,24 +402,43 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         if (text(filter.senderName())) partyFilter(q, "senderName", filter.senderName());
         if (text(filter.receiverName())) {
             // 未关联平台订单还没有本系统收货点，必须同时查询平台原始路线；不把发货地当收货地。
-            q.and(w -> w.nested(local -> partyFilter(local, "receiverName", filter.receiverName()))
-                    .or().apply("EXISTS(SELECT 1 FROM order_logistics_import_order i JOIN"
-                            + " JSON_TABLE(COALESCE(i.latest_source_json,i.source_json),'$.facts.stops[*]'"
-                            + " COLUMNS(pos FOR ORDINALITY,stop_name VARCHAR(500) PATH '$.name',"
-                            + " stop_address VARCHAR(1000) PATH '$.address')) p"
-                            + " WHERE i.tenant_id=order_logistics_cost.tenant_id AND i.cost_id=order_logistics_cost.id"
-                            + " AND p.pos>1 AND (LOCATE({0},p.stop_name)>0 OR LOCATE({0},p.stop_address)>0))",
-                            filter.receiverName().trim()));
+            q.and(
+                    w ->
+                            w.nested(
+                                            local ->
+                                                    partyFilter(
+                                                            local,
+                                                            "receiverName",
+                                                            filter.receiverName()))
+                                    .or()
+                                    .apply(
+                                            "EXISTS(SELECT 1 FROM order_logistics_import_order i"
+                                                + " JOIN"
+                                                + " JSON_TABLE(COALESCE(i.latest_source_json,i.source_json),'$.facts.stops[*]'"
+                                                + " COLUMNS(pos FOR ORDINALITY,stop_name"
+                                                + " VARCHAR(500) PATH '$.name', stop_address"
+                                                + " VARCHAR(1000) PATH '$.address')) p WHERE"
+                                                + " i.tenant_id=order_logistics_cost.tenant_id AND"
+                                                + " i.cost_id=order_logistics_cost.id AND p.pos>1"
+                                                + " AND (LOCATE({0},p.stop_name)>0 OR"
+                                                + " LOCATE({0},p.stop_address)>0))",
+                                            filter.receiverName().trim()));
         }
         if (Boolean.TRUE.equals(filter.salesSelectable())) {
-            q.eq("status_code", "ACTIVE").eq("carrier_code", "HLL").eq("source_system", "HUOLALA")
+            q.eq("status_code", "ACTIVE")
+                    .eq("carrier_code", "HLL")
+                    .eq("source_system", "HUOLALA")
                     .and(w -> w.isNull("type_code").or().eq("type_code", "DELIVERY"))
-                    .apply("EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
-                            + " i.tenant_id=order_logistics_cost.tenant_id AND i.cost_id=order_logistics_cost.id"
-                            + " AND i.source_channel='API' AND JSON_UNQUOTE(JSON_EXTRACT("
-                            + " COALESCE(i.latest_source_json,i.source_json),'$.status'))='已完成')");
-            if (filter.dateFrom() != null) q.apply(transportTimeSql() + ">={0}", filter.dateFrom().atStartOfDay());
-            if (filter.dateTo() != null) q.apply(transportTimeSql() + "<{0}", filter.dateTo().plusDays(1).atStartOfDay());
+                    .apply(
+                            "EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
+                                + " i.tenant_id=order_logistics_cost.tenant_id AND"
+                                + " i.cost_id=order_logistics_cost.id AND i.source_channel='API'"
+                                + " AND JSON_UNQUOTE(JSON_EXTRACT("
+                                + " COALESCE(i.latest_source_json,i.source_json),'$.status'))='已完成')");
+            if (filter.dateFrom() != null)
+                q.apply(transportTimeSql() + ">={0}", filter.dateFrom().atStartOfDay());
+            if (filter.dateTo() != null)
+                q.apply(transportTimeSql() + "<{0}", filter.dateTo().plusDays(1).atStartOfDay());
         }
         if (text(filter.carrierName()))
             q.apply(
@@ -474,38 +498,73 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         text(filter.ownerEmployeeCode()),
                         "owner_employee_code",
                         filter.ownerEmployeeCode())
-                .ge(!Boolean.TRUE.equals(filter.salesSelectable()) && filter.dateFrom() != null, "cost_date", filter.dateFrom())
-                .le(!Boolean.TRUE.equals(filter.salesSelectable()) && filter.dateTo() != null, "cost_date", filter.dateTo());
+                .ge(
+                        !Boolean.TRUE.equals(filter.salesSelectable()) && filter.dateFrom() != null,
+                        "cost_date",
+                        filter.dateFrom())
+                .le(
+                        !Boolean.TRUE.equals(filter.salesSelectable()) && filter.dateTo() != null,
+                        "cost_date",
+                        filter.dateTo());
         return q;
     }
 
-    /** 资料完整状态与生命周期独立；金额是否已知与自动同步人工保护仍沿用原规则。 */
-    static String completeBusinessSql() {
-        String links =
-                "JSON_TABLE(COALESCE(sources_json,'[]'),'$[*]' COLUMNS(order_code VARCHAR(100) PATH"
+    private static final String BUSINESS_LINKS =
+            "JSON_TABLE(COALESCE(sources_json,'[]'),'$[*]' COLUMNS(order_code VARCHAR(100) PATH"
                     + " '$.orderCode', document_no VARCHAR(100) PATH '$.documentNo',role_code"
                     + " VARCHAR(20) PATH '$.linkRoleCode', employee_code VARCHAR(64) PATH"
-                    + " '$.employeeCode',department_id VARCHAR(64) PATH '$.departmentId')) links";
-        String relevant = "(links.role_code IS NULL OR links.role_code='COST')";
-        return "(amount IS NOT NULL AND EXISTS(SELECT 1 FROM "
-                + links
-                + " WHERE "
-                + relevant
-                + " AND COALESCE(NULLIF(links.order_code,''),NULLIF(links.document_no,'')) IS NOT"
-                + " NULL) AND NOT EXISTS(SELECT 1 FROM "
-                + links
-                + " WHERE "
-                + relevant
-                + " AND (NULLIF(links.employee_code,'') IS NULL OR NULLIF(links.department_id,'')"
-                + " IS NULL)) AND (EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
-                + " i.tenant_id=order_logistics_cost.tenant_id AND"
-                + " i.cost_id=order_logistics_cost.id AND i.source_channel='API') OR EXISTS(SELECT"
-                + " 1 FROM order_transport_shipment_source s WHERE"
-                + " s.tenant_id=order_logistics_cost.tenant_id AND"
-                + " s.cost_id=order_logistics_cost.id) OR EXISTS(SELECT 1 FROM"
-                + " order_logistics_cost_attachment a WHERE"
-                + " a.tenant_id=order_logistics_cost.tenant_id AND"
-                + " a.entry_id=order_logistics_cost.id AND a.deleted=0)))";
+                    + " '$.employeeCode',department_id VARCHAR(64) PATH '$.departmentId')) links"
+                    + " WHERE (links.role_code IS NULL OR links.role_code='COST')";
+    private static final List<ReadinessCheck> READINESS =
+            List.of(
+                    new ReadinessCheck("AMOUNT", "amount IS NOT NULL"),
+                    new ReadinessCheck(
+                            "ORDER",
+                            "EXISTS(SELECT 1 FROM "
+                                    + BUSINESS_LINKS
+                                    + " AND COALESCE(NULLIF(links.order_code,''),NULLIF(links.document_no,''))"
+                                    + " IS NOT NULL)"),
+                    new ReadinessCheck(
+                            "EMPLOYEE",
+                            "NOT EXISTS(SELECT 1 FROM "
+                                    + BUSINESS_LINKS
+                                    + " AND NULLIF(links.employee_code,'') IS NULL)"),
+                    new ReadinessCheck(
+                            "DEPARTMENT",
+                            "NOT EXISTS(SELECT 1 FROM "
+                                    + BUSINESS_LINKS
+                                    + " AND NULLIF(links.department_id,'') IS NULL)"),
+                    new ReadinessCheck(
+                            "EVIDENCE",
+                            "(EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
+                                + " i.tenant_id=order_logistics_cost.tenant_id AND"
+                                + " i.cost_id=order_logistics_cost.id AND i.source_channel='API')"
+                                + " OR EXISTS(SELECT 1 FROM order_transport_shipment_source s WHERE"
+                                + " s.tenant_id=order_logistics_cost.tenant_id AND"
+                                + " s.cost_id=order_logistics_cost.id) OR EXISTS(SELECT 1 FROM"
+                                + " order_logistics_cost_attachment a WHERE"
+                                + " a.tenant_id=order_logistics_cost.tenant_id AND"
+                                + " a.entry_id=order_logistics_cost.id AND a.deleted=0))"));
+
+    private record ReadinessCheck(String code, String condition) {}
+
+    /** 列表状态与 BI 缺项使用同一校验条件。 */
+    static String completeBusinessSql() {
+        return READINESS.stream()
+                .map(ReadinessCheck::condition)
+                .collect(java.util.stream.Collectors.joining(" AND ", "(", ")"));
+    }
+
+    static String missingBusinessSql() {
+        return READINESS.stream()
+                .map(
+                        check ->
+                                "CASE WHEN "
+                                        + check.condition()
+                                        + " THEN NULL ELSE '"
+                                        + check.code()
+                                        + "' END")
+                .collect(java.util.stream.Collectors.joining(",", "CONCAT_WS(',',", ")"));
     }
 
     @Override
@@ -820,8 +879,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             var row = new OrderLogisticsCostEntity();
             row.setId(UUID.randomUUID().toString());
             row.setTenantId(tenant);
-            row.setDocumentNo(
-                    new BusinessCodeGenerator().generate(BusinessCodeRule.millisecond("CST", 6)));
+            row.setDocumentNo(CostDocumentNumber.next());
             row.setRequestId(c.requestId());
             row.setCategoryCode(category);
             row.setSourceSystem(sourceSystem(c, sources));

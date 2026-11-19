@@ -143,17 +143,28 @@ public class MybatisPlusSalesOrderRepository
 
     @Override
     public Optional<SalesOrderDetailView> salesOrder(String tenantId, Long id) {
-        var visible =
-                scopes.apply(
-                        Wrappers.<InternalSalesOrderEntity>lambdaQuery()
-                                .eq(InternalSalesOrderEntity::getTenantId, tenantId)
-                                .eq(InternalSalesOrderEntity::getId, id)
-                                .eq(InternalSalesOrderEntity::getDeleted, 0),
-                        "order:read");
-        var row = getBaseMapper().selectOne(visible);
-
+        var row = getBaseMapper().selectOne(visibleOrder(tenantId, id));
         return Optional.ofNullable(row)
                 .map(order -> detail(order, lines(tenantId, id), shipmentStatus(tenantId, id)));
+    }
+
+    @Override
+    public Optional<LogisticsOrder> logisticsOrder(String tenantId, Long id) {
+        var query = visibleOrder(tenantId, id)
+                .select(InternalSalesOrderEntity::getOrderNo,
+                        InternalSalesOrderEntity::getOrderStatusCode);
+        return Optional.ofNullable(getBaseMapper().selectOne(query))
+                .map(order -> new LogisticsOrder(order.getOrderNo(), order.getOrderStatusCode()));
+    }
+
+    private LambdaQueryWrapper<InternalSalesOrderEntity>
+            visibleOrder(String tenantId, Long id) {
+        return scopes.apply(
+                Wrappers.<InternalSalesOrderEntity>lambdaQuery()
+                        .eq(InternalSalesOrderEntity::getTenantId, tenantId)
+                        .eq(InternalSalesOrderEntity::getId, id)
+                        .eq(InternalSalesOrderEntity::getDeleted, 0),
+                "order:read");
     }
 
     @Override

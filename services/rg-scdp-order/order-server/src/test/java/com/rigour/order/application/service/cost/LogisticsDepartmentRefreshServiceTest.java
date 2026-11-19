@@ -14,11 +14,16 @@ import java.util.*;
 
 class LogisticsDepartmentRefreshServiceTest {
     final JsonMapper json = JsonMapper.builder().build();
+    final java.time.LocalDate date = java.time.LocalDate.parse("2026-11-16");
+
+    OrderLogisticsReferences.DepartmentAt key(String code) {
+        return new OrderLogisticsReferences.DepartmentAt(code, date);
+    }
 
     LogisticsCostCommand data() {
         return json.readValue(
                 """
-                {"amount":80,"paymentStatusCode":"PAID","remark":"人工备注","ledger":{"schemaVersion":2,
+                {"costDate":"2026-11-16","amount":80,"paymentStatusCode":"PAID","remark":"人工备注","ledger":{"schemaVersion":2,
                 "sources":[{"orderCode":"SO1","employeeCode":"EMP1","employeeName":"李林","linkRoleCode":"COST",
                 "allocations":[{"feeKey":"freight","amount":80,"basis":1}],"linkedAt":"2026-11-16T11:43:40Z"}],
                 "manualBillItems":[{"name":"运费","amount":80}]}}
@@ -32,7 +37,10 @@ class LogisticsDepartmentRefreshServiceTest {
         var next =
                 LogisticsDepartmentRefreshService.fill(
                         old.ledger(),
-                        Map.of("EMP1", new LogisticsCostEmployeeView("EMP1", "李林", 6L, "北京市")));
+                        date,
+                        Map.of(
+                                key("EMP1"),
+                                new LogisticsCostEmployeeView("EMP1", "李林", 6L, "北京市")));
         assertThat(next.sources().getFirst().departmentId()).isEqualTo(6L);
         assertThat(next.sources().getFirst().departmentName()).isEqualTo("北京市");
         assertThat(next.sources().getFirst().allocations())
@@ -43,8 +51,9 @@ class LogisticsDepartmentRefreshServiceTest {
         assertThat(
                         LogisticsDepartmentRefreshService.fill(
                                 next,
+                                date,
                                 Map.of(
-                                        "EMP1",
+                                        key("EMP1"),
                                         new LogisticsCostEmployeeView("EMP1", "李林", 7L, "新部门"))))
                 .isEqualTo(next);
         assertThat(old.withLedger(next, old.amount()).amount()).isEqualByComparingTo("80");
@@ -53,13 +62,75 @@ class LogisticsDepartmentRefreshServiceTest {
     }
 
     @Test
+    void sameEmployeeAcrossOrdersUsesEachOriginalDocumentDateRatherThanTransportDate() {
+        var old = data().ledger();
+        var source = old.sources().getFirst();
+        var september = java.time.LocalDate.parse("2026-09-10");
+        var october = java.time.LocalDate.parse("2026-10-10");
+        var first =
+                new LogisticsCostLedger.Source(
+                        source.orderTypeCode(),
+                        "SO1",
+                        source.linkRoleCode(),
+                        source.allocations(),
+                        source.noSourceReason(),
+                        source.employeeCode(),
+                        source.employeeName(),
+                        null,
+                        null,
+                        source.sourceWarehouseCode(),
+                        source.documentAmount(),
+                        september,
+                        source.linkedAt());
+        var second =
+                new LogisticsCostLedger.Source(
+                        source.orderTypeCode(),
+                        "SO2",
+                        source.linkRoleCode(),
+                        source.allocations(),
+                        source.noSourceReason(),
+                        source.employeeCode(),
+                        source.employeeName(),
+                        null,
+                        null,
+                        source.sourceWarehouseCode(),
+                        source.documentAmount(),
+                        october,
+                        source.linkedAt());
+        var next =
+                LogisticsDepartmentRefreshService.fill(
+                        old.withSources(List.of(first, second)),
+                        date,
+                        Map.of(
+                                new OrderLogisticsReferences.DepartmentAt("EMP1", september),
+                                new LogisticsCostEmployeeView("EMP1", "李林", 6L, "原部门"),
+                                new OrderLogisticsReferences.DepartmentAt("EMP1", october),
+                                new LogisticsCostEmployeeView("EMP1", "李林", 7L, "调岗后部门"),
+                                key("EMP1"),
+                                new LogisticsCostEmployeeView("EMP1", "李林", 8L, "当前部门")));
+        assertThat(next.sources())
+                .extracting(LogisticsCostLedger.Source::departmentId)
+                .containsExactly(6L, 7L);
+        assertThat(next.sources())
+                .extracting(LogisticsCostLedger.Source::documentDate)
+                .containsExactly(september, october);
+        assertThat(next.sources())
+                .allSatisfy(
+                        s -> {
+                            assertThat(s.allocations()).isEqualTo(source.allocations());
+                            assertThat(s.linkedAt()).isEqualTo(source.linkedAt());
+                        });
+    }
+
+    @Test
     void doesNotGuessFromEmployeeNameOrReplaceConflictingHistoricalDepartment() {
         var old = data().ledger();
         assertThat(
                         LogisticsDepartmentRefreshService.fill(
                                 old,
+                                date,
                                 Map.of(
-                                        "OTHER",
+                                        key("OTHER"),
                                         new LogisticsCostEmployeeView("OTHER", "李林", 6L, "北京市"))))
                 .isEqualTo(old);
         var source = old.sources().getFirst();
@@ -81,8 +152,9 @@ class LogisticsDepartmentRefreshServiceTest {
         assertThat(
                         LogisticsDepartmentRefreshService.fill(
                                         old.withSources(List.of(partial)),
+                                        date,
                                         Map.of(
-                                                "EMP1",
+                                                key("EMP1"),
                                                 new LogisticsCostEmployeeView(
                                                         "EMP1", "李林", 6L, "北京市")))
                                 .sources()
@@ -100,8 +172,8 @@ class LogisticsDepartmentRefreshServiceTest {
         when(store.missingDepartments(tenant, ""))
                 .thenReturn(
                         List.of(new OrderLogisticsCostStore.DepartmentCandidate("C1", 4, data())));
-        when(refs.employeeDepartments(
-                        any(), eq(Set.of("EMP1")), eq("order:logistics-cost:sync-source")))
+        when(refs.employeeDepartmentsAt(
+                        any(), eq(Set.of(key("EMP1"))), eq("order:logistics-cost:sync-source")))
                 .thenAnswer(
                         inv -> {
                             var caller =
@@ -109,7 +181,9 @@ class LogisticsDepartmentRefreshServiceTest {
                             assertThat(caller.tenantId().toString()).isEqualTo(tenant);
                             assertThat(caller.principalScope()).isEqualTo("SERVICE");
                             assertThat(caller.userId()).isNull();
-                            return List.of(new LogisticsCostEmployeeView("EMP1", "李林", 6L, "北京市"));
+                            return Map.of(
+                                    key("EMP1"),
+                                    new LogisticsCostEmployeeView("EMP1", "李林", 6L, "北京市"));
                         });
         service.refresh();
         verify(store).fillDepartments(eq(tenant), eq("C1"), eq(4), anyMap());
@@ -118,7 +192,7 @@ class LogisticsDepartmentRefreshServiceTest {
     }
 
     @Test
-    void ambiguousIdentityDoesNotFillAndUnavailableTenantDoesNotStopOthers() {
+    void unresolvedAttributionDoesNotFillAndUnavailableTenantDoesNotStopOthers() {
         var store = mock(OrderLogisticsCostStore.class);
         var refs = mock(OrderLogisticsReferences.class);
         var first = UUID.randomUUID().toString();
@@ -129,11 +203,7 @@ class LogisticsDepartmentRefreshServiceTest {
         when(store.missingDepartments(next, ""))
                 .thenReturn(
                         List.of(new OrderLogisticsCostStore.DepartmentCandidate("C1", 1, data())));
-        when(refs.employeeDepartments(any(), anySet(), anyString()))
-                .thenReturn(
-                        List.of(
-                                new LogisticsCostEmployeeView("EMP1", "李林", 6L, "北京市"),
-                                new LogisticsCostEmployeeView("EMP1", "李林", 9L, "其他部门")));
+        when(refs.employeeDepartmentsAt(any(), anySet(), anyString())).thenReturn(Map.of());
         new LogisticsDepartmentRefreshService(store, refs).refresh();
         verify(store, never()).fillDepartments(any(), any(), anyInt(), anyMap());
         verify(store).missingDepartments(next, "C1");

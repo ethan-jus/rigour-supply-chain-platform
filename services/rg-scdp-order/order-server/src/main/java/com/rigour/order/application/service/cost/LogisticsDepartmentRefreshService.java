@@ -51,31 +51,34 @@ public class LogisticsDepartmentRefreshService {
                 while (true) {
                     var rows = store.missingDepartments(tenant, after);
                     if (rows.isEmpty()) break;
-                    var codes =
+                    var queries =
                             rows.stream()
-                                    .flatMap(r -> r.data().ledger().sources().stream())
-                                    .filter(LogisticsDepartmentRefreshService::missing)
-                                    .map(LogisticsCostLedger.Source::employeeCode)
+                                    .flatMap(
+                                            r ->
+                                                    r.data().ledger().sources().stream()
+                                                            .filter(
+                                                                    LogisticsDepartmentRefreshService
+                                                                            ::missing)
+                                                            .map(s -> at(s, r.data().costDate())))
+                                    .filter(q -> q.businessDate() != null)
                                     .distinct()
                                     .toList();
-                    var employees = new HashMap<String, LogisticsCostEmployeeView>();
-                    var conflicts = new HashSet<String>();
-                    for (int start = 0; start < codes.size(); start += 100)
-                        for (var employee :
-                                references.employeeDepartments(
+                    var employees =
+                            new HashMap<
+                                    OrderLogisticsReferences.DepartmentAt,
+                                    LogisticsCostEmployeeView>();
+                    for (int start = 0; start < queries.size(); start += 100)
+                        employees.putAll(
+                                references.employeeDepartmentsAt(
                                         caller,
                                         new HashSet<>(
-                                                codes.subList(
+                                                queries.subList(
                                                         start,
-                                                        Math.min(codes.size(), start + 100))),
-                                        "order:logistics-cost:sync-source")) {
-                            var previous = employees.putIfAbsent(employee.employeeCode(), employee);
-                            if (previous != null && !previous.equals(employee))
-                                conflicts.add(employee.employeeCode());
-                        }
-                    conflicts.forEach(employees::remove);
+                                                        Math.min(queries.size(), start + 100))),
+                                        "order:logistics-cost:sync-source"));
                     for (var row : rows)
-                        if (!fill(row.data().ledger(), employees).equals(row.data().ledger()))
+                        if (!fill(row.data().ledger(), row.data().costDate(), employees)
+                                .equals(row.data().ledger()))
                             store.fillDepartments(tenant, row.id(), row.revision(), employees);
                     after = rows.getLast().id();
                 }
@@ -97,13 +100,15 @@ public class LogisticsDepartmentRefreshService {
     }
 
     public static LogisticsCostLedger fill(
-            LogisticsCostLedger ledger, Map<String, LogisticsCostEmployeeView> employees) {
+            LogisticsCostLedger ledger,
+            java.time.LocalDate fallbackDate,
+            Map<OrderLogisticsReferences.DepartmentAt, LogisticsCostEmployeeView> employees) {
         return ledger.withSources(
                 ledger.sources().stream()
                         .map(
                                 source -> {
                                     if (!missing(source)) return source;
-                                    var employee = employees.get(source.employeeCode());
+                                    var employee = employees.get(at(source, fallbackDate));
                                     if (employee == null
                                             || employee.departmentId() == null
                                             || employee.departmentName() == null
@@ -133,5 +138,12 @@ public class LogisticsDepartmentRefreshService {
                                             source.linkedAt());
                                 })
                         .toList());
+    }
+
+    static OrderLogisticsReferences.DepartmentAt at(
+            LogisticsCostLedger.Source source, java.time.LocalDate fallbackDate) {
+        return new OrderLogisticsReferences.DepartmentAt(
+                source.employeeCode(),
+                source.documentDate() == null ? fallbackDate : source.documentDate());
     }
 }

@@ -30,6 +30,12 @@ public interface OrderSalesOrderProjectionClient {
         throw new UnsupportedOperationException("销售发货运输投影尚未部署");
     }
 
+    default int backfillShipmentCarrier(
+            CallerIdentity caller,
+            com.rigour.order.api.v1.model.ShipmentTransportModels.CarrierBackfill command) {
+        throw new UnsupportedOperationException("Order发货物流公司回填接口尚未部署");
+    }
+
     default java.util.List<String> knownSourceOrders(
             CallerIdentity caller, java.util.UUID connectorId, String sourceNo) {
         throw new UnsupportedOperationException("已同步来源订单查询不可用");

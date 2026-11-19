@@ -34,7 +34,8 @@ public final class TransportRecordModels {
             String deliveryModeCode,
             List<LogisticsCostLedger.Party> receivingPoints,
             Map<String, BigDecimal> orderAllocations,
-            java.time.LocalDateTime shippingTime) {
+            java.time.LocalDateTime shippingTime,
+            String receivingMethodCode) {
         public Draft(
                 Integer revision,
                 String transportType,
@@ -85,6 +86,7 @@ public final class TransportRecordModels {
                     deliveryModeCode,
                     receivingPoints,
                     orderAllocations,
+                    null,
                     null);
         }
 
@@ -165,7 +167,8 @@ public final class TransportRecordModels {
                     deliveryModeCode,
                     receivingPoints,
                     allocations,
-                    shippingTime);
+                    shippingTime,
+                    receivingMethodCode);
         }
 
         public Draft(

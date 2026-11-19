@@ -60,7 +60,9 @@ public class BusinessDictionaryService {
             Map.entry("MARKETING_EXPENSE_TYPE", Set.of("erp:cost:marketing:read")),
             Map.entry("REIMBURSEMENT_EXPENSE_TYPE", Set.of("hr:expense:read")),
             Map.entry("COST_LOGISTICS_LEG", Set.of("order:logistics-cost:read", "hr:expense:read")),
-            Map.entry("COST_TRANSPORT_METHOD", Set.of("order:logistics-cost:read")),
+            Map.entry("COST_DELIVERY_MODE", Set.of("order:logistics-cost:read")),
+            Map.entry("COST_TRANSPORT_KIND", Set.of("order:logistics-cost:read")),
+            Map.entry("COST_CARRIER", Set.of("order:logistics-cost:read")),
             Map.entry("COST_PAYER", Set.of("order:logistics-cost:read")),
             Map.entry("WAREHOUSE_TYPE", Set.of("order:logistics-cost:read")),
             Map.entry("COST_PREMISES_TYPE", Set.of("erp:cost:rental:read")),
@@ -217,7 +219,7 @@ public class BusinessDictionaryService {
             if (value == null) throw badRequest("字典同步来源值不能为空");
             String raw = exact(value.value(), "来源值不能为空", 255);
             observed.add(raw);
-            DictItemView match = resolveSource(items, dictionaryCode, raw);
+            DictItemView match = resolveSource(items, dictionaryCode, raw, value.name());
             if (match == null) continue;
             String targetDictionary =
                     match.alias() ? match.canonicalDictionaryCode() : dictionaryCode;
@@ -254,13 +256,24 @@ public class BusinessDictionaryService {
     }
 
     private static DictItemView resolveSource(
-            List<DictItemView> items, String dictionaryCode, String raw) {
+            List<DictItemView> items, String dictionaryCode, String raw, String name) {
         String sourceCode = sourceItemCode(dictionaryCode, raw);
         List<DictItemView> byCode =
                 items.stream()
                         .filter(item -> item.dictionaryItemCode().equals(sourceCode))
                         .toList();
         if (byCode.size() == 1) return byCode.getFirst();
+        if ("COST_CARRIER".equals(dictionaryCode)) {
+            String sourceName = name == null || name.isBlank() ? raw : name.strip();
+            Map<String, DictItemView> byCarrier = new LinkedHashMap<>();
+            for (var item : items) {
+                if (!item.dictionaryItemName().strip().equals(sourceName)) continue;
+                if (item.alias() && !dictionaryCode.equals(item.canonicalDictionaryCode())) continue;
+                String code = item.alias() ? item.canonicalItemCode() : item.dictionaryItemCode();
+                if (selectable(items, code)) byCarrier.putIfAbsent(code, item);
+            }
+            return byCarrier.size() == 1 ? byCarrier.values().iterator().next() : null;
+        }
         List<DictItemView> byName =
                 items.stream()
                         .filter(

@@ -35,7 +35,9 @@ public final class LogisticsLedgerRules {
         if (p == null || p.schemaVersion() != 2) throw bad("物流费用结构版本无效");
         if ("PURCHASE".equals(p.transportPurposeCode())) throw bad("采购运费已归入采购成本，请在采购成本记录中维护");
         choice(p.transportPurposeCode(), Set.of("TRANSFER", "DELIVERY", "OTHER"), "运输类型");
-        choice(p.deliveryModeCode(), Set.of("SELF", "THIRD_PARTY"), "承运方式");
+        choice(p.deliveryModeCode(), Set.of("SELF", "THIRD_PARTY"), "配送方式");
+        if (p.receivingMethodCode() != null)
+            choice(p.receivingMethodCode(), Set.of("DOOR_DELIVERY", "SELF_PICKUP"), "收货方式");
         required(p.costMonth(), 7, "费用归属月份");
         try {
             YearMonth.parse(p.costMonth());

@@ -14,7 +14,11 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 @Component
@@ -328,38 +332,49 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
     }
 
     @Override
-    public List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employeeDepartments(
-            Set<String> codes, String action) {
-        AuthorizationContext.requirePermission(action);
-        return employeeDepartments(AuthorizationContext.requireCurrent(), codes, action);
-    }
-
-    @Override
-    public List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employeeDepartments(
-            com.rigour.shared.context.CallerIdentity actor, Set<String> codes, String action) {
+    public Map<DepartmentAt, com.rigour.order.api.v1.model.LogisticsCostEmployeeView>
+            employeeDepartmentsAt(
+                    com.rigour.shared.context.CallerIdentity actor,
+                    Set<DepartmentAt> queries,
+                    String action) {
         if (!Set.of(
-                        "order:logistics-cost:read",
-                        "order:logistics-cost:write",
-                        "order:logistics-cost:export",
-                        "order:logistics-cost:sync-source")
-                .contains(action))
+                                "order:logistics-cost:read",
+                                "order:logistics-cost:write",
+                                "order:logistics-cost:export",
+                                "order:logistics-cost:sync-source")
+                        .contains(action)
+                || actor == null
+                || (!actor.permissions().contains(action)
+                        && !actor.permissions().contains("*:*:*")))
             throw new com.rigour.shared.context.AuthorizationDeniedException(action);
-        if (actor == null
-                || !actor.permissions().contains(action) && !actor.permissions().contains("*:*:*"))
-            throw new com.rigour.shared.context.AuthorizationDeniedException(action);
-        if (actor.tenantId() == null || codes == null || codes.size() > 100)
+        if (actor.tenantId() == null
+                || queries == null
+                || queries.size() > 100
+                || queries.stream()
+                        .anyMatch(
+                                q ->
+                                        q == null
+                                                || q.employeeCode() == null
+                                                || q.employeeCode().isBlank()
+                                                || q.employeeCode().length() > 50
+                                                || q.businessDate() == null))
             throw new IllegalArgumentException("员工部门核验范围无效");
-        if (codes.isEmpty()) return List.of();
-        var sorted = codes.stream().sorted().toList();
+        if (queries.isEmpty()) return Map.of();
+        var sorted =
+                queries.stream()
+                        .sorted(
+                                Comparator.comparing(DepartmentAt::employeeCode)
+                                        .thenComparing(DepartmentAt::businessDate))
+                        .toList();
         return LogisticsRequestCache.get(
                 actor.tenantId().toString(),
                 action,
-                "employeeDepartments",
+                "employeeDepartmentsAt",
                 sorted,
                 () -> {
                     var uri =
                             UriComponentsBuilder.fromUriString(hr)
-                                    .path("/api/v1/hr/employee-identities/resolve")
+                                    .path("/api/v1/hr/employee-identities/department-attributions")
                                     .build()
                                     .toUri();
                     var service =
@@ -393,31 +408,45 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
                                             new ParameterizedTypeReference<
                                                     ApiResponse<
                                                             List<
-                                                                    EmployeeDepartmentIdentity>>>() {});
+                                                                    EmployeeDepartmentAttribution>>>() {});
                     if (response == null
                             || !"OK".equals(response.code())
                             || response.data() == null)
                         throw new IllegalStateException("员工部门暂不可核验");
-                    return response.data().stream()
-                            .filter(e -> codes.contains(e.employeeCode()) && e.usable())
-                            .map(
-                                    e ->
-                                            new com.rigour.order.api.v1.model
-                                                    .LogisticsCostEmployeeView(
-                                                    e.employeeCode(),
-                                                    e.employeeName(),
-                                                    e.departmentId(),
-                                                    e.departmentName()))
-                            .toList();
+                    var result =
+                            new HashMap<
+                                    DepartmentAt,
+                                    com.rigour.order.api.v1.model.LogisticsCostEmployeeView>();
+                    var conflicts = new HashSet<DepartmentAt>();
+                    for (var e : response.data()) {
+                        var key = new DepartmentAt(e.employeeCode(), e.businessDate());
+                        if (!queries.contains(key)
+                                || e.issue() != null
+                                || e.departmentId() == null
+                                || e.departmentName() == null
+                                || e.departmentName().isBlank()) continue;
+                        var value =
+                                new com.rigour.order.api.v1.model.LogisticsCostEmployeeView(
+                                        e.employeeCode(),
+                                        e.employeeName(),
+                                        e.departmentId(),
+                                        e.departmentName());
+                        var old = result.putIfAbsent(key, value);
+                        if (old != null && !old.equals(value)) conflicts.add(key);
+                    }
+                    conflicts.forEach(result::remove);
+                    return Map.copyOf(result);
                 });
     }
 
-    private record EmployeeDepartmentIdentity(
+    private record EmployeeDepartmentAttribution(
             String employeeCode,
+            java.time.LocalDate businessDate,
             String employeeName,
             Long departmentId,
             String departmentName,
-            boolean usable) {}
+            String basis,
+            String issue) {}
 
     private List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> readEmployees(
             String action) {
@@ -602,7 +631,71 @@ public final class HttpOrderLogisticsReferences implements OrderLogisticsReferen
 
     public String city(String code, String action) {
         String name = cities(action).get(code);
-        if (name == null) throw new com.rigour.shared.context.AuthorizationDeniedException(action);
+        if (name == null) {
+            if (code == null || code.isBlank())
+                throw new com.rigour.shared.core.exception.BusinessException(
+                        com.rigour.shared.core.api.ErrorCode.BAD_REQUEST,
+                        "业务归属地区未配置，请在仓库信息中维护正确的经营城市或总部",
+                        List.of());
+            var check = cityChecks(List.of(code), action).getFirst();
+            if (!check.configured())
+                throw new com.rigour.shared.core.exception.BusinessException(
+                        com.rigour.shared.core.api.ErrorCode.BAD_REQUEST, check.issue(), List.of());
+            throw new com.rigour.shared.context.AuthorizationDeniedException(action);
+        }
         return name;
+    }
+
+    @Override
+    public List<CityCheck> cityChecks(List<String> codes, String action) {
+        AuthorizationContext.requirePermission(action);
+        var requested = codes.stream().distinct().sorted().toList();
+        return LogisticsRequestCache.get(
+                AuthorizationContext.requireCurrent().tenantId().toString(),
+                action,
+                "city-checks",
+                requested,
+                () -> {
+                    var uri =
+                            UriComponentsBuilder.fromUriString(crm)
+                                    .path("/api/v1/crm/cost-city-references/checks")
+                                    .queryParam("action", action)
+                                    .build()
+                                    .encode()
+                                    .toUri();
+                    var headers =
+                            OutboundContextHeaders.caller(
+                                    signer, "POST", uri, AuthorizationContext.requireCurrent());
+                    ApiResponse<List<CityCheck>> response;
+                    try {
+                        response =
+                                client.post()
+                                        .uri(uri)
+                                        .headers(h -> headers.forEach(h::set))
+                                        .body(requested)
+                                        .retrieve()
+                                        .body(
+                                                new ParameterizedTypeReference<
+                                                        ApiResponse<List<CityCheck>>>() {});
+                    } catch (org.springframework.web.client.HttpClientErrorException.Forbidden e) {
+                        throw new com.rigour.shared.context.AuthorizationDeniedException(action);
+                    }
+                    if (response == null
+                            || !"OK".equals(response.code())
+                            || response.data() == null
+                            || response.data().size() != requested.size()
+                            || response.data().stream()
+                                    .anyMatch(
+                                            c ->
+                                                    !c.configured()
+                                                            && (c.allowed()
+                                                                    || c.issue() == null
+                                                                    || c.issue().isBlank()))
+                            || !new java.util.HashSet<>(
+                                            response.data().stream().map(CityCheck::code).toList())
+                                    .equals(new java.util.HashSet<>(requested)))
+                        throw new IllegalStateException("经营城市配置核验暂不可用，请稍后重试");
+                    return List.copyOf(response.data());
+                });
     }
 }

@@ -4,6 +4,7 @@ import com.rigour.analytics.api.v1.CostDashboardApi;
 import com.rigour.analytics.api.v1.model.CostDashboardDetail;
 import com.rigour.analytics.api.v1.model.CostDashboardExportCommand;
 import com.rigour.analytics.api.v1.model.CostDashboardExportView;
+import com.rigour.analytics.api.v1.model.CostDashboardPendingTransports;
 import com.rigour.analytics.api.v1.model.CostDashboardQuery;
 import com.rigour.analytics.api.v1.model.CostDashboardRecords;
 import com.rigour.analytics.api.v1.model.CostDashboardReport;
@@ -36,6 +37,12 @@ public final class CostDashboardController implements CostDashboardApi {
 
     public ApiResponse<CostDashboardRecords> records(CostDashboardQuery q) {
         return ApiResponse.success(service.records(q));
+    }
+
+    @Override
+    public ApiResponse<CostDashboardPendingTransports> pendingTransports(
+            CostDashboardQuery query, String reason) {
+        return ApiResponse.success(service.pendingTransports(query, reason));
     }
 
     public ApiResponse<CostDashboardWorkspace> workspace(CostDashboardQuery q) {

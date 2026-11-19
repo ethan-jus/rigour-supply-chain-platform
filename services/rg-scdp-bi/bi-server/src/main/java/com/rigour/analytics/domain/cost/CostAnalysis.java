@@ -9,7 +9,7 @@ import java.util.function.Function;
 public final class CostAnalysis {
     private CostAnalysis() {}
 
-    public static final String NORMALIZATION_VERSION = "12";
+    public static final String NORMALIZATION_VERSION = "14";
 
     public static final Map<String, String> CATEGORIES;
 
@@ -59,9 +59,9 @@ public final class CostAnalysis {
             Map.ofEntries(
                     Map.entry("leg", "运输类型"),
                     Map.entry("carrier", "物流公司"),
-                    Map.entry("method", "运输方式"),
+                    Map.entry("method", "运输渠道"),
                     Map.entry("feeType", "费用项目"),
-                    Map.entry("deliveryMode", "承运方式"),
+                    Map.entry("deliveryMode", "配送方式"),
                     Map.entry("component", "采购成本构成"),
                     Map.entry("premises", "仓库或场地"),
                     Map.entry("contract", "合同编号"),

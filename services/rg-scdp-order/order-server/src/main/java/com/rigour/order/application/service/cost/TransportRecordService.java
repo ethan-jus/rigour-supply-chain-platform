@@ -197,7 +197,12 @@ public class TransportRecordService {
                         costs.save(
                                 "logistics",
                                 id,
-                                command(old.record(), d, sources, "order:logistics-cost:write"));
+                                command(
+                                        old.record(),
+                                        d,
+                                        sources,
+                                        "order:logistics-cost:write",
+                                        "DOOR_DELIVERY"));
                 platform.saveAssociations(
                         tenant(),
                         id,
@@ -226,7 +231,12 @@ public class TransportRecordService {
                                 old == null ? null : old.record(),
                                 d,
                                 sources,
-                                "order:logistics-cost:write"));
+                                "order:logistics-cost:write",
+                                first(
+                                        d.receivingMethodCode(),
+                                        old == null || old.record().data().ledger() == null
+                                                ? null
+                                                : old.record().data().ledger().receivingMethodCode())));
         return detail(saved.id());
     }
 
@@ -413,7 +423,8 @@ public class TransportRecordService {
             LogisticsCostDetailView old,
             Draft d,
             List<LogisticsCostSourceView> rows,
-            String action) {
+            String action,
+            String receivingMethod) {
         var billItems =
                 d.manualBillItems() == null && old != null && old.data().ledger() != null
                         ? old.data().ledger().manualBillItems()
@@ -424,7 +435,21 @@ public class TransportRecordService {
                         : com.rigour.order.domain.cost.LogisticsLedgerRules.manualBillTotal(
                                 billItems);
         if (rows.isEmpty()) throw bad("请先关联业务订单");
-        String city = first(d.cityCode(), rows.getFirst().cityCode());
+        String city;
+        if ("DELIVERY".equals(d.transportType()) || "TRANSFER".equals(d.transportType())) {
+            var original = old == null ? null : old.data().ledger();
+            var originalCodes = original == null ? Set.<String>of()
+                    : original.sources().stream().map(Source::orderCode).collect(java.util.stream.Collectors.toSet());
+            boolean sameOrders = original != null
+                    && d.transportType().equals(original.transportPurposeCode())
+                    && originalCodes.equals(new HashSet<>(d.orderCodes()));
+            // 无关字段的修改保留已登记的汇总归属；新增或重新关联时使用业务单据归属。
+            city = sameOrders
+                    ? first(old.data().cityCode(), rows.getFirst().cityCode())
+                    : rows.getFirst().cityCode();
+        } else {
+            city = first(d.cityCode(), rows.getFirst().cityCode());
+        }
         if (city == null) throw bad("请维护业务单据的归属城市后保存");
         String cityName = refs.city(city, action);
         Party sender;
@@ -572,7 +597,7 @@ public class TransportRecordService {
                                 List.of())
                         .withPlatformOrderNo(d.platformOrderNo())
                         .withManualBillItems(billItems)
-                        .withShippingTime(
+                        .withDeliveryDetails(
                                 d.shippingTime() != null
                                         ? d.shippingTime()
                                         : old != null
@@ -580,7 +605,8 @@ public class TransportRecordService {
                                                         && Objects.equals(
                                                                 old.data().costDate(), d.date())
                                                 ? old.data().ledger().shippingTime()
-                                                : null);
+                                                : null,
+                                receivingMethod);
         return new LogisticsCostCommand(
                 old == null ? d.requestId() : old.data().requestId(),
                 old == null ? null : old.revision(),

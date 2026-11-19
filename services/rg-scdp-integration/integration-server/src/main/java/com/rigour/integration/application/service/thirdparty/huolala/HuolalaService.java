@@ -259,14 +259,14 @@ public class HuolalaService {
         var c = required(tenant);
         if (!"AUTHORIZED".equals(c.authStatus()))
             throw new IllegalStateException("货拉拉企业账号尚未授权或授权已失效");
-        var q = validated(c, command, "SCHEDULED".equals(trigger) ? 366 : 93);
+        var q = validated(c, command);
         UUID run = store.startRun(tenant, actor, q.scope(), trigger, Instant.now());
         if (!store.claim(tenant, run.toString(), Instant.now())) {
             store.finishRun(tenant, run, 0, 0, 0, 0, "已有同步或授权流程正在执行", Instant.now());
             throw new IllegalStateException("已有同步或授权流程正在执行，请稍后查看记录");
         }
         try {
-            executor.execute(() -> execute(tenant, c, run, q));
+            executor.execute(() -> execute(tenant, c, run, q, "MANUAL".equals(trigger)));
         } catch (RuntimeException e) {
             store.finishRun(tenant, run, 0, 0, 0, 0, "任务队列繁忙，请稍后重试", Instant.now());
             store.finish(tenant, run.toString(), "任务队列繁忙", Instant.now());
@@ -275,26 +275,32 @@ public class HuolalaService {
         return new Run(run.toString(), q.scope(), "RUNNING", 0, 0, 0, 0, Instant.now(), null, null);
     }
 
-    private SyncCommand validated(Connection c, SyncCommand command, int maxDays) {
+    private SyncCommand validated(Connection c, SyncCommand command) {
         String scope = command == null || command.scope() == null ? "ALL" : command.scope();
         if (!Set.of("ALL", "ORDERS", "EMPLOYEES").contains(scope))
             throw new IllegalArgumentException("同步范围无效");
+        LocalDate today = today();
+        if ("EMPLOYEES".equals(scope)) return new SyncCommand(scope, today, today, null);
+        String no = command == null || command.orderNo() == null ? "" : command.orderNo().strip();
+        if (!no.isEmpty()) {
+            if (!no.matches("[0-9]{6,19}")
+                    || (no.length() == 19 && no.compareTo(Long.toString(Long.MAX_VALUE)) > 0))
+                throw new IllegalArgumentException("请输入完整的货拉拉数字订单号");
+            return new SyncCommand(scope, today, today, no);
+        }
         LocalDate from =
                 command == null || command.from() == null
-                        ? max(c.startDate(), today().minusMonths(1).withDayOfMonth(1))
+                        ? max(c.startDate(), today.minusMonths(1).withDayOfMonth(1))
                         : command.from();
-        LocalDate to = command == null || command.to() == null ? today() : command.to();
-        String no = command == null ? null : command.orderNo();
-        if (from.isAfter(to)
-                || to.isAfter(today())
-                || from.isBefore(today().minusYears(3))
-                || from.plusDays(maxDays).isBefore(to)
-                || no != null && !no.isBlank() && !no.matches("[0-9]{6,19}"))
-            throw new IllegalArgumentException("同步日期须在近三年且单次不超过93天；订单号须为完整数字文本");
-        return new SyncCommand(scope, from, to, no);
+        LocalDate to = command == null || command.to() == null ? today : command.to();
+        if (from.isAfter(to)) throw new IllegalArgumentException("结束日期不能早于开始日期");
+        if (to.isAfter(today)) throw new IllegalArgumentException("结束日期不能晚于今天");
+        if (from.isBefore(today.minusYears(3)))
+            throw new IllegalArgumentException("开始日期须在近三年内");
+        return new SyncCommand(scope, from, to, null);
     }
 
-    private void execute(UUID tenant, Connection c, UUID run, SyncCommand q) {
+    private void execute(UUID tenant, Connection c, UUID run, SyncCommand q, boolean manual) {
         long[] count = new long[8];
         String error = null;
         try {
@@ -323,7 +329,8 @@ public class HuolalaService {
                     }
                 }
             }
-            if (!"EMPLOYEES".equals(q.scope())) syncOrders(tenant, c, run, q, token, count);
+            if (!"EMPLOYEES".equals(q.scope()))
+                syncOrders(tenant, c, run, q, token, count, manual);
         } catch (RuntimeException e) {
             error = safeError(e);
         } finally {
@@ -433,7 +440,30 @@ public class HuolalaService {
     }
 
     private void syncOrders(
-            UUID tenant, Connection c, UUID run, SyncCommand q, OAuthToken token, long[] count) {
+            UUID tenant, Connection c, UUID run, SyncCommand q, OAuthToken token, long[] count,
+            boolean manual) {
+        if (!manual || q.orderNo() != null || !q.to().isAfter(q.from().plusDays(30))) {
+            syncOrderWindow(tenant, c, run, q, token, count, q.from());
+            return;
+        }
+        for (LocalDate start = q.from(); !start.isAfter(q.to()); ) {
+            var monthEnd = YearMonth.from(start).atEndOfMonth();
+            var end = monthEnd.isBefore(q.to()) ? monthEnd : q.to();
+            try {
+                syncOrderWindow(
+                        tenant, c, run, new SyncCommand(q.scope(), start, end, null), token, count,
+                        q.from());
+            } catch (RuntimeException e) {
+                throw new IllegalStateException(
+                        "用车日期 " + start + " 至 " + end + " 同步未完成，" + safeError(e), e);
+            }
+            start = end.plusDays(1);
+        }
+    }
+
+    private void syncOrderWindow(
+            UUID tenant, Connection c, UUID run, SyncCommand q, OAuthToken token, long[] count,
+            LocalDate requestedFrom) {
         var staff = store.employees(tenant);
         Map<String, Long> mappingRevisions = new HashMap<>();
         Map<String, String> names = new HashMap<>(),
@@ -458,7 +488,7 @@ public class HuolalaService {
             parameters.put("page_size", 20);
             // 企业列表的业务状态 2 才是最终已完成；司机完成(10)不等于已完成。
             parameters.put("order_status", 2);
-            if (q.orderNo() != null && !q.orderNo().isBlank())
+            if (q.orderNo() != null)
                 parameters.put("order_display_id", Long.parseLong(q.orderNo()));
             else {
                 parameters.put(
@@ -609,11 +639,11 @@ public class HuolalaService {
             }
             store.stages(tenant, run, new StageCounts(count[4], count[5], count[6], count[7]));
             store.progress(
-                    tenant, run, count[0], count[1], count[2], count[3], q.from(), q.to(), page);
+                    tenant, run, count[0], count[1], count[2], count[3], requestedFrom, q.to(), page);
             if (orders.size() < 20 || page * 20L >= data.path("total").asLong(Long.MAX_VALUE))
                 return;
         }
-        throw new IllegalStateException("订单超过单次10000条上限，请缩小时间范围后补同步");
+        throw new IllegalStateException("当前日期段订单超过10000条，请缩小这段日期后补同步");
     }
 
     private com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder withMappingRevision(
@@ -671,6 +701,9 @@ public class HuolalaService {
         for (var tenant : store.due(Instant.now()))
             try {
                 var c = required(tenant);
+                // 共享库可能有多台 Integration。无法执行此连接的实例不得领取租约，
+                // 否则失败收尾会推进下次同步时间，挤占有正确凭据的实例的执行机会。
+                if (!c.credentialsReady() || !"AUTHORIZED".equals(c.authStatus())) continue;
                 boolean daily = store.historyDue(tenant, today());
                 var from =
                         max(

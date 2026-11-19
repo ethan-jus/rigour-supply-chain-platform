@@ -369,6 +369,29 @@ class CostSourceNormalizerTest {
     }
 
     @Test
+    void pendingDhbFreightWithoutPayerCanBeCompletedButNeverCountsAsExpense() {
+        var row = row();
+        row.put("source_system", "DHB");
+        row.put("status_code", "DRAFT");
+        row.put("data_json", "{\"_transportMissing\":\"AMOUNT,ORDER\"}");
+        row.remove("amount");
+        row.remove("payer_code");
+
+        var pending = normalizer.normalize("ORDER", row, cities, Map.of());
+        assertThat(pending.status()).isEqualTo("DRAFT");
+        assertThat(pending.amount()).isNull();
+        assertThat(pending.dimension("transportMissing").key()).isEqualTo("AMOUNT,ORDER");
+
+        row.put("payer_code", "CUSTOMER");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+
+        row.remove("payer_code");
+        row.put("status_code", "CONFIRMED");
+        row.put("amount", "35.00");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+    }
+
+    @Test
     void sourceLinksNeverMultiplyCostRowsOrExposeOtherDocumentNumbers() {
         var row = row();
         row.put("category_code", "PURCHASE");

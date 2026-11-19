@@ -26,7 +26,8 @@ public record LogisticsCostLedger(
         String vehicleNo,
         String platformOrderNo,
         List<ManualBillItem> manualBillItems,
-        java.time.LocalDateTime shippingTime) {
+        java.time.LocalDateTime shippingTime,
+        String receivingMethodCode) {
 
     public LogisticsCostLedger(
             int schemaVersion,
@@ -72,10 +73,20 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 platformOrderNo,
                 manualBillItems,
+                null,
                 null);
     }
 
-    public LogisticsCostLedger withShippingTime(java.time.LocalDateTime value) {
+    public LogisticsCostLedger withCarrierClassification(String carrier, String mode) {
+        return new LogisticsCostLedger(schemaVersion, transportPurposeCode, mode, carrier, costMonth,
+                trackingNo, transportMethodCode, sender, receivingPoints, feeItems, sources,
+                nonSalesPurposeCode, noTrackingReason, noSourceReason, scopeWarehouseIds,
+                scopeCityCodes, sourceSync, driverName, vehicleNo, platformOrderNo, manualBillItems,
+                shippingTime, receivingMethodCode);
+    }
+
+    public LogisticsCostLedger withDeliveryDetails(
+            java.time.LocalDateTime time, String receivingMethod) {
         return new LogisticsCostLedger(
                 schemaVersion,
                 transportPurposeCode,
@@ -98,7 +109,8 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 platformOrderNo,
                 manualBillItems,
-                value);
+                time,
+                receivingMethod);
     }
 
     public LogisticsCostLedger(
@@ -447,7 +459,8 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 platformOrderNo,
                 manualBillItems,
-                shippingTime);
+                shippingTime,
+                receivingMethodCode);
     }
 
     public LogisticsCostLedger withFeeItems(List<Fee> value) {
@@ -473,7 +486,8 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 platformOrderNo,
                 manualBillItems,
-                shippingTime);
+                shippingTime,
+                receivingMethodCode);
     }
 
     public LogisticsCostLedger withSources(List<Source> value) {
@@ -499,7 +513,8 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 platformOrderNo,
                 manualBillItems,
-                shippingTime);
+                shippingTime,
+                receivingMethodCode);
     }
 
     public LogisticsCostLedger withTransportType(String value) {
@@ -525,7 +540,8 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 platformOrderNo,
                 manualBillItems,
-                shippingTime);
+                shippingTime,
+                receivingMethodCode);
     }
 
     public LogisticsCostLedger resolved(Party from, List<Party> points, List<Long> warehouses) {
@@ -551,7 +567,8 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 platformOrderNo,
                 manualBillItems,
-                shippingTime);
+                shippingTime,
+                receivingMethodCode);
     }
 
     public LogisticsCostLedger withScopeCities(List<String> cities) {
@@ -577,7 +594,8 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 platformOrderNo,
                 manualBillItems,
-                shippingTime);
+                shippingTime,
+                receivingMethodCode);
     }
 
     public LogisticsCostLedger withPlatformOrderNo(String value) {
@@ -603,7 +621,8 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 value,
                 manualBillItems,
-                shippingTime);
+                shippingTime,
+                receivingMethodCode);
     }
 
     public LogisticsCostLedger withManualBillItems(List<ManualBillItem> value) {
@@ -629,6 +648,7 @@ public record LogisticsCostLedger(
                 vehicleNo,
                 platformOrderNo,
                 value,
-                shippingTime);
+                shippingTime,
+                receivingMethodCode);
     }
 }

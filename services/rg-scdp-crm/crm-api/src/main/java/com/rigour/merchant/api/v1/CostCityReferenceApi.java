@@ -13,4 +13,9 @@ public interface CostCityReferenceApi {
     @GetMapping(BASE_PATH)
     ApiResponse<List<CostCityView>> cities(
             @org.springframework.web.bind.annotation.RequestParam(required = false) String action);
+
+    @org.springframework.web.bind.annotation.PostMapping(BASE_PATH + "/checks")
+    ApiResponse<List<com.rigour.merchant.api.v1.model.CostCityCheckView>> checks(
+            @org.springframework.web.bind.annotation.RequestParam String action,
+            @org.springframework.web.bind.annotation.RequestBody List<String> codes);
 }

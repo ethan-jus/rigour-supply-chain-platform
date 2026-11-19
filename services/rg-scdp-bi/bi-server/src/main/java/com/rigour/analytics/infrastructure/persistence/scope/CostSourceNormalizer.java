@@ -108,7 +108,14 @@ public final class CostSourceNormalizer {
         if (!Set.of("DRAFT", "CONFIRMED", "VOID").contains(r.get("status_code"))
                 && !("ORDER".equals(source) && "ACTIVE".equals(r.get("status_code"))))
             throw new IllegalStateException("成本源状态无效");
-        if ("ORDER".equals(source) && !"COMPANY".equals(r.get("payer_code"))) return null;
+        if ("ORDER".equals(source) && !"COMPANY".equals(r.get("payer_code"))) {
+            // 订货宝在运费补齐前没有承担方。保留缺项，已完善金额仍只统计公司承担的记录。
+            boolean pendingShipment =
+                    "DHB".equals(r.get("source_system"))
+                            && "DRAFT".equals(r.get("status_code"))
+                            && blank(r.get("payer_code")) == null;
+            if (!pendingShipment) return null;
+        }
         String category =
                 switch (source) {
                     case "HR" -> "PAYROLL".equals(r.get("category_code")) ? "labor" : "expense";
@@ -203,6 +210,9 @@ public final class CostSourceNormalizer {
             mapping = "DEPARTMENT";
         }
         Map<String, Dimension> dims = new LinkedHashMap<>();
+        String transportMissing = text(data, "_transportMissing");
+        if ("ORDER".equals(source) && transportMissing != null)
+            dims.put("transportMissing", new Dimension(transportMissing, transportMissing, false));
         if (text(data, "_ledgerRootId") != null) {
             dims.put(
                     "rootSourceId",
@@ -322,11 +332,20 @@ public final class CostSourceNormalizer {
                         "NON_SALES".equals(modernPurpose)
                                 ? "OTHER"
                                 : first(modernPurpose, oldPurpose)));
+        String legacyMethod = text(data, "logistics", "transportMethodCode");
+        String recordedDeliveryMode = text(data, "ledger", "deliveryModeCode");
+        String deliveryMode = first(
+                recordedDeliveryMode,
+                switch (Objects.toString(legacyMethod, "")) {
+                    case "OWN_VEHICLE" -> "SELF";
+                    case "THIRD_PARTY" -> "THIRD_PARTY";
+                    default -> null;
+                });
         String carrier = text(data, "ledger", "carrierCode");
         dims.put(
                 "carrier",
                 carrier == null
-                        ? "SELF".equals(text(data, "ledger", "deliveryModeCode"))
+                        ? "SELF".equals(deliveryMode)
                                 ? dictionaryDimension("COST_DELIVERY_MODE", "SELF")
                                 : dimension(null, text(data, "logistics", "carrierName"), "carrier")
                         : dictionaryDimension("COST_CARRIER", carrier));
@@ -357,8 +376,7 @@ public final class CostSourceNormalizer {
                         "route"));
         dims.put(
                 "deliveryMode",
-                dictionaryDimension(
-                        "COST_DELIVERY_MODE", text(data, "ledger", "deliveryModeCode")));
+                dictionaryDimension("COST_DELIVERY_MODE", deliveryMode));
         dims.put(
                 "feeType",
                 dictionaryDimension(
@@ -382,11 +400,9 @@ public final class CostSourceNormalizer {
                 "destination",
                 dimension(null, text(data, "expense", "destination"), "destination"));
         String method = text(data, "ledger", "transportMethodCode");
-        dims.put(
-                "method",
-                dictionaryDimension(
-                        method == null ? "COST_TRANSPORT_METHOD" : "COST_TRANSPORT_KIND",
-                        first(method, text(data, "logistics", "transportMethodCode"))));
+        if (method == null && !"OWN_VEHICLE".equals(legacyMethod)
+                && !"THIRD_PARTY".equals(legacyMethod)) method = legacyMethod;
+        dims.put("method", dictionaryDimension("COST_TRANSPORT_KIND", method));
         dims.put(
                 "premises",
                 dimension(

@@ -19,6 +19,16 @@ public interface OrderLogisticsReferences {
 
     java.util.Map<String, String> cities(String action);
 
+    record CityCheck(String code, boolean configured, boolean allowed, String issue) {
+        public CityCheck(String code, boolean configured, boolean allowed) {
+            this(code, configured, allowed, null);
+        }
+    }
+
+    default List<CityCheck> cityChecks(List<String> codes, String action) {
+        throw new UnsupportedOperationException("经营城市配置核验尚未接入");
+    }
+
     default List<com.rigour.order.api.v1.model.LogisticsLedgerPartyView> ledgerCustomers(
             String city, List<String> codes, String action) {
         return codes.stream()
@@ -47,14 +57,14 @@ public interface OrderLogisticsReferences {
 
     List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employees(String action);
 
-    /** 按稳定编码核验最小员工身份，供自动同步补齐缺失部门，不读取人事个人资料。 */
-    default List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employeeDepartments(
-            Set<String> codes, String action) {
-        return employees(action).stream().filter(e -> codes.contains(e.employeeCode())).toList();
-    }
+    record DepartmentAt(String employeeCode, java.time.LocalDate businessDate) {}
 
-    default List<com.rigour.order.api.v1.model.LogisticsCostEmployeeView> employeeDepartments(
-            com.rigour.shared.context.CallerIdentity caller, Set<String> codes, String action) {
+    /** 按原单业务日期核验部门；员工当前是否在职不决定历史成本归属。 */
+    default java.util.Map<DepartmentAt, com.rigour.order.api.v1.model.LogisticsCostEmployeeView>
+            employeeDepartmentsAt(
+                    com.rigour.shared.context.CallerIdentity caller,
+                    Set<DepartmentAt> queries,
+                    String action) {
         throw new UnsupportedOperationException("员工部门最小身份核验尚未配置");
     }
 

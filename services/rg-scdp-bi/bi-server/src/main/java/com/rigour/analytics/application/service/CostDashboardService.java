@@ -13,6 +13,7 @@ import com.rigour.analytics.api.v1.model.CostDashboardMonth;
 import com.rigour.analytics.api.v1.model.CostDashboardPayrollComponent;
 import com.rigour.analytics.api.v1.model.CostDashboardPeriod;
 import com.rigour.analytics.api.v1.model.CostDashboardPoint;
+import com.rigour.analytics.api.v1.model.CostDashboardPendingTransports;
 import com.rigour.analytics.api.v1.model.CostDashboardQuery;
 import com.rigour.analytics.api.v1.model.CostDashboardRecordSummary;
 import com.rigour.analytics.api.v1.model.CostDashboardRecordView;
@@ -67,6 +68,7 @@ public class CostDashboardService {
             Filter filter,
             CostPeriod period,
             List<CostFact> rows,
+            List<CostFact> pendingTransports,
             CostDashboardMeta meta) {}
 
     public List<com.rigour.analytics.api.v1.model.CostDepartmentSummary> departments(
@@ -247,21 +249,7 @@ public class CostDashboardService {
                         .toList();
         String dataState =
                 "FAILED".equals(state.status()) || state.succeededAt() == null ? "STALE" : "READY";
-        // 待完善记录只提示数量，绝不混入金额、图表、对比或成本明细。
-        var currentPending = latest.records().stream().filter(a::visible)
-                .filter(r -> "DRAFT".equals(r.status()))
-                .map(CostFact::key).collect(java.util.stream.Collectors.toSet());
-        var pendingCounts = new java.util.LinkedHashMap<String, Long>();
-        snapshot.records().stream().filter(a::visible)
-                .filter(r -> "DRAFT".equals(r.status()) && currentPending.contains(r.key()))
-                .filter(r -> r.inPeriod(p, false))
-                .filter(r -> f.city() == null || f.city().equals(r.city()))
-                .filter(r -> f.department() == null || f.department().equals(r.dashboardDepartment())
-                        || r.dashboardDepartmentPath().contains(f.department()))
-                .collect(java.util.stream.Collectors.groupingBy(CostFact::category,
-                        java.util.stream.Collectors.mapping(CostFact::documentKey,
-                                java.util.stream.Collectors.toSet())))
-                .forEach((category, documents) -> pendingCounts.put(category, (long) documents.size()));
+        List<CostFact> pending = pendingTransports(snapshot, latest, a, f, p);
         CostDashboardMeta meta =
                 new CostDashboardMeta(
                         "cost-v11",
@@ -277,8 +265,79 @@ public class CostDashboardService {
                         dataState,
                         a.exportAllowed(),
                         CATEGORIES.keySet().stream().filter(a.categories()::contains).toList(),
-                        java.util.Map.copyOf(pendingCounts));
-        return new Context(snapshot, a, f, p, rows, meta);
+                        pending.isEmpty() ? Map.of() : Map.of("freight", (long) pending.size()));
+        return new Context(snapshot, a, f, p, rows, pending, meta);
+    }
+
+    private static boolean pendingTransport(CostFact fact) {
+        return "ORDER".equals(fact.source())
+                && "freight".equals(fact.category())
+                && "DRAFT".equals(fact.status());
+    }
+
+    private static List<CostFact> pendingTransports(
+            CostDashboardStore.Snapshot snapshot,
+            CostDashboardStore.Snapshot latest,
+            CostDashboardAccess.Access access,
+            Filter filter,
+            CostPeriod period) {
+        if (!"opex".equals(filter.scope())
+                || filter.category() != null && !"freight".equals(filter.category()))
+            return List.of();
+        var visible = new HashSet<String>();
+        for (var fact : latest.records())
+            if (pendingTransport(fact) && access.visible(fact)) visible.add(fact.key());
+        var documents = new LinkedHashMap<String, CostFact>();
+        for (var fact : snapshot.records()) {
+            if (pendingTransport(fact)
+                    && visible.contains(fact.key())
+                    && access.visible(fact)
+                    && fact.inPeriod(period, false)
+                    && (filter.city() == null || filter.city().equals(fact.city()))
+                    && (filter.department() == null
+                            || filter.department().equals(fact.dashboardDepartment())
+                            || fact.dashboardDepartmentPath().contains(filter.department()))
+                    && (filter.dimensionKey() == null
+                            || filter.dimensionKey()
+                                    .equals(fact.dimension(filter.dimension()).key()))) {
+                documents.putIfAbsent(fact.documentKey(), fact);
+            }
+        }
+        return sorted(List.copyOf(documents.values()));
+    }
+
+    public CostDashboardPendingTransports pendingTransports(
+            CostDashboardQuery query, String reason) {
+        var context = context(query);
+        var filter = context.filter();
+        var scopeRows = context.pendingTransports();
+        var rows =
+                reason == null || reason.isBlank()
+                        ? scopeRows
+                        : scopeRows.stream()
+                                .filter(row -> transportMissingReasons(row).contains(reason))
+                                .toList();
+        int offset = (int) Math.min(rows.size(), (long) (filter.page() - 1) * filter.size());
+        var items =
+                rows.subList(offset, Math.min(rows.size(), offset + filter.size())).stream()
+                        .map(
+                                row ->
+                                        new CostDashboardPendingTransports.Item(
+                                                row.rootSourceId(),
+                                                row.documentNo(),
+                                                row.cityName(),
+                                                row.sourceSystem(),
+                                                row.date(),
+                                                row.monthly() ? row.costMonth().toString() : null,
+                                                transportMissingReasons(row)))
+                        .toList();
+        return new CostDashboardPendingTransports(
+                rows.size(), scopeRows.size(), filter.page(), filter.size(), items);
+    }
+
+    private static List<String> transportMissingReasons(CostFact row) {
+        var reasons = row.dimension("transportMissing");
+        return reasons.missing() ? List.of() : List.of(reasons.key().split(","));
     }
 
     public CostDashboardReport overview(CostDashboardQuery query) {

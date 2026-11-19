@@ -24,6 +24,10 @@ public final class HrCostCityReferenceService {
                     "erp:cost:rental:read", "erp:cost:rental:write",
                     "hr:expense:read", "hr:expense:write",
                     "hr:payroll-rule:read", "hr:payroll-rule:write");
+    private static final Set<String> WAREHOUSE_ACTIONS =
+            Set.of(
+                    "erp:warehouse:read", "erp:warehouse:create", "erp:warehouse:update",
+                    "erp:product:read", "erp:product:write");
     private final HrOrganizationStore store;
     private final SupplyAuthorizationClient authorization;
 
@@ -36,7 +40,7 @@ public final class HrCostCityReferenceService {
     public List<HrCostCityReference> cities(String action) {
         var caller = AuthorizationContext.requireCurrent();
         String read = action == null ? "" : action.replaceFirst(":(confirm|void|export)$", ":read");
-        if (caller.tenantId() == null || !ACTIONS.contains(read))
+        if (caller.tenantId() == null || (!ACTIONS.contains(read) && !WAREHOUSE_ACTIONS.contains(read)))
             throw new AuthorizationDeniedException("cost-city-reference");
         AuthorizationContext.requirePermission(action);
         if ("TENANT".equals(caller.principalScope())) {
@@ -45,13 +49,16 @@ public final class HrCostCityReferenceService {
                     action.startsWith("hr:") || action.startsWith("erp:cost:marketing:")
                             ? "EMPLOYEE"
                             : "INVENTORY";
-            if (policy == null
-                    || !"ACTIVE".equals(policy.mode())
-                    || !policy.functionAllowed()
-                    || !ManualCostScope.access(policy, object).allowed())
-                throw new AuthorizationDeniedException(action);
-            var scope = ManualCostScope.access(policy, object);
-            if (scope.cities() != null && scope.cities().isEmpty()) return List.of();
+            if (action.startsWith("erp:product:")) {
+                if (policy == null || "ACTIVE".equals(policy.mode()))
+                    throw new AuthorizationDeniedException(action);
+            } else {
+                if (policy == null || !"ACTIVE".equals(policy.mode()) || !policy.functionAllowed())
+                    throw new AuthorizationDeniedException(action);
+                var scope = ManualCostScope.access(policy, object);
+                if (!scope.allowed()) throw new AuthorizationDeniedException(action);
+                if (scope.cities() != null && scope.cities().isEmpty()) return List.of();
+            }
         }
         var rows = store.departments(caller.tenantId().toString());
         Map<Long, HrDepartmentView> index = new HashMap<>();

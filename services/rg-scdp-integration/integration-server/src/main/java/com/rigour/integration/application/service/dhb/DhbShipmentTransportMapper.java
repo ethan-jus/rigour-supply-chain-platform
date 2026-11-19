@@ -8,6 +8,9 @@ import java.util.*;
 
 /** 发货详情保持原文；只提取明确字段，不把商品金额推断为运费。 */
 final class DhbShipmentTransportMapper {
+    private static final Set<String> SELF_CARRIER_NAMES =
+            Set.of("自营", "自营配送", "自配", "自配送", "自有车辆");
+
     private DhbShipmentTransportMapper() {}
 
     record ShippingContext(
@@ -81,11 +84,18 @@ final class DhbShipmentTransportMapper {
                 carrier,
                 carrierName,
                 mode,
-                first(detail, "distribution_mode_name"),
+                rawValue(payload, "distribution_mode_name", "distribution_mode_name"),
                 List.copyOf(tracking),
                 receiver,
                 raw,
                 goods);
+    }
+
+    static String doorDeliveryMode(String carrierName, String verifiedCarrierCode) {
+        boolean self = carrierName != null && SELF_CARRIER_NAMES.contains(carrierName);
+        if (self && verifiedCarrierCode != null && !"SELF".equals(verifiedCarrierCode)) return null;
+        if (self || "SELF".equals(verifiedCarrierCode)) return "SELF";
+        return verifiedCarrierCode == null ? null : "THIRD_PARTY";
     }
 
     static String rawValue(Map<String, Object> payload, String code, String name) {

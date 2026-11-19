@@ -50,11 +50,50 @@ public class SalesLogisticsService {
     }
 
     public Context context(Long id) {
+        return context(id, false);
+    }
+
+    public Context context(Long id, boolean forSelection) {
         AuthorizationContext.requirePermission("order:logistics-cost:read");
         var order = orders.salesOrderForLogistics(id);
         var source = source(order.orderNo(), "order:logistics-cost:read", true);
-        var rawRows = costs.linkedSales(tenant(), order.orderNo(), "order:logistics-cost:read").stream()
-                .filter(r -> "ACTIVE".equals(r.statusCode())).toList();
+        var rawRows =
+                costs.linkedSales(tenant(), order.orderNo(), "order:logistics-cost:read").stream()
+                        .filter(r -> "ACTIVE".equals(r.statusCode()))
+                        .toList();
+        var shipping =
+                shipments == null
+                        ? Map.<String, List<ShipmentTransportModels.Source>>of()
+                        : shipments.byCosts(
+                                tenant(),
+                                rawRows.stream().map(LogisticsCostDetailView::id).toList());
+        if (forSelection) {
+            var shipmentRows =
+                    rawRows.stream()
+                            .filter(row -> !shipping.getOrDefault(row.id(), List.of()).isEmpty())
+                            .toList();
+            var platforms =
+                    shipmentRows.isEmpty()
+                            ? Map.<String, PlatformRecord>of()
+                            : platform.byCosts(
+                                    tenant(),
+                                    shipmentRows.stream()
+                                            .map(LogisticsCostDetailView::id)
+                                            .toList());
+            return new Context(
+                    source,
+                    shipmentRows.stream()
+                            .map(
+                                    row ->
+                                            new Detail(
+                                                    row,
+                                                    platforms.get(row.id()),
+                                                    shipping.get(row.id())))
+                            .toList(),
+                    null,
+                    null,
+                    valid(order));
+        }
         var states =
                 costs.businessStatuses(
                         tenant(),
@@ -73,11 +112,6 @@ public class SalesLogisticsService {
                         .toList();
         var platforms =
                 platform.byCosts(tenant(), rows.stream().map(LogisticsCostDetailView::id).toList());
-        var shipping =
-                shipments == null
-                        ? Map.<String, List<ShipmentTransportModels.Source>>of()
-                        : shipments.byCosts(
-                                tenant(), rows.stream().map(LogisticsCostDetailView::id).toList());
         BigDecimal allocated = BigDecimal.ZERO, confirmed = BigDecimal.ZERO;
         boolean unknown = false;
         for (var row : rows) {
@@ -198,7 +232,7 @@ public class SalesLogisticsService {
                 .orElseThrow(() -> bad("销售订单不存在、状态无效或无权访问"));
     }
 
-    private static boolean valid(SalesOrderDetailView row) {
+    private static boolean valid(OrderSalesOrderStore.LogisticsOrder row) {
         return row != null
                 && row.orderStatusCode() != null
                 && !Set.of("DRAFT", "CANCELLED").contains(row.orderStatusCode());

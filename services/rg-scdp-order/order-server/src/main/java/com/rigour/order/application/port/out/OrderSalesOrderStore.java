@@ -18,6 +18,10 @@ public interface OrderSalesOrderStore {
 
     Optional<SalesOrderDetailView> salesOrder(String tenantId, Long id);
 
+    Optional<LogisticsOrder> logisticsOrder(String tenantId, Long id);
+
+    record LogisticsOrder(String orderNo, String orderStatusCode) {}
+
     boolean existsByNo(String tenantId, String orderNo);
 
     SalesOrderDetailView create(String tenantId, String orderNo, SalesOrderWrite command, String actorId);

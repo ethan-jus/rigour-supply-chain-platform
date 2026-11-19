@@ -14,5 +14,7 @@ public interface ShipmentTransportStore {
             LogisticsCostSourceView order,
             Long warehouseId);
 
+    int backfillCarrier(String tenant, String actor, CarrierBackfill command);
+
     Map<String, List<Source>> byCosts(String tenant, List<String> costIds);
 }

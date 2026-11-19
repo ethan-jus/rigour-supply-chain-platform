@@ -119,11 +119,16 @@ class ShipmentTransportPersistenceTest {
     @Test
     void repeatAndChangedSourceNeverCreateAnotherCostAndFreightRemainsUnknown() {
         var one = sync("receivedin", 1);
+        String documentNumber =
+                db.queryForObject("SELECT document_no FROM order_logistics_cost", String.class);
+        assertThat(documentNumber).matches("CST[0-9]{23}");
         var two = sync("receivedin", 1);
         var three = sync("received", 2);
         assertThat(one.costId()).isEqualTo(two.costId()).isEqualTo(three.costId());
         assertThat(db.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class))
                 .isEqualTo(1);
+        assertThat(db.queryForObject("SELECT document_no FROM order_logistics_cost", String.class))
+                .isEqualTo(documentNumber);
         assertThat(
                         db.queryForObject(
                                 "SELECT amount FROM order_logistics_cost",

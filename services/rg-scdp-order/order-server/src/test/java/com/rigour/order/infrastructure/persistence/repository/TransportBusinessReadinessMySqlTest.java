@@ -34,16 +34,31 @@ class TransportBusinessReadinessMySqlTest {
           UNION ALL SELECT 'OTHER','manual-no-proof',0
           UNION ALL SELECT 'T','void',0)
         SELECT id,CASE WHEN status_code='VOID' THEN 'VOID' WHEN %s THEN 'COMPLETE' ELSE 'INCOMPLETE' END readiness
+          ,CASE WHEN status_code='VOID' THEN NULL ELSE %s END missing
         FROM order_logistics_cost
         """
-                .formatted(MybatisPlusOrderLogisticsCostRepository.completeBusinessSql());
+                .formatted(
+                        MybatisPlusOrderLogisticsCostRepository.completeBusinessSql(),
+                        MybatisPlusOrderLogisticsCostRepository.missingBusinessSql());
     }
 
     static void assertStates(java.sql.Connection c) throws Exception {
         var result = new HashMap<String, String>();
         try (var s = c.createStatement();
                 var r = s.executeQuery(fixture())) {
-            while (r.next()) result.put(r.getString(1), r.getString(2));
+            while (r.next()) {
+                result.put(r.getString("id"), r.getString("readiness"));
+                String expected =
+                        switch (r.getString("id")) {
+                            case "hll-unlinked" -> "ORDER";
+                            case "missing-dept" -> "DEPARTMENT";
+                            case "manual-no-proof" -> "EVIDENCE";
+                            case "missing-fee" -> "AMOUNT";
+                            case "void" -> null;
+                            default -> "";
+                        };
+                assertThat(r.getString("missing")).as(r.getString("id")).isEqualTo(expected);
+            }
         }
         assertThat(result)
                 .containsExactlyInAnyOrderEntriesOf(

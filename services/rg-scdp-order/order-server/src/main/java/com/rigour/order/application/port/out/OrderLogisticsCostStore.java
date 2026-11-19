@@ -25,7 +25,9 @@ public interface OrderLogisticsCostStore {
             String tenant,
             String id,
             int revision,
-            java.util.Map<String, com.rigour.order.api.v1.model.LogisticsCostEmployeeView>
+            java.util.Map<
+                            OrderLogisticsReferences.DepartmentAt,
+                            com.rigour.order.api.v1.model.LogisticsCostEmployeeView>
                     employees) {
         return false;
     }

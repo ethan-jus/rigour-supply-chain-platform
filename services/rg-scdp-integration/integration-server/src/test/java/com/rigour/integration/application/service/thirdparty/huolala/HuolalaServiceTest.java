@@ -216,17 +216,88 @@ class HuolalaServiceTest {
     }
 
     @Test
-    void largeManualWindowsAreValidatedBeforeExternalRequest() {
-        assertThatThrownBy(
-                        () ->
-                                service.sync(
-                                        new SyncCommand(
-                                                "ORDERS",
-                                                LocalDate.now().minusDays(94),
-                                                LocalDate.now(),
-                                                null)))
-                .hasMessageContaining("93天");
+    void manualSyncCoversNineMonthsInOneRunWithoutGapsOrOverlaps() {
+        stubEmptyOrderList();
+        LocalDate from = LocalDate.now(ZoneId.of("Asia/Shanghai")).minusYears(1).withDayOfYear(1);
+        LocalDate to = from.plusMonths(9);
+
+        service.sync(new SyncCommand("ORDERS", from, to, null));
+
+        List<Map<String, Object>> requests = orderListRequests(10);
+        long nextStart = orderDayStart(from);
+        for (int i = 0; i < requests.size(); i++) {
+            var request = requests.get(i);
+            assertThat(request).containsEntry("order_start_datetime", nextStart)
+                    .containsEntry("order_status", 2)
+                    .containsEntry("page_no", 1);
+            long nextBoundary = orderDayStart(i == 9 ? to.plusDays(1) : from.plusMonths(i + 1));
+            assertThat(request).containsEntry("order_end_datetime", nextBoundary - 1);
+            nextStart = nextBoundary;
+        }
+        verify(store).startRun(eq(tenant), eq(actor), eq("ORDERS"), eq("MANUAL"), any());
+        verify(store).progress(tenant, run, 0, 0, 0, 0, from, to, 1);
+        verify(store).finishRun(eq(tenant), eq(run), eq(0L), eq(0L), eq(0L), eq(0L), isNull(), any());
+    }
+
+    @Test
+    void invalidDatesAndOrderNumbersReportSpecificErrorsBeforeSubmission() {
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        assertThatThrownBy(() -> service.sync(new SyncCommand("ORDERS", today, today.minusDays(1), null)))
+                .hasMessage("结束日期不能早于开始日期");
+        assertThatThrownBy(() -> service.sync(new SyncCommand("ORDERS", today, today.plusDays(1), null)))
+                .hasMessage("结束日期不能晚于今天");
+        assertThatThrownBy(() -> service.sync(new SyncCommand("ORDERS", today.minusYears(3).minusDays(1), today, null)))
+                .hasMessage("开始日期须在近三年内");
+        assertThatThrownBy(() -> service.sync(new SyncCommand("ORDERS", null, null, "9999999999999999999")))
+                .hasMessage("请输入完整的货拉拉数字订单号");
+        verify(store, never()).startRun(any(), any(), any(), any(), any());
         verify(gateway, never()).read(any(), any(), any(), any());
+    }
+
+    @Test
+    void orderNumberSyncDoesNotApplyDateFiltersOrDateValidation() {
+        stubEmptyOrderList();
+        LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        service.sync(new SyncCommand("ORDERS", today, today.minusDays(1), " 3624071813921329726 "));
+
+        assertThat(orderListRequests(1).getFirst())
+                .containsEntry("order_display_id", 3624071813921329726L)
+                .doesNotContainKeys("order_start_datetime", "order_end_datetime");
+    }
+
+    @Test
+    void failedMonthIsReportedAndStopsRemainingMonthsInTheSameRun() {
+        stubEmptyOrderList();
+        LocalDate from = LocalDate.now(ZoneId.of("Asia/Shanghai")).minusYears(1).withDayOfYear(1);
+        when(gateway.read(any(), any(), eq("e-order-list"),
+                argThat(p -> Objects.equals(p.get("order_start_datetime"), orderDayStart(from.plusMonths(1))))))
+                .thenThrow(new IllegalStateException("平台暂不可用"));
+
+        service.sync(new SyncCommand("ORDERS", from, from.plusMonths(3), null));
+
+        orderListRequests(2);
+        verify(store).progress(tenant, run, 0, 0, 0, 0, from, from.plusMonths(1).minusDays(1), 1);
+        verify(store).finishRun(eq(tenant), eq(run), eq(0L), eq(0L), eq(0L), eq(0L),
+                eq("用车日期 " + from.plusMonths(1) + " 至 " + from.plusMonths(2).minusDays(1)
+                        + " 同步未完成，平台暂不可用"), any());
+    }
+
+    private static long orderDayStart(LocalDate date) {
+        return date.atStartOfDay(ZoneId.of("Asia/Shanghai")).toEpochSecond();
+    }
+
+    private List<Map<String, Object>> orderListRequests(int times) {
+        org.mockito.ArgumentCaptor<Map<String, Object>> requests = org.mockito.ArgumentCaptor.captor();
+        verify(gateway, times(times)).read(any(), any(), eq("e-order-list"), requests.capture());
+        return requests.getAllValues();
+    }
+
+    private void stubEmptyOrderList() {
+        when(tokens.valid(any(), any(), any()))
+                .thenReturn(new OAuthToken("access", "refresh", Instant.now().plusSeconds(3600)));
+        var list = json.createObjectNode().put("total", 0);
+        list.putArray("order_arr");
+        when(gateway.read(any(), any(), eq("e-order-list"), any())).thenReturn(list);
     }
 
     @Test
@@ -353,7 +424,21 @@ class HuolalaServiceTest {
     }
 
     @Test
+    void scheduledJobWithoutAppCredentialsLeavesDueWorkForAnotherInstance() {
+        when(store.due(any())).thenReturn(List.of(tenant));
+        when(gateway.ready(any())).thenReturn(false);
+
+        service.tick();
+
+        verify(store, never()).startRun(any(), any(), any(), any(), any());
+        verify(store, never()).claim(any(), any(), any());
+        verify(store, never()).finish(any(), any(), any(), any());
+    }
+
+    @Test
     void dailyScheduledJobRechecksWholeSupportedYearInsteadOfOnlyOldestQuarter() {
+        when(gateway.ready(any())).thenReturn(true);
+        when(gateway.appKey(any())).thenReturn("app");
         when(store.due(any())).thenReturn(List.of(tenant));
         when(store.historyDue(eq(tenant), any())).thenReturn(true);
         var token = new OAuthToken("access", "refresh", Instant.now().plusSeconds(3600));

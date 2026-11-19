@@ -34,10 +34,7 @@ public class ShipmentTransportService {
 
     @Transactional
     public ShipmentTransportModels.Source sync(Command c) {
-        var caller = AuthorizationContext.requireCurrent();
-        AuthorizationContext.requirePermission("order:logistics-cost:sync-source");
-        if (!"SERVICE".equals(caller.principalScope()) || caller.tenantId() == null)
-            throw new AuthorizationDeniedException("shipment-transport-service-only");
+        var caller = sourceCaller();
         if (c == null
                 || c.connectorId() == null
                 || blank(c.shipmentId())
@@ -163,7 +160,7 @@ public class ShipmentTransportService {
                                 carrier,
                                 date.toString().substring(0, 7),
                                 null,
-                                null,
+                                transportChannel(c),
                                 sender,
                                 List.of(receiver),
                                 List.of(
@@ -204,6 +201,26 @@ public class ShipmentTransportService {
                 tenant, caller.principalId().toString(), c, command, source, c.warehouseId());
     }
 
+    @Transactional
+    public int backfillCarrier(CarrierBackfill command) {
+        var caller = sourceCaller();
+        String tenant = caller.tenantId().toString();
+        if (command == null || blank(command.sourceValue()) || command.sourceValue().length() > 255
+                || blank(command.carrierCode()) || command.carrierCode().length() > 50)
+            throw bad("物流公司回填参数无效");
+        if (!refs.validCodes(tenant, "COST_CARRIER").contains(command.carrierCode())
+                || "SELF".equals(command.carrierCode())) return 0;
+        return store.backfillCarrier(tenant, caller.principalId().toString(), command);
+    }
+
+    private static CallerIdentity sourceCaller() {
+        var caller = AuthorizationContext.requireCurrent();
+        AuthorizationContext.requirePermission("order:logistics-cost:sync-source");
+        if (!"SERVICE".equals(caller.principalScope()) || caller.tenantId() == null)
+            throw new AuthorizationDeniedException("shipment-transport-service-only");
+        return caller;
+    }
+
     private ShipmentTransportModels.Source unlinked(Command c, CallerIdentity caller) {
         var date = c.shipTime().atZone(ZoneId.of("Asia/Shanghai")).toLocalDate();
         var rawReceiver = c.receiver();
@@ -239,7 +256,7 @@ public class ShipmentTransportService {
                                 c.carrierCode(),
                                 date.toString().substring(0, 7),
                                 null,
-                                null,
+                                transportChannel(c),
                                 sender,
                                 receiver == null ? List.of() : List.of(receiver),
                                 List.of(
@@ -280,6 +297,10 @@ public class ShipmentTransportService {
                 transport,
                 null,
                 null);
+    }
+
+    private static String transportChannel(Command shipment) {
+        return "快递".equals(shipment.deliveryModeName()) ? "EXPRESS" : null;
     }
 
     private static boolean blank(String s) {

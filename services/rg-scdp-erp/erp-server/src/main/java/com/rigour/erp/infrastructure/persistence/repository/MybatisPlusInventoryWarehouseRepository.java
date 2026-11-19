@@ -90,6 +90,12 @@ public class MybatisPlusInventoryWarehouseRepository
     }
 
     @Override
+    public Optional<InternalInventoryWarehouseView> warehouseForUpdate(String tenantId, Long id) {
+        scopes.requireWarehouse(tenantId, id, "erp:warehouse:update");
+        return selectActive(tenantId, id).map(MybatisPlusInventoryWarehouseRepository::view);
+    }
+
+    @Override
     public boolean existsByCode(String tenantId, String warehouseCode) {
         return getBaseMapper()
                         .selectCount(

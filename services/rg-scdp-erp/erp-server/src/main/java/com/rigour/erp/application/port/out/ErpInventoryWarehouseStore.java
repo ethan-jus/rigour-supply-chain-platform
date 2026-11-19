@@ -12,6 +12,8 @@ public interface ErpInventoryWarehouseStore {
 
     Optional<InternalInventoryWarehouseView> warehouse(String tenantId, Long id);
 
+    Optional<InternalInventoryWarehouseView> warehouseForUpdate(String tenantId, Long id);
+
     boolean existsByCode(String tenantId, String warehouseCode);
 
     InternalInventoryWarehouseView create(String tenantId, String warehouseCode,

@@ -137,10 +137,10 @@ class TransportRecordServiceTest {
                 .thenReturn(
                         List.of(
                                 json.readValue(
-                                        "{\"documentNo\":\"SO1\",\"sourceType\":\"SALES_ORDER\",\"documentAmount\":6000}",
+                                        "{\"documentNo\":\"SO1\",\"sourceType\":\"SALES_ORDER\",\"cityCode\":\"WH\",\"documentAmount\":6000}",
                                         LogisticsCostSourceView.class),
                                 json.readValue(
-                                        "{\"documentNo\":\"SO2\",\"sourceType\":\"SALES_ORDER\",\"documentAmount\":4000}",
+                                        "{\"documentNo\":\"SO2\",\"sourceType\":\"SALES_ORDER\",\"cityCode\":\"WH\",\"documentAmount\":4000}",
                                         LogisticsCostSourceView.class)));
         var input = draft("137.64", List.of("SO2", "SO1"));
         var manual = Map.of("SO1", new BigDecimal("80"), "SO2", new BigDecimal("57.64"));
@@ -195,8 +195,10 @@ class TransportRecordServiceTest {
         var input = draft("100.01", List.of("SO1", "SO2", "SO3"));
         var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(input);
         node.put("carrierCode", carrier);
+        node.put("cityCode", "WAREHOUSE_CITY");
         node.put("trackingNo", "WAYBILL-001");
         node.put("shippingTime", "2026-11-10T10:22:33");
+        node.put("receivingMethodCode", "DOOR_DELIVERY");
         node.put("paymentStatusCode", "PAID");
         node.set(
                 "manualBillItems",
@@ -241,10 +243,12 @@ class TransportRecordServiceTest {
                         .withSources(command.ledger().sources())
                         .withSourceSync(null)
                         .withTransportType("DELIVERY");
+        assertThat(command.cityCode()).isEqualTo("WH");
         assertThat(command.paymentStatusCode()).isEqualTo("PAID");
         assertThat(command.amount()).isEqualByComparingTo("100.01");
         assertThat(ledger.manualBillItems()).hasSize(3);
         assertThat(ledger.shippingTime()).isEqualTo(LocalDateTime.of(2026, 11, 10, 10, 22, 33));
+        assertThat(ledger.receivingMethodCode()).isEqualTo("DOOR_DELIVERY");
         assertThat(ledger.trackingNo()).isEqualTo("WAYBILL-001");
         assertThat(ledger.carrierCode()).isEqualTo(carrier);
         assertThat(ledger.platformOrderNo()).isEqualTo("3624071813921329726");

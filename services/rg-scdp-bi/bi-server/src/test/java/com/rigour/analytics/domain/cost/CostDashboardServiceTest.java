@@ -406,17 +406,22 @@ class CostDashboardServiceTest {
         var normalizer = new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
                 JsonMapper.builder().build());
         var rows = new ArrayList<CostFact>();
-        for (String id : List.of("COMPLETE", "PENDING-A", "PENDING-B", "PENDING-B-SPLIT", "OLD", "VOID")) {
+        for (String id :
+                List.of("COMPLETE", "PENDING-A", "PENDING-B", "PENDING-B-SPLIT", "OLD", "VOID")) {
             var raw = new HashMap<String, String>();
             raw.put("id", id);
             raw.put("document_no", id);
             raw.put("title", "运输费用");
             raw.put("amount", "COMPLETE".equals(id) ? "55.31" : "999.00");
-            raw.put("status_code", "COMPLETE".equals(id) ? "CONFIRMED" : "VOID".equals(id) ? "VOID" : "DRAFT");
+            raw.put(
+                    "status_code",
+                    "COMPLETE".equals(id) ? "CONFIRMED" : "VOID".equals(id) ? "VOID" : "DRAFT");
             raw.put("cost_date", "OLD".equals(id) ? "2026-09-01" : "2026-10-01");
-            raw.put("payer_code", "COMPANY");
+            if ("PENDING-A".equals(id)) raw.remove("amount");
+            else raw.put("payer_code", "COMPANY");
             raw.put("revision", "1");
-            raw.put("data_json", "{}");
+            raw.put("data_json", "{\"_transportMissing\":\"AMOUNT,DEPARTMENT\"}");
+            raw.put("source_system", "DHB");
             var fact = normalizer.normalize("ORDER", raw, List.of(), Map.of());
             if (id.startsWith("PENDING-B")) {
                 var dims = new HashMap<>(fact.dimensions());
@@ -429,6 +434,30 @@ class CostDashboardServiceTest {
         var q = query(null, "freight", "current", "ALL");
         var report = service.overview(q);
         assertThat(report.meta().pendingCounts()).containsEntry("freight", 2L);
+        var pending = service.pendingTransports(q, null);
+        assertThat(pending.total())
+                .isEqualTo(report.meta().pendingCounts().get("freight").intValue());
+        assertThat(pending.items()).extracting(item -> item.id()).containsExactly("PENDING-A", "B");
+        assertThat(pending.items())
+                .allSatisfy(
+                        item -> {
+                            assertThat(item.missing()).containsExactly("AMOUNT", "DEPARTMENT");
+                            assertThat(item.sourceSystem()).isEqualTo("DHB");
+                        });
+        assertThat(
+                        service.pendingTransports(query("UNKNOWN", "freight", "current", "ALL"), null)
+                                .total())
+                .isEqualTo(2);
+        assertThat(
+                        service.pendingTransports(query(null, "office", "current", "ALL"), null)
+                                .total())
+                .isZero();
+        var missingAmount = service.pendingTransports(q, "AMOUNT");
+        assertThat(missingAmount.items()).isEqualTo(pending.items());
+        var missingEvidence = service.pendingTransports(q, "EVIDENCE");
+        assertThat(missingEvidence.total()).isZero();
+        assertThat(missingEvidence.items()).isEmpty();
+        assertThat(missingEvidence.scopeTotal()).isEqualTo(pending.total());
         assertThat(report.current().amount()).isEqualTo("55.31");
         assertThat(service.records(q).items()).hasSize(1);
         assertThat(CostDashboardExportService.csv(service.context(q), service.matching(service.context(q))))

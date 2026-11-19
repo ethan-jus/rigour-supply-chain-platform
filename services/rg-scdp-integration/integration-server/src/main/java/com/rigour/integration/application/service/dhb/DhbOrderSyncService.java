@@ -2635,6 +2635,12 @@ public final class DhbOrderSyncService {
         String mode =
                 DhbShipmentTransportMapper.rawValue(
                         payload, "distribution_mode_id", "distribution_mode_name");
+        String carrierName =
+                DhbShipmentTransportMapper.rawValue(payload, "logistics_name", "logistics_name");
+        String modeName =
+                DhbShipmentTransportMapper.rawValue(
+                        payload, "distribution_mode_name", "distribution_mode_name");
+        boolean doorDelivery = "送货上门".equals(modeName);
         var observations = new ArrayList<Observation>();
         if (carrier != null)
             observations.add(
@@ -2642,16 +2648,14 @@ public final class DhbOrderSyncService {
                             "COST_CARRIER",
                             "shipment.logistics",
                             carrier,
-                            DhbShipmentTransportMapper.rawValue(
-                                    payload, "logistics_name", "logistics_name")));
-        if (mode != null)
+                            carrierName));
+        if (mode != null && !doorDelivery)
             observations.add(
                     new Observation(
                             "COST_DELIVERY_MODE",
                             "shipment.deliveryMode",
                             mode,
-                            DhbShipmentTransportMapper.rawValue(
-                                    payload, "distribution_mode_name", "distribution_mode_name")));
+                            modeName));
         var audit =
                 observations.isEmpty()
                         ? null
@@ -2665,11 +2669,16 @@ public final class DhbOrderSyncService {
         String carrierCode = null, modeCode = null;
         if (audit != null)
             for (var value : audit.resolved()) {
-                if ("COST_CARRIER".equals(value.dictionaryCode()))
+                if ("COST_CARRIER".equals(value.dictionaryCode())
+                        && (!doorDelivery || "COST_CARRIER".equals(value.targetDictionaryCode())))
                     carrierCode = value.targetItemCode();
                 if ("COST_DELIVERY_MODE".equals(value.dictionaryCode()))
                     modeCode = value.targetItemCode();
             }
+        if (doorDelivery) {
+            modeCode = DhbShipmentTransportMapper.doorDeliveryMode(carrierName, carrierCode);
+            if ("SELF".equals(modeCode)) carrierCode = null;
+        }
         var command =
                 DhbShipmentTransportMapper.command(
                         task.connectorId(), no, summary, shipment, payload, carrierCode, modeCode);
@@ -7773,7 +7782,7 @@ public final class DhbOrderSyncService {
                 source.revision());
     }
 
-    private static CallerIdentity orderServiceCaller(UUID tenantId) {
+    static CallerIdentity orderServiceCaller(UUID tenantId) {
         return new CallerIdentity(
                 "SERVICE",
                 SERVICE_PRINCIPAL_ID,

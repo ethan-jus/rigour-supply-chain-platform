@@ -48,10 +48,7 @@ class SalesLogisticsServiceTest {
                                 "order:logistics-cost:read",
                                 "order:logistics-cost:write")));
         when(orders.salesOrderForLogistics(11L))
-                .thenReturn(
-                        json.readValue(
-                                "{\"id\":11,\"orderNo\":\"SO001\",\"orderStatusCode\":\"CONFIRMED\"}",
-                                SalesOrderDetailView.class));
+                .thenReturn(new OrderSalesOrderStore.LogisticsOrder("SO001", "CONFIRMED"));
         when(ledgers.salesSources(anyList(), anyString(), anyBoolean()))
                 .thenReturn(
                         List.of(
@@ -134,6 +131,30 @@ class SalesLogisticsServiceTest {
         assertThat(result.transports()).extracting(r -> r.record().id()).containsExactly("C1", "C2");
         assertThat(result.allocatedAmount()).isEqualByComparingTo("35.53");
         assertThat(result.confirmedAmount()).isEqualByComparingTo("15.53");
+    }
+
+    @Test
+    void selectionKeepsAutomaticShipmentRowsAndSkipsCostSummary() {
+        var shipments = mock(ShipmentTransportStore.class);
+        service.shipmentStore(shipments);
+        var complete = costForSummary("C1", "ACTIVE", "15.53");
+        var other = costForSummary("C2", "ACTIVE", "20.00");
+        var cancelled = costForSummary("C3", "VOID", "100.00");
+        when(costs.linkedSales(tenant.toString(), "SO001", "order:logistics-cost:read"))
+                .thenReturn(List.of(complete, other, cancelled));
+        var shipment = mock(ShipmentTransportModels.Source.class);
+        when(shipments.byCosts(tenant.toString(), List.of("C1", "C2")))
+                .thenReturn(Map.of("C1", List.of(shipment)));
+        when(platform.byCosts(tenant.toString(), List.of("C1"))).thenReturn(Map.of());
+
+        var context = service.context(11L, true);
+
+        assertThat(context.salesOrder().documentNo()).isEqualTo("SO001");
+        assertThat(context.transports()).extracting(r -> r.record().id()).containsExactly("C1");
+        assertThat(context.transports().getFirst().shipments()).containsExactly(shipment);
+        assertThat(context.allocatedAmount()).isNull();
+        assertThat(context.confirmedAmount()).isNull();
+        verify(costs, never()).businessStatuses(anyString(), anyList(), anyString());
     }
 
     LogisticsCostDetailView costForSummary(String id, String status, String amount) {
