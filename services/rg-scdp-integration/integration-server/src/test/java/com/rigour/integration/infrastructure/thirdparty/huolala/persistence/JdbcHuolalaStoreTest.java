@@ -61,9 +61,12 @@ public class JdbcHuolalaStoreTest {
 
     @Test
     void packagedVersionedMigrationsHaveUniqueVersions() throws Exception {
-        var resources =
-                new org.springframework.core.io.support.PathMatchingResourcePatternResolver()
-                        .getResources("classpath*:db/migration/V*__*.sql");
+        var configuration = org.flywaydb.core.Flyway.configure()
+                .dataSource(context.getBean(DriverManagerDataSource.class))
+                .locations("classpath:db/migration");
+        com.rigour.integration.infrastructure.persistence.migration.IntegrationV34MigrationResources
+                .configure(configuration);
+        var resources = configuration.getResourceProvider().getResources("V", new String[] {".sql"});
         var scripts = new LinkedHashMap<String, List<String>>();
         for (var resource : resources) {
             var filename = resource.getFilename();

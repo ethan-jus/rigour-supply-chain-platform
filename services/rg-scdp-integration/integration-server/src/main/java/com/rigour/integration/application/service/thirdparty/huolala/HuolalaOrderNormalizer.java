@@ -218,7 +218,8 @@ public final class HuolalaOrderNormalizer {
                         0L,
                         null,
                         receiptInfo,
-                        List.copyOf(photos));
+                        List.copyOf(photos),
+                        null);
         return new CarrierOrder(enterprise, no, label, useTime, paid, raw, List.of(), 0, facts);
     }
 

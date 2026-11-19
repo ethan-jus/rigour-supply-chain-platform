@@ -479,10 +479,11 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                                 .mappedEmployeeCode())
                 .isNull();
         store.employeeMapping(
-                "T1", new EmployeeMappingUpdate("connector", "AC1", "user", "EMP1", 1));
+                "T1", new EmployeeMappingUpdate("connector", "AC1", "user", "EMP1", 1, "武汉运营部"));
         var bound = store.byCost("T1", "C1").orElseThrow();
         assertThat(bound.order().facts().mappedEmployeeCode()).isEqualTo("EMP1");
         assertThat(bound.latestOrder().facts().mappedEmployeeCode()).isEqualTo("EMP1");
+        assertThat(bound.latestOrder().facts().mappedDepartmentName()).isEqualTo("武汉运营部");
         assertThat(store.rows("T1", "SYSTEM", 0))
                 .hasSize(2)
                 .allSatisfy(
@@ -495,11 +496,44 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                 "T1", new EmployeeMappingUpdate("connector", "AC1", "user", "EMP2", 2));
         var stale = store.receive("T1", "SYSTEM", api("40.50", "a"));
         assertThat(stale.latestOrder().facts().mappedEmployeeCode()).isNull();
+        assertThat(stale.latestOrder().facts().mappedDepartmentName()).isNull();
         assertThat(stale.latestOrder().facts().employeeMappingRevision()).isEqualTo(3);
         assertThat(stale.syncOutcome()).isEqualTo("UNCHANGED");
         assertThat(stale.order().facts().billAmount()).isEqualByComparingTo("40.50");
         assertThat(stale.costId()).isEqualTo("C1");
         assertThat(stale.revision()).isEqualTo(bound.revision());
+    }
+
+    @Test
+    void summaryFillsDepartmentOfExistingBindingWithoutReplacingDetailsOrChangingBill() {
+        var json = JsonMapper.builder().build();
+        var initial = (tools.jackson.databind.node.ObjectNode) json.valueToTree(api("40.50", "a").order());
+        initial.withObject("raw").put("详情状态", "DETAIL");
+        var first = store.receive("T1", "SYSTEM", new ApiSource(
+                "connector", "a".repeat(64), json.treeToValue(initial, CarrierOrder.class)));
+        store.generated("T1", first.id(), first.revision(), "C1");
+        store.employeeMapping("T1", new EmployeeMappingUpdate("connector", "AC1", "user", "EMP1", 1));
+        var before = store.byCost("T1", "C1").orElseThrow();
+        var summary = initial.deepCopy();
+        summary.withObject("raw").put("详情状态", "LIST");
+        summary.withObject("facts")
+                .put("mappedEmployeeCode", "EMP1")
+                .put("employeeMappingRevision", 1)
+                .put("mappedDepartmentName", "金华市");
+        var command = new ApiSource("connector", "b".repeat(64), json.treeToValue(summary, CarrierOrder.class));
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            var result = store.receive("T1", "SYSTEM", command);
+            assertThat(result.latestOrder().facts().mappedDepartmentName()).isEqualTo("金华市");
+            assertThat(result.latestOrder().raw()).containsEntry("详情状态", "DETAIL");
+            assertThat(result.latestOrder().facts().billAmount()).isEqualByComparingTo("40.50");
+            assertThat(result.revision()).isEqualTo(before.revision());
+            assertThat(result.costId()).isEqualTo("C1");
+            assertThat(result.syncOutcome()).isEqualTo("UNCHANGED");
+        }
+        store.employeeMapping("T1", new EmployeeMappingUpdate("connector", "AC1", "user", "EMP1", 1, "金华市"));
+        assertThat(store.byCost("T1", "C1").orElseThrow().order().facts().mappedDepartmentName())
+                .isEqualTo("金华市");
     }
 
     @Test

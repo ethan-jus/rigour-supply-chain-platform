@@ -1,5 +1,7 @@
 package com.rigour.integration.application.port.out.thirdparty.huolala;
 
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityLookup;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatch;
 import com.rigour.integration.api.v1.model.HuolalaModels.*;
 import com.rigour.order.api.v1.model.LogisticsImportModels.*;
 import com.rigour.shared.context.CallerIdentity;
@@ -10,6 +12,10 @@ public interface HuolalaDomainClient {
     List<EmployeeCandidate> employees(CallerIdentity caller, String keyword);
 
     EmployeeCandidate employee(CallerIdentity caller, Long id);
+
+    default List<IdentityMatch> matchEmployees(CallerIdentity caller, List<IdentityLookup> staff) {
+        return List.of();
+    }
 
     Row receive(CallerIdentity caller, ApiSource source);
 

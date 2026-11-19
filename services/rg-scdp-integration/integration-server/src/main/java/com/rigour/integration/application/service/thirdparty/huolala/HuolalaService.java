@@ -1,5 +1,8 @@
 package com.rigour.integration.application.service.thirdparty.huolala;
 
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityLookup;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatch;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatchMethod;
 import com.rigour.integration.api.v1.model.HuolalaModels.*;
 import com.rigour.integration.application.port.out.*;
 import com.rigour.integration.application.port.out.thirdparty.huolala.HuolalaDomainClient;
@@ -305,7 +308,9 @@ public class HuolalaService {
         String error = null;
         try {
             var token = tokens.valid(tenant, "HUOLALA", UUID.fromString(c.id()));
-            if (!"ORDERS".equals(q.scope())) {
+            if ("ORDERS".equals(q.scope())) {
+                matchEmployeesSafely(tenant, c, run, count, null);
+            } else {
                 // 员工接口能力独立于订单查询；目录暂不可用不应丢弃整批订单。
                 if ("EMPLOYEES".equals(q.scope()))
                     token = syncEmployees(tenant, c, run, token, count);
@@ -326,6 +331,7 @@ public class HuolalaService {
                                 tenant, run, raw, "DIRECTORY", "员工目录暂未获取，订单继续同步；请检查员工查询权限后重试");
                         // 目录处理过程中可能已换过令牌；重新读取当前令牌再处理订单。
                         token = tokens.valid(tenant, "HUOLALA", UUID.fromString(c.id()));
+                        matchEmployeesSafely(tenant, c, run, count, null);
                     }
                 }
             }
@@ -355,6 +361,7 @@ public class HuolalaService {
         store.raw(tenant, UUID.fromString(c.id()), run, "EMPLOYEE_DIRECTORY", "DIRECTORY", tree);
         Map<String, Employee> previous = new HashMap<>();
         for (var employee : store.employees(tenant)) previous.put(employee.staffId(), employee);
+        Set<String> observed = new HashSet<>();
         boolean detailAvailable = true;
         for (var node : staff) {
             store.heartbeat(tenant, run.toString(), Instant.now());
@@ -421,6 +428,7 @@ public class HuolalaService {
                     }
                 rawId = store.raw(tenant, UUID.fromString(c.id()), run, "EMPLOYEE", id, employee);
                 store.delivery(tenant, run, rawId, id, null);
+                observed.add(id);
                 count[1]++;
             } catch (RuntimeException e) {
                 count[3]++;
@@ -436,7 +444,75 @@ public class HuolalaService {
                 store.delivery(tenant, run, rawId, id, safeError(e));
             }
         }
+        if (!observed.isEmpty()) matchEmployeesSafely(tenant, c, run, count, observed);
         return token;
+    }
+
+    private void matchEmployeesSafely(
+            UUID tenant, Connection c, UUID run, long[] count, Set<String> observed) {
+        try {
+            matchEmployees(tenant, observed);
+        } catch (RuntimeException matchFailure) {
+            count[3]++;
+            var raw = store.raw(tenant, UUID.fromString(c.id()), run, "EMPLOYEE_MATCH_FAILED",
+                    "DIRECTORY", json.createObjectNode());
+            store.delivery(tenant, run, raw, "DIRECTORY", "员工匹配暂未完成，员工目录和订单可继续同步");
+        }
+    }
+
+    private void matchEmployees(UUID tenant, Set<String> observed) {
+        var directory = store.employees(tenant);
+        Set<String> linkedEmployees = new HashSet<>();
+        for (var staff : directory)
+            if (staff.employeeCode() != null) linkedEmployees.add(staff.employeeCode());
+        Map<String, Integer> phoneCount = new HashMap<>(),
+                nameCount = new HashMap<>(), userCount = new HashMap<>();
+        for (var staff : directory) {
+            phoneCount.merge(IdentityLookup.normalizedMobile(staff.phone()), 1, Integer::sum);
+            nameCount.merge(staff.name().strip(), 1, Integer::sum);
+            userCount.merge(staff.userId(), 1, Integer::sum);
+        }
+        var pending = new LinkedHashMap<String, Employee>();
+        var lookups = new ArrayList<IdentityLookup>();
+        for (var staff : directory) {
+            String phone = IdentityLookup.normalizedMobile(staff.phone());
+            String name = staff.name().strip();
+            boolean uniqueMobile = !phone.isEmpty() && phoneCount.get(phone) == 1;
+            boolean uniqueName = !name.isEmpty() && nameCount.get(name) == 1;
+            if ((observed != null && !observed.contains(staff.staffId()))
+                    || staff.revision() != 0 || staff.employeeCode() != null
+                    || !uniqueMobile && !uniqueName
+                    || !staff.staffId().matches("[0-9]{1,10}")
+                    || staff.userId().isBlank() || userCount.get(staff.userId()) != 1
+                    || name.length() > 128) continue;
+            pending.put(staff.staffId(), staff);
+            lookups.add(new IdentityLookup(staff.staffId(), phone, name, uniqueMobile, uniqueName));
+        }
+        if (lookups.isEmpty()) return;
+        var actor = service(tenant);
+        var matches = new ArrayList<IdentityMatch>();
+        for (int from = 0; from < lookups.size(); from += 200)
+            matches.addAll(domains.matchEmployees(actor,
+                    lookups.subList(from, Math.min(from + 200, lookups.size()))));
+        Map<String, Integer> matchCount = new HashMap<>();
+        for (var match : matches) matchCount.merge(match.employeeCode(), 1, Integer::sum);
+        for (var match : matches) {
+            var staff = pending.get(match.staffId());
+            if (staff == null || matchCount.get(match.employeeCode()) != 1
+                    || linkedEmployees.contains(match.employeeCode())) continue;
+            String reason = match.method() == IdentityMatchMethod.NAME
+                    ? "系统匹配：姓名唯一" : "系统匹配：手机号唯一";
+            try {
+                store.bind(tenant, actor.principalId(), staff,
+                        new EmployeeCandidate(match.id(), match.employeeCode(), match.name(),
+                                null, match.departmentName(), "ACTIVE"),
+                        staff.revision(), reason);
+            } catch (IllegalStateException conflict) {
+                if (store.employee(tenant, staff.staffId()).map(Employee::revision)
+                        .orElse(0L) == 0L) throw conflict;
+            }
+        }
+        publishEmployeeBindings();
     }
 
     private void syncOrders(
@@ -470,7 +546,8 @@ public class HuolalaService {
                 mappings = new HashMap<>(),
                 phones = new HashMap<>(),
                 staffIds = new HashMap<>(),
-                departments = new HashMap<>();
+                departments = new HashMap<>(),
+                mappedDepartments = new HashMap<>();
         for (var e : staff)
             if (!e.userId().isBlank()) {
                 mappingRevisions.put(e.userId(), e.revision());
@@ -478,7 +555,10 @@ public class HuolalaService {
                 phones.put(e.userId(), e.phone());
                 staffIds.put(e.userId(), e.staffId());
                 departments.put(e.userId(), e.externalDepartmentName());
-                if (e.employeeCode() != null) mappings.put(e.userId(), e.employeeCode());
+                if (e.employeeCode() != null) {
+                    mappings.put(e.userId(), e.employeeCode());
+                    mappedDepartments.put(e.userId(), e.departmentName());
+                }
             }
         for (int page = 1; page <= 500; page++) {
             store.heartbeat(tenant, run.toString(), Instant.now());
@@ -556,7 +636,8 @@ public class HuolalaService {
                             withMappingRevision(
                                     summary,
                                     mappingRevisions.getOrDefault(user, 0L),
-                                    departments.get(user));
+                                    departments.get(user),
+                                    mappedDepartments.get(user));
                     var row =
                             domains.receive(
                                     service(tenant),
@@ -592,7 +673,8 @@ public class HuolalaService {
                                 withMappingRevision(
                                         normalized,
                                         mappingRevisions.getOrDefault(user, 0L),
-                                        departments.get(user));
+                                        departments.get(user),
+                                        mappedDepartments.get(user));
                         var detailedRow =
                                 domains.receive(
                                         service(tenant),
@@ -649,13 +731,15 @@ public class HuolalaService {
     private com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder withMappingRevision(
             com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder order,
             long revision,
-            String department) {
+            String department,
+            String mappedDepartment) {
         var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
-        ((tools.jackson.databind.node.ObjectNode) node.path("facts"))
-                .put("employeeMappingRevision", revision);
+        var facts = (tools.jackson.databind.node.ObjectNode) node.path("facts");
+        facts.put("employeeMappingRevision", revision);
         if (department != null && !department.isBlank())
-            ((tools.jackson.databind.node.ObjectNode) node.path("facts"))
-                    .put("sourceDepartmentName", department);
+            facts.put("sourceDepartmentName", department);
+        if (mappedDepartment != null && !mappedDepartment.isBlank())
+            facts.put("mappedDepartmentName", mappedDepartment);
         return json.treeToValue(
                 node, com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder.class);
     }

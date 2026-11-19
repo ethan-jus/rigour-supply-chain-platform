@@ -311,10 +311,46 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         + " i.cost_id=order_logistics_cost.id) OR JSON_LENGTH(sources_json)>0)";
             q.apply(("UNLINKED".equals(filter.relationState()) ? "NOT " : "") + condition);
         }
-        String sourceExists =
-                "EXISTS(SELECT 1 FROM order_logistics_import_order i WHERE"
-                        + " i.tenant_id=order_logistics_cost.tenant_id AND"
-                        + " i.cost_id=order_logistics_cost.id AND i.source_channel='API' AND ";
+        String platformSource =
+                " FROM order_logistics_import_order i WHERE i.tenant_id=order_logistics_cost.tenant_id"
+                        + " AND i.cost_id=order_logistics_cost.id AND i.source_channel='API'";
+        String sourceExists = "EXISTS(SELECT 1" + platformSource + " AND ";
+        if (text(filter.orderPlacerEmployeeCode()) || text(filter.orderPlacerDepartment())) {
+            String sourceJson = "COALESCE(i.latest_source_json,i.source_json)";
+            String platformEmployee = jsonText(sourceJson, "$.facts.mappedEmployeeCode");
+            String platformDepartment = jsonText(sourceJson, "$.facts.mappedDepartmentName");
+            String salesSources =
+                    "CASE WHEN COALESCE(JSON_LENGTH(JSON_EXTRACT(data_json,'$.ledger.sources')),0)>0"
+                            + " THEN JSON_EXTRACT(data_json,'$.ledger.sources') ELSE sources_json END";
+            q.apply(
+                    "(" + sourceExists
+                            + "({0}='' OR " + platformEmployee + "={0})"
+                            + " AND ({1}='' OR " + platformDepartment + "={1}))"
+                            + " OR (NOT EXISTS(SELECT 1" + platformSource + ")"
+                            + " AND (SELECT COUNT(*) FROM JSON_TABLE(COALESCE(" + salesSources + ",JSON_ARRAY()),"
+                            + " '$[*]' COLUMNS(order_type VARCHAR(32) PATH '$.orderTypeCode',"
+                            + " source_type VARCHAR(32) PATH '$.sourceType',"
+                            + " employee_code VARCHAR(50) PATH '$.employeeCode',"
+                            + " department VARCHAR(128) PATH '$.departmentName')) business"
+                            + " WHERE COALESCE(business.order_type,business.source_type)"
+                            + " IN ('SALES_ORDER','DELIVERY')"
+                            + " AND ({0}='' OR business.employee_code={0})"
+                            + " AND ({1}='' OR TRIM(business.department)={1}))>0))",
+                    Objects.toString(filter.orderPlacerEmployeeCode(), "").strip(),
+                    java.util.Objects.toString(filter.orderPlacerDepartment(), "").strip());
+        }
+        if (text(filter.businessOrderNo())) {
+            String pattern = filter.businessOrderNo().strip()
+                    .replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
+            q.apply(
+                    "JSON_SEARCH(COALESCE((SELECT JSON_EXTRACT(i.business_json,'$.orderCodes')"
+                            + platformSource + " LIMIT 1),"
+                            + " CASE WHEN COALESCE(JSON_LENGTH(JSON_EXTRACT(data_json,'$.ledger.sources')),0)>0"
+                            + " THEN JSON_EXTRACT(data_json,'$.ledger.sources[*].orderCode')"
+                            + " ELSE JSON_EXTRACT(sources_json,'$[*].documentNo') END),"
+                            + " 'one',{0}) IS NOT NULL",
+                    "%" + pattern + "%");
+        }
         if (text(filter.platformOrderNo()))
             q.apply(
                     "("
@@ -507,6 +543,11 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         "cost_date",
                         filter.dateTo());
         return q;
+    }
+
+    private static String jsonText(String json, String path) {
+        return "NULLIF(NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(" + json + ",'" + path
+                + "'))),''),'null')";
     }
 
     private static final String BUSINESS_LINKS =

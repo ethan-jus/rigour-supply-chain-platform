@@ -597,7 +597,8 @@ public class JdbcHuolalaStore implements HuolalaStore {
                             c.enterpriseId(),
                             external.userId(),
                             internal == null ? null : internal.employeeCode(),
-                            revision + 1);
+                            revision + 1,
+                            internal == null ? null : internal.departmentName());
             String payload = json.writeValueAsString(update);
             jdbc.update(
                     "INSERT INTO"

@@ -11,6 +11,10 @@ import java.util.Optional;
 
 /** HR 员工主档持久化端口。 */
 public interface HrEmployeeStore {
+    default List<com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatch> matchHuolalaEmployees(
+            String tenant, List<com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityLookup> staff) {
+        throw new UnsupportedOperationException("员工手机匹配未配置");
+    }
     HrPageView<HrEmployeeView> employees(String tenantId, int begin, int step,
                                          EmployeeSearchCriteria criteria);
 

@@ -29,4 +29,9 @@ public final class InternalHrEmployeeProjectionController implements HrEmployeeP
             ExternalEmployeeResolveCommand command) {
         return ApiResponse.success(service.resolveExternalEmployees(command));
     }
+
+    @Override
+    public ApiResponse<List<IdentityMatch>> matchHuolalaEmployees(List<IdentityLookup> staff) {
+        return ApiResponse.success(service.matchHuolalaEmployees(staff));
+    }
 }

@@ -179,6 +179,7 @@ public class LogisticsImportService {
                 || update.userId() == null
                 || !update.userId().matches("[0-9]{1,32}")
                 || update.revision() < 1
+                || update.departmentName() != null && update.departmentName().length() > 128
                 || update.employeeCode() != null
                         && (update.employeeCode().isBlank() || update.employeeCode().length() > 64))
             throw bad("员工关联信息无效");

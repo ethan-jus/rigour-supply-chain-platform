@@ -223,6 +223,16 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
         boolean partial = "LIST".equals(order.raw().get("详情状态"));
         var last = current.latestOrder() == null ? current.order() : current.latestOrder();
         if (partial && "DETAIL".equals(last.raw().get("详情状态"))) {
+            var facts = last.facts();
+            if (sameEmployee(order, last)) {
+                var mapping = order.facts();
+                facts = applyEmployeeMapping(
+                                last,
+                                mapping.mappedEmployeeCode(),
+                                mapping.employeeMappingRevision(),
+                                mapping.mappedDepartmentName())
+                        .facts();
+            }
             order =
                     new CarrierOrder(
                             last.enterpriseId(),
@@ -233,7 +243,7 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
                             last.raw(),
                             last.salesOrderNos(),
                             last.line(),
-                            last.facts());
+                            facts);
             encoded = json.writeValueAsString(order);
         }
         if (!partial && last.facts() != null && order.facts() != null) {
@@ -284,13 +294,17 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
         }
         // 旧批次的目录快照不能撤回已经投递的新员工关联。
         if (sameEmployee(order, last)
-                && last.facts().employeeMappingRevision()
-                        > order.facts().employeeMappingRevision()) {
+                && (last.facts().employeeMappingRevision() > order.facts().employeeMappingRevision()
+                        || last.facts().employeeMappingRevision().equals(order.facts().employeeMappingRevision())
+                        && Objects.equals(last.facts().mappedEmployeeCode(), order.facts().mappedEmployeeCode())
+                        && order.facts().mappedDepartmentName() == null
+                        && last.facts().mappedDepartmentName() != null)) {
             order =
                     mapped(
                             order,
                             last.facts().mappedEmployeeCode(),
-                            last.facts().employeeMappingRevision());
+                            last.facts().employeeMappingRevision(),
+                            last.facts().mappedDepartmentName());
             encoded = json.writeValueAsString(order);
         }
         // 附件是独立事实：平台后续缺项、空数组和签名更新不能删除已留存资料。
@@ -458,15 +472,29 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
         var f = order.facts();
         if (f == null
                 || !Objects.equals(f.connectorId(), update.connectorId())
-                || !Objects.equals(f.sourceUserId(), update.userId())
-                || f.employeeMappingRevision() >= update.revision()) return order;
-        return mapped(order, update.employeeCode(), update.revision());
+                || !Objects.equals(f.sourceUserId(), update.userId())) return order;
+        return applyEmployeeMapping(order, update.employeeCode(), update.revision(), update.departmentName());
     }
 
-    private CarrierOrder mapped(CarrierOrder order, String employeeCode, long revision) {
+    private CarrierOrder applyEmployeeMapping(
+            CarrierOrder order, String employeeCode, long revision, String departmentName) {
+        var f = order.facts();
+        boolean fillsDepartment = f.employeeMappingRevision() == revision
+                && employeeCode != null
+                && employeeCode.equals(f.mappedEmployeeCode())
+                && (f.mappedDepartmentName() == null || f.mappedDepartmentName().isBlank())
+                && departmentName != null
+                && !departmentName.isBlank();
+        if (f.employeeMappingRevision() >= revision && !fillsDepartment) return order;
+        return mapped(order, employeeCode, revision, departmentName);
+    }
+
+    private CarrierOrder mapped(
+            CarrierOrder order, String employeeCode, long revision, String departmentName) {
         var node = (tools.jackson.databind.node.ObjectNode) json.valueToTree(order);
         var facts = (tools.jackson.databind.node.ObjectNode) node.path("facts");
         facts.put("mappedEmployeeCode", employeeCode);
+        facts.put("mappedDepartmentName", employeeCode == null ? null : departmentName);
         facts.put("employeeMappingRevision", revision);
         return json.treeToValue(node, CarrierOrder.class);
     }

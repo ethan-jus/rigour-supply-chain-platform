@@ -3,6 +3,9 @@ package com.rigour.integration.application.service.thirdparty.huolala;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityLookup;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatch;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatchMethod;
 import com.rigour.integration.api.v1.model.HuolalaModels.*;
 import com.rigour.integration.application.port.out.*;
 import com.rigour.integration.application.port.out.thirdparty.huolala.HuolalaDomainClient;
@@ -11,9 +14,12 @@ import com.rigour.integration.application.port.out.thirdparty.huolala.HuolalaSto
 import com.rigour.integration.application.port.out.thirdparty.oauth.ThirdPartyTokenStore.Stored;
 import com.rigour.integration.application.service.thirdparty.oauth.*;
 import com.rigour.integration.domain.thirdparty.oauth.OAuthToken;
+import com.rigour.order.api.v1.model.LogisticsImportModels.Row;
 import com.rigour.shared.context.*;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -593,6 +599,90 @@ class HuolalaServiceTest {
         verify(gateway, never()).read(any(), any(), eq("e-depart-detail"), any());
         verify(store)
                 .finishRun(eq(tenant), eq(run), eq(1L), eq(1L), eq(0L), eq(1L), isNull(), any());
+    }
+
+    @Test
+    void directorySyncAutomaticallyBindsOnlyUnambiguousNewEmployees() {
+        var token = new OAuthToken("access", "refresh", Instant.now().plusSeconds(3600));
+        when(tokens.valid(any(), any(), any())).thenReturn(token);
+        var tree = json.createObjectNode();
+        var entries = tree.putArray("list");
+        var eligible = new Employee("11", "101", "职员甲", "+86 13800000000", "", "", null, null, null, "UNMATCHED", 0);
+        var other = new Employee("12", "102", "职员乙", "13800000002", "", "", null, null, null, "UNMATCHED", 0);
+        var duplicate = new Employee("13", "103", "职员丙", "13800000002", "", "", null, null, null, "UNMATCHED", 0);
+        var unlinked = new Employee("14", "104", "职员丁", "13800000003", "", "", null, null, null, "UNMATCHED", 2);
+        var directory = List.of(eligible, other, duplicate, unlinked);
+        directory.forEach(staff -> entries.addObject().put("code", staff.staffId())
+                .put("name", staff.name()).put("phone_no", staff.phone()).put("flag", 2));
+        when(gateway.read(any(), any(), eq("e-staff-construct"), any())).thenReturn(tree);
+        when(gateway.read(any(), any(), eq("e-staff-detail"), any()))
+                .thenAnswer(call -> {
+                    var parameters = (Map<?, ?>) call.getArgument(3);
+                    return json.createObjectNode().put("ep_id", "12345")
+                            .put("staff_id", parameters.get("staff_id").toString());
+                });
+        when(store.raw(any(), any(), any(), any(), any(), any())).thenReturn("raw");
+        when(store.employees(tenant)).thenReturn(directory);
+        var lookups = List.of(
+                new IdentityLookup("11", "13800000000", "职员甲", true, true),
+                new IdentityLookup("12", "13800000002", "职员乙", false, true),
+                new IdentityLookup("13", "13800000002", "职员丙", false, true));
+        when(domains.matchEmployees(any(), eq(lookups)))
+                .thenReturn(List.of(new IdentityMatch("11", 91L, "EMP91", "职员甲", "武汉销售部",
+                        IdentityMatchMethod.MOBILE)));
+        service.sync(new SyncCommand("EMPLOYEES", null, null, null));
+        verify(domains).matchEmployees(argThat(caller -> tenant.equals(caller.tenantId())),
+                eq(lookups));
+        verify(store).bind(eq(tenant), any(), eq(eligible),
+                eq(new EmployeeCandidate(91L, "EMP91", "职员甲", null, "武汉销售部", "ACTIVE")),
+                eq(0L), eq("系统匹配：手机号唯一"));
+        verify(store, times(1)).bind(any(), any(), any(), any(), anyLong(), any());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"MANUAL", "SCHEDULED"})
+    void orderOnlySyncMatchesEmployeesBeforeDeliveringOrders(String trigger) {
+        stubEmptyOrderList();
+        var orders = json.createObjectNode().put("total", 1);
+        orders.putArray("order_arr").addObject()
+                .put("order_display_id", "3624071813921329726")
+                .put("ep_id", "12345")
+                .put("user_id", "101")
+                .put("order_status", 2)
+                .put("order_time", LocalDate.now(ZoneId.of("Asia/Shanghai")) + " 10:00:00");
+        when(gateway.read(any(), any(), eq("e-order-list"), any())).thenReturn(orders);
+        when(gateway.read(any(), any(), eq("e-order-detail"), any())).thenReturn(completedDetail(2));
+        when(store.raw(any(), any(), any(), any(), any(), any())).thenReturn("raw");
+        when(domains.receive(any(), any()))
+                .thenReturn(new Row("R1", 1, "UNMATCHED", null, "接口", null)
+                        .withSyncOutcome("UNCHANGED"));
+        when(gateway.ready(any())).thenReturn(true);
+        when(gateway.appKey(any())).thenReturn("app");
+        when(store.due(any())).thenReturn(List.of(tenant));
+        var external = new Employee("11", "101", "职员甲", "13800000000", "", "",
+                null, null, null, "UNMATCHED", 0);
+        var linked = new Employee("11", "101", "职员甲", "13800000000", "", "",
+                "EMP91", "职员甲", "武汉销售部", "LINKED", 1);
+        when(store.employees(tenant)).thenReturn(List.of(external), List.of(linked));
+        when(domains.matchEmployees(any(), anyList()))
+                .thenReturn(List.of(new IdentityMatch("11", 91L, "EMP91", "职员甲", "武汉销售部",
+                        IdentityMatchMethod.NAME)));
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if ("SCHEDULED".equals(trigger)) service.tick();
+            else service.sync(new SyncCommand("ORDERS", null, null, "3624071813921329726"));
+        }
+        verify(store, times(2)).startRun(eq(tenant), any(), eq("ORDERS"), eq(trigger), any());
+        verify(domains, times(1)).matchEmployees(any(),
+                eq(List.of(new IdentityLookup("11", "13800000000", "职员甲", true, true))));
+        verify(store, times(1)).bind(eq(tenant), any(), eq(external),
+                eq(new EmployeeCandidate(91L, "EMP91", "职员甲", null, "武汉销售部", "ACTIVE")),
+                eq(0L), eq("系统匹配：姓名唯一"));
+        verify(gateway, never()).read(any(), any(), eq("e-staff-construct"), any());
+        verify(gateway, times(2)).read(any(), any(), eq("e-order-list"), any());
+        verify(domains, times(4)).receive(any(), argThat(source ->
+                "EMP91".equals(source.order().facts().mappedEmployeeCode())
+                        && "职员甲".equals(source.order().facts().sourceEmployeeName())
+                        && "武汉销售部".equals(source.order().facts().mappedDepartmentName())));
     }
 
     @Test

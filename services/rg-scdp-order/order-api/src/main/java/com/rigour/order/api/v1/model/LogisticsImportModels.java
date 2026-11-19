@@ -66,7 +66,8 @@ public final class LogisticsImportModels {
             Long employeeMappingRevision,
             String sourceDepartmentName,
             ReceiptInfo receiptInfo,
-            List<StopPhotos> stopPhotos) {
+            List<StopPhotos> stopPhotos,
+            String mappedDepartmentName) {
         public SourceFacts(
                 String connectorId,
                 String rawLandingId,
@@ -114,7 +115,8 @@ public final class LogisticsImportModels {
                     employeeMappingRevision,
                     sourceDepartmentName,
                     null,
-                    List.of());
+                    List.of(),
+                    null);
         }
 
         public SourceFacts(
@@ -304,7 +306,13 @@ public final class LogisticsImportModels {
             String enterpriseId,
             String userId,
             String employeeCode,
-            long revision) {}
+            long revision,
+            String departmentName) {
+        public EmployeeMappingUpdate(
+                String connectorId, String enterpriseId, String userId, String employeeCode, long revision) {
+            this(connectorId, enterpriseId, userId, employeeCode, revision, null);
+        }
+    }
 
     public record ApiSource(String connectorId, String payloadHash, CarrierOrder order) {}
 

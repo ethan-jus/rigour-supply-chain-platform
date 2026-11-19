@@ -1,5 +1,7 @@
 package com.rigour.hr.application.service;
 
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityLookup;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatch;
 import com.rigour.hr.api.v1.model.ExternalEmployeeRowCommand;
 import com.rigour.hr.api.v1.model.ExternalEmployeeResolveCommand;
 import com.rigour.hr.api.v1.model.ExternalEmployeeResolvedView;
@@ -130,6 +132,21 @@ public final class HrEmployeeService {
                 sourceEmployeeIds == null ? 0 : sourceEmployeeIds.size(),
                 employeeNames == null ? 0 : employeeNames.size(), result.size());
         return result;
+    }
+
+    public List<IdentityMatch> matchHuolalaEmployees(List<IdentityLookup> staff) {
+        CallerIdentity caller = actor("integration:huolala:sync");
+        if (!"SERVICE".equals(caller.principalScope())
+                || !caller.roles().contains("INTEGRATION_HUOLALA"))
+            throw new AuthorizationDeniedException("integration-huolala");
+        if (staff == null || staff.size() > 200 || staff.stream().anyMatch(row ->
+                row == null || row.staffId() == null || !row.staffId().matches("[0-9]{1,10}")
+                        || row.mobile() == null || !row.mobile().isEmpty()
+                        && !row.mobile().matches("1[3-9][0-9]{9}")
+                        || row.name() == null || row.name().length() > 128
+                        || row.mobile().isEmpty() && row.name().isBlank()))
+            throw badRequest("员工匹配参数无效");
+        return staff.isEmpty() ? List.of() : store.matchHuolalaEmployees(caller.tenantId().toString(), staff);
     }
 
     private static List<ExternalEmployeeRowCommand> normalizeRows(List<ExternalEmployeeRowCommand> rows) {

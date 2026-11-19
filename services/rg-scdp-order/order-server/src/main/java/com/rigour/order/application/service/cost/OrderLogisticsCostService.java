@@ -132,6 +132,9 @@ public final class OrderLogisticsCostService {
         text(q.contactPhone(), 50, "联系电话");
         text(q.platformOrderNo(), 80, "第三方订单号");
         text(q.mappedEmployeeCode(), 64, "本系统员工");
+        text(q.orderPlacerEmployeeCode(), 50, "下单人员工编号");
+        text(q.orderPlacerDepartment(), 128, "下单人所属部门");
+        text(q.businessOrderNo(), 100, "业务单号");
         for (String state : Arrays.asList(q.relationState(), q.employeeRelationState()))
             if (state != null && !state.isBlank() && !Set.of("LINKED", "UNLINKED").contains(state))
                 throw bad("关联状态无效");
@@ -175,7 +178,10 @@ public final class OrderLogisticsCostService {
                                 q.employeeRelationState(),
                                 q.contactPhone(),
                                 q.mappedEmployeeCode(),
-                                q.salesSelectable()),
+                                q.salesSelectable(),
+                                q.orderPlacerEmployeeCode(),
+                                q.orderPlacerDepartment(),
+                                q.businessOrderNo()),
                         p);
         var rows = withBusinessStatuses(page.items(), p);
         return page.withItems(

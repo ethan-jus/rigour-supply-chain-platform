@@ -4,6 +4,9 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.rigour.hr.api.v1.model.ExternalEmployeeResolvedView;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityLookup;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatch;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatchMethod;
 import com.rigour.hr.api.v1.model.ExternalEmployeeRowCommand;
 import com.rigour.hr.api.v1.model.ExternalEmployeeSyncResult;
 import com.rigour.hr.api.v1.model.ExternalEmployeeSyncRowResult;
@@ -39,6 +42,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 /** MyBatis-Plus HR 员工主档仓储；外部来源同步在这里做幂等合并。 */
@@ -70,6 +74,60 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         this.bindingMapper = bindingMapper;
         this.transaction = new TransactionTemplate(transactionManager);
         this.clock = hrClock;
+    }
+
+    @Override
+    public List<IdentityMatch> matchHuolalaEmployees(String tenant, List<IdentityLookup> staff) {
+        if (staff.isEmpty()) return List.of();
+        var phones = staff.stream().map(IdentityLookup::mobile)
+                .filter(Predicate.not(String::isBlank)).collect(Collectors.toSet());
+        var names = staff.stream().map(IdentityLookup::name).map(String::strip)
+                .filter(Predicate.not(String::isBlank)).collect(Collectors.toSet());
+        var candidates = getBaseMapper().selectList(new QueryWrapper<HrEmployeeEntity>()
+                        .select("id", "employee_code", "employee_name", "mobile", "employment_status",
+                                "department_id", "department_name_snapshot", "entry_date", "leave_date")
+                        .eq("tenant_id", tenant).eq("deleted", 0)
+                        .and(identity -> {
+                            if (!phones.isEmpty()) {
+                                identity.in("RIGHT(REGEXP_REPLACE(mobile,'[^0-9]',''),11)", phones);
+                                if (!names.isEmpty()) identity.or();
+                            }
+                            identity.in(!names.isEmpty(), "TRIM(employee_name)", names);
+                        }));
+        if (candidates.isEmpty()) return List.of();
+        var byMobile = candidates.stream()
+                .filter(row -> phones.contains(IdentityLookup.normalizedMobile(row.mobile)))
+                .collect(Collectors.groupingBy(row -> IdentityLookup.normalizedMobile(row.mobile)));
+        var byName = candidates.stream()
+                .collect(Collectors.groupingBy(row -> Objects.toString(row.employeeName, "").strip()));
+        Map<Long, HrDepartmentView> departments = organization.departments(tenant).stream()
+                .collect(Collectors.toMap(HrDepartmentView::id, value -> value));
+        var result = new ArrayList<IdentityMatch>();
+        var now = LocalDateTime.ofInstant(clock.instant(), ZoneOffset.UTC);
+        for (var lookup : staff) {
+            var mobileMatches = byMobile.getOrDefault(lookup.mobile(), List.of());
+            var nameMatches = byName.getOrDefault(lookup.name().strip(), List.of());
+            var employee = lookup.uniqueMobile() && mobileMatches.size() == 1
+                    ? mobileMatches.getFirst() : null;
+            var method = IdentityMatchMethod.MOBILE;
+            if (employee != null) {
+                if (!lookup.name().isBlank() && !nameMatches.isEmpty()
+                        && !nameMatches.contains(employee)) continue;
+            } else {
+                if (!lookup.uniqueName() || lookup.name().isBlank() || nameMatches.size() != 1) continue;
+                employee = nameMatches.getFirst();
+                if (!mobileMatches.isEmpty() && !mobileMatches.contains(employee)) continue;
+                method = IdentityMatchMethod.NAME;
+            }
+            if (!"ACTIVE".equals(employee.employmentStatus)
+                    || employee.entryDate != null && employee.entryDate.isAfter(now)
+                    || employee.leaveDate != null && !employee.leaveDate.isAfter(now)) continue;
+            var department = departments.get(employee.departmentId);
+            result.add(new IdentityMatch(lookup.staffId(), employee.id, employee.employeeCode,
+                    employee.employeeName, department == null ? employee.departmentNameSnapshot : department.departmentName(),
+                    method));
+        }
+        return List.copyOf(result);
     }
 
     @Override

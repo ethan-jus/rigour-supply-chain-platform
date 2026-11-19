@@ -234,6 +234,46 @@ public class LogisticsCostFilterTest {
     }
 
     @Test
+    void transportPlacerAndBusinessNumberUseTheDisplayedSourceBeforePagination() {
+        jdbc.execute("ALTER TABLE order_logistics_import_order ADD source_channel VARCHAR(8), ADD business_json JSON");
+        insert("platform", "T1", "HLL", 7L);
+        jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");
+        jdbc.update("""
+                UPDATE order_logistics_cost SET data_json=?
+                WHERE id IN ('good','other','hidden','platform')
+                """, """
+                {"ledger":{"schemaVersion":2,"sources":[
+                  {"orderTypeCode":"SALES_ORDER","orderCode":"XS_001","employeeCode":"E1","employeeName":"销售张三","departmentName":"武汉销售部"},
+                  {"orderTypeCode":"SALES_ORDER","orderCode":"XS002","employeeCode":"E2","employeeName":"销售张三","departmentName":"北京销售部"},
+                  {"orderTypeCode":"TRANSFER_ORDER","orderCode":"DB001","employeeCode":"E3","employeeName":"调拨员","departmentName":"仓储部"}
+                ]}}
+                """);
+        jdbc.update("""
+                INSERT INTO order_logistics_import_order(id,tenant_id,cost_id,source_channel,source_json,business_json)
+                VALUES('source','T1','platform','API',?,?)
+                """, """
+                {"raw":{"下单人(员工)":"平台王五"},"facts":{"sourceEmployeeName":" ","sourceDepartmentName":"平台部门",
+                  "mappedEmployeeCode":"E4","mappedDepartmentName":"本系统运营部"}}
+                """, "{\"orderCodes\":[\"HLL-SALES-2\",\"HLL-SALES-1\"]}");
+        assertThat(transportIds("\"orderPlacerEmployeeCode\":\"E1\",\"orderPlacerDepartment\":\"武汉销售部\",\"businessOrderNo\":\"XS_0\""))
+                .containsExactly("good");
+        assertThat(transportIds("\"orderPlacerEmployeeCode\":\"E1\",\"orderPlacerDepartment\":\"北京销售部\"")).isEmpty();
+        assertThat(transportIds("\"orderPlacerEmployeeCode\":\"E2\",\"orderPlacerDepartment\":\"北京销售部\"")).containsExactly("good");
+        assertThat(transportIds("\"orderPlacerEmployeeCode\":\"E3\"")).isEmpty();
+        assertThat(transportIds("\"orderPlacerEmployeeCode\":\"E4\",\"orderPlacerDepartment\":\"本系统运营部\",\"businessOrderNo\":\"HLL-SALES-1\""))
+                .containsExactly("platform");
+        assertThat(transportIds("\"orderPlacerDepartment\":\"平台部门\"")).isEmpty();
+        assertThat(transportIds("\"orderPlacerEmployeeCode\":\"E4\",\"businessOrderNo\":\"XS_001\"")).isEmpty();
+    }
+
+    private List<String> transportIds(String filters) {
+        var q = JSON.readValue("{\"begin\":0,\"step\":1," + filters + "}", LogisticsCostQuery.class);
+        var result = store.entries("T1", "LOGISTICS", q, "cost:read");
+        assertThat(result.total()).isEqualTo(result.items().size());
+        return result.items().stream().map(row -> row.id()).toList();
+    }
+
+    @Test
     void selectedExportStillIntersectsTenantAndWarehouseScope() {
         var rows = store.selectedEntries("T1", List.of("good", "other", "hidden"), "cost:export");
         assertThat(rows).extracting(r -> r.id()).containsExactly("good");

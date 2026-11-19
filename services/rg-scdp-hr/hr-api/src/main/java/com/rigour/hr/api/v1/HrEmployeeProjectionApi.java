@@ -20,4 +20,27 @@ public interface HrEmployeeProjectionApi {
     @PostMapping(BASE_PATH + "/source-resolve")
     ApiResponse<List<ExternalEmployeeResolvedView>> resolveExternalEmployees(
             @RequestBody ExternalEmployeeResolveCommand command);
+
+    @PostMapping(BASE_PATH + "/huolala-matches")
+    ApiResponse<List<IdentityMatch>> matchHuolalaEmployees(@RequestBody List<IdentityLookup> staff);
+
+    record IdentityLookup(
+            String staffId, String mobile, String name, boolean uniqueMobile, boolean uniqueName) {
+        public static String normalizedMobile(String value) {
+            if (value == null) return "";
+            String digits = value.replaceAll("[\\s()-]", "");
+            if (digits.startsWith("+86")) digits = digits.substring(3);
+            else if (digits.length() == 13 && digits.startsWith("86")) digits = digits.substring(2);
+            return digits.matches("1[3-9][0-9]{9}") ? digits : "";
+        }
+    }
+
+    enum IdentityMatchMethod {
+        MOBILE,
+        NAME
+    }
+
+    record IdentityMatch(
+            String staffId, Long id, String employeeCode, String name, String departmentName,
+            IdentityMatchMethod method) {}
 }

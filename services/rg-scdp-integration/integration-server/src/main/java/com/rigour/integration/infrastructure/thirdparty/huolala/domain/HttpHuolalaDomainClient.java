@@ -1,5 +1,8 @@
 package com.rigour.integration.infrastructure.thirdparty.huolala.domain;
 
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityLookup;
+import com.rigour.hr.api.v1.HrEmployeeProjectionApi.IdentityMatch;
 import com.rigour.hr.api.v1.model.*;
 import com.rigour.integration.api.v1.model.HuolalaModels.EmployeeCandidate;
 import com.rigour.integration.application.port.out.thirdparty.huolala.HuolalaDomainClient;
@@ -92,6 +95,20 @@ public final class HttpHuolalaDomainClient implements HuolalaDomainClient {
                                                 new TypeReference<ApiResponse<HrEmployeeView>>() {},
                                                 "员工查询"));
         return candidate(SignedDomainRequest.required(response, "员工查询"));
+    }
+
+    @Override
+    public List<IdentityMatch> matchEmployees(CallerIdentity caller, List<IdentityLookup> staff) {
+        URI uri = hr.resolve(HrEmployeeProjectionApi.BASE_PATH + "/huolala-matches");
+        ApiResponse<List<IdentityMatch>> response =
+                http.post()
+                        .uri(uri)
+                        .headers(h -> SignedDomainRequest.signedHeaders(signer, "POST", uri, caller)
+                                .forEach(h::set))
+                        .body(staff)
+                        .exchange((request, r) -> SignedDomainRequest.readResponse(
+                                r, new TypeReference<ApiResponse<List<IdentityMatch>>>() {}, "员工匹配"));
+        return SignedDomainRequest.required(response, "员工匹配");
     }
 
     @Override
