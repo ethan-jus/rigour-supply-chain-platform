@@ -78,6 +78,27 @@ class PayrollPaymentAttachmentMySqlTest {
     void caller() { TestAuthorizationContext.set(new CallerIdentity("TENANT",user,tenant,user,null,UUID.randomUUID(),1,1,1,Set.of(),Set.of("hr:payroll:paid"))); }
     @AfterEach void close() { TestAuthorizationContext.clear(); }
 
+    @Test void onlyPublishedSalaryIsVisibleAndLaterDisbursementsUpdateItsPaymentProgress() throws Exception {
+        new ResourceDatabasePopulator(new ClassPathResource("db/migration/V29__published_sales_pay_statements.sql")).execute(jdbc.getDataSource());
+        var mapper=tools.jackson.databind.json.JsonMapper.builder().findAndAddModules().build();
+        var statements=new SalesStatementPublications(jdbc,mapper);
+        var month="2026-09";var t=tenant.toString();
+        var salary=mapper.readValue("""
+            {"code":"A","status":"CONFIRMED","basis":0,"commission":0,"net":5500,"paid":0,"revision":4}
+            """,SalesPayrollBoardView.Employee.class);
+        assertThat(statements.published(t,"A",month)).isEmpty();
+        statements.publish(t,payrollId,month,4,user.toString(),salary);
+        statements.publish(t,payrollId,month,4,user.toString(),salary);
+        assertThat(statements.published(t,"B",month)).isEmpty();
+        assertThat(statements.published(UUID.randomUUID().toString(),"A",month)).isEmpty();
+        assertThat(statements.published(t,"A",month).orElseThrow().paid()).isEqualByComparingTo("5000");
+        jdbc.update("INSERT INTO hr_payroll_payment(id,tenant_id,payroll_id,request_id,paid_date,amount,reference_no,reason,created_by) VALUES(?,?,?,?,CURRENT_DATE,500,'BALANCE','尾款',?)",
+                    UUID.randomUUID().toString(),t,payrollId,UUID.randomUUID().toString(),user.toString());
+        var paid=statements.published(t,"A",month).orElseThrow();
+        assertThat(paid.paid()).isEqualByComparingTo("5500");assertThat(paid.basis()).isZero();assertThat(paid.status()).isEqualTo("PAID");
+        assertThatThrownBy(()->statements.publish(t,payrollId,month,3,user.toString(),salary)).isInstanceOf(BusinessException.class);
+    }
+
     @Test void repeatableReadConcurrentLastSlotUsesCurrentAttachmentRows() throws Exception {
         assertThat(jdbc.queryForObject("SELECT @@transaction_isolation",String.class)).isEqualTo("REPEATABLE-READ");
         for(int i=0;i<19;i++) jdbc.update("INSERT INTO hr_payroll_payment_attachment(id,tenant_id,payroll_id,payment_id,file_key,file_name,content_type,file_size,created_by) VALUES(?,?,?,?,?,'已有回单.pdf','application/pdf',20,?)",

@@ -119,6 +119,143 @@ class BiSupplyScopeIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_sales_order_fact WHERE tenant_id=? AND deleted=0",Integer.class,tenant)).isZero();
     }
 
+    @Autowired com.rigour.analytics.application.service.ReceivablesService receivables;
+
+    @Autowired com.rigour.analytics.application.service.ReceivablesArchive archive;
+
+    @Test
+    void cashRiskAndAllocationsReconcileAcrossMonthsAndScopes() throws java.io.IOException {
+        String archivePermission="analytics:receivables:archive";
+        grantAdditionalAction(archivePermission);
+        fact(1,"A","HZ",10,11,6000);
+        fact(2,"B","HZ",20,11,1200);
+        fact(3,"B","HZ",20,11,900);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_status_code='CONFIRMED',order_date='2026-09-05',customer_id=order_id,customer_name=CONCAT('样例门店 ',order_id),region_name='杭州',owner_staff_name=CONCAT('员工 ',owner_staff_code),order_no=CONCAT('S',order_id) WHERE tenant_id=?",tenant);
+        jdbc.update("INSERT INTO bi_receivable_installment(id,tenant_id,order_id,plan_version,installment_no,effective_at,due_date,amount) VALUES(1,?,1,1,1,'2026-09-05','2026-09-25',6000),(2,?,2,1,1,'2026-09-05','2026-10-26',1200)",tenant,tenant);
+        for (String dataset:List.of("ORDER_CASH_RECEIPT","ORDER_CASH_APPLICATION","ORDER_RECEIVABLE_PLAN","ORDER_RECEIVABLE_ADJUSTMENT","ORDER_RECEIVABLE_OPENING"))
+            jdbc.update("INSERT INTO bi_source_snapshot_checkpoint(tenant_id,dataset,source_version,projected_at) VALUES(?,?,'fixture',UTC_TIMESTAMP(6))",tenant,dataset);
+        for (String[] r:List.of(new String[]{"R1","1","09-15","2000"},new String[]{"R2","2","09-22","500"},
+                new String[]{"R3","1","10-12","4000"},new String[]{"R4","2","10-18","1000"}))
+            jdbc.update("INSERT INTO bi_cash_receipt(tenant_id,id,reference_no,customer_id,cash_at,amount,kind,verified) VALUES(?,UNHEX(MD5(?)),?,?,?,?,'RECEIPT',1)",tenant,r[0],r[0],r[1],"2026-"+r[2],r[3]);
+        long id=0;
+        for (String[] a:List.of(new String[]{"R1","1","09-15","2000"}, new String[]{"R2","2","10-02","500"},
+                new String[]{"R3","1","10-12","4000"},new String[]{"R4","2","10-18","700"},new String[]{"R4","3","10-18","300"}))
+            jdbc.update("INSERT INTO bi_cash_application(tenant_id,id,cash_key,order_id,effective_at,amount,verified) VALUES(?,?,MD5(?),?,?,?,1)",tenant,++id,a[0],a[1],"2026-"+a[2],a[3]);
+        jdbc.update("UPDATE bi_cash_receipt SET channel='银行转账',payee='样例公司',owner_code=IF(customer_id=1,'A','B'),verified_at=DATE_ADD(cash_at,INTERVAL 1 DAY) WHERE tenant_id=?",tenant);
+        String action=UUID.randomUUID().toString();
+        jdbc.update("""
+            INSERT INTO bi_operating_action(id,tenant_id,kind,business_ref,business_label,assignee,due_at,status,note,created_by,created_at,updated_at)
+            VALUES(?,?,'COLLECTION','order-id:1','S1','A','2026-10-03','OPEN','核实尾款','manager','2026-09-26','2026-09-26')
+            """,action,tenant);
+        jdbc.update("""
+            INSERT INTO bi_operating_action_event(id,tenant_id,action_id,revision,status,assignee,due_at,note,actor,occurred_at,promised_on,disputed)
+            VALUES(?,?,?,1,'OPEN','A','2026-10-03','核实尾款','manager','2026-09-26','2026-10-03',1)
+            """,UUID.randomUUID().toString(),tenant,action);
+        var full=policy(List.of(clause("ALL",all(),all(),all())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(full);
+        var writePolicy=new SupplyAuthorizationView(full.mode(),full.tenantId(),full.userId(),full.employeeCode(),
+                full.applicationVersion(),full.memberVersion(),full.employeeRevision(),full.organizationVersion(),
+                full.permissions(),archivePermission,true,full.clauses(),full.regionLimit(),full.warehouseLimit());
+        when(iam.authorization(eq(actor),eq(archivePermission))).thenReturn(writePolicy);
+        var sep=java.time.LocalDate.of(2026,9,1);
+        var oct=sep.plusMonths(1);
+        try (var context=SupplyAuthorizationContext.open(iam,actor,full)) {
+            var sept=receivables.load(sep,oct.minusDays(1),null,null,null,null,1,20).totals();
+            var revision=archive.save(sep,oct.minusDays(1));
+            assertThat(archive.save(sep,oct.minusDays(1))).isEqualTo(revision);
+            assertThat(archive.revisions(sep,oct.minusDays(1))).hasSize(1);
+            jdbc.update("UPDATE bi_cash_receipt SET reference_no='R1-reconciled' WHERE tenant_id=? AND reference_no='R1'",tenant);
+            var frozen=archive.read(sep,oct.minusDays(1),revision,null,1,20,null,null);
+            assertThat(frozen.receipts()).anyMatch(r->"R1".equals(r.reference()));
+            assertThat(receivables.load(sep,oct.minusDays(1),null,null,null,null,1,20).version()).isNotEqualTo(revision);
+            assertThat(sept.receipts()).isEqualByComparingTo("2500");
+            var queue=receivables.loadFiltered(sep,oct.minusDays(1),null,null,null,null,1,20,"A",true);
+            assertThat(queue.balanceCount()).isEqualTo(1);
+            assertThat(queue.balances().getFirst().promisedOn()).isEqualTo(oct.plusDays(2));
+            assertThat(queue.cashGroups()).anyMatch(g->g.dimension().equals("CHANNEL") && g.label().equals("银行转账") && g.net().intValueExact()==2500);
+            assertThat(sept.unapplied()).isEqualByComparingTo("500");
+            assertThat(sept.overdue()).isEqualByComparingTo("4000");
+            assertThat(sept.missingDue()).isEqualByComparingTo("900");
+            var october=receivables.load(oct,oct.plusMonths(1).minusDays(1),null,null,null,null,1,20);
+            assertThat(october.totals().receipts()).isEqualByComparingTo("5000");
+            assertThat(october.totals().cumulativeReceipts()).isEqualByComparingTo("7500");
+            assertThat(october.totals().applied()).isEqualByComparingTo("5500");
+            assertThat(october.totals().outstanding()).isEqualByComparingTo("600");
+            assertThat(october.totals().overdue()).isZero();
+            assertThat(october.totals().opening().add(october.totals().newReceivables()).add(october.totals().adjustments()).subtract(october.totals().applied())).isEqualByComparingTo(october.totals().outstanding());
+        }
+        var self=policy(List.of(clause("SELF",none(),all(),none())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(self);
+        try (var context=SupplyAuthorizationContext.open(iam,actor,self)) {
+            var restricted=receivables.load(sep,oct.minusDays(1),null,null,null,null,1,20);
+            assertThatThrownBy(()->archive.revisions(sep,oct.minusDays(1))).isInstanceOf(AuthorizationDeniedException.class);
+            assertThat(restricted.completeCashScope()).isFalse();
+            assertThat(restricted.totals().unapplied()).isNull();
+            assertThat(restricted.totals().receipts()).isEqualByComparingTo("2000");
+            assertThat(restricted.totals().outstanding()).isEqualByComparingTo("4000");
+        }
+    }
+
+    @Test void installmentsRefundsAndApprovedCreditsKeepCashAndDebtSeparate() {
+        var sep=java.time.LocalDate.of(2026,9,1);
+        var oct=sep.plusMonths(1);
+        fact(21,"A","HZ",1,1,6000);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_status_code='CONFIRMED',order_date='2026-09-01',customer_id=1 WHERE tenant_id=?",tenant);
+        jdbc.update("""
+            INSERT INTO bi_receivable_installment(id,tenant_id,order_id,plan_version,installment_no,effective_at,due_date,amount)
+            VALUES(1,?,21,1,1,'2026-09-01','2026-09-14',3000),(2,?,21,1,2,'2026-09-01','2026-11-01',3000)
+            """,tenant,tenant);
+        for(String key:List.of("ORDER_CASH_RECEIPT","ORDER_CASH_APPLICATION","ORDER_RECEIVABLE_PLAN","ORDER_RECEIVABLE_ADJUSTMENT","ORDER_RECEIVABLE_OPENING"))
+            jdbc.update("INSERT INTO bi_source_snapshot_checkpoint(tenant_id,dataset,source_version,projected_at) VALUES(?,?,'verified',UTC_TIMESTAMP())",tenant,key);
+        jdbc.update("""
+            INSERT INTO bi_cash_receipt(tenant_id,id,reference_no,customer_id,cash_at,amount,kind,verified) VALUES
+            (?,UNHEX(MD5('C1')),'C1',1,'2026-09-03',2000,'RECEIPT',1),(?,UNHEX(MD5('F1')),'F1',1,'2026-10-06',500,'REFUND',1)
+            """,tenant,tenant);
+        jdbc.update("INSERT INTO bi_cash_application(tenant_id,id,cash_key,order_id,effective_at,amount,verified) VALUES(?,11,MD5('C1'),21,'2026-09-03',2000,1)",tenant);
+        jdbc.update("""
+            INSERT INTO bi_receivable_adjustment(tenant_id,id,order_id,event_type,receivable_delta,received_delta,effective_at,deleted)
+            VALUES(?,1,21,'CREDIT_NOTE',-4000,0,'2026-10-03',0),(?,2,21,'PAYMENT_REVERSAL',0,-500,'2026-10-06',0)
+            """,tenant,tenant);
+        var full=policy(List.of(clause("ALL",all(),all(),all())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(full);
+        try(var context=SupplyAuthorizationContext.open(iam,actor,full)) {
+            var september=receivables.load(sep,oct.minusDays(1),null,null,null,null,1,25);
+            assertThat(september.totals().overdue()).isEqualByComparingTo("1000");
+            assertThat(september.balances()).extracting(r->r.remaining().intValueExact()).containsExactly(1000,3000);
+            var october=receivables.load(oct,oct.plusMonths(1).minusDays(1),null,null,null,null,1,25).totals();
+            assertThat(october.receipts()).isZero();assertThat(october.refunds()).isEqualByComparingTo("500");
+            assertThat(october.net()).isEqualByComparingTo("-500");assertThat(october.outstanding()).isEqualByComparingTo("500");
+            assertThat(october.adjustments()).isEqualByComparingTo("-3500");
+        }
+    }
+
+    @Autowired com.rigour.analytics.application.service.AssignedFollowups assigned;
+
+    @Test void assignedFollowupsShareTheManagersRecordAndProtectOtherEmployees() {
+        String read="sales:followup:self:read", respond="sales:followup:self:respond";
+        grantAdditionalAction(read);grantAdditionalAction(respond);
+        var base=policy(List.of(clause("SELF",none(),all(),none())),all(),all());
+        for(String action:List.of(read,respond)){
+            var p=new SupplyAuthorizationView(base.mode(),base.tenantId(),base.userId(),"A",1,1,1,1,base.permissions(),action,true,base.clauses(),base.regionLimit(),base.warehouseLimit());
+            when(iam.authorization(actor,action)).thenReturn(p);
+        }
+        String mine=UUID.randomUUID().toString(),other=UUID.randomUUID().toString();
+        for(var id:List.of(mine,other))jdbc.update("""
+            INSERT INTO bi_operating_action(id,tenant_id,kind,business_ref,business_label,assignee,due_at,status,note,revision,created_by,created_at,updated_at)
+            VALUES(?,?,'CUSTOMER','customer-id:1','样例门店',?,UTC_TIMESTAMP(),'OPEN','核对补货计划',1,'manager',UTC_TIMESTAMP(),UTC_TIMESTAMP())
+            """,id,tenant,id.equals(mine)?"A":"B");
+        var page=assigned.list(false,1,25);
+        assertThat(page.items()).extracting(task->task.id()).containsExactly(mine);
+        var started=new com.rigour.analytics.application.service.AssignedFollowups.Reply("IN_PROGRESS","已与门店联系",1);
+        assertThatThrownBy(()->assigned.respond(other,started)).isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        assigned.respond(mine,started);
+        assertThatThrownBy(()->assigned.respond(mine,started)).isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        assigned.respond(mine,new com.rigour.analytics.application.service.AssignedFollowups.Reply("RESOLVED","门店已确认",2));
+        assertThat(assigned.list(false,1,25).total()).isZero();
+        assertThat(assigned.list(true,1,25).items().getFirst().revision()).isEqualTo(3);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_operating_action_event WHERE tenant_id=? AND action_id=?",Integer.class,tenant,mine)).isEqualTo(2);
+    }
+
     @BeforeEach
     void setup() {
         tenant = UUID.randomUUID().toString();

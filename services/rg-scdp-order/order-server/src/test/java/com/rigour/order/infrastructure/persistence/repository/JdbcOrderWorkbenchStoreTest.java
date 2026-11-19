@@ -25,6 +25,7 @@ class JdbcOrderWorkbenchStoreTest {
         scopes = mock(OrderDataScope.class);
         when(scopes.predicate(anyString(), eq("o."), isNull())).thenReturn(new OrderDataScope.Predicate("o.region_code=?", List.of("allowed")));
         when(scopes.paymentPredicate(anyString(),eq("o."),eq("p."))).thenReturn(new OrderDataScope.Predicate("o.region_code=?",List.of("allowed")));
+        jdbc.execute("CREATE VIEW order_verified_payment_v AS SELECT p.*,payment_time allocation_effective_at,payment_time actual_cash_at FROM order_payment_record p WHERE deleted=0 AND payment_status_code IN ('RECEIVED','CHECKED')");
         store = new JdbcOrderWorkbenchStore(jdbc, scopes);
         order(1,"tenant","self","allowed","SUBMITTED","2026-11-02T00:00:00Z",100,40);
         order(2,"tenant","self","allowed","COMPLETED","2026-10-02T00:00:00Z",200,60);

@@ -68,6 +68,82 @@ class OrderAttributionAndScopeIntegrationTest {
     CallerIdentity actor;
     TransactionTemplate tx;
 
+    @Autowired com.rigour.order.infrastructure.persistence.mapper.OrderCostSourceMapper payrollSource;
+
+    @Test
+    void contractRevisionsKeepOldTermsAndAcceptExactRetries() {
+        var user=UUID.randomUUID();
+        TestAuthorizationContext.set(new CallerIdentity("TENANT",user,UUID.fromString(tenant),user,null,UUID.randomUUID(),1,1,1,Set.of(),Set.of("order:read","order:receivable-plan:write")));
+        jdbc.update("INSERT INTO order_sales_order(tenant_id,order_no,order_status_code,order_date,payable_amount) VALUES(?,'TERMS-QA','SUBMITTED','2026-09-01',3000)",tenant);
+        long id=jdbc.queryForObject("SELECT id FROM order_sales_order WHERE tenant_id=? AND order_no='TERMS-QA'",Long.class,tenant);
+        var service=new com.rigour.order.application.service.sales.ReceivablePlanService(jdbc,mock(OrderDataScope.class));
+        var sept=java.time.LocalDate.of(2026,9,1);
+        var cmd=new com.rigour.order.application.service.sales.ReceivablePlanService.Command(0,sept,"合同 QA",List.of(
+          new com.rigour.order.application.service.sales.ReceivablePlanService.Line(sept.plusDays(13),new java.math.BigDecimal("1000")),
+          new com.rigour.order.application.service.sales.ReceivablePlanService.Line(sept.plusMonths(1),new java.math.BigDecimal("2000"))));
+        assertThat(service.save(id,cmd).version()).isEqualTo(1);assertThat(service.save(id,cmd).version()).isEqualTo(1);
+        var next=new com.rigour.order.application.service.sales.ReceivablePlanService.Command(1,sept.plusDays(5),"补充协议",cmd.lines());
+        assertThat(service.save(id,next).version()).isEqualTo(2);assertThatThrownBy(()->service.save(id,cmd)).isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_receivable_installment WHERE tenant_id=? AND order_id=?",Integer.class,tenant,id)).isEqualTo(4);
+    }
+
+    @Test
+    void partialCashOnlyQualifiesInMonthOfFirstVerifiedFullSettlement() {
+        jdbc.update("INSERT INTO order_sales_order(tenant_id,order_no,owner_employee_code,region_code,source_system_code,order_status_code,order_date,payable_amount) VALUES(?,'S-LOCAL','A','HZ','LOCAL','CONFIRMED','2026-09-05',6000)",tenant);
+        long id=jdbc.queryForObject("SELECT id FROM order_sales_order WHERE tenant_id=? AND order_no='S-LOCAL'",Long.class,tenant);
+        jdbc.update("INSERT INTO order_sales_order_line(tenant_id,order_id,line_no,line_amount) VALUES(?,?,1,3500),(?,?,2,2500)",tenant,id,tenant,id);
+        jdbc.update("INSERT INTO order_payment_record(tenant_id,payment_no,order_id,payment_time,paid_amount,payment_status_code) VALUES(?,'R1',?,'2026-09-15',2000,'CHECKED'),(?,'R3',?,'2026-10-12',4000,'CHECKED'),(?,'UNVERIFIED',?,'2026-09-20',4000,'RECEIVED')",tenant,id,tenant,id,tenant,id);
+        var sept=payrollSource.payrollLines(tenant,"A",null,java.time.LocalDateTime.parse("2026-09-30T16:00:00"));
+        assertThat(sept).hasSize(2).allSatisfy(line->{assertThat(line.fullyPaidDate()).isNull();assertThat(line.paidAmount()).isEqualByComparingTo("2000");});
+        var oct=payrollSource.payrollLines(tenant,"A",null,java.time.LocalDateTime.parse("2026-10-31T16:00:00"));
+        assertThat(oct).allSatisfy(line->{assertThat(line.fullyPaidDate()).isEqualTo(java.time.LocalDate.of(2026,10,12));assertThat(line.orderAmount()).isEqualByComparingTo("6000");assertThat(line.qualityStatus()).isEqualTo("COMPLETE");});
+        var nov=payrollSource.payrollLines(tenant,"A",null,java.time.LocalDateTime.parse("2026-11-30T16:00:00"));
+        assertThat(nov).noneMatch(line->line.fullyPaidDate().getMonthValue()==11);
+        var cash=jdbc.queryForObject("SELECT SUM(amount) FROM order_cash_receipt_v WHERE tenant_id=? AND verified=1",java.math.BigDecimal.class,tenant);
+        assertThat(cash).isEqualByComparingTo("6000");
+    }
+
+    @Test void verifiedAdvanceRetainsCashDayWhenAllocatedToTwoOrdersNextMonth() {
+        jdbc.update("""
+            INSERT INTO order_sales_order(tenant_id,order_no,owner_employee_code,region_code,source_system_code,order_status_code,order_date,payable_amount)
+            VALUES (?,'A-1','A','HZ','LOCAL','CONFIRMED','2026-09-05',1200),(?,'A-2','A','HZ','LOCAL','CONFIRMED','2026-09-06',900)
+            """,tenant,tenant);
+        jdbc.update("""
+            INSERT INTO order_fund_document(tenant_id,document_no,direction_code,counterparty_type_code,document_status_code,business_type_code,
+             payment_serial_no,occurred_time,amount,customer_id,bank_account_name,settlement_method_code,confirmed_at)
+            VALUES(?,'ADV-1','RECEIPT','CUSTOMER','CONFIRMED','ADVANCE','BANK-TEST','2026-09-24',500,123,'样例收款方','BANK','2026-09-26')
+            """,tenant);
+        jdbc.update("""
+            INSERT INTO order_sales_order_line(tenant_id,order_id,line_no,line_amount)
+            SELECT tenant_id,id,1,payable_amount FROM order_sales_order WHERE tenant_id=?
+            """,tenant);
+        jdbc.update("""
+            INSERT INTO order_payment_record(tenant_id,payment_no,order_id,customer_id,payment_time,created_time,paid_amount,payment_status_code,transaction_no)
+            SELECT tenant_id,'APPLY-ADV',id,123,'2026-09-24','2026-10-02',500,'CHECKED','BANK-TEST'
+            FROM order_sales_order WHERE tenant_id=? AND order_no='A-1'
+            """,tenant);
+        String connector=UUID.randomUUID().toString();
+        jdbc.update("""
+            INSERT INTO order_sync_receipt(tenant_id,connector_id,receipt_no,customer_id,amount,occurred_at,source_status,checksum,state)
+            VALUES(?,?,'SPLIT-1',123,1000,'2026-09-28','CONFIRMED','local','ALLOCATED')
+            """,tenant,connector);
+        jdbc.update("""
+            INSERT INTO order_payment_record(tenant_id,payment_no,order_id,customer_id,payment_time,created_time,paid_amount,payment_status_code)
+            SELECT tenant_id,CONCAT('P-',id),id,123,'2026-09-28','2026-10-08',IF(order_no='A-1',700,300),'CHECKED'
+            FROM order_sales_order WHERE tenant_id=?
+            """,tenant);
+        jdbc.update("""
+            INSERT INTO order_sync_allocation(tenant_id,connector_id,receipt_no,order_id,payment_id,amount,evidence,actor_id,created_at)
+            SELECT tenant_id,?,'SPLIT-1',order_id,id,paid_amount,'核销凭据','qa','2026-10-08'
+            FROM order_payment_record WHERE tenant_id=? AND payment_no LIKE 'P-%'
+            """,connector, tenant);
+        assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM order_cash_receipt_v WHERE tenant_id=? AND verified=1 AND cash_at<'2026-10-01'",java.math.BigDecimal.class,tenant)).isEqualByComparingTo("1500");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_cash_application_v WHERE tenant_id=? AND effective_at<'2026-10-01'",Integer.class,tenant)).isZero();
+        var october=payrollSource.payrollLines(tenant,"A",null,java.time.LocalDateTime.parse("2026-10-31T16:00:00"));
+        assertThat(october).filteredOn(e->e.orderNo().equals("A-1")).singleElement().satisfies(e->assertThat(e.fullyPaidDate()).isEqualTo(java.time.LocalDate.of(2026,10,8)));
+        assertThat(october).filteredOn(e->e.orderNo().equals("A-2")).singleElement().satisfies(e->assertThat(e.fullyPaidDate()).isNull());
+    }
+
     @BeforeEach
     void setup() {
         when(units.validUnits(anyString())).thenReturn(Set.of("BOX", "PIECE", "SET"));

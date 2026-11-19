@@ -90,7 +90,8 @@ public class OperatingWorkspaceService {
                         subject.employeeCode(),
                         text(input.assignee(), 160, true, "负责人"),
                         due(input.dueAt()),
-                        text(input.note(), 2000, true, "跟进内容"));
+                        text(input.note(), 2000, true, "跟进内容"),"COLLECTION".equals(kind)?input.promisedOn():null,
+                        "COLLECTION".equals(kind)?input.disputed():null);
         scope.requireObjectScope(command.cityCode(), command.employeeCode());
         scope.requireObjectActionScope(command.cityCode(), command.employeeCode(), ACTION_WRITE);
         if ("STOCK".equals(command.kind())) scope.requireGlobalGovernance();
@@ -126,7 +127,9 @@ public class OperatingWorkspaceService {
                         due(input.dueAt()),
                         status,
                         text(input.note(), 2000, true, "处理记录"),
-                        input.expectedRevision());
+                        input.expectedRevision(),
+                        "COLLECTION".equals(previous.kind()) && input.disputed()!=null ? input.promisedOn() : previous.promisedOn(),
+                        "COLLECTION".equals(previous.kind()) && input.disputed()!=null ? input.disputed() : previous.disputed());
         requireTargetScope(tenant, "SALES_OWNER", command.assignee(), ACTION_WRITE);
         return store.updateAction(
                         tenant, actor.userId().toString(), previous, command, Instant.now(clock))

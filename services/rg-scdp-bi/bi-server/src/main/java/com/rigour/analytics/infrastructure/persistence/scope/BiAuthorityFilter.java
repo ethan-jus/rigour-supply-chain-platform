@@ -26,7 +26,9 @@ public final class BiAuthorityFilter extends OncePerRequestFilter {
             HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
         // 新成本看板在用例内独立核验页面及三域费用范围，不调用旧销售事实投影。
-        if (request.getRequestURI().startsWith("/api/v1/analytics/supply/cost-dashboard/")) {
+        String path=request.getRequestURI();
+        if (path.startsWith("/api/v1/analytics/supply/cost-dashboard/") || path.equals("/api/v1/analytics/me/followups")
+                || path.startsWith("/api/v1/analytics/me/followups/")) {
             chain.doFilter(request, response);
             return;
         }

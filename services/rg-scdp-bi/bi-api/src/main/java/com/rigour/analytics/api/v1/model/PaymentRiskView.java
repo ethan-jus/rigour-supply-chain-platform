@@ -5,7 +5,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 
-/** 未结清订单按整单应收统计；每单唯一归属最高风险产品，并列取商品合计金额最大者。 */
+/** 商品账龄以截至日的剩余未收统计；每单唯一归属最高风险产品，并列取商品合计金额最大者。 */
 public record PaymentRiskView(
         Instant generatedAt, Instant dataUpdatedAt, List<Category> categories, List<Order> orders,
         List<Region> regions) {
@@ -20,5 +20,5 @@ public record PaymentRiskView(
             String orderId, String orderNo, String customerName,
             String regionCode, String regionName, String ownerStaffCode, String ownerStaffName,
             LocalDate orderDate, long ageDays, BigDecimal orderAmount, BigDecimal paidAmount,
-            List<Product> products) {}
+            List<Product> products, BigDecimal remainingAmount) {}
 }

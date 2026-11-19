@@ -65,7 +65,7 @@ class PaymentRiskServiceTest {
         var a = fact("11", "台呢子分类");
         var b = new Fact(a.orderId(), a.orderNo(), a.customerName(), a.regionCode(), a.regionName(),
                 a.ownerStaffCode(), a.ownerStaffName(), a.orderDate(), a.categoryId(), a.categoryName(),
-                "B", "另一个台呢", a.orderAmount(), a.paidAmount(), now, new BigDecimal("1500"));
+                "B", "另一个台呢", a.orderAmount(), a.paidAmount(), now, new BigDecimal("1500"),a.remainingAmount());
         when(store.load(anyString(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of(b, fact("2", "球杆"), a, a));
         var assigned = query(null, null).orders().getFirst().products().getFirst();
@@ -91,6 +91,6 @@ class PaymentRiskServiceTest {
     private Fact fact(String category, String name) {
         return new Fact("1", "DEMO-1", "客户", "CD", "成都", "A", "业务员A",
                 Instant.parse("2026-09-24T16:00:00Z"), category, name, category, name,
-                new BigDecimal("10000"), new BigDecimal("6000"), now, new BigDecimal("11".equals(category) ? "1000" : "8000"));
+                new BigDecimal("10000"), new BigDecimal("6000"), now, new BigDecimal("11".equals(category) ? "1000" : "8000"),new BigDecimal("4000"));
     }
 }

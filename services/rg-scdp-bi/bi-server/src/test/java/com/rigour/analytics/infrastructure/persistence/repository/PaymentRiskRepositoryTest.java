@@ -52,6 +52,8 @@ class PaymentRiskRepositoryTest {
                 ('T',1,3,13,'删除行',3,'配件',1,2000),('OTHER',1,1,11,'其他租户',9,'私有分类',0,3000)
                 """);
         jdbc.update("INSERT INTO bi_product_dim VALUES('T',12,2,'球杆'),('OTHER',11,9,'其他租户')");
+        jdbc.execute("CREATE TABLE bi_order_balance_event(tenant_id VARCHAR,order_id BIGINT,effective_at TIMESTAMP,paid DECIMAL(24,6),adjustment DECIMAL(24,6))");
+        jdbc.update("INSERT INTO bi_order_balance_event VALUES('T',1,'2026-10-01',6000,-400),('T',2,'2026-10-01',10000,0),('T',1,'2026-11-01',3600,0)");
         OperatingCityTestSchema.install(jdbc);
     }
 
@@ -61,6 +63,7 @@ class PaymentRiskRepositoryTest {
             assertThat(row.orderId()).isEqualTo("1");
             assertThat(row.orderAmount()).isEqualByComparingTo("10000");
             assertThat(row.paidAmount()).isEqualByComparingTo("6000");
+            assertThat(row.remainingAmount()).isEqualByComparingTo("3600");
         });
         assertThat(rows).extracting(row -> row.lineAmount().intValue()).containsExactly(1000, 9000);
         assertThat(rows).extracting(row -> row.productName()).containsExactly("台呢A", "球杆A");

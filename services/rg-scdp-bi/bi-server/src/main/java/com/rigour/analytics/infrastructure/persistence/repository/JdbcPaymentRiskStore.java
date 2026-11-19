@@ -49,19 +49,23 @@ public class JdbcPaymentRiskStore implements PaymentRiskStore {
         var args = new MapSqlParameterSource("tenant", tenant)
                 .addValue("from", Timestamp.from(from)).addValue("to", Timestamp.from(to))
                 .addValue("region", region).addValue("owner", owner).addValue("limit", limit);
-        // 完整订单数据权限先于商品关联；部分回款不抵扣风险金额，结清订单退出统计。
+        // 先按同一截止时点计算整单余额，再按订单权限关联商品。
         return BiScopedQueries.query(jdbc, """
                 SELECT o.order_id,o.order_no,o.customer_name,o.region_code,o.region_name,
                        o.owner_staff_code,o.owner_staff_name,o.order_date,
                        CASE WHEN p.product_id IS NOT NULL THEN p.product_category_id ELSE l.product_category_id END category_id,
                        CASE WHEN p.product_id IS NOT NULL THEN p.product_category_name ELSE l.product_category_name END category_name,
-                       l.product_id,l.product_name,COALESCE(l.line_amount,0) line_amount,o.payable_amount,o.paid_amount,o.synced_time
+                       l.product_id,l.product_name,COALESCE(l.line_amount,0) line_amount,o.payable_amount,COALESCE(b.paid,0) paid_amount,
+                       o.payable_amount+COALESCE(b.adjustment,0)-COALESCE(b.paid,0) remaining_amount,o.synced_time
                   FROM bi_sales_order_fact o
+                  LEFT JOIN (SELECT order_id,SUM(paid) paid,SUM(adjustment) adjustment
+                               FROM bi_order_balance_event WHERE tenant_id=:tenant AND effective_at<=:to
+                               GROUP BY order_id) b ON b.order_id=o.order_id
                   LEFT JOIN bi_sales_order_line_fact l
                     ON l.tenant_id=o.tenant_id AND l.order_id=o.order_id AND l.deleted=0
                   LEFT JOIN bi_product_dim p ON p.tenant_id=l.tenant_id AND p.product_id=l.product_id
-                 WHERE o.tenant_id=:tenant AND o.deleted=0 AND COALESCE(o.order_status_code,'') NOT IN ('CANCELLED','DELETED')
-                   AND o.payable_amount>0 AND o.paid_amount<o.payable_amount
+                 WHERE o.tenant_id=:tenant AND o.deleted=0 AND COALESCE(o.order_status_code,'') NOT IN ('DRAFT','CANCELLED','DELETED')
+                   AND o.payable_amount>0 AND o.payable_amount+COALESCE(b.adjustment,0)>COALESCE(b.paid,0)
                    AND o.order_date BETWEEN :from AND :to
                    AND (:region IS NULL OR o.region_code""" + JDBC_REGION_SCOPE + """
 )
@@ -74,6 +78,6 @@ public class JdbcPaymentRiskStore implements PaymentRiskStore {
                 r.getTimestamp("order_date").toInstant(), r.getString("category_id"),
                 r.getString("category_name"), r.getString("product_id"), r.getString("product_name"),
                 r.getBigDecimal("payable_amount"), r.getBigDecimal("paid_amount"),
-                r.getTimestamp("synced_time").toInstant(), r.getBigDecimal("line_amount")));
+                r.getTimestamp("synced_time").toInstant(), r.getBigDecimal("line_amount"),r.getBigDecimal("remaining_amount")));
     }
 }

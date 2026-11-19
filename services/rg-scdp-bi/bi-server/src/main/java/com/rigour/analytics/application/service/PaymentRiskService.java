@@ -65,7 +65,7 @@ public class PaymentRiskService {
         var facts = from.isAfter(end) ? List.<PaymentRiskStore.Fact>of()
                 : store.load(tenant, from, end, region, owner, MAX_LINES + 1);
         if (facts.size() > MAX_LINES) throw bad("未回款明细超过50000行，请缩小订单日期或城市范围；未返回部分统计");
-        var today = generatedAt.atZone(BiBusinessTime.ZONE).toLocalDate();
+        var today = end.atZone(BiBusinessTime.ZONE).toLocalDate();
         var grouped = facts.stream().collect(Collectors.groupingBy(PaymentRiskStore.Fact::orderId,
                 LinkedHashMap::new, Collectors.toList()));
         List<Order> orders = new ArrayList<>();
@@ -98,7 +98,7 @@ public class PaymentRiskService {
             if (riskLevel != null && !riskLevel.equals(assigned.riskLevel())) continue;
             orders.add(new Order(first.orderId(), first.orderNo(), first.customerName(),
                     first.regionCode(), first.regionName(), first.ownerStaffCode(), first.ownerStaffName(),
-                    date, days, first.orderAmount(), first.paidAmount(), List.of(assigned)));
+                    date, days, first.orderAmount(), first.paidAmount(), List.of(assigned),first.remainingAmount()));
         }
         Instant updated = facts.stream().map(PaymentRiskStore.Fact::syncedAt).filter(Objects::nonNull)
                 .max(Instant::compareTo).orElse(null);

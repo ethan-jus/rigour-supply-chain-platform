@@ -82,7 +82,7 @@ class OperatingWorkspaceServiceTest {
     @Test void explicitlyAssignedSelfCanFollowUpWithoutGainingBusinessReadAccess() {
         when(scope.effective()).thenReturn(new BiEffectiveScopeView("SELF", "AUTHORIZED", null, List.of("BJ"), "E2", "E2", "BJ", "E2", false, List.of()));
         var assigned = new ActionView("id", "COLLECTION", "customer-id:17", "客户", "BJ", "E1", "E2", NOW,
-                "OPEN", "已指派", 1, USER.toString(), NOW, NOW);
+                "OPEN", "已指派", 1, USER.toString(), NOW, NOW,null,null);
         when(store.action(TENANT.toString(), "id")).thenReturn(Optional.of(assigned));
         service.events("id");
         verify(scope, times(2)).requireObjectScope("BJ", "E2");
@@ -93,7 +93,7 @@ class OperatingWorkspaceServiceTest {
     private ActionCommand create() { return new ActionCommand("COLLECTION", "customer-code:C17", "伪造名称", "SH", "OTHER", "E1", NOW, "联系客户"); }
     private ActionUpdateCommand update(String status, int revision) { return new ActionUpdateCommand("E1", NOW, status, "已与客户确认下一步", revision); }
     private ActionView action(String status, int revision) {
-        return new ActionView("id", "COLLECTION", "customer-id:17", "客户", "BJ", "E1", "E1", NOW, status, "原记录", revision, USER.toString(), NOW, NOW);
+        return new ActionView("id", "COLLECTION", "customer-id:17", "客户", "BJ", "E1", "E1", NOW, status, "原记录", revision, USER.toString(), NOW, NOW,null,null);
     }
     private void authorize(Set<String> permissions) {
         TestAuthorizationContext.set(new CallerIdentity("TENANT", USER, TENANT, USER, null, UUID.randomUUID(), 1, 1, 1, Set.of(), permissions));

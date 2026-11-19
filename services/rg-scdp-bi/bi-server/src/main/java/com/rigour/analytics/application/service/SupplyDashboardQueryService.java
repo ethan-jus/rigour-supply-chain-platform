@@ -57,6 +57,10 @@ public final class SupplyDashboardQueryService {
     private final Clock clock;
     private final BiDataScopeService scopes;
 
+    private ReceivablesService funds;
+    @org.springframework.beans.factory.annotation.Autowired
+    void setReceivables(ReceivablesService funds) { this.funds=funds; }
+
     public SupplyDashboardQueryService(
             SupplyDashboardStore store, Clock analyticsClock, BiDataScopeService scopes) {
         this.store = Objects.requireNonNull(store, "store");
@@ -102,20 +106,28 @@ public final class SupplyDashboardQueryService {
                         productCategoryId,
                         sourceSystemCode);
         SupplyDashboardData data = store.overview(tenantId, filter);
+        var cash=funds==null?null:funds.overview(filter,scope);
+        var cards=cash==null?metrics(data):metrics(data).stream().map(m -> switch(m.metricCode()) {
+            case "receipt_amount" -> metric(m.metricCode(),"期间实际到账",cash.received(),"CNY","按资金凭据归集，受限范围仅显示已归单的分配份额");
+            case "unpaid_amount" -> metric(m.metricCode(),"期末应收未收",cash.outstanding(),"CNY","所选截止日的剩余应收，含以前期间未结清订单");
+            case "payment_risk_amount" -> metric(m.metricCode(),"已逾期未收",cash.overdue(),"CNY","按合同到期日和剩余应收统计");
+            default -> m;
+        }).toList();
+        var cashTrend=cash==null?data.collectionTrend().stream().map(SupplyDashboardQueryService::trend).toList():cash.days();
         if (!scope.fullTenant())
             return restrictedOverview(
                     filter,
                     now,
                     data,
-                    !scopes.effective().unavailableSubjects().contains("INVENTORY"));
+                    !scopes.effective().unavailableSubjects().contains("INVENTORY"), cards,cashTrend);
         Instant cutoff = cutoff(data);
         return new SupplyDashboardOverviewView(
                 filter.from(),
                 filter.to(),
                 now,
-                metrics(data),
+                cards,
                 data.salesTrend().stream().map(SupplyDashboardQueryService::trend).toList(),
-                data.collectionTrend().stream().map(SupplyDashboardQueryService::trend).toList(),
+                cashTrend,
                 data.cityCostTrend().stream().map(SupplyDashboardQueryService::trend).toList(),
                 data.citySalesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
                 data.salesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
@@ -287,7 +299,7 @@ public final class SupplyDashboardQueryService {
             SupplyDashboardFilter filter,
             Instant now,
             SupplyDashboardData data,
-            boolean inventory) {
+            boolean inventory,List<SupplyDashboardMetricCardView> effectiveCards,List<SupplyDashboardTrendPointView> cashTrend) {
         // 只有城市总范围且没有更细的业务筛选时，城市全量成本/目标与销售分母才同口径。
         boolean wholeCity =
                 filter.ownerStaffCode() == null
@@ -325,7 +337,7 @@ public final class SupplyDashboardQueryService {
                         "payment_risk_amount_rate",
                         "payment_aging_bucket_count");
         var cards =
-                metrics(data).stream()
+                effectiveCards.stream()
                         .filter(
                                 item ->
                                         permitted.contains(item.metricCode())
@@ -371,9 +383,7 @@ public final class SupplyDashboardQueryService {
                 cards,
                 data.salesTrend().stream().map(SupplyDashboardQueryService::trend).toList(),
                 cityReceipts
-                        ? data.collectionTrend().stream()
-                                .map(SupplyDashboardQueryService::trend)
-                                .toList()
+                        ? cashTrend
                         : List.of(),
                 wholeCity
                         ? data.cityCostTrend().stream()
@@ -967,7 +977,7 @@ public final class SupplyDashboardQueryService {
                 definition(
                         "unpaid_amount",
                         "待回款",
-                        "SUM(bi_sales_order_fact.unpaid_amount)，按订单事实累计未收金额统计",
+                        "截至所选期末的有效应收减去有效核销，按合同分期及有凭据的期初调整归集",
                         "Analytics BI / bi_sales_order_fact",
                         "排除 deleted=1 和 order_status_code 为 CANCELLED/DELETED",
                         updatedAt,

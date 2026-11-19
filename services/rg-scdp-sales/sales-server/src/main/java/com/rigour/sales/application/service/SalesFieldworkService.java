@@ -36,11 +36,7 @@ public class SalesFieldworkService {
             if(!scope.all()) members.retainAll(scope.employeeCodes());
             scope=new SalesManagementDirectory.Access(false,members);
         }
-        Set<String> matches=new HashSet<>();
-        if(keyword!=null&&!keyword.isBlank()) {
-            String term=keyword.strip().toLowerCase(Locale.ROOT);
-            for(var person:identities(caller,scope)) if(person.employeeName()!=null&&person.employeeName().toLowerCase(Locale.ROOT).contains(term)) matches.add(person.employeeCode());
-        }
+        Set<String> matches=matchingEmployeeCodes(caller,scope,keyword);
         var search=new SalesFieldworkRepository.Search(status,keyword,matches,pendingOnly,riskKind);
         var totals=repository.totals(caller.tenantId(),date,scope,search);
         var rows=repository.page(caller.tenantId(),date,scope,search,size,(page-1)*size);
@@ -60,6 +56,13 @@ public class SalesFieldworkService {
         for(var person:identities(caller,scopes.resolve(caller,"sales:dashboard:read")))
             if(person.departmentId()!=null&&person.departmentName()!=null) result.put(person.departmentId(),new Department(person.departmentId().toString(),person.departmentName()));
         return List.copyOf(result.values());
+    }
+    public Set<String> matchingEmployeeCodes(com.rigour.shared.context.CallerIdentity caller,SalesManagementDirectory.Access scope,String keyword) {
+        if(keyword==null||keyword.isBlank()) return Set.of();
+        String term=keyword.strip().toLowerCase(Locale.ROOT);
+        return identities(caller,scope).stream()
+                .filter(person->person.employeeName()!=null && person.employeeName().toLowerCase(Locale.ROOT).contains(term))
+                .map(person->person.employeeCode()).collect(Collectors.toSet());
     }
     private List<com.rigour.hr.api.v1.model.HrEmployeeIdentityView> identities(com.rigour.shared.context.CallerIdentity caller,SalesManagementDirectory.Access scope) {
         var codes=repository.employeeCodes(caller.tenantId(),scope);

@@ -12,7 +12,7 @@ public interface OperatingWorkspaceMapper {
     String ACTION_COLUMNS = """
             id, kind, business_ref AS businessRef, business_label AS businessLabel,
             city_code AS cityCode, employee_code AS employeeCode, assignee, due_at AS dueAt,
-            status, note, revision, created_by AS createdBy, created_at AS createdAt, updated_at AS updatedAt
+            status, note, revision, created_by AS createdBy, created_at AS createdAt, updated_at AS updatedAt,promised_on AS promisedOn,disputed
             """;
     String ACTION_WHERE = """
             tenant_id=#{tenant}
@@ -73,15 +73,15 @@ public interface OperatingWorkspaceMapper {
 
     @Insert("""
             INSERT INTO bi_operating_action (id, tenant_id, kind, business_ref, business_label, city_code,
-                employee_code, assignee, due_at, status, note, revision, created_by, created_at, updated_at)
+                employee_code, assignee, due_at, status, note, revision, created_by, created_at, updated_at,promised_on,disputed)
             VALUES (#{id}, #{tenant}, #{c.kind}, #{c.businessRef}, #{c.businessLabel}, #{c.cityCode},
-                #{c.employeeCode}, #{c.assignee}, #{c.dueAt}, 'OPEN', #{c.note}, 1, #{actor}, #{now}, #{now})
+                #{c.employeeCode}, #{c.assignee}, #{c.dueAt}, 'OPEN', #{c.note}, 1, #{actor}, #{now}, #{now},#{c.promisedOn},#{c.disputed})
             """)
     int insertAction(@Param("tenant") String tenant, @Param("actor") String actor, @Param("id") String id,
             @Param("c") ActionCommand command, @Param("now") Instant now);
     @Update("""
             UPDATE bi_operating_action SET assignee=#{c.assignee}, due_at=#{c.dueAt}, status=#{c.status},
-                note=#{c.note}, revision=revision+1, updated_at=#{now}
+                note=#{c.note},promised_on=#{c.promisedOn},disputed=#{c.disputed}, revision=revision+1, updated_at=#{now}
              WHERE tenant_id=#{tenant} AND id=#{id} AND revision=#{c.expectedRevision}
             """)
     int updateAction(@Param("tenant") String tenant, @Param("id") String id, @Param("c") ActionUpdateCommand command,
@@ -89,15 +89,15 @@ public interface OperatingWorkspaceMapper {
 
     @Insert("""
             INSERT INTO bi_operating_action_event (id, tenant_id, action_id, revision, previous_status, status,
-                previous_assignee, assignee, previous_due_at, due_at, note, actor, occurred_at)
+                previous_assignee, assignee, previous_due_at, due_at, note, actor, occurred_at,promised_on,disputed)
             VALUES (#{e.id}, #{tenant}, #{e.actionId}, #{e.revision}, #{e.previousStatus}, #{e.status},
-                #{e.previousAssignee}, #{e.assignee}, #{e.previousDueAt}, #{e.dueAt}, #{e.note}, #{e.actor}, #{e.occurredAt})
+                #{e.previousAssignee}, #{e.assignee}, #{e.previousDueAt}, #{e.dueAt}, #{e.note}, #{e.actor}, #{e.occurredAt},#{e.promisedOn},#{e.disputed})
             """)
     int insertEvent(@Param("tenant") String tenant, @Param("e") ActionEventView event);
     @Select("""
             SELECT id, action_id AS actionId, revision, previous_status AS previousStatus, status,
                 previous_assignee AS previousAssignee, assignee, previous_due_at AS previousDueAt,
-                due_at AS dueAt, note, actor, occurred_at AS occurredAt
+                due_at AS dueAt, note, actor, occurred_at AS occurredAt,promised_on AS promisedOn,disputed
               FROM bi_operating_action_event WHERE tenant_id=#{tenant} AND action_id=#{id} ORDER BY revision DESC
             """)
     List<ActionEventView> events(@Param("tenant") String tenant, @Param("id") String id);

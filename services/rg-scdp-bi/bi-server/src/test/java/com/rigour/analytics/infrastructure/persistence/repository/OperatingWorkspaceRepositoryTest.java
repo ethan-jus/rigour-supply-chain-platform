@@ -37,6 +37,7 @@ class OperatingWorkspaceRepositoryTest {
         String target = v9.substring(v9.indexOf("CREATE TABLE bi_business_target"), v9.indexOf("CREATE TABLE bi_inventory_operation_fact"));
         execute(target);
         execute(Files.readString(Path.of("src/main/resources/db/migration/V10__bi_operating_actions.sql")));
+        execute(java.nio.file.Files.readString(java.nio.file.Path.of("src/main/resources/db/migration/V31__collection_commitments.sql")));
         jdbc.execute("CREATE TABLE bi_customer_dim (tenant_id VARCHAR(64), customer_id BIGINT, customer_code VARCHAR(50), customer_name VARCHAR(200), region_code VARCHAR(64), owner_staff_code VARCHAR(50), deleted INT)");
         jdbc.execute("CREATE TABLE bi_sales_order_fact (tenant_id VARCHAR(64), order_id BIGINT, order_no VARCHAR(50), source_order_no VARCHAR(80), region_code VARCHAR(64), owner_staff_code VARCHAR(50), deleted INT)");
         jdbc.execute("CREATE TABLE bi_inventory_balance_current (tenant_id VARCHAR(64), product_code VARCHAR(50), product_name VARCHAR(200), region_code VARCHAR(64), deleted INT)");

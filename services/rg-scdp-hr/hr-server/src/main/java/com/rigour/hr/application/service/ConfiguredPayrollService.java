@@ -1028,7 +1028,8 @@ public class ConfiguredPayrollService {
                 payroll.salarySource(tenant, e.employeeCode()),
                 correctionAmount,
                 corrections,
-                snapshot);
+                snapshot,
+                collectionEvidence(own, month));
     }
 
     private boolean requiresOrderSource(
@@ -1194,7 +1195,7 @@ public class ConfiguredPayrollService {
             List<OrderPayrollLineView> facts, YearMonth month) {
         Map<String, PayrollCollectionEvidenceView> result = new TreeMap<>();
         for (var f : facts)
-            if (f.fullyPaidDate() != null && YearMonth.from(f.fullyPaidDate()).equals(month))
+            if ("COMPLETE".equals(f.qualityStatus()) && f.orderAmount()!=null && f.fullyPaidDate() != null && YearMonth.from(f.fullyPaidDate()).equals(month))
                 result.put(
                         f.orderId(),
                         new PayrollCollectionEvidenceView(

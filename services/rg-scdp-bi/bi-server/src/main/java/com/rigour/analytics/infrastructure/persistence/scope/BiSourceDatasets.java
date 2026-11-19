@@ -18,6 +18,16 @@ public final class BiSourceDatasets {
 
     public static final List<Dataset> ALL =
             List.of(
+                    new Dataset("ORDER", "ORDER_RECEIVABLE_OPENING", "bi_receivable_opening", false, false,
+                            List.of(new Column("id", false), new Column("tenant_id", false), new Column("baseline_at", false), new Column("opening_paid", false))),
+                    new Dataset("ORDER", "ORDER_RECEIVABLE_ADJUSTMENT", "bi_receivable_adjustment", false, false,
+                            List.of(new Column("id", false), new Column("tenant_id", false), new Column("order_id", false), new Column("payment_id", false), new Column("event_type", false), new Column("receivable_delta", false), new Column("received_delta", false), new Column("effective_at", false), new Column("deleted", false))),
+                    new Dataset("ORDER", "ORDER_RECEIVABLE_PLAN", "bi_receivable_installment", false, false,
+                            List.of(new Column("id", false), new Column("tenant_id", false), new Column("order_id", false), new Column("plan_version", false), new Column("installment_no", false), new Column("effective_at", false), new Column("due_date", false), new Column("amount", false))),
+                    new Dataset("ORDER", "ORDER_CASH_APPLICATION", "bi_cash_application", false, false,
+                            List.of(new Column("id", false), new Column("tenant_id", false), new Column("order_id", false), new Column("cash_key", false), new Column("effective_at", false), new Column("amount", false), new Column("verified", false))),
+                    new Dataset("ORDER", "ORDER_CASH_RECEIPT", "bi_cash_receipt", false, true,
+                            List.of(new Column("id", true), new Column("tenant_id", false), new Column("reference_no", false), new Column("customer_id", false), new Column("cash_at", false), new Column("amount", false), new Column("kind", false), new Column("verified", false),new Column("channel",false),new Column("payee",false),new Column("owner_code",false),new Column("verified_at",false))),
                     new Dataset(
                             "ORDER", "ORDER_PAYMENT_STATUS", "bi_payment_status", false, false,
                             List.of(new Column("id", false), new Column("tenant_id", false),

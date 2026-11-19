@@ -20,18 +20,19 @@ public interface OrderCostSourceMapper extends BaseMapper<InternalSalesOrderEnti
     @Select(
 """
 SELECT CONCAT('PAYMENT:',p.id) sourceId,o.order_no orderNo,COALESCE(a.region_code,o.region_code) cityCode,
- DATE(CONVERT_TZ(p.payment_time,'+00:00','+08:00')) `date`,p.paid_amount amount,
- CASE WHEN a.order_id IS NOT NULL THEN o.data_quality_status_code
+ DATE(CONVERT_TZ(p.actual_cash_at,'+00:00','+08:00')) `date`,p.paid_amount amount,
+ CASE WHEN EXISTS (SELECT 1 FROM order_attribution_adjustment review WHERE review.tenant_id=o.tenant_id AND review.order_id=o.id AND review.status='PENDING') THEN 'ATTRIBUTION_PENDING'
+      WHEN a.order_id IS NOT NULL THEN o.data_quality_status_code
       WHEN NULLIF(o.source_system_code,'') IS NOT NULL
        AND NULLIF(o.owner_employee_code,'') IS NOT NULL AND NULLIF(o.region_code,'') IS NOT NULL
        AND NOT EXISTS(SELECT 1 FROM order_attribution_snapshot pending
            WHERE pending.tenant_id=o.tenant_id AND pending.order_id=o.id)
       THEN o.data_quality_status_code ELSE 'ATTRIBUTION_PENDING' END qualityStatus
-FROM order_payment_record p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
+FROM order_verified_payment_v p JOIN order_sales_order o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
 LEFT JOIN order_attribution_snapshot a ON a.tenant_id=o.tenant_id AND a.order_id=o.id AND a.state='FROZEN'
 WHERE p.tenant_id=#{tenant} AND COALESCE(a.region_code,o.region_code)=#{city} AND p.deleted=0 AND o.deleted=0 AND o.order_status_code NOT IN ('CANCELLED','DELETED')
  AND p.payment_status_code IN ('RECEIVED','CHECKED')
- AND p.payment_time>=#{from} AND p.payment_time<#{until}
+ AND p.actual_cash_at>=#{from} AND p.actual_cash_at<#{until}
 ORDER BY `date`,sourceId LIMIT 20001
 """)
     List<com.rigour.order.api.v1.model.OrderCityCollectionSourceView> cityCollections(
@@ -122,10 +123,10 @@ WITH scoped AS (
  AND o.order_date&lt;#{until}
  AND <choose><when test="employee != null and employee != ''">COALESCE(scope_attr.employee_code,o.owner_employee_code)=#{employee}</when><otherwise>COALESCE(scope_attr.region_code,o.region_code)=#{city}</otherwise></choose>
 ), running AS (
- SELECT p.order_id,p.payment_time,p.id,
- SUM(p.paid_amount) OVER(PARTITION BY p.tenant_id,p.order_id ORDER BY p.payment_time,p.id ROWS UNBOUNDED PRECEDING) cumulative
- FROM order_payment_record p JOIN scoped o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
- WHERE p.tenant_id=#{tenant} AND p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time&lt;#{until}
+ SELECT p.order_id,p.allocation_effective_at payment_time,p.id,
+ SUM(p.paid_amount) OVER(PARTITION BY p.tenant_id,p.order_id ORDER BY p.allocation_effective_at,p.id ROWS UNBOUNDED PRECEDING) cumulative
+ FROM order_verified_payment_v p JOIN scoped o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
+ WHERE p.tenant_id=#{tenant} AND p.allocation_effective_at&lt;#{until} AND p.actual_cash_at&lt;#{until}
 ), paid AS (
  SELECT r.order_id,MIN(r.payment_time) fully_paid_time FROM running r JOIN scoped o ON o.id=r.order_id
  WHERE o.payable_amount&gt;0 AND r.cumulative-COALESCE((SELECT SUM(f.refund_amount) FROM order_refund_record f
@@ -141,10 +142,12 @@ SELECT CAST(l.id AS CHAR) lineId,CAST(o.id AS CHAR) orderId,o.order_no orderNo,
  l.product_id productId,l.product_variant_id productVariantId,l.product_name_snapshot productName,l.unit_code unitCode,
  DATE(CONVERT_TZ(o.order_date,'+00:00','+08:00')) orderDate,l.quantity,l.line_amount lineAmount,
  SUM(l.line_amount) OVER(PARTITION BY o.id) orderLineTotal,o.payable_amount orderAmount,
- COALESCE((SELECT SUM(p.paid_amount) FROM order_payment_record p WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time&lt;#{until}),0) paidAmount,
+ COALESCE((SELECT MAX(r.cumulative) FROM running r WHERE r.order_id=o.id),0) paidAmount,
  DATE(CONVERT_TZ(paid.fully_paid_time,'+00:00','+08:00')) fullyPaidDate,COALESCE(refunds.amount,0) refundedAmount,
  DATE(CONVERT_TZ(refunds.last_time,'+00:00','+08:00')) lastRefundDate,
- CASE WHEN a.order_id IS NOT NULL THEN o.data_quality_status_code
+ CASE WHEN EXISTS (SELECT 1 FROM order_attribution_adjustment review WHERE review.tenant_id=o.tenant_id AND review.order_id=o.id AND review.status='PENDING') THEN 'ATTRIBUTION_PENDING'
+      WHEN EXISTS (SELECT 1 FROM order_financial_event e WHERE e.tenant_id=o.tenant_id AND e.order_id=o.id AND e.deleted=0 AND e.event_type IN ('CREDIT_NOTE','WRITE_OFF') AND e.effective_at&lt;#{until}) THEN 'NON_CASH_SETTLEMENT'
+      WHEN a.order_id IS NOT NULL THEN o.data_quality_status_code
       WHEN NULLIF(o.source_system_code,'') IS NOT NULL
        AND NULLIF(o.owner_employee_code,'') IS NOT NULL AND NULLIF(o.region_code,'') IS NOT NULL
        AND NOT EXISTS(SELECT 1 FROM order_attribution_snapshot pending

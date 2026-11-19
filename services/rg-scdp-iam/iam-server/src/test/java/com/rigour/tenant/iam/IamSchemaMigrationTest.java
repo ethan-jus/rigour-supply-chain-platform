@@ -38,7 +38,7 @@ class IamSchemaMigrationTest {
         Flyway flyway = migration(true, "latest");
         flyway.migrate();
         flyway.validate();
-        assertEquals("160", flyway.info().current().getVersion().getVersion());
+        assertEquals("163", flyway.info().current().getVersion().getVersion());
         assertEquals(1, scalar("SELECT COUNT(*) FROM flyway_schema_history WHERE version='120' AND type='SQL_BASELINE'"));
         try (var connection = DriverManager.getConnection(MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
              var statement = connection.createStatement();
@@ -65,10 +65,10 @@ class IamSchemaMigrationTest {
             statement.execute("INSERT INTO migration_sentinel VALUES(42)");
         }
         Flyway upgraded = migration(true, "latest");
-        assertEquals(28, upgraded.migrate().migrationsExecuted);
+        assertEquals(31, upgraded.migrate().migrationsExecuted);
         upgraded.validate();
-        assertEquals(historyCount + 28, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
-        assertEquals("160", upgraded.info().current().getVersion().getVersion());
+        assertEquals(historyCount + 31, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
+        assertEquals("163", upgraded.info().current().getVersion().getVersion());
         assertEquals(checksum, scalar("SELECT checksum FROM flyway_schema_history WHERE version='120'"));
         assertEquals(0, scalar("SELECT COUNT(*) FROM flyway_schema_history WHERE type='SQL_BASELINE'"));
         assertEquals(42, scalar("SELECT id FROM migration_sentinel"));
@@ -119,6 +119,66 @@ class IamSchemaMigrationTest {
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM iam_app_menu_node WHERE tenant_id=? AND deleted_at IS NOT NULL", Integer.class, tenant));
         assertEquals(8L, jdbc.queryForObject("SELECT version FROM iam_app_settings WHERE tenant_id=? AND authorization_mode='ACTIVE'", Long.class, tenant));
         assertEquals(savedGrants, jdbc.queryForList("SELECT HEX(role_id),HEX(menu_node_id) FROM iam_app_role_grant WHERE tenant_id=?", tenant));
+    }
+
+    @Test
+    void groupedNavigationKeepsCustomNamesAndLimitsInheritedAccessToTheOriginalRole() {
+        migration(true, "160").migrate();
+        var ds = new org.springframework.jdbc.datasource.DriverManagerDataSource(
+                MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
+        var jdbc = new org.springframework.jdbc.core.JdbcTemplate(ds);
+        jdbc.update("INSERT INTO iam_tenant(id,tenant_code,company_name,status,created_at,updated_at) VALUES(UUID_TO_BIN(UUID()),'nav-review','菜单验收','ACTIVE',NOW(6),NOW(6))");
+        var tenant = jdbc.queryForObject("SELECT id FROM iam_tenant WHERE tenant_code='nav-review'", byte[].class);
+        var app = jdbc.queryForObject("SELECT id FROM iam_application WHERE app_code='SUPPLY_CHAIN'", byte[].class);
+        jdbc.update("INSERT INTO iam_app_settings(tenant_id,application_id) VALUES(?,?)", tenant, app);
+        jdbc.update("INSERT INTO iam_app_role(tenant_id,application_id,id,role_code,role_name) VALUES(?,?,UUID_TO_BIN(UUID()),'WORKER','本人作业')", tenant, app);
+        jdbc.update("""
+                INSERT INTO iam_app_menu_node(tenant_id,application_id,id,resource_id,node_type,display_name,sort_order,visible,status)
+                SELECT ?,?,UUID_TO_BIN(UUID()),r.id,IF(r.resource_type='API','BUTTON',r.resource_type),
+                       IF(u.route_key='supply.order.sales-orders','客户订单',r.display_name),r.sort_order,COALESCE(u.visible,0),r.status
+                FROM iam_resource r LEFT JOIN iam_resource_ui u ON u.resource_id=r.id
+                WHERE r.application_id=? AND r.deleted_at IS NULL AND (r.resource_type IN ('MENU','PAGE','BUTTON')
+                      OR r.permission_code IN ('sales:context:read','sales:visit:own:read','sales:visit:own:write'))
+                """, tenant, app, app);
+        jdbc.update("""
+                UPDATE iam_app_menu_node n JOIN iam_resource r ON r.id=n.resource_id JOIN iam_app_menu_node parent
+                  ON parent.tenant_id=n.tenant_id AND parent.application_id=n.application_id AND parent.resource_id=r.parent_id
+                SET n.parent_id=parent.id WHERE n.tenant_id=?
+                """, tenant);
+        jdbc.update("""
+                INSERT INTO iam_app_role_grant(tenant_id,application_id,role_id,menu_node_id)
+                SELECT n.tenant_id,n.application_id,role.id,n.id FROM iam_app_menu_node n
+                JOIN iam_app_role role ON role.tenant_id=n.tenant_id AND role.application_id=n.application_id
+                JOIN iam_resource r ON r.id=n.resource_id LEFT JOIN iam_resource_ui u ON u.resource_id=r.id
+                WHERE n.tenant_id=? AND (u.route_key IN ('supply.order.sales-orders','supply.bi.payment-risk') OR
+                      r.permission_code IN ('sales:context:read','sales:visit:own:read','sales:visit:own:write'))
+                """, tenant);
+
+        migration(true, "163").migrate();
+        var grants = jdbc.queryForList("""
+                SELECT COALESCE(u.route_key,r.permission_code) FROM iam_app_role_grant g
+                JOIN iam_app_menu_node n ON n.id=g.menu_node_id AND n.application_id=g.application_id AND n.tenant_id=g.tenant_id
+                JOIN iam_resource r ON r.id=n.resource_id LEFT JOIN iam_resource_ui u ON u.resource_id=r.id
+                WHERE g.tenant_id=?
+                """, String.class, tenant);
+        org.assertj.core.api.Assertions.assertThat(grants)
+                .contains("supply.order.sales-orders", "supply.bi.receivables", "supply.sales.pay-statements",
+                        "sales:followup:self:read", "sales:followup:self:respond")
+                .doesNotContain("supply.sales.overview", "supply.hr.sales-payroll", "supply.sales.visits.records",
+                        "hr:payroll:publish", "analytics:receivables:archive", "order:receivable-plan:write");
+        assertEquals("客户订单", jdbc.queryForObject("""
+                SELECT n.display_name FROM iam_app_menu_node n JOIN iam_resource_ui u ON u.resource_id=n.resource_id
+                WHERE n.tenant_id=? AND u.route_key='supply.order.sales-orders'
+                """, String.class, tenant));
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM iam_app_menu_node n LEFT JOIN iam_app_menu_node p
+                  ON p.id=n.parent_id AND p.application_id=n.application_id AND p.tenant_id=n.tenant_id AND p.deleted_at IS NULL
+                WHERE n.tenant_id=? AND n.deleted_at IS NULL AND n.parent_id IS NOT NULL AND p.id IS NULL
+                """, Integer.class, tenant));
+        assertEquals(0, jdbc.queryForObject("""
+                SELECT COUNT(*) FROM iam_resource r WHERE r.application_id=? AND r.resource_type='MENU' AND r.deleted_at IS NULL
+                  AND NOT EXISTS(SELECT 1 FROM iam_resource c WHERE c.parent_id=r.id)
+                """, Integer.class, app));
     }
 
     private long scalar(String sql) throws Exception {

@@ -17,5 +17,5 @@ public interface PaymentRiskStore {
             String regionCode, String regionName, String ownerStaffCode, String ownerStaffName,
             Instant orderDate, String categoryId, String categoryName,
             String productId, String productName, BigDecimal orderAmount, BigDecimal paidAmount,
-            Instant syncedAt, BigDecimal lineAmount) {}
+            Instant syncedAt, BigDecimal lineAmount, BigDecimal remainingAmount) {}
 }

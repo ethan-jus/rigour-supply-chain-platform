@@ -121,7 +121,7 @@ public class MybatisOperatingWorkspaceRepository implements OperatingWorkspaceSt
                         result.dueAt(),
                         result.note(),
                         actor,
-                        now));
+                        now,result.promisedOn(),result.disputed()));
     }
 
     @Override

@@ -9,6 +9,21 @@ public final class OrderAnalyticsSourceSql {
 
     private static final Map<String, OrderAnalyticsSourceDataset> DATASETS =
             Map.ofEntries(
+                    Map.entry("ORDER_RECEIVABLE_OPENING", new OrderAnalyticsSourceDataset("order_receivable_opening_v",
+                            List.of("id", "tenant_id", "baseline_at", "opening_paid"), false, false,
+                            "CONCAT(COUNT(*),':',COALESCE(SUM(CRC32(JSON_ARRAY(id,tenant_id,baseline_at,opening_paid))),0),':',BIT_XOR(CRC32(JSON_ARRAY(opening_paid,baseline_at,tenant_id,id))))")),
+                    Map.entry("ORDER_RECEIVABLE_ADJUSTMENT", new OrderAnalyticsSourceDataset("order_financial_event",
+                            List.of("id", "tenant_id", "order_id", "payment_id", "event_type", "receivable_delta", "received_delta", "effective_at", "deleted"), false, false,
+                            "CONCAT(COUNT(*),':',COALESCE(SUM(CRC32(JSON_ARRAY(id,tenant_id,order_id,payment_id,event_type,receivable_delta,received_delta,effective_at,deleted))),0),':',BIT_XOR(CRC32(JSON_ARRAY(deleted,effective_at,received_delta,receivable_delta,event_type,payment_id,order_id,tenant_id,id))))")),
+                    Map.entry("ORDER_RECEIVABLE_PLAN", new OrderAnalyticsSourceDataset("order_receivable_installment",
+                            List.of("id", "tenant_id", "order_id", "plan_version", "installment_no", "effective_at", "due_date", "amount"), false, false,
+                            "CONCAT(COUNT(*),':',COALESCE(SUM(CRC32(JSON_ARRAY(id,tenant_id,order_id,plan_version,installment_no,effective_at,due_date,amount))),0),':',BIT_XOR(CRC32(JSON_ARRAY(amount,due_date,effective_at,installment_no,plan_version,order_id,tenant_id,id))))")),
+                    Map.entry("ORDER_CASH_APPLICATION", new OrderAnalyticsSourceDataset("order_cash_application_v",
+                            List.of("id", "tenant_id", "order_id", "cash_key", "effective_at", "amount", "verified"), false, false,
+                            "CONCAT(COUNT(*),':',COALESCE(SUM(CRC32(JSON_ARRAY(id,tenant_id,order_id,cash_key,effective_at,amount,verified))),0),':',BIT_XOR(CRC32(JSON_ARRAY(verified,amount,effective_at,cash_key,order_id,tenant_id,id))))")),
+                    Map.entry("ORDER_CASH_RECEIPT", new OrderAnalyticsSourceDataset("order_cash_receipt_v",
+                            List.of("id", "tenant_id", "reference_no", "customer_id", "cash_at", "amount", "kind", "verified","channel","payee","owner_code","verified_at"), false, true,
+                            "CONCAT(COUNT(*),':',COALESCE(SUM(CRC32(JSON_ARRAY(HEX(id),tenant_id,reference_no,customer_id,cash_at,amount,kind,verified,channel,payee,owner_code,verified_at))),0),':',BIT_XOR(CRC32(JSON_ARRAY(verified_at,owner_code,payee,channel,verified,kind,amount,cash_at,customer_id,reference_no,tenant_id,HEX(id)))))")),
                     Map.entry(
                             "ORDER_PAYMENT_STATUS",
                             new OrderAnalyticsSourceDataset(

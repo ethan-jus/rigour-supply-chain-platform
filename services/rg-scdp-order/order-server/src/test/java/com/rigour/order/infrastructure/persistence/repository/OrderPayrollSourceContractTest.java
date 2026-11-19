@@ -64,6 +64,9 @@ public class OrderPayrollSourceContractTest {
                 "CREATE TABLE order_attribution_snapshot(tenant_id VARCHAR(36),order_id"
                         + " BIGINT,employee_code VARCHAR(50),region_code VARCHAR(50),department_id"
                         + " BIGINT,state VARCHAR(20))");
+        jdbc.execute("CREATE TABLE order_attribution_adjustment(tenant_id VARCHAR,order_id BIGINT,status VARCHAR)");
+        jdbc.execute("CREATE TABLE order_financial_event(tenant_id VARCHAR,order_id BIGINT,deleted INT,event_type VARCHAR,effective_at TIMESTAMP)");
+        jdbc.execute("CREATE VIEW order_verified_payment_v AS SELECT p.*,payment_time AS allocation_effective_at,payment_time AS actual_cash_at FROM order_payment_record p WHERE p.payment_status_code='CHECKED' AND p.deleted=0");
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(OrderCostSourceMapper.class);
@@ -83,7 +86,7 @@ public class OrderPayrollSourceContractTest {
                         + " VALUES('t',1,'ORIGINAL','ORIGINAL-CITY',7,'FROZEN')");
         jdbc.update(
                 "INSERT INTO order_payment_record VALUES(1,'t',1,2000,'2026-09-10"
-                    + " 02:00:00','RECEIVED',0),(2,'t',1,4000,'2026-10-01 17:00:00','CHECKED',0)");
+                    + " 02:00:00','CHECKED',0),(2,'t',1,4000,'2026-10-01 17:00:00','CHECKED',0)");
     }
 
     @Test

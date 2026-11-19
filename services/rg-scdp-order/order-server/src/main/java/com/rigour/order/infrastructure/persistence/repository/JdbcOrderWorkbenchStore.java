@@ -73,13 +73,13 @@ public class JdbcOrderWorkbenchStore implements OrderWorkbenchStore {
         if ("performance".equals(kind)) return performance(tenant, employee, scope, from, until, begin, step);
         boolean receipt = "receipts".equals(kind);
         String table = " FROM order_sales_order o" + (receipt
-                ? " JOIN order_payment_record p ON p.tenant_id=o.tenant_id AND p.order_id=o.id" : "");
+                ? " JOIN order_verified_payment_v p ON p.tenant_id=o.tenant_id AND p.order_id=o.id" : "");
         String where = " WHERE o.tenant_id=? AND " + (receipt ? "p.payment_owner_code=?" : "o.owner_employee_code=?") + " AND o.deleted=0"
                 + " AND o.order_status_code IN ('SUBMITTED','COMPLETED') AND " + scope.sql();
         List<Object> args = new ArrayList<>(List.of(tenant, employee));
         args.addAll(scope.args());
         if (receipt) where += " AND p.payment_owner_evidence IS NOT NULL AND p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED')";
-        String time = receipt ? "p.payment_time" : "o.order_date";
+        String time = receipt ? "p.actual_cash_at" : "o.order_date";
         if (receipt || "orders".equals(kind)) {
             where += " AND " + time + ">=? AND " + time + "<?";
             args.add(Timestamp.from(from)); args.add(Timestamp.from(until));
@@ -112,10 +112,11 @@ public class JdbcOrderWorkbenchStore implements OrderWorkbenchStore {
                       AND own.payment_owner_code=? AND own.payment_owner_evidence IS NOT NULL
                       AND own.deleted=0 AND own.payment_status_code IN ('RECEIVED','CHECKED'))
                 ), running AS (
-                  SELECT p.*,
-                    SUM(p.paid_amount) OVER(PARTITION BY p.tenant_id,p.order_id ORDER BY p.payment_time,p.id ROWS UNBOUNDED PRECEDING) cumulative
-                  FROM order_payment_record p JOIN scoped o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
-                  WHERE p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED') AND p.payment_time<?
+                  SELECT p.id,p.tenant_id,p.order_id,p.paid_amount,p.payment_owner_code,p.payment_owner_evidence,
+                    p.allocation_effective_at payment_time,
+                    SUM(p.paid_amount) OVER(PARTITION BY p.tenant_id,p.order_id ORDER BY p.allocation_effective_at,p.id ROWS UNBOUNDED PRECEDING) cumulative
+                  FROM order_verified_payment_v p JOIN scoped o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
+                  WHERE p.allocation_effective_at<?
                 ), settled AS (
                   SELECT r.order_id,r.payment_time,r.id,
                     ROW_NUMBER() OVER(PARTITION BY r.order_id ORDER BY r.payment_time,r.id) settlement_rank

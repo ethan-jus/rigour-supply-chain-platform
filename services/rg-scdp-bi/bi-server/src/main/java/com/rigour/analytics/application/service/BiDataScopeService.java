@@ -82,6 +82,13 @@ public final class BiDataScopeService {
         } else throw deniedException("bi-supply-context");
     }
 
+    public void requireFullAction(String action) {
+        var context=com.rigour.tenant.iam.client.SupplyAuthorizationContext.current();
+        if (context.isEmpty()) throw deniedException(action);
+        var policy=com.rigour.tenant.iam.client.SupplyAuthorizationContext.requireAction(action);
+        if (!policy.functionAllowed() || !full(policy)) throw deniedException(action);
+    }
+
     public void requireGlobalGovernance() {
         if (!effective().globalGovernance()) throw deniedException("bi-global-governance");
     }
