@@ -4,10 +4,13 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 import com.rigour.order.api.v1.model.*;
+import com.rigour.order.api.v1.model.LogisticsImportModels.*;
 import com.rigour.order.api.v1.model.ShipmentTransportModels.*;
 import com.rigour.order.application.port.out.*;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
@@ -143,12 +146,13 @@ class ShipmentTransportPersistenceTest {
         assertThat(store.byCosts("T", List.of(one.costId())).get(one.costId())).hasSize(1);
     }
 
-    @Test
-    void exactDhbShipmentReusesHuolalaCostAndPersistsSalesSharesWithoutTakingTheNewBillAmount() {
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void exactDhbShipmentReusesHuolalaCostAndPreservesFreight(boolean carrierProvided) {
         var prior = sync("receivedin", 1);
         db.execute(
                 "CREATE TABLE order_logistics_import_order(tenant_id VARCHAR(64),cost_id"
-                        + " VARCHAR(36),carrier_order_no VARCHAR(80))");
+                        + " VARCHAR(36),carrier_order_no VARCHAR(80),source_channel VARCHAR(16))");
         db.execute(
                 "CREATE ALIAS JSON_EXTRACT FOR '"
                         + LogisticsImportPersistenceTest.class.getName()
@@ -161,7 +165,7 @@ class ShipmentTransportPersistenceTest {
                 "UPDATE order_logistics_cost SET source_system='HUOLALA',carrier_code='HLL' WHERE"
                         + " id=?",
                 prior.costId());
-        db.update("INSERT INTO order_logistics_import_order VALUES('T',?,'SF001')", prior.costId());
+        db.update("INSERT INTO order_logistics_import_order VALUES('T',?,'SF001','API')", prior.costId());
         var old =
                 json.readValue(
                         """
@@ -197,7 +201,11 @@ class ShipmentTransportPersistenceTest {
         command.put("shipmentId", "D2");
         command.put("shipmentNo", "FH002");
         var data = (tools.jackson.databind.node.ObjectNode) json.valueToTree(transport());
-        ((tools.jackson.databind.node.ObjectNode) data.path("ledger")).put("carrierCode", "HLL");
+        if (carrierProvided) {
+            ((tools.jackson.databind.node.ObjectNode) data.path("ledger")).put("carrierCode", "HLL");
+        } else {
+            command.putNull("carrierName");
+        }
         ((tools.jackson.databind.node.ObjectNode) data.path("ledger").path("sources").get(0))
                 .set(
                         "allocations",
@@ -216,6 +224,11 @@ class ShipmentTransportPersistenceTest {
                         snapshot,
                         null);
         assertThat(result.costId()).isEqualTo(prior.costId());
+        if (!carrierProvided) {
+            assertThat(result.issue()).isNull();
+            assertThat(result.latest().carrierCode()).isEqualTo("HLL");
+            assertThat(result.latest().deliveryModeCode()).isEqualTo("THIRD_PARTY");
+        }
         var saved = org.mockito.ArgumentCaptor.forClass(LogisticsCostCommand.class);
         verify(costs)
                 .save(
@@ -229,12 +242,67 @@ class ShipmentTransportPersistenceTest {
                         eq("U"),
                         any());
         assertThat(saved.getValue().amount()).isEqualByComparingTo("99");
+        assertThat(saved.getValue().ledger().sources().getFirst().orderCode()).isEqualTo("SO001");
         assertThat(saved.getValue().ledger().sources().getFirst().allocations().getFirst().amount())
                 .isEqualByComparingTo("99");
         verify(platform).saveAssociations(eq("T"), eq(prior.costId()), any(), any(), eq("U"));
         verify(platform, never()).saveDraft(any(), any(), any(), any(), any());
         assertThat(db.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class))
                 .isEqualTo(1);
+    }
+
+    @Test
+    void huolalaArrivingAfterDhbAdoptsSameCostAndKeepsSaleAndManualFreight() throws Exception {
+        String migration = Files.readString(Path.of("src/main/resources/db/migration",
+                        "V67__logistics_carrier_import_queue.sql"))
+                .replaceFirst("(?is)\\)\\s*ENGINE=InnoDB[^;]*;", ");")
+                .replace(" JSON ", " LONGTEXT ").replace("UNIQUE KEY ", "CONSTRAINT ");
+        for (String sql : migration.split(";")) {
+            if (!sql.isBlank()) db.execute(sql.replace("uk_logistics_import_order (",
+                    "uk_logistics_import_order UNIQUE ("));
+        }
+        for (String column : List.of(
+                "source_channel VARCHAR(16) DEFAULT 'EXCEL'", "latest_source_json CLOB",
+                "source_hash VARCHAR(64)", "latest_source_hash VARCHAR(64)",
+                "source_difference INT DEFAULT 0", "last_synced_time TIMESTAMP",
+                "bill_verification_json CLOB", "bill_history_json CLOB")) {
+            db.execute("ALTER TABLE order_logistics_import_order ADD " + column);
+        }
+        db.execute("ALTER TABLE order_logistics_cost ADD amount_manually_edited INT DEFAULT 0");
+        db.execute("CREATE ALIAS JSON_EXTRACT FOR '" + LogisticsImportPersistenceTest.class.getName() + ".jsonExtract'");
+        db.execute("CREATE ALIAS JSON_UNQUOTE FOR '" + LogisticsImportPersistenceTest.class.getName() + ".jsonUnquote'");
+        var dhb = (tools.jackson.databind.node.ObjectNode) json.valueToTree(command("receivedin", 1));
+        dhb.putNull("carrierName");
+        var draft = transport();
+        var saved = store.sync("T", "U", json.treeToValue(dhb, Command.class),
+                draft.withLedger(draft.ledger().withPlatformOrderNo("SF001"), null),
+                json.readValue("{\"documentNo\":\"SO001\"}", LogisticsCostSourceView.class), null);
+        var paid = new java.math.BigDecimal("99.00");
+        var prior = json.readValue(db.queryForObject("SELECT data_json FROM order_logistics_cost",
+                String.class), LogisticsCostCommand.class);
+        db.update("UPDATE order_logistics_cost SET amount=?,amount_manually_edited=1,data_json=?",
+                paid, json.writeValueAsString(prior.withLedger(prior.ledger(), paid)));
+        var imports = new JdbcLogisticsImportStore(db, json);
+        var platformWriter = new JdbcPlatformTransportStore(db, json, imports);
+        var huolala = json.readValue("""
+                {"enterpriseId":"AC1","orderNo":"SF001","status":"已完成","line":0,
+                 "useTime":"2026-11-13 09:00:00","raw":{},"facts":{"billAmount":142.64}}
+                """, CarrierOrder.class);
+        var command = new ApiSource("HLL-CONNECTOR", "a".repeat(64), huolala);
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            var source = imports.receive("T", "U", command);
+            assertThat(platformWriter.materialize("T", "U", source).costId())
+                    .isEqualTo(saved.costId());
+        }
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class))
+                .isEqualTo(1);
+        assertThat(db.queryForObject("SELECT amount FROM order_logistics_cost", java.math.BigDecimal.class))
+                .isEqualByComparingTo(paid);
+        assertThat(db.queryForObject("SELECT carrier_code FROM order_logistics_cost", String.class))
+                .isEqualTo("HLL");
+        assertThat(db.queryForObject("SELECT sources_json FROM order_logistics_cost", String.class))
+                .contains("SO001");
     }
 
     @Test

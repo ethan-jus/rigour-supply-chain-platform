@@ -106,28 +106,52 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
             }
             return row;
         }
-        var manual =
+        var candidates =
                 jdbc.queryForList(
-                        "SELECT id FROM order_logistics_cost WHERE tenant_id=? AND"
-                            + " carrier_code='HLL' AND"
-                            + " JSON_UNQUOTE(JSON_EXTRACT(data_json,'$.ledger.platformOrderNo'))=?"
-                            + " AND source_system<>'HUOLALA' ORDER BY created_time LIMIT 2",
+                        "SELECT c.id,c.carrier_code,c.data_json,s.latest_json AS shipment_json"
+                            + " FROM order_logistics_cost c LEFT JOIN order_transport_shipment_source s"
+                            + " ON s.tenant_id=c.tenant_id AND s.cost_id=c.id AND s.platform_code='DHB'"
+                            + " AND c.source_system='DHB' AND c.carrier_code IS NULL"
+                            + " AND c.deleted=0 AND c.status_code='ACTIVE'"
+                            + " WHERE c.tenant_id=?"
+                            + " AND JSON_UNQUOTE(JSON_EXTRACT(c.data_json,'$.ledger.platformOrderNo'))=?"
+                            + " AND c.source_system<>'HUOLALA' AND (c.carrier_code='HLL' OR s.id IS NOT NULL)",
                         tenant,
                         row.order().orderNo());
+        var manual = candidates.stream().filter(candidate -> {
+            if ("HLL".equals(candidate.get("carrier_code"))) return true;
+            var shipment = json.readValue(
+                    candidate.get("shipment_json").toString(), ShipmentTransportModels.Command.class);
+            return JdbcShipmentTransportStore.carrierNotProvided(shipment)
+                    && shipment.trackingNumbers().equals(List.of(row.order().orderNo()));
+        }).toList();
         if (manual.size() > 1) throw bad("该货拉拉单号已重复登记，请先处理已有运输记录");
         if (manual.size() == 1) {
-            String existing = manual.getFirst().get("id").toString();
+            var match = manual.getFirst();
+            String existing = match.get("id").toString();
             jdbc.update(
                     "UPDATE order_logistics_import_order SET cost_id=?,state='GENERATED' WHERE"
                             + " tenant_id=? AND id=? AND cost_id IS NULL",
                     existing,
                     tenant,
                     row.id());
-            jdbc.update(
-                    "UPDATE order_logistics_cost SET source_system='HUOLALA' WHERE tenant_id=? AND"
-                            + " id=?",
-                    tenant,
-                    existing);
+            if (match.get("carrier_code") == null) {
+                var prior = json.readValue(match.get("data_json").toString(), LogisticsCostCommand.class);
+                var classified = prior.withLedger(
+                        prior.ledger().withCarrierClassification("HLL", "THIRD_PARTY"), prior.amount());
+                jdbc.update(
+                        "UPDATE order_logistics_cost SET source_system='HUOLALA',carrier_code='HLL',"
+                            + " delivery_mode_code='THIRD_PARTY',data_json=?,revision=revision+1,"
+                            + " updated_time=CURRENT_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
+                        json.writeValueAsString(classified), tenant, existing);
+                jdbc.update(
+                        "UPDATE order_logistics_cost_guard SET version=version+1 WHERE tenant_id=?", tenant);
+            } else {
+                jdbc.update(
+                        "UPDATE order_logistics_cost SET source_system='HUOLALA' WHERE tenant_id=? AND id=?",
+                        tenant,
+                        existing);
+            }
             return imports.lockManaged(tenant, actor, true, row.id())
                     .withSyncOutcome(row.syncOutcome());
         }

@@ -84,11 +84,24 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                         transport.amount());
             }
         }
+        String costId = old == null ? null : Objects.toString(old.get("cost_id"), null);
+        boolean shipped = Set.of("receivedin", "received").contains(command.sourceStatus());
+        List<String> verifiedHuolala = List.of();
+        if (shipped && transport.ledger().carrierCode() == null && carrierNotProvided(command)
+                && command.trackingNumbers().size() == 1) {
+            verifiedHuolala = huolalaMatches(tenant, command.trackingNumbers().getFirst());
+            if (verifiedHuolala.size() == 1
+                    && (costId == null || costId.equals(verifiedHuolala.getFirst()))) {
+                command = command.withCarrierClassification("HLL", "THIRD_PARTY");
+                transport = transport.withLedger(
+                        transport.ledger().withCarrierClassification("HLL", "THIRD_PARTY"),
+                        transport.amount());
+            }
+        }
         String body = json.writeValueAsString(command);
         String fp = fingerprint(channel == null ? body : body + "\n" + channel);
         if (old != null && fp.equals(old.get("fingerprint")) && old.get("issue") == null) return source(old);
         String sourceId = old == null ? UUID.randomUUID().toString() : old.get("id").toString();
-        String costId = old == null ? null : Objects.toString(old.get("cost_id"), null);
         // 仅对“无单号、无运费、无人工凭证”的旧记录清理允许补单号后重新建有效运输。
         // 普通人工作废记录不得被来源同步重新启用。
         if (old != null && costId != null && !command.trackingNumbers().isEmpty()) {
@@ -113,9 +126,9 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         }
         String issue = null;
         boolean difference = false;
-        boolean shipped = Set.of("receivedin", "received").contains(command.sourceStatus());
         if (shipped && costId == null) {
-            var matches = matches(tenant, command, transport.ledger().carrierCode());
+            var matches = verifiedHuolala.isEmpty()
+                    ? matches(tenant, command, transport.ledger().carrierCode()) : verifiedHuolala;
             if (matches.size() > 1) issue = "同一快递单号对应多笔运输，请核对已有记录";
             else if (matches.size() == 1 && order == null) issue = "同一快递单号已有运输记录，请核对后关联原销售单";
             else if (matches.size() == 1) {
@@ -387,6 +400,18 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                 no);
     }
 
+    private List<String> huolalaMatches(String tenant, String no) {
+        return jdbc.queryForList(
+                "SELECT DISTINCT c.id FROM order_logistics_import_order i"
+                    + " JOIN order_logistics_cost c ON c.tenant_id=i.tenant_id AND c.id=i.cost_id"
+                    + " WHERE i.tenant_id=? AND i.carrier_order_no=? AND i.source_channel='API'"
+                    + " AND c.source_system='HUOLALA' AND c.carrier_code='HLL'"
+                    + " AND c.deleted=0 AND c.status_code='ACTIVE'",
+                String.class,
+                tenant,
+                no);
+    }
+
     private void linkPlatform(
             String tenant,
             String actor,
@@ -625,6 +650,13 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
             result.computeIfAbsent(Objects.toString(row.get("cost_id")), k -> new ArrayList<>())
                     .add(source(row));
         return result;
+    }
+
+    static boolean carrierNotProvided(Command command) {
+        return !"SELF".equals(command.deliveryModeCode())
+                && (command.carrierCode() == null || command.carrierCode().isBlank())
+                && (command.carrierName() == null || command.carrierName().isBlank())
+                && sourceCarrierCode(command) == null;
     }
 
     private static String sourceCarrierCode(Command command) {
