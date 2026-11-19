@@ -194,17 +194,35 @@ public class RestAmapPoiClient implements AmapPoiClient {
 
     @Override
     public Coordinates convertGps(BigDecimal longitude,BigDecimal latitude) {
+        return convertGpsBatch(List.of(new GpsPoint(longitude, latitude))).getFirst();
+    }
+
+    @Override
+    public List<Coordinates> convertGpsBatch(List<GpsPoint> points) {
+        if (points.isEmpty() || points.size() > MAX_COORDINATES_PER_REQUEST)
+            throw new AmapPoiException("坐标批次无效");
         if (!StringUtils.hasText(properties.getWebKey())) throw new AmapPoiException("高德 Web 服务 key 未配置");
-        String location=longitude.setScale(6,java.math.RoundingMode.HALF_UP).toPlainString()+","+latitude.setScale(6,java.math.RoundingMode.HALF_UP).toPlainString();
+        var locations = new java.util.StringJoiner("|");
+        for (var point : points) {
+            locations.add(point.longitude().setScale(6, java.math.RoundingMode.HALF_UP).toPlainString()
+                    + "," + point.latitude().setScale(6, java.math.RoundingMode.HALF_UP).toPlainString());
+        }
         try {
             String body=restClient.get().uri(uri->uri.path("/assistant/coordinate/convert")
-                    .queryParam("key",properties.getWebKey()).queryParam("locations",location)
+                    .queryParam("key",properties.getWebKey()).queryParam("locations",locations.toString())
                     .queryParam("coordsys","gps").queryParam("output","JSON").build()).retrieve().body(String.class);
             JsonNode response=objectMapper.readTree(body);
             if(response==null||!"1".equals(scalarText(response.get("status"))))throw providerFailure(response,"坐标转换失败");
-            var point=coordinates(scalarText(response.get("locations")));
-            if(point[0]==null||point[1]==null||point[0].abs().doubleValue()>180||point[1].abs().doubleValue()>90)throw new AmapPoiException("坐标转换结果无效");
-            return new Coordinates(point[0],point[1],"GCJ02");
+            String[] converted = scalarText(response.get("locations")).split(";", -1);
+            if (converted.length != points.size()) throw new AmapPoiException("坐标转换结果数量不一致");
+            var result = new ArrayList<Coordinates>(converted.length);
+            for (String value : converted) {
+                var point = coordinates(value);
+                if (point[0] == null || point[1] == null || point[0].abs().doubleValue() > 180 || point[1].abs().doubleValue() > 90)
+                    throw new AmapPoiException("坐标转换结果无效");
+                result.add(new Coordinates(point[0], point[1], "GCJ02"));
+            }
+            return result;
         } catch (AmapPoiException e) { throw e; }
         catch (RuntimeException e) { throw new AmapPoiException("坐标转换服务暂不可用，请重试定位"); }
     }

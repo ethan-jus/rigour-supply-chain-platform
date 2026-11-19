@@ -2,6 +2,8 @@ package com.rigour.sales;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.CheckInCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.ResumeWorkCommand;
@@ -11,6 +13,9 @@ import com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationEvidence;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationPointCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayTrackView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayView;
+import com.rigour.sales.application.port.out.AmapPoiClient;
+import com.rigour.sales.application.port.out.AmapPoiClient.Coordinates;
+import com.rigour.sales.application.port.out.AmapPoiClient.GpsPoint;
 import com.rigour.sales.application.service.SalesWorkAttendanceService;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
@@ -33,6 +38,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
@@ -72,6 +78,8 @@ class SalesWorkReopenAndTrackIntegrationTests {
 
     @Autowired
     private SalesWorkAttendanceService attendanceService;
+
+    @MockitoBean private AmapPoiClient maps;
 
     @Autowired private com.rigour.sales.application.port.out.SalesFieldworkRepository fieldwork;
     @Autowired private com.rigour.sales.application.service.SalesFieldworkMetricsWorker metricsWorker;
@@ -430,6 +438,34 @@ class SalesWorkReopenAndTrackIntegrationTests {
         var earlier=policies.findFieldPolicy(tenantId,policyVersionId).orElseThrow();
         assertThat(date.invoke(null,Instant.parse("2026-11-19T15:59:59Z"),earlier)).isEqualTo(LocalDate.of(2026,11,19));
         assertThat(date.invoke(null,Instant.parse("2026-11-19T16:00:00Z"),earlier)).isEqualTo(LocalDate.of(2026,11,20));
+    }
+
+    @Test
+    void convertsTwelveRawFixesTogetherAndReplaysWithoutAnExternalCall() {
+        var origin = new BigDecimal("120.100000");
+        var latitude = new BigDecimal("30.200000");
+        var accuracy = new BigDecimal("4");
+        var location = new LocationEvidence(origin, latitude, accuracy, "APP_NATIVE");
+        var now = Instant.now();
+        var day = attendanceService.checkIn(new CheckInCommand("gps-in", "client", now.minusSeconds(59), location, null, null));
+        var raw = java.util.stream.IntStream.range(0, 12)
+                .mapToObj(index -> new GpsPoint(origin.add(BigDecimal.valueOf(index * 2L, 4)), latitude)).toList();
+        var offset = new BigDecimal("0.004123");
+        when(maps.convertGpsBatch(raw)).thenReturn(raw.stream()
+                .map(point -> new Coordinates(point.longitude().add(offset), point.latitude(), "GCJ02")).toList());
+        var points = java.util.stream.IntStream.range(0, raw.size()).mapToObj(index ->
+                new LocationPointCommand("gps-" + index, null, null, accuracy, now.minusSeconds(55 - index * 5L),
+                        "APP_GPS", raw.get(index).longitude(), raw.get(index).latitude(), "WGS84")).toList();
+        var command = new LocationBatchCommand("gps-batch", points, day.locationSessionId());
+
+        assertThat(attendanceService.uploadLocationPoints(day.id(), command).acceptedCount()).isEqualTo(12);
+        assertThat(attendanceService.uploadLocationPoints(day.id(), command).acceptedCount()).isEqualTo(12);
+        verify(maps).convertGpsBatch(raw);
+        var track = attendanceService.track(day.businessDate());
+        assertThat(track.points()).hasSize(12);
+        assertThat(track.legs()).hasSize(1);
+        assertThat(track.totalDistanceMeters()).isGreaterThan(150);
+        assertThat(track.points().getFirst().longitude()).isEqualByComparingTo(origin.add(offset));
     }
 
     @Test

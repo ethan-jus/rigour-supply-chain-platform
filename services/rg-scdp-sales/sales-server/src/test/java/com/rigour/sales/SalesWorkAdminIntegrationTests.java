@@ -128,7 +128,7 @@ class SalesWorkAdminIntegrationTests {
         var fieldPolicy = adminService.upsertFieldPolicy(new FieldPolicyCommand(
                 "FIELD-ADMIN", "默认外勤规则", "Asia/Shanghai",
                 LocalTime.of(4, 0),
-                480, 240, true, true, true, 24, true, 20, new BigDecimal("100"), 120,
+                480, 240, true, true, true, 24, true, 1200, 60, new BigDecimal("100"), 120,
                 "ALL", null, true, null));
         assertThat(fieldPolicy.publishStatus()).isEqualTo("PUBLISHED");
         assertThat(fieldPolicy.versionNo()).isEqualTo(1);
@@ -142,7 +142,7 @@ class SalesWorkAdminIntegrationTests {
         var fieldPolicyV2 = adminService.upsertFieldPolicy(new FieldPolicyCommand(
                 "FIELD-ADMIN", "默认外勤规则V2", "Asia/Shanghai",
                 LocalTime.of(4, 0),
-                480, 240, true, true, true, 24, true, 20, new BigDecimal("100"), 120,
+                480, 240, true, true, true, 24, true, 1200, 60, new BigDecimal("100"), 120,
                 "ALL", null, true, 1));
         assertThat(fieldPolicyV2.versionNo()).isEqualTo(2);
         assertThat(fieldPolicyV2.effectiveFrom()).isAfter(java.time.Instant.now());
@@ -180,7 +180,7 @@ class SalesWorkAdminIntegrationTests {
         assertThatThrownBy(() -> adminService.upsertFieldPolicy(new FieldPolicyCommand(
                 "FIELD-NO-PUBLISH", "无发布权限规则", "Asia/Shanghai",
                 LocalTime.of(4, 0),
-                480, 240, true, true, true, 24, true, 20, null, 120, "ALL", null, true, null)))
+                480, 240, true, true, true, 24, true, 1200, 60, null, 120, "ALL", null, true, null)))
                 .isInstanceOf(AuthorizationDeniedException.class);
     }
 
@@ -234,7 +234,7 @@ class SalesWorkAdminIntegrationTests {
         adminService.upsertFieldPolicy(new FieldPolicyCommand(
                 "FIELD-SAMPLING", "默认外勤规则", "Asia/Shanghai", LocalTime.of(4, 0),
 
-                480, 240, true, true, true, 24, true, 20, new BigDecimal("100"), 120,
+                480, 240, true, true, true, 24, true, 1200, 60, new BigDecimal("100"), 120,
                 "EMPLOYEE", employeeId, true, null));
         setCaller(adminUserId, Set.of("sales:policy:read", "sales:policy:write", "sales:policy:publish"));
         var before = adminService.fieldPolicies().getFirst();
@@ -245,15 +245,15 @@ class SalesWorkAdminIntegrationTests {
         var command = new FieldPolicyCommand(p.policyCode(), p.policyName(), p.timezoneId(),
                 p.businessDayCutoff(), p.standardWorkMinutes(),
                 p.minimumWorkMinutes(), p.allowResume(), p.workHoursEnabled(), p.allowAdjustment(), p.adjustmentDeadlineHours(),
-                p.locationEnabled(), 1, p.minimumLocationAccuracyMeters(), p.offlineUploadDeadlineMinutes(),
+                p.locationEnabled(), 5, 120, p.minimumLocationAccuracyMeters(), p.offlineUploadDeadlineMinutes(),
                 p.scopeType(), p.scopeId(), true, before.versionNo());
         assertThat(adminService.upsertFieldPolicy(command).versionNo()).isEqualTo(2);
         assertThatThrownBy(() -> adminService.upsertFieldPolicy(command)).isInstanceOf(StateConflictException.class);
         var versions = adminService.fieldPolicies();
         assertThat(versions).hasSize(2);
-        assertThat(versions.getFirst().policy().locationIntervalMinutes()).isEqualTo(1);
+        assertThat(versions.getFirst().policy().locationSampleIntervalSeconds()).isEqualTo(5);
         assertThat(versions.getFirst().policy().scopeId()).isEqualTo(employeeId);
-        assertThat(versions.getLast().policy().locationIntervalMinutes()).isEqualTo(20);
+        assertThat(versions.getLast().policy().locationSampleIntervalSeconds()).isEqualTo(1200);
         setCaller(salesUserId, Set.of("sales:context:read"));
         assertThatThrownBy(() -> adminService.fieldPolicies()).isInstanceOf(AuthorizationDeniedException.class);
     }

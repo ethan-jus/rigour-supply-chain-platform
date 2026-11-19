@@ -58,19 +58,12 @@ public interface SalesWorkAttendanceRepository {
 
     List<String> findExistingLocationEventIds(UUID tenantId, List<String> deviceEventIds);
 
-    void insertLocationPoint(
-            UUID id,
-            UUID tenantId,
-            UUID locationSessionId,
-            UUID workDayId,
-            String deviceEventId,
-            BigDecimal longitude,
-            BigDecimal latitude,
-            BigDecimal accuracyMeters,
-            Instant clientOccurredAt,
-            Instant serverReceivedAt,
-            String source,
-            String qualityStatus, BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem);
+    record NewLocationPoint(UUID id, String deviceEventId, BigDecimal longitude, BigDecimal latitude,
+                            BigDecimal accuracyMeters, Instant clientOccurredAt, String source, String qualityStatus,
+                            BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem) {}
+
+    void insertLocationPoints(UUID tenantId, UUID locationSessionId, UUID workDayId, Instant receivedAt,
+                              List<NewLocationPoint> points);
 
     int incrementLocationPointCount(
             UUID tenantId, UUID workDayId, UUID locationSessionId, int amount);

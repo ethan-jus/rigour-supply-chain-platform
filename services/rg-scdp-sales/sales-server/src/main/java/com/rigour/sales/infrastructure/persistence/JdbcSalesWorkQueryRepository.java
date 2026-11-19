@@ -67,7 +67,8 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
                        fpv.timezone_id, fpv.business_day_cutoff,
                        fpv.standard_work_minutes, fpv.minimum_work_minutes, fpv.allow_resume, fpv.work_hours_enabled,
                        fpv.allow_adjustment, fpv.adjustment_deadline_hours, fpv.location_enabled,
-                       fpv.location_interval_minutes, fpv.minimum_location_accuracy_meters,
+                       fpv.location_interval_minutes, fpv.location_sample_interval_seconds,
+                       fpv.location_upload_interval_seconds, fpv.minimum_location_accuracy_meters,
                        fpv.offline_upload_deadline_minutes, fpv.effective_from
                   FROM sales_field_policy_version fpv
                   JOIN sales_field_policy fp ON fp.id=fpv.policy_id AND fp.tenant_id=fpv.tenant_id
@@ -122,7 +123,8 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
                        fpv.timezone_id, fpv.business_day_cutoff,
                        fpv.standard_work_minutes, fpv.minimum_work_minutes, fpv.allow_resume, fpv.work_hours_enabled,
                        fpv.allow_adjustment, fpv.adjustment_deadline_hours, fpv.location_enabled,
-                       fpv.location_interval_minutes, fpv.minimum_location_accuracy_meters,
+                       fpv.location_interval_minutes, fpv.location_sample_interval_seconds,
+                       fpv.location_upload_interval_seconds, fpv.minimum_location_accuracy_meters,
                        fpv.offline_upload_deadline_minutes, fpv.effective_from
                   FROM sales_field_policy_version fpv
                   JOIN sales_field_policy fp ON fp.id=fpv.policy_id AND fp.tenant_id=fpv.tenant_id
@@ -288,7 +290,8 @@ public class JdbcSalesWorkQueryRepository implements SalesWorkQueryRepository {
                 rs.getInt("standard_work_minutes"), rs.getInt("minimum_work_minutes"),
                 rs.getBoolean("allow_resume"), rs.getBoolean("work_hours_enabled"), rs.getBoolean("allow_adjustment"),
                 integerValue(rs.getObject("adjustment_deadline_hours")), rs.getBoolean("location_enabled"),
-                rs.getInt("location_interval_minutes"), rs.getBigDecimal("minimum_location_accuracy_meters"),
+                rs.getInt("location_interval_minutes"), rs.getInt("location_sample_interval_seconds"),
+                rs.getInt("location_upload_interval_seconds"), rs.getBigDecimal("minimum_location_accuracy_meters"),
                 rs.getInt("offline_upload_deadline_minutes"), instant(rs.getTimestamp("effective_from")));
     }
 

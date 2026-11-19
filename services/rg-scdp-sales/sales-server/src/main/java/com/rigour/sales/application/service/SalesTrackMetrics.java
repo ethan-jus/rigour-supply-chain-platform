@@ -16,9 +16,10 @@ final class SalesTrackMetrics {
     record Result(int distanceMeters, int trackedMinutes, boolean available, int rejected,
                   List<TrackLegView> legs, List<TrackGapView> gaps) {}
 
-    static Result calculate(List<LocationPointRow> input, int expectedIntervalMinutes) {
+    static Result calculate(List<LocationPointRow> input, int sampleIntervalSeconds) {
         var rows = input.stream().sorted(Comparator.comparing(SalesTrackMetrics::time)).toList();
-        long maximumGap = Math.max(180L, Math.min(300L, expectedIntervalMinutes * 120L));
+        long maximumGap = Math.max(180L, Math.min(300L, sampleIntervalSeconds * 2L));
+        long movingGap = Math.max(20L, Math.min(maximumGap, sampleIntervalSeconds * 3L));
         List<TrackLegView> legs = new ArrayList<>();
         List<TrackGapView> gaps = new ArrayList<>();
         List<TrackPointView> path = new ArrayList<>();
@@ -29,6 +30,7 @@ final class SalesTrackMetrics {
         boolean broken = false;
         for (int index = 0; index < rows.size(); index++) {
             var row = rows.get(index);
+            if ("APP_NETWORK".equals(row.source())) { broken = true; continue; }
             if (!valid(row)) { rejected++; broken = true; continue; }
             if (previous != null && coarseSpike(previous, row, index + 1 < rows.size() ? rows.get(index + 1) : null, maximumGap)) {
                 rejected++; continue;
@@ -40,9 +42,11 @@ final class SalesTrackMetrics {
             if (previous != null) {
                 long elapsed = Duration.between(time(previous), time(row)).getSeconds();
                 double hop = distance(previous, row);
+                long gapLimit = "APP_GPS".equals(previous.source()) && "APP_GPS".equals(row.source())
+                        ? movingGap : maximumGap;
                 String reason = !Objects.equals(previous.sessionId(), row.sessionId()) ? "SESSION_BOUNDARY"
                         : broken ? "REJECTED_SAMPLES" : elapsed <= 0 ? "INVALID_TIME"
-                        : elapsed > maximumGap ? "MISSING_SAMPLES" : hop / elapsed > 55 ? "IMPLAUSIBLE_SPEED" : null;
+                        : elapsed > gapLimit ? "MISSING_SAMPLES" : hop / elapsed > 55 ? "IMPLAUSIBLE_SPEED" : null;
                 if (reason != null) {
                     if (path.size() > 1) legs.add(new TrackLegView((int)Math.round(legDistance), path));
                     if (!"SESSION_BOUNDARY".equals(reason)) gaps.add(new TrackGapView(time(previous), time(row), reason));
@@ -91,7 +95,7 @@ final class SalesTrackMetrics {
                 && distance(anchor, after) <= anchor.accuracyMeters().doubleValue() + after.accuracyMeters().doubleValue();
     }
     private static boolean valid(LocationPointRow row) {
-        return "ACCEPTED".equals(row.qualityStatus()) && row.clientOccurredAt() != null
+        return !"APP_NETWORK".equals(row.source()) && "ACCEPTED".equals(row.qualityStatus()) && row.clientOccurredAt() != null
                 && row.longitude() != null && row.latitude() != null
                 && row.longitude().abs().doubleValue() <= 180 && row.latitude().abs().doubleValue() <= 90
                 && row.accuracyMeters() != null && row.accuracyMeters().doubleValue() > 0;

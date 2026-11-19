@@ -125,7 +125,7 @@ public class SalesWorkAdminService {
                 command.businessDayCutoff(), command.standardWorkMinutes(),
                 command.minimumWorkMinutes(), command.allowResume(), command.workHoursEnabled(), command.allowAdjustment(),
                 command.adjustmentDeadlineHours(), command.locationEnabled(),
-                command.locationIntervalMinutes(), command.minimumLocationAccuracyMeters(),
+                command.locationSampleIntervalSeconds(), command.locationUploadIntervalSeconds(), command.minimumLocationAccuracyMeters(),
                 command.offlineUploadDeadlineMinutes(), caller.userId(), now, effectiveFrom);
         insertScope(caller, "FIELD", versionId, command.scopeType(), command.scopeId(), now);
         appendAudit(caller, "SALES_ADMIN_FIELD_POLICY_VERSION", "SALES_FIELD_POLICY", policy.policyId(),
@@ -256,8 +256,11 @@ public class SalesWorkAdminService {
         if (command.minimumWorkMinutes() > command.standardWorkMinutes()) {
             throw invalid("minimumWorkMinutes不能大于standardWorkMinutes");
         }
-        if (command.locationIntervalMinutes() <= 0 || command.locationIntervalMinutes() > 1440) {
-            throw invalid("locationIntervalMinutes必须大于0");
+        if (command.locationSampleIntervalSeconds() < 5 || command.locationSampleIntervalSeconds() > 86400) {
+            throw invalid("定位采样间隔须在 5–86400 秒之间");
+        }
+        if (command.locationUploadIntervalSeconds() < 30 || command.locationUploadIntervalSeconds() > 300) {
+            throw invalid("轨迹上传间隔须在 30–300 秒之间");
         }
         if (!"Asia/Shanghai".equals(command.timezoneId())) throw invalid("销售作业统一使用北京时间");
         if (command.minimumLocationAccuracyMeters() == null || command.minimumLocationAccuracyMeters().signum() <= 0

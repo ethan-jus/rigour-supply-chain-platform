@@ -8,6 +8,7 @@ import com.rigour.shared.core.api.ApiResponse;
 import java.math.BigDecimal;
 import java.net.URI;
 import java.time.Duration;
+import java.util.List;
 import java.util.Map;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
@@ -46,6 +47,11 @@ public class HttpIntegrationAmapClient implements AmapPoiClient, TemporaryChecki
     public Coordinates convertGps(BigDecimal longitude,BigDecimal latitude) {
         return get("/coordinates/gps",Map.of("longitude",longitude,"latitude",latitude),new ParameterizedTypeReference<>(){});
     }
+    @Override
+    public List<Coordinates> convertGpsBatch(List<GpsPoint> points) {
+        URI uri = URI.create(base + "/coordinates/gps:batch");
+        return send(client.post().uri(uri).body(points), "POST", uri, new ParameterizedTypeReference<>() {});
+    }
     public Address reverseGcj02(BigDecimal longitude,BigDecimal latitude) {
         return get("/reverse-geocode/gcj02",Map.of("longitude",longitude,"latitude",latitude),new ParameterizedTypeReference<>(){});
     }
@@ -56,11 +62,14 @@ public class HttpIntegrationAmapClient implements AmapPoiClient, TemporaryChecki
     private <T> T get(String path,Map<String,?> parameters,ParameterizedTypeReference<ApiResponse<T>> type) {
         var builder=UriComponentsBuilder.fromUriString(base+path); parameters.forEach(builder::queryParam);
         URI uri=builder.build().encode().toUri();
+        return send(client.get().uri(uri), "GET", uri, type);
+    }
+    private <T> T send(RestClient.RequestHeadersSpec<?> request, String method, URI uri, ParameterizedTypeReference<ApiResponse<T>> type) {
         String tenant=AuthorizationContext.current().filter(c->c.tenantId()!=null)
                 .map(c->c.tenantId().toString()).orElse(temporaryTenant);
         if(tenant==null || tenant.isBlank()) throw new AmapPoiException("查询缺少租户上下文");
         try {
-            var response=client.get().uri(uri).headers(h->OutboundContextHeaders.service(signer,"GET",uri,
+            var response=request.headers(h->OutboundContextHeaders.service(signer,method,uri,
                     "rigour-sales-work-service",tenant,"integration:amap:read").forEach(h::set)).retrieve().body(type);
             if(response!=null && "OK".equals(response.code()) && response.data()!=null) return response.data();
         } catch(RestClientResponseException e) {

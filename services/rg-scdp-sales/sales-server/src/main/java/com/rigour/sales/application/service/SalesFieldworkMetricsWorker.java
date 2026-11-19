@@ -26,7 +26,7 @@ public class SalesFieldworkMetricsWorker {
         for(var day:summaries.pendingSummaries(20)) {
             try {
                 var policy=policies.findFieldPolicy(day.tenantId(),day.fieldPolicyId()).orElseThrow();
-                var result=SalesTrackMetrics.calculate(points.findLocationPoints(day.tenantId(),day.workDayId()),policy.locationIntervalMinutes());
+                var result=SalesTrackMetrics.calculate(points.findLocationPoints(day.tenantId(),day.workDayId()),policy.locationSampleIntervalSeconds());
                 for (var gap : result.gaps()) {
                     String key=day.workDayId()+":TRACK:"+gap.from()+":"+gap.to();
                     reviews.detect(day.tenantId(),day.salesProfileId(),day.workDayId(),null,key,"TRACK_GAP",

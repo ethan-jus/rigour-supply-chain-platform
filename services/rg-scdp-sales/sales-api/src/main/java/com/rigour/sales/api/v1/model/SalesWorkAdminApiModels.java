@@ -37,7 +37,7 @@ public final class SalesWorkAdminApiModels {
             LocalTime businessDayCutoff,
             int standardWorkMinutes, int minimumWorkMinutes, boolean allowResume, boolean workHoursEnabled,
             boolean allowAdjustment, Integer adjustmentDeadlineHours, boolean locationEnabled,
-            int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
+            int locationSampleIntervalSeconds, int locationUploadIntervalSeconds, BigDecimal minimumLocationAccuracyMeters,
             int offlineUploadDeadlineMinutes, String scopeType, UUID scopeId, boolean publish,
             Integer expectedVersion) {
     }

@@ -89,7 +89,8 @@ public final class SalesWorkContextService {
                 policy.publishStatus(), policy.timezoneId(), policy.businessDayCutoff(),
                 policy.standardWorkMinutes(), policy.minimumWorkMinutes(),
                 policy.allowResume(), policy.workHoursEnabled(), policy.allowAdjustment(), policy.adjustmentDeadlineHours(),
-                policy.locationEnabled(), policy.locationIntervalMinutes(),
+                policy.locationEnabled(), policy.locationIntervalMinutes(), policy.locationSampleIntervalSeconds(),
+                policy.locationUploadIntervalSeconds(),
                 policy.minimumLocationAccuracyMeters(), policy.offlineUploadDeadlineMinutes(),
                 policy.effectiveFrom());
     }

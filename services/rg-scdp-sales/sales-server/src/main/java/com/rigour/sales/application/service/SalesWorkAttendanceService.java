@@ -18,6 +18,9 @@ import com.rigour.sales.api.v1.model.SalesWorkApiModels.TrackVisitView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayTrackView;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.WorkDayView;
 import com.rigour.sales.application.port.out.SalesWorkAttendanceRepository;
+import com.rigour.sales.application.port.out.SalesWorkAttendanceRepository.NewLocationPoint;
+import com.rigour.sales.application.port.out.AmapPoiClient;
+import com.rigour.sales.application.port.out.AmapPoiException;
 import com.rigour.sales.application.port.out.SalesWorkAttendanceRepository.WorkDaySnapshot;
 import com.rigour.sales.application.port.out.SalesWorkQueryRepository.FieldPolicy;
 import com.rigour.sales.application.port.out.SalesWorkVisitRepository;
@@ -68,6 +71,7 @@ public class SalesWorkAttendanceService {
 
     private static final Duration IDEMPOTENCY_TTL = Duration.ofHours(48);
     private static final int MAX_LOCATION_POINTS = 100;
+    private static final int MAX_AMAP_COORDINATES = 40;
 
     private final SalesWorkContextService contextService;
     private final SalesWorkAttendanceRepository repository;
@@ -79,6 +83,7 @@ public class SalesWorkAttendanceService {
     private final Clock clock;
     private final SalesFieldworkService fieldwork;
     private final SalesWorkDayExpiryWorker expiry;
+    private final AmapPoiClient maps;
 
     public SalesWorkAttendanceService(
             SalesWorkContextService contextService,
@@ -88,7 +93,7 @@ public class SalesWorkAttendanceService {
             OutboxStore outboxStore,
             AuditSink auditSink,
             ObjectMapper objectMapper,
-            Clock clock, SalesFieldworkService fieldwork, SalesWorkDayExpiryWorker expiry) {
+            Clock clock, SalesFieldworkService fieldwork, SalesWorkDayExpiryWorker expiry, AmapPoiClient maps) {
         this.contextService = contextService;
         this.repository = repository;
         this.visitRepository = visitRepository;
@@ -98,6 +103,7 @@ public class SalesWorkAttendanceService {
         this.objectMapper = objectMapper;
         this.clock = clock;
         this.fieldwork = fieldwork; this.expiry = expiry;
+        this.maps = maps;
     }
 
     @Transactional
@@ -242,29 +248,21 @@ public class SalesWorkAttendanceService {
                                 uniquePoints.stream()
                                         .map(LocationPointCommand::deviceEventId)
                                         .toList()));
-        int duplicateCount = command.points().size() - uniquePoints.size();
-        int acceptedCount = 0;
-        for (LocationPointCommand point : uniquePoints) {
-            if (existingIds.contains(point.deviceEventId())) {
-                duplicateCount++;
-                continue;
-            }
-            repository.insertLocationPoint(
-                    UUID.randomUUID(),
-                    caller.tenantId(),
-                    sessionId,
-                    workDay.id(),
-                    point.deviceEventId(),
-                    point.longitude(),
-                    point.latitude(),
-                    point.accuracyMeters(),
-                    point.clientOccurredAt(),
-                    receivedAt,
-                    normalizeSource(point.source()),
-                    qualityStatus(point.accuracyMeters(), policy), point.rawLongitude(), point.rawLatitude(), point.rawCoordinateSystem());
-            acceptedCount++;
-        }
+        var pending = uniquePoints.stream().filter(point -> !existingIds.contains(point.deviceEventId())).toList();
+        int acceptedCount = pending.size();
+        int duplicateCount = command.points().size() - acceptedCount;
         if (acceptedCount > 0) {
+            var converted = convertTrackCoordinates(pending).iterator();
+            var inserts = new ArrayList<NewLocationPoint>(acceptedCount);
+            for (var point : pending) {
+                var position = point.longitude() == null ? converted.next()
+                        : new AmapPoiClient.Coordinates(point.longitude(), point.latitude(), "GCJ02");
+                inserts.add(new NewLocationPoint(UUID.randomUUID(), point.deviceEventId(), position.longitude(),
+                        position.latitude(), point.accuracyMeters(), point.clientOccurredAt(),
+                        normalizeSource(point.source()), qualityStatus(point.accuracyMeters(), policy),
+                        point.rawLongitude(), point.rawLatitude(), point.rawCoordinateSystem()));
+            }
+            repository.insertLocationPoints(caller.tenantId(), sessionId, workDay.id(), receivedAt, inserts);
             if (repository.incrementLocationPointCount(
                             caller.tenantId(),
                             workDay.id(),
@@ -299,6 +297,27 @@ public class SalesWorkAttendanceService {
                 batchReference(workDay.id(), acceptedCount, duplicateCount, 0, receivedAt);
         complete(caller, "LOCATION_BATCH", key, reference);
         return new LocationBatchResult(workDay.id(), acceptedCount, duplicateCount, 0, receivedAt);
+    }
+
+    private List<AmapPoiClient.Coordinates> convertTrackCoordinates(List<LocationPointCommand> pending) {
+        var raw = pending.stream().filter(point -> point.longitude() == null)
+                .map(point -> new AmapPoiClient.GpsPoint(point.rawLongitude(), point.rawLatitude())).toList();
+        var converted = new ArrayList<AmapPoiClient.Coordinates>(raw.size());
+        try {
+            for (int offset = 0; offset < raw.size(); offset += MAX_AMAP_COORDINATES) {
+                var chunk = raw.subList(offset, Math.min(raw.size(), offset + MAX_AMAP_COORDINATES));
+                var result = maps.convertGpsBatch(chunk);
+                if (result == null || result.size() != chunk.size() || result.stream().anyMatch(point ->
+                        point == null || !"GCJ02".equals(point.coordinateSystem()) || point.longitude() == null
+                                || point.latitude() == null || point.longitude().abs().doubleValue() > 180
+                                || point.latitude().abs().doubleValue() > 90))
+                    throw new AmapPoiException("轨迹坐标转换结果无效");
+                converted.addAll(result);
+            }
+        } catch (AmapPoiException e) {
+            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, e.getMessage(), List.of());
+        }
+        return converted;
     }
 
     @Transactional
@@ -477,7 +496,9 @@ public class SalesWorkAttendanceService {
         if(day!=null) policy=contextService.resolvePolicyVersion(caller.tenantId(),day.fieldPolicyVersionId());
         var until=date.plusDays(1).atTime(policy.businessDayCutoff()).atZone(java.time.ZoneId.of(policy.timezoneId())).toInstant();
         return new com.rigour.sales.api.v1.model.SalesWorkApiModels.AttendanceContextView(date,until,now,
-                policy.locationEnabled(),policy.locationIntervalMinutes(),policy.offlineUploadDeadlineMinutes(),policy.allowResume(),day);
+                policy.locationEnabled(),policy.locationIntervalMinutes(),policy.locationSampleIntervalSeconds(),
+                policy.locationUploadIntervalSeconds(),policy.minimumLocationAccuracyMeters(),
+                policy.offlineUploadDeadlineMinutes(),policy.allowResume(),day);
     }
 
     public WorkDayView workDay(LocalDate date) {
@@ -595,7 +616,7 @@ public class SalesWorkAttendanceService {
                                 () -> new BusinessException(ErrorCode.SALES_WORK_DAY_NOT_FOUND));
         var pointRows = repository.findLocationPoints(tenantId, workDay.id());
         var policy = contextService.resolvePolicyVersion(tenantId, workDay.fieldPolicyVersionId());
-        var metrics = SalesTrackMetrics.calculate(pointRows, policy.locationIntervalMinutes());
+        var metrics = SalesTrackMetrics.calculate(pointRows, policy.locationSampleIntervalSeconds());
         List<TrackPointView> points =
                 pointRows.stream()
                         .map(
@@ -667,7 +688,7 @@ public class SalesWorkAttendanceService {
                             reviewStatus(visit), target.storeAddress()));
         }
         List<TrackTravelSegmentView> segments =
-                travelSegments(visitRows, targets, pointRows, policy.locationIntervalMinutes());
+                travelSegments(visitRows, targets, pointRows, policy.locationSampleIntervalSeconds());
         return new WorkDayTrackView(
                 workDay.id(),
                 workDay.businessDate(),
@@ -683,7 +704,7 @@ public class SalesWorkAttendanceService {
     private static List<TrackTravelSegmentView> travelSegments(
             List<VisitSnapshot> visits,
             Map<UUID, VisitTargetSnapshot> targets,
-            List<SalesWorkAttendanceRepository.LocationPointRow> points, int expectedIntervalMinutes) {
+            List<SalesWorkAttendanceRepository.LocationPointRow> points, int sampleIntervalSeconds) {
         List<TrackTravelSegmentView> segments = new ArrayList<>();
         for (int index = 1; index < visits.size(); index++) {
             VisitSnapshot fromVisit = visits.get(index - 1);
@@ -703,7 +724,7 @@ public class SalesWorkAttendanceService {
                                             !pointTime(point).isBefore(from)
                                                     && !pointTime(point).isAfter(to))
                             .toList();
-            var measured = SalesTrackMetrics.calculate(segmentPoints, expectedIntervalMinutes);
+            var measured = SalesTrackMetrics.calculate(segmentPoints, sampleIntervalSeconds);
             segments.add(
                     new TrackTravelSegmentView(
                             fromVisit.id(),
@@ -1065,7 +1086,9 @@ public class SalesWorkAttendanceService {
     private static void validatePoint(LocationPointCommand point) {
         if (point == null) throw new BusinessException(ErrorCode.SALES_LOCATION_INVALID);
         required(point.deviceEventId(), "deviceEventId", 128);
-        validateCoordinates(point.longitude(), point.latitude(), point.accuracyMeters());
+        boolean needsConversion = point.longitude() == null && point.latitude() == null;
+        if (needsConversion && !"WGS84".equals(point.rawCoordinateSystem())) throw badRequest("缺少原始 GPS 坐标");
+        if (!needsConversion) validateCoordinates(point.longitude(), point.latitude(), point.accuracyMeters());
         required(point.source(), "source", 24);
         if (point.rawLongitude()!=null || point.rawLatitude()!=null || point.rawCoordinateSystem()!=null) {
             validateCoordinates(point.rawLongitude(),point.rawLatitude(),point.accuracyMeters());

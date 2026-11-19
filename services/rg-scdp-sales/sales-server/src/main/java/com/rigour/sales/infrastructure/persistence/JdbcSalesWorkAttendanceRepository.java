@@ -229,39 +229,25 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMES
     }
 
     @Override
-    public void insertLocationPoint(
-            UUID id,
-            UUID tenantId,
-            UUID locationSessionId,
-            UUID workDayId,
-            String deviceEventId,
-            BigDecimal longitude,
-            BigDecimal latitude,
-            BigDecimal accuracyMeters,
-            Instant clientOccurredAt,
-            Instant serverReceivedAt,
-            String source,
-            String qualityStatus, BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem) {
-        jdbc.update(
-                """
+    public void insertLocationPoints(UUID tenantId, UUID locationSessionId, UUID workDayId, Instant receivedAt,
+                                     List<NewLocationPoint> points) {
+        if (points.isEmpty()) return;
+        var args = new ArrayList<Object>(points.size() * 15);
+        for (var point : points) {
+            java.util.Collections.addAll(args, bin(point.id()), bin(tenantId), bin(locationSessionId), bin(workDayId),
+                    point.deviceEventId(), point.longitude(), point.latitude(), point.accuracyMeters(),
+                    timestamp(point.clientOccurredAt()), timestamp(receivedAt), point.source(), point.qualityStatus(),
+                    point.rawLongitude(), point.rawLatitude(), point.rawCoordinateSystem());
+        }
+        String values = String.join(",", java.util.Collections.nCopies(points.size(),
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))"));
+        jdbc.update("""
                 INSERT INTO sales_location_point
                     (id, tenant_id, location_session_id, work_day_id, device_event_id,
                      longitude, latitude, accuracy_meters, client_occurred_at, server_received_at,
                      source, quality_status, raw_longitude, raw_latitude, raw_coordinate_system, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))
-                """,
-                bin(id),
-                bin(tenantId),
-                bin(locationSessionId),
-                bin(workDayId),
-                deviceEventId,
-                longitude,
-                latitude,
-                accuracyMeters,
-                timestamp(clientOccurredAt),
-                timestamp(serverReceivedAt),
-                source,
-                qualityStatus, rawLongitude, rawLatitude, rawCoordinateSystem);
+                VALUES
+                """ + values, args.toArray());
     }
 
     @Override

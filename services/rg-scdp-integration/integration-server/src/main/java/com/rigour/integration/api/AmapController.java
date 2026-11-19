@@ -58,6 +58,17 @@ public class AmapController {
     public ApiResponse<AmapPoiClient.Coordinates> convertGps(@RequestParam BigDecimal longitude,@RequestParam BigDecimal latitude) {
         authorize(); coordinates(longitude,latitude);return call(()->pois.convertGps(longitude,latitude));
     }
+    @PostMapping("/coordinates/gps:batch")
+    public ApiResponse<List<AmapPoiClient.Coordinates>> convertGpsBatch(@RequestBody List<AmapPoiClient.GpsPoint> points) {
+        authorize();
+        if (points == null || points.isEmpty() || points.size() > AmapPoiClient.MAX_COORDINATES_PER_REQUEST)
+            throw new RequestValidationException("坐标批次须包含 1–40 个点");
+        for (var point : points) {
+            if (point == null) throw new RequestValidationException("经纬度无效");
+            coordinates(point.longitude(), point.latitude());
+        }
+        return call(() -> pois.convertGpsBatch(points));
+    }
     private static void authorize() {
         var caller=AuthorizationContext.requireCurrent();
         if(!"SERVICE".equals(caller.principalScope()) || caller.tenantId()==null)
@@ -65,7 +76,7 @@ public class AmapController {
         AuthorizationContext.requirePermission("integration:amap:read");
     }
     private static void coordinates(BigDecimal longitude,BigDecimal latitude) {
-        if(longitude.abs().compareTo(BigDecimal.valueOf(180))>0 || latitude.abs().compareTo(BigDecimal.valueOf(90))>0)
+        if(longitude==null || latitude==null || longitude.abs().compareTo(BigDecimal.valueOf(180))>0 || latitude.abs().compareTo(BigDecimal.valueOf(90))>0)
             throw new RequestValidationException("经纬度无效");
     }
     private static void page(int page,int size) {

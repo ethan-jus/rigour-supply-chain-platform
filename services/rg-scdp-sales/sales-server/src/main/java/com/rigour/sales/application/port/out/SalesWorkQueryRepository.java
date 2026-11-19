@@ -47,7 +47,8 @@ public interface SalesWorkQueryRepository {
                        String publishStatus, String timezoneId, LocalTime businessDayCutoff,
                        int standardWorkMinutes, int minimumWorkMinutes, boolean allowResume, boolean workHoursEnabled,
                        boolean allowAdjustment, Integer adjustmentDeadlineHours, boolean locationEnabled,
-                       int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
+                       int locationIntervalMinutes, int locationSampleIntervalSeconds, int locationUploadIntervalSeconds,
+                       BigDecimal minimumLocationAccuracyMeters,
                        int offlineUploadDeadlineMinutes, Instant effectiveFrom) {
     }
 

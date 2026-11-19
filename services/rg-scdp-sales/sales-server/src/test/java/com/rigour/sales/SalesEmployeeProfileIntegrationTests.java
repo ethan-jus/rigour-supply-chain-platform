@@ -146,7 +146,7 @@ class SalesEmployeeProfileIntegrationTests {
         profiles.register();
         caller(user, Set.of("sales:policy:write", "sales:policy:publish", "sales:store-projection:write", "sales:assignment:write"));
         admin.upsertFieldPolicy(new FieldPolicyCommand("DEFAULT", "外勤", "Asia/Shanghai", LocalTime.MIDNIGHT,
-                480, 240, false, false, false, null, false, 20, new java.math.BigDecimal("100"), 120, "ALL", null, true, null));
+                480, 240, false, false, false, null, false, 1200, 60, new java.math.BigDecimal("100"), 120, "ALL", null, true, null));
         UUID store = UUID.randomUUID();
         admin.upsertStoreProjection(new StoreProjectionCommand(store, null, "客户", "门店一", "地址", null, null, "ACTIVE"));
         admin.upsertAssignment(new AssignmentCommand(first.salesProfileId(), store, null, "PRIMARY"));

@@ -33,7 +33,8 @@ public interface SalesWorkAdminRepository {
                                   int standardWorkMinutes, int minimumWorkMinutes,
                                   boolean allowResume, boolean workHoursEnabled, boolean allowAdjustment,
                                   Integer adjustmentDeadlineHours, boolean locationEnabled,
-                                  int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
+                                  int locationSampleIntervalSeconds, int locationUploadIntervalSeconds,
+                                  BigDecimal minimumLocationAccuracyMeters,
                                   int offlineUploadDeadlineMinutes, UUID actorId, Instant now, Instant effectiveFrom);
 
     UUID insertVisitPolicyVersion(UUID tenantId, UUID policyId, int versionNo, boolean publish,

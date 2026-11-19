@@ -8,10 +8,12 @@ import static org.springframework.test.web.client.match.MockRestRequestMatchers.
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 
 import com.rigour.integration.application.port.out.AmapPoiClient.NearbyPoiPage;
+import com.rigour.integration.application.port.out.AmapPoiClient.GpsPoint;
 import com.rigour.integration.application.port.out.AmapPoiException;
 import com.rigour.integration.infrastructure.config.AmapProperties;
 import java.math.BigDecimal;
 import java.time.Duration;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.client.MockRestServiceServer;
@@ -33,6 +35,26 @@ class RestAmapPoiClientTest {
         var point=client.convertGps(new BigDecimal("120.1"),new BigDecimal("30.2"));
         assertThat(point.coordinateSystem()).isEqualTo("GCJ02");assertThat(point.longitude()).isEqualByComparingTo("120.1045");
         assertThatThrownBy(()->client.convertGps(BigDecimal.ONE,BigDecimal.ONE)).isInstanceOf(AmapPoiException.class);
+        server.verify();
+    }
+
+    @Test
+    void sendsSeveralGpsFixesInOneRequestAndKeepsTheirOrder() {
+        var builder = RestClient.builder();
+        var server = MockRestServiceServer.bindTo(builder).build();
+        var client = new RestAmapPoiClient(builder.build(), properties, JsonMapper.builder().build());
+        server.expect(requestTo(containsString("/assistant/coordinate/convert")))
+                .andExpect(queryParam("coordsys", "gps"))
+                .andExpect(request -> assertThat(request.getURI().getQuery())
+                        .contains("locations=120.100000,30.200000|120.101000,30.201000"))
+                .andRespond(withSuccess("{\"status\":\"1\",\"locations\":\"120.1045,30.1976;120.1055,30.1986\"}",
+                        MediaType.APPLICATION_JSON));
+
+        var points = client.convertGpsBatch(List.of(
+                new GpsPoint(new BigDecimal("120.100"), new BigDecimal("30.200")),
+                new GpsPoint(new BigDecimal("120.101"), new BigDecimal("30.201"))));
+        assertThat(points).extracting(point -> point.longitude()).containsExactly(
+                new BigDecimal("120.1045"), new BigDecimal("120.1055"));
         server.verify();
     }
 

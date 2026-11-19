@@ -46,7 +46,8 @@ public class JdbcSalesWorkAdminRepository implements SalesWorkAdminRepository {
                         r.getObject("business_day_cutoff", LocalTime.class),
                         r.getInt("standard_work_minutes"), r.getInt("minimum_work_minutes"), r.getBoolean("allow_resume"), r.getBoolean("work_hours_enabled"),
                         r.getBoolean("allow_adjustment"), r.getObject("adjustment_deadline_hours", Integer.class),
-                        r.getBoolean("location_enabled"), r.getInt("location_interval_minutes"),
+                        r.getBoolean("location_enabled"), r.getInt("location_sample_interval_seconds"),
+                        r.getInt("location_upload_interval_seconds"),
                         r.getBigDecimal("minimum_location_accuracy_meters"), r.getInt("offline_upload_deadline_minutes"),
                         r.getString("scope_type") == null ? "ALL" : r.getString("scope_type"),
                         SalesUuidCodec.decode(r.getBytes("scope_id")), true, r.getInt("version_no"))), bin(tenantId));
@@ -150,7 +151,8 @@ public class JdbcSalesWorkAdminRepository implements SalesWorkAdminRepository {
                                          int standardWorkMinutes, int minimumWorkMinutes,
                                          boolean allowResume, boolean workHoursEnabled, boolean allowAdjustment,
                                          Integer adjustmentDeadlineHours, boolean locationEnabled,
-                                         int locationIntervalMinutes, BigDecimal minimumLocationAccuracyMeters,
+                                         int locationSampleIntervalSeconds, int locationUploadIntervalSeconds,
+                                         BigDecimal minimumLocationAccuracyMeters,
                                          int offlineUploadDeadlineMinutes, UUID actorId, Instant now, Instant effectiveFrom) {
         UUID versionId = UUID.randomUUID();
         jdbc.update("""
@@ -159,13 +161,14 @@ public class JdbcSalesWorkAdminRepository implements SalesWorkAdminRepository {
                      business_day_cutoff, standard_work_minutes,
                      minimum_work_minutes, allow_resume, work_hours_enabled, allow_adjustment,
                      adjustment_deadline_hours, location_enabled, location_interval_minutes,
-                     minimum_location_accuracy_meters, offline_upload_deadline_minutes,
+                     location_sample_interval_seconds, location_upload_interval_seconds, minimum_location_accuracy_meters, offline_upload_deadline_minutes,
                      effective_from, approved_by, approved_at, created_by, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))
                 """, bin(versionId), bin(tenantId), bin(policyId), versionNo,
                 publish ? "PUBLISHED" : "DRAFT", timezoneId, businessDayCutoff,
                 standardWorkMinutes, minimumWorkMinutes, allowResume ? 1 : 0, workHoursEnabled ? 1 : 0, allowAdjustment ? 1 : 0,
-                adjustmentDeadlineHours, locationEnabled ? 1 : 0, locationIntervalMinutes,
+                adjustmentDeadlineHours, locationEnabled ? 1 : 0, Math.ceilDiv(locationSampleIntervalSeconds, 60),
+                locationSampleIntervalSeconds, locationUploadIntervalSeconds,
                 minimumLocationAccuracyMeters, offlineUploadDeadlineMinutes,
                 publish ? timestamp(effectiveFrom) : null, publish ? bin(actorId) : null,
                 publish ? timestamp(now) : null, bin(actorId));
