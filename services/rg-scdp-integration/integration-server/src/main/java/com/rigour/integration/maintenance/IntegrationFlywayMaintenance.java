@@ -2,6 +2,7 @@ package com.rigour.integration.maintenance;
 
 import java.util.Arrays;
 import org.flywaydb.core.Flyway;
+import com.rigour.integration.infrastructure.persistence.migration.IntegrationV34MigrationResources;
 import org.flywaydb.core.api.MigrationInfo;
 import org.flywaydb.core.api.output.MigrateResult;
 import org.flywaydb.core.api.output.RepairResult;
@@ -44,10 +45,11 @@ public final class IntegrationFlywayMaintenance {
         System.out.println("迁移账号: " + user);
         System.out.println("迁移脚本: classpath:db/migration");
 
-        Flyway flyway = Flyway.configure()
+        var configuration = Flyway.configure()
                 .dataSource(url, user, password)
-                .locations("classpath:db/migration", "classpath:db/bootstrap")
-                .load();
+                .locations("classpath:db/migration", "classpath:db/bootstrap");
+        IntegrationV34MigrationResources.configure(configuration);
+        Flyway flyway = configuration.load();
 
         RepairResult repair = flyway.repair();
         System.out.println("Flyway repair 完成，removedFailedMigrations="

@@ -30,15 +30,17 @@ Flyway B 基线机制说明：[官方文档](https://documentation.red-gate.com/
 cd /root/rigour_scm
 mkdir -p integration-general-ci-init
 cd integration-general-ci-init
-/usr/local/jdk21/bin/jar xf ../integration-server.jar BOOT-INF/lib BOOT-INF/classes/db
+/usr/local/jdk21/bin/jar xf ../integration-server.jar BOOT-INF/lib BOOT-INF/classes
 cd ..
 /usr/local/jdk21/bin/java \
-  --class-path 'integration-general-ci-init/BOOT-INF/lib/*' \
+  --class-path 'integration-general-ci-init/BOOT-INF/classes:integration-general-ci-init/BOOT-INF/lib/*' \
   InitializeIntegrationDatabase.java \
   train integration-general-ci-init/BOOT-INF/classes/db/migration
 ```
 
-工具先验证本机 MySQL:3306、主机名、排序规则和 `UUID_TO_BIN`，再确认 `rigour_integration` 没有任何表；非空或部分失败的库会拒绝继续，不自动清理或 repair。随后从 B27 基线迁移到 V34，验证 Flyway 历史、最终版本、库/表/字符列排序规则及业务表行数。V34 会清除基线中的 6 个退役飞书模板和 2 个依赖，新库仅含结构及迁移历史。若数据库能力检查失败，记录版本与完整错误，先解决兼容性问题，不开启服务自动迁移。
+工具先验证本机 MySQL:3306、主机名、排序规则和 `UUID_TO_BIN`，再确认 `rigour_integration` 没有任何表；非空或部分失败的库会拒绝继续，不自动清理或 repair。随后从 B27 基线迁移到 V35，验证 Flyway 历史、最终版本、库/表/字符列排序规则及业务表行数。V35 会补齐承运商回填进度列，并清除基线中的 6 个退役飞书模板和 2 个依赖，新库仅含结构及迁移历史。若数据库能力检查失败，记录版本与完整错误，先解决兼容性问题，不开启服务自动迁移。
+
+Integration 的两份 V34 和 Foundation 的两份 V61 均已有执行记录，原文件及校验值保留。应用按成功历史中的脚本名、描述、类型和 checksum 选择对应原版；无历史的新库分别选择承运商回填、物流字典名称分支，再由 V35 / V62 补齐另一分支。未知、失败或被改动的历史仍阻止启动，其他迁移保持完整校验。
 
 ## 已有数据库转换
 

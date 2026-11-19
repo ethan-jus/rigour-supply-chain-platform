@@ -7,14 +7,15 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import org.flywaydb.core.Flyway;
+import com.rigour.integration.infrastructure.persistence.migration.IntegrationV34MigrationResources;
 
 /**
  * One-time empty-schema initialization using the deployed Integration JAR's migrations and libraries.
  * Run on the database host with JDK 21. The JDBC target is deliberately fixed to local MySQL:3306.
- * Usage: java --class-path 'extracted/BOOT-INF/lib/*' InitializeIntegrationDatabase.java
+ * Usage: java --class-path 'extracted/BOOT-INF/classes:extracted/BOOT-INF/lib/*' InitializeIntegrationDatabase.java
  *        expected-mysql-hostname extracted/BOOT-INF/classes/db/migration
  * Stop Integration before running. Never reads Nacos or development defaults; refuses every nonempty
- * schema, including partial runs. Applies the B27 baseline and V28 through V34 to an empty schema.
+ * schema, including partial runs. Applies the B27 baseline and V28 through V35 to an empty schema.
  * Retains Flyway history and imports no business data.
  */
 public final class InitializeIntegrationDatabase {
@@ -30,8 +31,8 @@ public final class InitializeIntegrationDatabase {
         }
         Path migrations = Path.of(args[1]).toAbsolutePath().normalize();
         if (!Files.isRegularFile(migrations.resolve("V1__integration_dinghuobao.sql"))
-                || !Files.isRegularFile(migrations.resolve("V34__retire_feishu_import_configuration.sql"))) {
-            throw new IllegalArgumentException("Integration migrations through V34 required: " + migrations);
+                || !Files.isRegularFile(migrations.resolve("V35__converge_carrier_progress_and_retired_import_configuration.sql"))) {
+            throw new IllegalArgumentException("Integration migrations through V35 required: " + migrations);
         }
         Path bootstrap = migrations.resolveSibling("bootstrap");
         if (!Files.isRegularFile(bootstrap.resolve("B27__general_ci_bootstrap.sql"))) {
@@ -75,22 +76,23 @@ public final class InitializeIntegrationDatabase {
             statement.executeUpdate("ALTER DATABASE rigour_integration CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
         }
 
-        Flyway flyway = Flyway.configure()
+        var configuration = Flyway.configure()
                 .dataSource(SERVER_URL + SCHEMA + PARAMETERS, user, password)
                 .defaultSchema(SCHEMA)
                 .schemas(SCHEMA)
                 .createSchemas(false)
                 .locations("filesystem:" + migrations, "filesystem:" + bootstrap)
-                .target("34")
+                .target("35")
                 .cleanDisabled(true)
                 .baselineOnMigrate(false)
                 .validateOnMigrate(true)
-                .outOfOrder(false)
-                .load();
+                .outOfOrder(false);
+        IntegrationV34MigrationResources.configure(configuration);
+        Flyway flyway = configuration.load();
         var result = flyway.migrate();
         flyway.validate();
-        if (!"34".equals(result.targetSchemaVersion)) {
-            throw new IllegalStateException("Expected Integration schema V34, found " + result.targetSchemaVersion);
+        if (!"35".equals(result.targetSchemaVersion)) {
+            throw new IllegalStateException("Expected Integration schema V35, found " + result.targetSchemaVersion);
         }
         verifyCollations(user, password);
         verifyNoBusinessData(user, password);
