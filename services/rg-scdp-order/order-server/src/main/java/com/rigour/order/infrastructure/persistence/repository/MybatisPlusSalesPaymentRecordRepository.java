@@ -302,9 +302,9 @@ public class MybatisPlusSalesPaymentRecordRepository
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void delete(String tenantId, Long id, int revision, String actorId) {
+    public void cancelSyncedReceipt(String tenantId, Long id, int revision, String actorId) {
         queryCache.changed(tenantId);
-        scopes.requireRelated(tenantId, id, "order:payment:delete", "order_payment_record");
+        scopes.requireRelated(tenantId, id, "order:write", "order_payment_record");
         InternalSalesPaymentRecordEntity existing =
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售回款记录不存在"));
         LocalDateTime now = now();
@@ -323,6 +323,7 @@ public class MybatisPlusSalesPaymentRecordRepository
                                         .set(InternalSalesPaymentRecordEntity::getUpdatedTime, now)
                                         .eq(InternalSalesPaymentRecordEntity::getTenantId, tenantId)
                                         .eq(InternalSalesPaymentRecordEntity::getId, id)
+                                        .eq(InternalSalesPaymentRecordEntity::getSourceSystemCode, "DINGHUOBAO")
                                         .eq(InternalSalesPaymentRecordEntity::getRevision, revision)
                                         .eq(InternalSalesPaymentRecordEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售回款记录已被其他人修改，请刷新后重试");

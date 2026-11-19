@@ -1434,7 +1434,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                                 c.connectorId().toString(),
                                 c.receiptNo())) {
                     require(customer != null && num(p, "customer_id") == customer, "撤销回款的客户快照不一致");
-                    payments.delete(t, num(p, "id"), (int) num(p, "revision"), "SYSTEM");
+                    payments.cancelSyncedReceipt(t, num(p, "id"), (int) num(p, "revision"), "SYSTEM");
                 }
             }
             return new Intake("CANCELLED", group, null);

@@ -103,14 +103,12 @@ class CosProductMediaStorageTest {
     }
 
     @Test
-    void allowsFeishuAttachmentPrefixInSharedCosBucket() {
+    void retiredImportPrefixIsRejectedBeforeCosAccess() {
         COSClient client = mock(COSClient.class);
-        when(client.doesObjectExist("bucket", FEISHU_ATTACHMENT_KEY)).thenReturn(true);
-
         CosProductMediaStorage storage = new CosProductMediaStorage(properties(), client);
-
-        assertThat(storage.exists(TENANT_ID, FEISHU_ATTACHMENT_KEY)).isTrue();
-        verify(client).doesObjectExist("bucket", FEISHU_ATTACHMENT_KEY);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> storage.exists(TENANT_ID, FEISHU_ATTACHMENT_KEY))
+                .isInstanceOf(IllegalArgumentException.class);
+        org.mockito.Mockito.verifyNoInteractions(client);
     }
 
     private static ProductMediaProperties properties() {

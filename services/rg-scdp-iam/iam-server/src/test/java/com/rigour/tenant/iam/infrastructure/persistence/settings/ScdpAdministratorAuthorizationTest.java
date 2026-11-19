@@ -214,7 +214,7 @@ class ScdpAdministratorAuthorizationTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"supply.bi.sales", "supply.bi.city-operating", "supply.bi.payment-risk"})
-    void dashboardPageGrantProvidesReadOnlyAccessWithSavedScope(String route) {
+    void dashboardNeedsItsReadActionAndHonorsTheRolesSavedScope(String route) {
         var employee = mock(AppEmployeeClient.class);
         when(employee.employee(ordinary.tenantId(), "CITY-EMPLOYEE")).thenReturn(
                 new AppEmployeeClient.Employee(1, "CITY-EMPLOYEE", "城市负责人", "ACTIVE",
@@ -243,6 +243,12 @@ class ScdpAdministratorAuthorizationTest {
         jdbc.update("UPDATE iam_app_menu_node SET parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000065') WHERE tenant_id=? AND id IN (UUID_TO_BIN('019facf2-0000-7000-8000-000000000240'),UUID_TO_BIN('019facf2-0000-7000-8000-000000000379'),UUID_TO_BIN('019facf2-0000-7000-8000-000000000375'))", tenant);
         byte[] selectedPage = jdbc.queryForObject("SELECT resource_id FROM iam_resource_ui WHERE route_key=?", byte[].class, route);
         jdbc.update("INSERT INTO iam_app_role_grant(tenant_id,application_id,role_id,menu_node_id) VALUES(?,?,?,?)", tenant, bin(app), assignedRole, selectedPage);
+        assertThat(settings.context(ordinary).permissions()).doesNotContain("analytics:dashboard:read");
+        byte[] readAction = jdbc.queryForObject("SELECT id FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.API.ANALYTICS_SUPPLY_DASHBOARD_READ'", byte[].class);
+        jdbc.update("INSERT INTO iam_app_menu_node(tenant_id,application_id,id,parent_id,resource_id,node_type,display_name,visible) SELECT ?,application_id,id,parent_id,id,'BUTTON',display_name,0 FROM iam_resource WHERE id=?",
+                tenant, readAction);
+        jdbc.update("INSERT INTO iam_app_role_grant(tenant_id,application_id,role_id,menu_node_id) VALUES(?,?,?,?)", tenant, bin(app), assignedRole, readAction);
+        settings.bump(ordinary);
         assertThat(settings.context(ordinary).permissions()).containsExactly("analytics:dashboard:read");
         assertThat(settings.navigation(ordinary)).singleElement().satisfies(group ->
                 assertThat(group.children()).singleElement().satisfies(node ->
@@ -275,6 +281,7 @@ class ScdpAdministratorAuthorizationTest {
         assertThat(settings.permissions(ordinary)).isEmpty();
         jdbc.update("UPDATE iam_app_member SET status='ACTIVE' WHERE tenant_id=? AND user_id=?", tenant, user);
         jdbc.update("DELETE FROM iam_app_role_grant WHERE tenant_id=? AND role_id=?", tenant, assignedRole);
+        settings.bump(ordinary);
         assertThat(settings.permissions(ordinary)).isEmpty();
         assertThat(settings.navigation(ordinary)).isEmpty();
     }

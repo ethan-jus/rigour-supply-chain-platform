@@ -78,41 +78,59 @@ public class PayrollSchemePersistenceTest {
         return LocalDateTime.now(ZoneOffset.UTC);
     }
 
-    PayrollSchemeSaveCommand command(String request, Integer revision) {
-        return new PayrollSchemeSaveCommand(
-                request, revision, null, PayrollSchemeTestFixture.definition(), "测试核定");
-    }
-
     @Test
-    void tenantIsolationIdempotencyRevisionAndImmutablePublish() {
-        var c = command("request", 0);
-        var saved = repository.save("tenant-a", null, c, "actor");
-        assertThat(repository.save("tenant-a", null, c, "actor").id()).isEqualTo(saved.id());
+    void readsPublishedHistoricalScoringBandsWithinTenant() {
+        var json = JsonMapper.builder().build();
+        tools.jackson.databind.node.ObjectNode node =
+                (tools.jackson.databind.node.ObjectNode)
+                        json.valueToTree(PayrollSchemeTestFixture.definition());
+        var bands =
+                List.of(
+                        new PayrollMetricStep(
+                                java.math.BigDecimal.ZERO,
+                                null,
+                                true,
+                                false,
+                                "FIXED",
+                                new java.math.BigDecimal("1.73")));
+        node.set(
+                "manager",
+                json.valueToTree(
+                        new PayrollManagerPolicy(
+                                List.of(
+                                        new PayrollMetricDefinition(
+                                                "store",
+                                                "建联门店",
+                                                "MANUAL_CONFIRMED",
+                                                null,
+                                                new java.math.BigDecimal("100"),
+                                                bands,
+                                                null,
+                                                "CONTACTED_STORE_COUNT",
+                                                "TIERED")),
+                                new PayrollProtectionPolicy("MONTHS", 1, true),
+                                null,
+                                List.of(),
+                                "ACTUAL_COMPLETION")));
+        var definition = json.treeToValue(node, PayrollSchemeDefinition.class);
+        jdbc.update("""
+                INSERT INTO hr_payroll_scheme_version
+                    (id,tenant_id,request_id,scheme_id,version,revision,status,data_json,reason,created_by,updated_time)
+                VALUES ('archived','tenant-a','request','scheme',1,2,'PUBLISHED',?,'历史规则','actor',CURRENT_TIMESTAMP)
+                """, json.writeValueAsString(definition));
+        var loaded = repository.versions("tenant-a").getFirst();
+        assertThat(loaded.definition().manager().metrics().getFirst().scoringMode())
+                .isEqualTo("TIERED");
+        assertThat(
+                        loaded.definition()
+                                .manager()
+                                .metrics()
+                                .getFirst()
+                                .steps()
+                                .getFirst()
+                                .coefficient())
+                .isEqualByComparingTo("1.73");
         assertThat(repository.versions("tenant-b")).isEmpty();
-        var edited = repository.save("tenant-a", saved.id(), c, "actor");
-        assertThat(edited.revision()).isEqualTo(1);
-        assertThatThrownBy(() -> repository.save("tenant-a", saved.id(), c, "actor"))
-                .hasMessageContaining("更新");
-        var published =
-                repository.publish(
-                        "tenant-a", saved.id(), new PayrollSchemePublishCommand(1, "审核"), "actor");
-        assertThat(published.status()).isEqualTo("PUBLISHED");
-        assertThat(
-                        repository.publish(
-                                "tenant-a",
-                                saved.id(),
-                                new PayrollSchemePublishCommand(1, "审核"),
-                                "actor"))
-                .isEqualTo(published);
-        assertThatThrownBy(
-                        () ->
-                                repository.save(
-                                        "tenant-a", saved.id(), command("request", 2), "actor"))
-                .hasMessageContaining("已发布");
-        assertThat(
-                        jdbc.queryForObject(
-                                "SELECT COUNT(*) FROM hr_payroll_scheme_event", Integer.class))
-                .isEqualTo(3);
     }
 
     @Test
@@ -171,72 +189,6 @@ public class PayrollSchemePersistenceTest {
     }
 
     @Test
-    void hrMetricScoringBandsRoundTripWithoutChangingPublishedHistory() {
-        var json = JsonMapper.builder().build();
-        tools.jackson.databind.node.ObjectNode node =
-                (tools.jackson.databind.node.ObjectNode)
-                        json.valueToTree(PayrollSchemeTestFixture.definition());
-        var bands =
-                List.of(
-                        new PayrollMetricStep(
-                                java.math.BigDecimal.ZERO,
-                                null,
-                                true,
-                                false,
-                                "FIXED",
-                                new java.math.BigDecimal("1.73")));
-        node.set(
-                "manager",
-                json.valueToTree(
-                        new PayrollManagerPolicy(
-                                List.of(
-                                        new PayrollMetricDefinition(
-                                                "store",
-                                                "建联门店",
-                                                "MANUAL_CONFIRMED",
-                                                null,
-                                                new java.math.BigDecimal("100"),
-                                                bands,
-                                                null,
-                                                "CONTACTED_STORE_COUNT",
-                                                "TIERED")),
-                                new PayrollProtectionPolicy("MONTHS", 1, true),
-                                null,
-                                List.of(),
-                                "ACTUAL_COMPLETION")));
-        var definition = json.treeToValue(node, PayrollSchemeDefinition.class);
-        var saved =
-                repository.save(
-                        "tenant-a",
-                        null,
-                        new PayrollSchemeSaveCommand("scoring", 0, null, definition, "HR配置"),
-                        "actor");
-        var published =
-                repository.publish(
-                        "tenant-a",
-                        saved.id(),
-                        new PayrollSchemePublishCommand(saved.revision(), "发布"),
-                        "actor");
-        var loaded =
-                repository.versions("tenant-a").stream()
-                        .filter(v -> v.id().equals(published.id()))
-                        .findFirst()
-                        .orElseThrow();
-        assertThat(loaded.definition().manager().metrics().getFirst().scoringMode())
-                .isEqualTo("TIERED");
-        assertThat(
-                        loaded.definition()
-                                .manager()
-                                .metrics()
-                                .getFirst()
-                                .steps()
-                                .getFirst()
-                                .coefficient())
-                .isEqualByComparingTo("1.73");
-        assertThat(repository.versions("tenant-b")).isEmpty();
-    }
-
-    @Test
     void failedAuditRollsBackMonthlyFacts() {
         jdbc.execute("DROP TABLE hr_payroll_scheme_event");
         assertThatThrownBy(
@@ -250,21 +202,4 @@ public class PayrollSchemePersistenceTest {
         assertThat(repository.facts("tenant-a", "EMP", "2026-10").revision()).isZero();
     }
 
-    @Test
-    void stoppingKeepsDefinitionAndHistoricalVersion() {
-        var saved = repository.save("t", null, command("stop-test", 0), "actor");
-        var published =
-                repository.publish(
-                        "t", saved.id(), new PayrollSchemePublishCommand(0, "发布"), "actor");
-        var stopped =
-                repository.stop(
-                        "t",
-                        saved.id(),
-                        new PayrollSchemeStopCommand(
-                                published.revision(), LocalDate.of(2027, 1, 1), "停用"),
-                        "actor");
-        assertThat(stopped.definition()).isEqualTo(published.definition());
-        assertThat(stopped.stopFrom()).isEqualTo(LocalDate.of(2027, 1, 1));
-        assertThat(stopped.status()).isEqualTo("PUBLISHED");
-    }
 }

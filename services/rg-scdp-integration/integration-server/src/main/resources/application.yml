@@ -79,7 +79,6 @@ rigour:
       # 订货宝收付款附件写入同一个 COS 私桶，但必须和商品图片目录隔离。
       fund-attachment-prefix: ${RIGOUR_INTEGRATION_FUND_ATTACHMENT_COS_OBJECT_PREFIX:fund-attachments}
       # 飞书导入附件写入同一个 COS 私桶，但必须和订货宝附件目录隔离。
-      feishu-attachment-prefix: ${RIGOUR_INTEGRATION_FEISHU_ATTACHMENT_COS_OBJECT_PREFIX:feishu-attachments}
       cos:
         # 非敏感项由 Nacos/统一环境变量配置；Secret 只从部署环境注入。
         object-prefix: ${RIGOUR_INTEGRATION_PRODUCT_MEDIA_COS_OBJECT_PREFIX:product-images}

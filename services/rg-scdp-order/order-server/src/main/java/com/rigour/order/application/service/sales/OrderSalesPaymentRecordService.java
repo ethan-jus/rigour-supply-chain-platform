@@ -237,23 +237,6 @@ public final class OrderSalesPaymentRecordService {
         return updated;
     }
 
-    public void delete(Long id, int revision) {
-        CallerIdentity actor = actionActor("order:payment:delete");
-        requireRevision(revision);
-        String tenantId = actor.tenantId().toString();
-        Long paymentId = requireId(id, "销售回款记录ID无效");
-        SalesPaymentRecordDetailView existing =
-                store.payment(tenantId, paymentId).orElseThrow(() -> notFound("销售回款记录不存在"));
-        requireExternalMutationAllowed(actor, existing.sourceSystemCode(), "销售回款记录");
-        store.delete(tenantId, paymentId, revision, OrderAuditActors.writeActor(actor));
-        log.info(
-                "Order销售回款记录逻辑删除完成 tenantId={} paymentId={} revision={} actorId={}",
-                tenantId,
-                paymentId,
-                revision,
-                actor.principalId());
-    }
-
     private SalesPaymentWrite normalize(
             String tenantId,
             SalesPaymentRecordCommand command,

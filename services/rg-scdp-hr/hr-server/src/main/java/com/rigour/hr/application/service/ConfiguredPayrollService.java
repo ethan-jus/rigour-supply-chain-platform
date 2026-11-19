@@ -98,54 +98,6 @@ public class ConfiguredPayrollService {
                 null);
     }
 
-    public PayrollCalculationView preview(String id, String value, String employeeCode) {
-        var actor = HrPayrollService.actor("hr:payroll:calculate");
-        String tenant = actor.tenantId().toString();
-        HrPayrollService.actor("hr:payroll-rule:read");
-        var employee = payroll.employee(tenant, employeeCode, "hr:payroll:calculate");
-        var versions = new ArrayList<>(schemes.versions(tenant));
-        var draft =
-                versions.stream()
-                        .filter(v -> v.id().equals(id))
-                        .findFirst()
-                        .orElseThrow(() -> new IllegalArgumentException("方案不存在"));
-        var visibleDepartments =
-                payroll.departments(tenant, "hr:payroll-rule:read").stream()
-                        .map(PayrollDepartmentView::id)
-                        .toList();
-        if (!visibleDepartments.containsAll(draft.definition().departmentIds()))
-            throw new com.rigour.shared.context.AuthorizationDeniedException(
-                    "hr:payroll-rule:read");
-        for (String code : draft.definition().employeeCodes())
-            payroll.employee(tenant, code, "hr:payroll-rule:read");
-        if (!draft.definition().employeeCodes().contains(employeeCode)
-                && !draft.definition().departmentIds().contains(employee.departmentId()))
-            throw new IllegalArgumentException("员工不在方案适用范围");
-        var errors = PayrollSchemeValidator.check(draft.definition()).errors();
-        if (!errors.isEmpty()) throw new IllegalArgumentException(String.join("；", errors));
-        var month = HrPayrollSchemeService.period(value);
-        if (month.atDay(1).isBefore(draft.definition().effectiveFrom())
-                || month.atEndOfMonth().isAfter(draft.definition().effectiveTo()))
-            throw new IllegalArgumentException("试算月份不在方案生效期内");
-        versions.removeIf(v -> v.id().equals(id));
-        var simulated =
-                new PayrollSchemeVersionView(
-                        draft.id(),
-                        draft.schemeId(),
-                        draft.version(),
-                        draft.revision(),
-                        "PUBLISHED",
-                        draft.definition(),
-                        draft.reason(),
-                        draft.createdBy(),
-                        draft.publishedBy(),
-                        draft.updatedTime(),
-                        draft.publishedTime(),
-                        draft.stopFrom());
-        versions.add(simulated);
-        return calculate(tenant, employee, month, simulated, versions);
-    }
-
     PayrollCalculationView calculate(
             String tenant,
             PayrollEmployeeView e,

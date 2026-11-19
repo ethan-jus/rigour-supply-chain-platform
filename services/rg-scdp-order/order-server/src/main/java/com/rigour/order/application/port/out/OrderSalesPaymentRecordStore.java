@@ -27,7 +27,7 @@ public interface OrderSalesPaymentRecordStore {
     SalesPaymentRecordDetailView update(String tenantId, Long id,
                                         SalesPaymentWrite command, String actorId);
 
-    void delete(String tenantId, Long id, int revision, String actorId);
+    void cancelSyncedReceipt(String tenantId, Long id, int revision, String actorId);
 
     record SalesPaymentSearchCriteria(
             String paymentNo,

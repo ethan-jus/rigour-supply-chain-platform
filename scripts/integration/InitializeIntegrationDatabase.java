@@ -14,8 +14,8 @@ import org.flywaydb.core.Flyway;
  * Usage: java --class-path 'extracted/BOOT-INF/lib/*' InitializeIntegrationDatabase.java
  *        expected-mysql-hostname extracted/BOOT-INF/classes/db/migration
  * Stop Integration before running. Never reads Nacos or development defaults; refuses every nonempty
- * schema, including partial runs. Runs the B27 general-ci baseline (V1-V27); it is not an upgrade
- * tool. Retains built-in Feishu template configuration and Flyway history; imports no business data.
+ * schema, including partial runs. Applies the B27 baseline and V28 through V34 to an empty schema.
+ * Retains Flyway history and imports no business data.
  */
 public final class InitializeIntegrationDatabase {
     private static final String SCHEMA = "rigour_integration";
@@ -30,8 +30,8 @@ public final class InitializeIntegrationDatabase {
         }
         Path migrations = Path.of(args[1]).toAbsolutePath().normalize();
         if (!Files.isRegularFile(migrations.resolve("V1__integration_dinghuobao.sql"))
-                || !Files.isRegularFile(migrations.resolve("V27__sync_schedule.sql"))) {
-            throw new IllegalArgumentException("Integration V1-V27 migrations required: " + migrations);
+                || !Files.isRegularFile(migrations.resolve("V34__retire_feishu_import_configuration.sql"))) {
+            throw new IllegalArgumentException("Integration migrations through V34 required: " + migrations);
         }
         Path bootstrap = migrations.resolveSibling("bootstrap");
         if (!Files.isRegularFile(bootstrap.resolve("B27__general_ci_bootstrap.sql"))) {
@@ -81,7 +81,7 @@ public final class InitializeIntegrationDatabase {
                 .schemas(SCHEMA)
                 .createSchemas(false)
                 .locations("filesystem:" + migrations, "filesystem:" + bootstrap)
-                .target("27")
+                .target("34")
                 .cleanDisabled(true)
                 .baselineOnMigrate(false)
                 .validateOnMigrate(true)
@@ -89,11 +89,14 @@ public final class InitializeIntegrationDatabase {
                 .load();
         var result = flyway.migrate();
         flyway.validate();
+        if (!"34".equals(result.targetSchemaVersion)) {
+            throw new IllegalStateException("Expected Integration schema V34, found " + result.targetSchemaVersion);
+        }
         verifyCollations(user, password);
         verifyNoBusinessData(user, password);
         System.out.printf("Integration migration OK: applied=%d, version=%s%n",
                 result.migrationsExecuted, result.targetSchemaVersion);
-        System.out.println("No business data imported; built-in Feishu templates and Flyway history retained.");
+        System.out.println("No business data imported; Flyway history retained.");
         System.out.println("No Integration application or background sync worker was started.");
     }
 
@@ -156,8 +159,7 @@ public final class InitializeIntegrationDatabase {
                 try (var result = statement.executeQuery("""
                         SELECT table_name FROM information_schema.tables
                         WHERE table_schema='rigour_integration' AND table_type='BASE TABLE'
-                          AND table_name NOT IN ('flyway_schema_history', 'integration_feishu_import_template',
-                                                 'integration_feishu_import_template_dependency')
+                          AND table_name <> 'flyway_schema_history'
                         """)) {
                     while (result.next()) tables.add(result.getString(1));
                 }
@@ -168,17 +170,6 @@ public final class InitializeIntegrationDatabase {
                             throw new IllegalStateException("Unexpected business data in " + table + "; inspect before starting Integration");
                         }
                     }
-                }
-                try (var result = statement.executeQuery("""
-                        SELECT
-                          (SELECT COUNT(*) FROM integration_feishu_import_template) AS templates,
-                          (SELECT COUNT(*) FROM integration_feishu_import_template_dependency) AS dependencies
-                        """)) {
-                    result.next();
-                    if (result.getInt(1) != 6 || result.getInt(2) != 2) {
-                        throw new IllegalStateException("Unexpected built-in template counts; inspect before starting Integration");
-                    }
-                    System.out.println("Verified: 6 built-in Feishu templates and 2 template dependencies.");
                 }
             }
         }

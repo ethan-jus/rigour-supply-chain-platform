@@ -320,23 +320,6 @@ class OrderAttributionAndScopeIntegrationTest {
                         tenant,
                         other);
         assertThat(payments.payment(tenant, hidden)).isEmpty();
-        when(iam.authorization(any(), eq("order:payment:delete")))
-                .thenReturn(
-                        policy(
-                                "order:payment:delete",
-                                List.of(
-                                        new Clause(
-                                                UUID.randomUUID(),
-                                                "ORDER",
-                                                "SELF",
-                                                none(),
-                                                all(),
-                                                none(),
-                                                false)),
-                                all(),
-                                all()));
-        assertThatThrownBy(() -> payments.delete(tenant, hidden, 1, actor.userId().toString()))
-                .isInstanceOf(AuthorizationDeniedException.class);
         when(iam.authorization(any(), eq("order:fund:read")))
                 .thenReturn(
                         policy(

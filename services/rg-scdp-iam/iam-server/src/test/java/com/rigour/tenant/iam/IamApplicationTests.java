@@ -134,10 +134,7 @@ class IamApplicationTests {
                 "SELECT r.status, ui.visible FROM iam_resource r JOIN iam_resource_ui ui"
                         + " ON ui.resource_id = r.id WHERE ui.route_key LIKE 'supply.city.%'"
                         + " OR ui.route_key LIKE 'supply.channel.%'");
-        assertThat(retired).isNotEmpty().allSatisfy(row -> {
-            assertThat(row.get("status")).isEqualTo("DISABLED");
-            assertThat(((Number) row.get("visible")).intValue()).isZero();
-        });
+        assertThat(retired).isEmpty();
         assertThat(jdbcTemplate.queryForList(
                 "SELECT status FROM iam_resource WHERE resource_code IN"
                         + " ('WORKBENCH.PAGE.CHAT', 'WORKBENCH.API.COLLABORATION_IM',"
@@ -277,13 +274,11 @@ class IamApplicationTests {
         assertCount("SELECT COUNT(*) FROM iam_resource r JOIN iam_application a ON a.id=r.application_id WHERE a.app_code<>'SUPPLY_CHAIN' AND r.status='ACTIVE'", 0);
         assertCount("SELECT COUNT(*) FROM iam_resource_ui ui JOIN iam_resource r ON r.id=ui.resource_id JOIN iam_application a ON a.id=r.application_id WHERE a.app_code<>'SUPPLY_CHAIN' AND ui.visible=1", 0);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_resource r JOIN iam_application a ON a.id=r.application_id WHERE a.app_code='SUPPLY_CHAIN' AND r.permission_code LIKE 'sales:%' AND r.status='ACTIVE'", Integer.class)).isPositive();
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND ("
-                        + "id IN (UUID_TO_BIN('019facf2-0000-7000-8000-000000000057'),"
-                        + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000058')) OR id BETWEEN "
-                        + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000121') AND "
-                        + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000166'))",
-                48);
+        assertCount("""
+                SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND resource_code IN (
+                    'SUPPLY_CHAIN.PAGE.SALES_DASHBOARD','SUPPLY_CHAIN.PAGE.SALES_VISIT_PLAN',
+                    'SUPPLY_CHAIN.PAGE.SALES_VISIT_REVIEW','SUPPLY_CHAIN.PAGE.SALES_EXCEPTION_LOCATION','SUPPLY_CHAIN.PAGE.SALES_POLICY_VISIT')
+                """, 5);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND permission_code IN ("
                     + "'sales:evidence:own:read','sales:evidence:own:write','sales:evidence:sensitive:read')",
@@ -296,18 +291,14 @@ class IamApplicationTests {
                 "SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND permission_code IN ("
                     + "'erp:product:read','erp:product:write','erp:supply:read','erp:supply:write')",
                 4);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource WHERE status='ACTIVE' AND resource_code IN ("
-                        + "'SUPPLY_CHAIN.PAGE.ERP_MASTER_DATA_TAGS',"
-                        + "'SUPPLY_CHAIN.MENU.ERP_MASTER_DATA_ATTRIBUTES',"
-                        + "'SUPPLY_CHAIN.PAGE.ERP_MASTER_DATA_SYNC')",
-                3);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource WHERE"
-                        + " parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000049') AND"
-                        + " display_name IN ('供应链首页','ERP','CRM','订单管理','销售管理','城市运营','数据看板',"
-                        + "'人事与绩效','渠道代理','外部同步','系统设置')",
-                11);
+        assertCount("""
+                SELECT COUNT(*) FROM iam_resource WHERE resource_code IN ('SUPPLY_CHAIN.MENU.ERP_MASTER_DATA_ATTRIBUTES','SUPPLY_CHAIN.PAGE.ERP_MASTER_DATA_SYNC')
+                """, 0);
+        assertCount("""
+                SELECT COUNT(*) FROM iam_resource r LEFT JOIN iam_resource parent ON parent.id=r.parent_id
+                WHERE (parent.resource_code='SUPPLY_CHAIN.ROOT' OR r.resource_code='SUPPLY_CHAIN.COST_PAYROLL.SUPPLY.COST.MENU')
+                  AND r.display_name IN ('首页','BI','订单','HR','ERP','CRM','成本','销售','同步','设置') AND r.status='ACTIVE'
+                """, 10);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.menu' "
                         + "AND route_path IS NULL AND visible=1",
@@ -316,10 +307,7 @@ class IamApplicationTests {
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.sales-orders' "
                         + "AND route_path='/supply-chain/order/sales-orders' AND visible=1",
                 1);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.statistics' "
-                        + "AND route_path='/supply-chain/order/statistics' AND visible=0",
-                1);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.statistics'", 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.order.invoices' "
                         + "AND route_path='/supply-chain/order/invoices' AND visible=1",
@@ -387,10 +375,7 @@ class IamApplicationTests {
                         + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000276'),"
                         + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000277'))",
                 0);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id=UUID_TO_BIN("
-                        + "'019facf2-0000-7000-8000-000000000203') AND visible=0",
-                1);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE resource_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000203')", 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource WHERE "
                         + "(id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000292') "
@@ -404,10 +389,7 @@ class IamApplicationTests {
                         + "'supply.crm.customers.areas') "
                         + "AND visible=1",
                 3);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key="
-                        + "'supply.crm.index' AND route_path='/supply-chain/crm' AND visible=0",
-                1);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.crm.index'", 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key="
                         + "'supply.crm.assignments.external-staff'",
@@ -434,32 +416,20 @@ class IamApplicationTests {
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key="
                         + "'supply.crm.customers.shipping-addresses' AND visible=1",
                 1);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource resource_record JOIN iam_resource_ui ui_record"
-                    + " ON ui_record.resource_id=resource_record.id WHERE"
-                    + " resource_record.id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000297') AND"
-                    + " resource_record.parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000177')"
-                    + " AND resource_record.display_name='采购付款单' AND"
-                    + " ui_record.route_key='supply.erp.procurement.payments' AND"
-                    + " ui_record.route_path='/supply-chain/erp/procurement/payments' AND"
-                    + " ui_record.visible=1",
-                1);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.erp.procurement.payments'", 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
                     + "'supply.erp.master-data.products','supply.erp.master-data.attributes.categories',"
                     + "'supply.erp.master-data.attributes.brands','supply.erp.master-data.attributes.tags',"
                     + "'supply.erp.master-data.attributes.specifications',"
                     + "'supply.erp.suppliers.profiles','supply.erp.procurement.orders',"
-                    + "'supply.erp.procurement.payments','supply.erp.inventory.inventory',"
+                    + "'supply.erp.inventory.inventory',"
                     + "'supply.erp.inventory.inbound','supply.erp.inventory.outbound','supply.erp.inventory.transfers','supply.erp.inventory.warehouses')"
                     + " AND visible=1",
-                13);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
-                        + "'supply.erp.suppliers.products','supply.erp.procurement.receipts',"
-                        + "'supply.crm.credit-policy.limits') "
-                        + "AND visible=0",
-                3);
+                12);
+        assertCount("""
+                SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ('supply.erp.suppliers.products','supply.erp.procurement.receipts','supply.crm.credit-policy.limits')
+                """, 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource WHERE id IN ("
                         + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000374'),"
@@ -477,52 +447,40 @@ class IamApplicationTests {
                         + "'/supply-chain/bi/payment-risk') "
                         + "AND visible=1",
                 2);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource WHERE id IN ("
-                    + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000240'),"
-                    + "UUID_TO_BIN('019facf2-0000-7000-8000-000000000377'),UUID_TO_BIN('019facf2-0000-7000-8000-000000000378'))"
-                    + " AND resource_code IN"
-                    + " ('SUPPLY_CHAIN.PAGE.BI_SALES','SUPPLY_CHAIN.PAGE.BI_ACTIVITY','SUPPLY_CHAIN.PAGE.BI_PRODUCT_INVENTORY')"
-                    + " AND display_name IN ('销售看板','活动看板','商品/库存看板') AND"
-                    + " parent_id=UUID_TO_BIN('019facf2-0000-7000-8000-000000000065') AND"
-                    + " status='ACTIVE'",
-                3);
+        assertCount("SELECT COUNT(*) FROM iam_resource WHERE resource_code='SUPPLY_CHAIN.PAGE.BI_ACTIVITY'", 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource WHERE id=UUID_TO_BIN("
                         + "'019facf2-0000-7000-8000-000000000376')",
                 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
-                        + "'supply.bi.sales','supply.bi.activity','supply.bi.product-inventory') "
-                        + "AND route_path IN ('/supply-chain/bi/sales','/supply-chain/bi/activity',"
+                        + "'supply.bi.sales','supply.bi.product-inventory') "
+                        + "AND route_path IN ('/supply-chain/bi/sales',"
                         + "'/supply-chain/bi/product-inventory') "
                         + "AND visible=1",
-                3);
+                2);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.bi.city-operating' "
                         + "AND route_path='/supply-chain/bi/city-operating' "
                         + "AND visible=1",
                 1);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.bi.%' "
-                        + "AND visible=1",
-                14);
+        assertCount("""
+                SELECT COUNT(*) FROM iam_resource_ui ui JOIN iam_resource r ON r.id=ui.resource_id
+                WHERE ui.route_key LIKE 'supply.bi.%' AND r.resource_type='PAGE' AND ui.visible=1
+                """, 12);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN"
                     + " ('supply.bi.product-sales','supply.bi.payment-risk','supply.bi.inventory-risk')"
                     + " AND visible=1",
                 3);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.bi.sales-collection' "
-                        + "AND visible=0",
-                1);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.bi.sales-collection'", 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.bi.customer' "
                         + "AND route_path='/supply-chain/bi/customer' AND visible=1",
                 1);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key LIKE 'supply.integration.%'",
-                6);
+                5);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource_ui ui JOIN iam_resource r ON r.id=ui.resource_id"
                         + " JOIN iam_resource_ui parent ON parent.resource_id=r.parent_id"
@@ -530,17 +488,10 @@ class IamApplicationTests {
                         + " AND ui.route_path='/supply-chain/integration/schedules'"
                         + " AND parent.route_key='supply.integration.sync-control.menu' AND ui.visible=1",
                 1);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource_ui WHERE"
-                        + " route_key='supply.integration.feishu-import' AND"
-                        + " route_path='/supply-chain/integration/feishu-import' AND visible=1",
-                1);
-        assertCount(
-                "SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ("
-                        + "'supply.city.menu','supply.erp.index','supply.sales.attendance.menu',"
-                        + "'supply.settings.product-inventory') "
-                        + "AND visible=0",
-                4);
+        assertCount("SELECT COUNT(*) FROM iam_resource_ui WHERE route_key='supply.integration.feishu-import'", 0);
+        assertCount("""
+                SELECT COUNT(*) FROM iam_resource_ui WHERE route_key IN ('supply.city.menu','supply.erp.index','supply.settings.product-inventory')
+                """, 0);
         assertCount(
                 "SELECT COUNT(*) FROM iam_resource resource_record JOIN iam_resource_ui ui_record"
                         + " ON ui_record.resource_id=resource_record.id WHERE"
@@ -2092,65 +2043,23 @@ INSERT INTO iam_user_credential (
     }
 
     @Test
-    void supplyPermissionCatalogCoversBusinessActionsAndUpgradePreservesTenantChoices() {
+    void sharedBusinessActionsAreUnderTheirOwningPageOrDirectory() {
         var actor = insertTenantAdministrator().actor();
         appSettingsStore.initialize(actor);
-        var required = Set.of("order:invoice:write", "order:payment:check", "crm:customer:read",
-                "crm:customer:write", "erp:product-price:read", "erp:product-price:write",
-                "erp:product:read", "erp:product:write", "erp:supply:read", "erp:supply:write");
+        var parents = Map.of(
+                "order:invoice:write", "supply.order.invoices", "order:payment:check", "supply.order.sales-payments",
+                "crm:customer:read", "supply.crm.customers.profiles", "crm:customer:write", "supply.crm.customers.profiles",
+                "erp:product-price:read", "supply.erp.master-data.prices", "erp:product-price:write", "supply.erp.master-data.prices",
+                "erp:product:read", "supply.erp.master-data.menu", "erp:product:write", "supply.erp.master-data.menu",
+                "erp:supply:read", "supply.erp.menu", "erp:supply:write", "supply.erp.menu");
         var nodes = appRoles.grantableMenus(actor);
-        var targets = nodes.stream().filter(n -> n.permissionCode() != null && required.contains(n.permissionCode())).toList();
-        assertThat(targets).hasSize(10);
-        for (var node : targets) {
-            assertThat(node.type()).isEqualTo("BUTTON");
-            assertThat(nodes.stream().filter(n -> n.id().equals(node.parentId())).findFirst().orElseThrow().type())
-                    .isEqualTo("PAGE");
+        var actions = nodes.stream().filter(n -> n.permissionCode() != null && parents.containsKey(n.permissionCode())).toList();
+        assertThat(actions).extracting(n -> n.permissionCode()).containsExactlyInAnyOrderElementsOf(parents.keySet());
+        for (var action : actions) {
+            assertThat(action.type()).isEqualTo("BUTTON");
+            var parent = nodes.stream().filter(n -> n.id().equals(action.parentId())).findFirst().orElseThrow();
+            assertThat(parent.routeKey()).isEqualTo(parents.get(action.permissionCode()));
         }
-        var ordinary = supplyTestRole(actor, "NO_AUTOMATIC_GRANTS", Set.of("supply:user:read"), List.of());
-        var kept = targets.stream().filter(n -> "crm:customer:read".equals(n.permissionCode())).findFirst().orElseThrow();
-        appSettingsStore.saveMenu(actor, kept.id(),
-                new com.rigour.tenant.iam.application.service.settings.AppSettingsModels.MenuCommand(
-                        kept.parentId(), kept.type(), kept.resourceId(), "企业自定义权限名称", null,
-                        777, false, "DISABLED", kept.version(), null, null, null, null));
-        var removed = targets.stream().filter(n -> "erp:product:read".equals(n.permissionCode())).findFirst().orElseThrow();
-        appSettingsStore.deleteMenu(actor, removed.id(), removed.version(), true);
-        // 模拟 V119 已初始化企业缺少其余八项资源节点，而不是重新初始化覆盖全部配置。
-        for (var node : targets) {
-            if (node.id().equals(kept.id()) || node.id().equals(removed.id())) continue;
-            jdbcTemplate.update("DELETE FROM iam_app_role_grant WHERE tenant_id=? AND menu_node_id=?",
-                    uuidBytes(actor.tenantId()), uuidBytes(node.id()));
-            jdbcTemplate.update("DELETE FROM iam_app_menu_node WHERE tenant_id=? AND id=?",
-                    uuidBytes(actor.tenantId()), uuidBytes(node.id()));
-        }
-        long version = appSettingsStore.context(actor).version();
-        Runnable migrate = () -> jdbcTemplate.execute((org.springframework.jdbc.core.ConnectionCallback<Void>) connection -> {
-            // 复现 DEV：库默认 general_ci，历史资源表显式使用 0900_ai_ci。
-            try (var statement = connection.createStatement()) {
-                statement.execute("ALTER DATABASE rigour_iam COLLATE utf8mb4_general_ci");
-                try {
-                    org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
-                            new org.springframework.core.io.ClassPathResource("db/migration/V120__iam_complete_supply_permission_nodes.sql"));
-                } finally {
-                    statement.execute("ALTER DATABASE rigour_iam COLLATE utf8mb4_0900_ai_ci");
-                }
-            }
-            return null;
-        });
-        migrate.run();
-        var migrated = appRoles.grantableMenus(actor);
-        assertThat(migrated.stream().filter(n -> n.permissionCode() != null && required.contains(n.permissionCode()))).hasSize(9);
-        var preserved = migrated.stream().filter(n -> n.id().equals(kept.id())).findFirst().orElseThrow();
-        assertThat(preserved.name()).isEqualTo("企业自定义权限名称");
-        assertThat(preserved.sortOrder()).isEqualTo(777);
-        assertThat(preserved.status()).isEqualTo("DISABLED");
-        assertThat(migrated).noneMatch(n -> n.id().equals(removed.id()));
-        assertThat(appRoles.roles(actor).stream().filter(r -> r.id().equals(ordinary.id())).findFirst().orElseThrow().menuNodeIds())
-                .isEqualTo(ordinary.menuNodeIds());
-        assertThat(appSettingsStore.context(actor).mode()).isEqualTo("ACTIVE");
-        assertThat(appSettingsStore.context(actor).version()).isEqualTo(version + 1);
-        migrate.run();
-        assertThat(appRoles.grantableMenus(actor)).hasSize(migrated.size());
-        assertThat(appSettingsStore.context(actor).version()).isEqualTo(version + 1);
     }
 
     @Test
@@ -2833,8 +2742,8 @@ SELECT COUNT(*) FROM iam_package_resource package_resource
  JOIN iam_resource resource_record ON resource_record.id=package_resource.resource_id
  JOIN iam_resource_ui resource_ui ON resource_ui.resource_id=resource_record.id
  WHERE package_resource.package_version_id=UUID_TO_BIN('019facf3-0000-7000-8000-000000000002')
-   AND resource_ui.route_key='supply.erp.procurement.payments'
-   AND resource_ui.route_path='/supply-chain/erp/procurement/payments'
+   AND resource_ui.route_key='supply.erp.procurement.orders'
+   AND resource_ui.route_path='/supply-chain/erp/procurement/orders'
 """,
                                 Integer.class))
                 .isEqualTo(1);

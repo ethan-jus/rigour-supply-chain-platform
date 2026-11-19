@@ -50,9 +50,4 @@ public final class OrderSalesPaymentRecordController implements OrderSalesPaymen
         return ApiResponse.success(service.update(id, command));
     }
 
-    @Override
-    public ApiResponse<Void> deletePayment(Long id, int revision) {
-        service.delete(id, revision);
-        return ApiResponse.success(null);
-    }
 }

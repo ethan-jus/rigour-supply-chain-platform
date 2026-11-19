@@ -55,7 +55,6 @@ public final class CosProductMediaStorage
                 List.of(
                         this.objectPrefix,
                         normalizePrefix(properties.getFundAttachmentPrefix()),
-                        normalizePrefix(properties.getFeishuAttachmentPrefix()),
                         normalizePrefix(properties.getHuolalaAttachmentPrefix()));
     }
 
