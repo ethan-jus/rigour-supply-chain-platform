@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 import com.rigour.order.api.v1.model.LogisticsCostCommand;
+import com.rigour.order.api.v1.model.LogisticsCostLedger;
 import com.rigour.order.api.v1.model.LogisticsImportModels.*;
 import com.rigour.order.application.port.out.LogisticsImportStore;
 
@@ -12,6 +13,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
 import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.util.*;
 
@@ -64,14 +66,17 @@ class TransportSavedCostPersistenceTest {
                     {"orderTypeCode":"SALES_ORDER","orderCode":"SO2","linkRoleCode":"COST","documentAmount":4000,
                      "allocations":[{"feeKey":"freight","receivingPointCode":"TO2","cityCode":"WH","basis":4000,"amount":40.00}]}]}}
                 """;
+        var data = (ObjectNode) json.readTree(body);
+        var sources = ((ObjectNode) data.path("ledger")).remove("sources");
         db.update(
                 "INSERT INTO"
-                    + " order_logistics_cost(tenant_id,id,status_code,amount_manually_edited,amount,cost_date,data_json)"
-                    + " VALUES(?,'C',?,?,100.01,'2026-11-10',?)",
+                    + " order_logistics_cost(tenant_id,id,status_code,amount_manually_edited,amount,cost_date,data_json,sources_json)"
+                    + " VALUES(?,'C',?,?,100.01,'2026-11-10',?,?)",
                 tenant,
                 state,
                 manual ? 1 : 0,
-                body);
+                json.writeValueAsString(data),
+                json.writeValueAsString(sources));
     }
 
     Row incoming(String amount) {
@@ -95,6 +100,15 @@ class TransportSavedCostPersistenceTest {
                 LogisticsCostCommand.class);
     }
 
+    LogisticsCostLedger.Source[] savedSources(String tenant) {
+        return json.readValue(
+                db.queryForObject(
+                        "SELECT sources_json FROM order_logistics_cost WHERE tenant_id=? AND id='C'",
+                        String.class,
+                        tenant),
+                LogisticsCostLedger.Source[].class);
+    }
+
     @Test
     void uneditedCostRefreshesAndReallocatesExactlyOnceWithoutCrossingTenant() {
         seed("T", "ACTIVE", false);
@@ -104,17 +118,12 @@ class TransportSavedCostPersistenceTest {
         assertThat(result.amount()).isEqualByComparingTo("137.64");
         assertThat(result.ledger().feeItems().getFirst().ourAmount())
                 .isEqualByComparingTo("137.64");
-        assertThat(result.ledger().sources().getFirst().allocations().getFirst().amount())
+        var sources = savedSources("T");
+        assertThat(sources).hasSize(2);
+        assertThat(sources[0].allocations().getFirst().amount())
                 .isEqualByComparingTo("82.58");
-        assertThat(result.ledger().sources().getLast().allocations().getFirst().amount())
+        assertThat(sources[1].allocations().getFirst().amount())
                 .isEqualByComparingTo("55.06");
-        var projectionLinks =
-                json.readTree(
-                        db.queryForObject(
-                                "SELECT sources_json FROM order_logistics_cost WHERE tenant_id='T'",
-                                String.class));
-        assertThat(projectionLinks.get(0).path("allocations").get(0).path("amount").decimalValue())
-                .isEqualByComparingTo("82.58");
         store.materialize("T", "U", incoming("137.64"));
         assertThat(
                         db.queryForObject(
@@ -133,7 +142,7 @@ class TransportSavedCostPersistenceTest {
         seed("T", "ACTIVE", true);
         for (int i = 0; i < 3; i++) store.materialize("T", "U", incoming("142.64"));
         assertThat(saved("T").amount()).isEqualByComparingTo("100.01");
-        assertThat(saved("T").ledger().sources().getFirst().allocations().getFirst().amount())
+        assertThat(savedSources("T")[0].allocations().getFirst().amount())
                 .isEqualByComparingTo("60.01");
         assertThat(db.queryForObject("SELECT revision FROM order_logistics_cost", Integer.class))
                 .isEqualTo(1);

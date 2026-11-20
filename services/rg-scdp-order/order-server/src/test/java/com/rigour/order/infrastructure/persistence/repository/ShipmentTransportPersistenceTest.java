@@ -7,6 +7,7 @@ import com.rigour.order.api.v1.model.*;
 import com.rigour.order.api.v1.model.LogisticsImportModels.*;
 import com.rigour.order.api.v1.model.ShipmentTransportModels.*;
 import com.rigour.order.application.port.out.*;
+import com.rigour.order.application.service.cost.TransportAllocationPlan;
 
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -283,10 +284,16 @@ class ShipmentTransportPersistenceTest {
         var paid = new BigDecimal("99.00");
         var prior = json.readValue(db.queryForObject("SELECT data_json FROM order_logistics_cost",
                 String.class), LogisticsCostCommand.class);
-        if (manuallyEntered) {
-            db.update("UPDATE order_logistics_cost SET amount=?,amount_manually_edited=1,data_json=?",
-                    paid, json.writeValueAsString(prior.withLedger(prior.ledger(), paid)));
-        }
+        // A manual save keeps the association in sources_json, separately from the command body.
+        var priorAmount = manuallyEntered ? paid : null;
+        if (manuallyEntered)
+            prior = TransportAllocationPlan.reprice(prior, paid);
+        var originalSource = json.valueToTree(prior.ledger().sources().getFirst());
+        var body = (tools.jackson.databind.node.ObjectNode) json.valueToTree(prior);
+        ((tools.jackson.databind.node.ObjectNode) body.path("ledger")).remove("sources");
+        db.update("UPDATE order_logistics_cost SET amount=?,amount_manually_edited=?,data_json=?,sources_json=? WHERE id=?",
+                priorAmount, manuallyEntered, json.writeValueAsString(body),
+                json.writeValueAsString(prior.ledger().sources()), saved.costId());
         db.update("""
                 INSERT INTO order_logistics_cost_attachment
                     (id,tenant_id,entry_id,file_key,file_name,content_type,file_size,created_by,created_time)
@@ -300,7 +307,7 @@ class ShipmentTransportPersistenceTest {
         assertThat(db.queryForObject("SELECT amount FROM order_logistics_cost", BigDecimal.class))
                 .isEqualByComparingTo(manuallyEntered ? "99.00" : "142.64");
         for (int attempt = 0; attempt < 2; attempt++) {
-            var source = receiveHuolala(imports, platformWriter, "143.64", "b");
+            var source = receiveHuolala(imports, platformWriter, "143.64", "b", "2026-11-14");
             assertThat(source.costId()).isEqualTo(saved.costId());
             assertThat(source.latestOrder().facts().receipts().getFirst().fileKey())
                     .isEqualTo("T/huolala-receipt.jpg");
@@ -314,8 +321,45 @@ class ShipmentTransportPersistenceTest {
                 .isEqualTo("T/manual-receipt.pdf");
         assertThat(db.queryForObject("SELECT carrier_code FROM order_logistics_cost", String.class))
                 .isEqualTo("HLL");
-        assertThat(db.queryForObject("SELECT sources_json FROM order_logistics_cost", String.class))
-                .contains("SO001");
+        var sources = json.readTree(db.queryForObject("SELECT sources_json FROM order_logistics_cost",
+                String.class));
+        assertThat(sources.size()).isEqualTo(1);
+        var source = sources.get(0);
+        assertThat(source.path("orderCode").asText()).isEqualTo("SO001");
+        assertThat(source.path("linkedAt")).isEqualTo(originalSource.path("linkedAt"));
+        assertThat(source.path("allocations").get(0).path("amount").decimalValue())
+                .isEqualByComparingTo(manuallyEntered ? "99.00" : "143.64");
+    }
+
+    @Test
+    void dhbUpdatePreservesSalesSnapshotSavedSeparatelyFromTransportBody() {
+        var saved = sync("receivedin", 1);
+        var prior = json.readValue(db.queryForObject("SELECT data_json FROM order_logistics_cost",
+                String.class), LogisticsCostCommand.class);
+        var priced = TransportAllocationPlan.reprice(prior, new BigDecimal("64.00"));
+        var body = (tools.jackson.databind.node.ObjectNode) json.valueToTree(priced);
+        ((tools.jackson.databind.node.ObjectNode) body.path("ledger")).remove("sources");
+        String originalSources = json.writeValueAsString(priced.ledger().sources());
+        db.update("UPDATE order_logistics_cost SET amount=64,amount_manually_edited=1,data_json=?,sources_json=? WHERE id=?",
+                json.writeValueAsString(body), originalSources, saved.costId());
+
+        var shipment = (tools.jackson.databind.node.ObjectNode) json.valueToTree(transport());
+        ((tools.jackson.databind.node.ObjectNode) shipment.path("ledger").path("sender"))
+                .put("manualName", "更新的发货仓");
+        var order = json.readValue(
+                "{\"documentNo\":\"SO001\",\"documentAmount\":100,\"employeeCode\":\"EMP2\"}",
+                LogisticsCostSourceView.class);
+        var after = store.sync("T", "U", command("received", 2),
+                json.treeToValue(shipment, LogisticsCostCommand.class), order, null);
+        assertThat(after.costId()).isEqualTo(saved.costId());
+        assertThat(db.queryForObject("SELECT amount FROM order_logistics_cost WHERE id=?",
+                BigDecimal.class, saved.costId())).isEqualByComparingTo("64");
+        assertThat(json.readTree(db.queryForObject(
+                "SELECT sources_json FROM order_logistics_cost WHERE id=?", String.class, saved.costId())))
+                .isEqualTo(json.readTree(originalSources));
+        assertThat(json.readTree(db.queryForObject(
+                "SELECT data_json FROM order_logistics_cost WHERE id=?", String.class, saved.costId()))
+                .path("ledger").path("sender").path("manualName").asText()).isEqualTo("更新的发货仓");
     }
 
     @Test
@@ -419,11 +463,16 @@ class ShipmentTransportPersistenceTest {
 
     private Row receiveHuolala(JdbcLogisticsImportStore imports, JdbcPlatformTransportStore writer,
                                String amount, String hash) {
+        return receiveHuolala(imports, writer, amount, hash, "2026-11-13");
+    }
+
+    private Row receiveHuolala(JdbcLogisticsImportStore imports, JdbcPlatformTransportStore writer,
+                               String amount, String hash, String date) {
         var huolala = json.readValue("""
                 {"enterpriseId":"AC1","orderNo":"SF001","status":"已完成","line":0,
-                 "useTime":"2026-11-13 09:00:00","raw":{},"facts":{"billAmount":%s,
+                 "useTime":"%s 09:00:00","raw":{},"facts":{"billAmount":%s,
                  "receipts":[{"id":"PHOTO1","name":"回单.jpg","fileKey":"T/huolala-receipt.jpg","state":"READY"}]}}
-                """.formatted(amount), CarrierOrder.class);
+                """.formatted(date, amount), CarrierOrder.class);
         return writer.materialize("T", "U",
                 imports.receive("T", "U", new ApiSource("HLL-CONNECTOR", hash.repeat(64), huolala)));
     }

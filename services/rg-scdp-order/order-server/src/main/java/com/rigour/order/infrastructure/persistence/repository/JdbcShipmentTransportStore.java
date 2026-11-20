@@ -216,7 +216,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                 && !(command.salesOrderId() == null && old.get("sales_order_id") != null)) {
             var states =
                     jdbc.queryForList(
-                            "SELECT status_code,revision,deleted,source_system,data_json FROM"
+                            "SELECT status_code,revision,deleted,source_system,data_json,sources_json FROM"
                                     + " order_logistics_cost WHERE tenant_id=? AND id=? FOR UPDATE",
                             tenant,
                             costId);
@@ -248,7 +248,9 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                                     state.get("data_json").toString(), LogisticsCostCommand.class);
                     // 新来源只更新收发货事实；人工补充的账单、付款、备注、凭证和费用分摊保留。
                     var nextLedger = transport.ledger();
-                    var oldLedger = prior.ledger();
+                    var sources = json.readValue(
+                            state.get("sources_json").toString(), LogisticsCostLedger.Source[].class);
+                    var oldLedger = prior.ledger().withSources(Arrays.asList(sources));
                     String sourceChannel = channel == null ? oldLedger.transportMethodCode() : channel;
                     boolean linkedNow =
                             oldLedger.sources().isEmpty()

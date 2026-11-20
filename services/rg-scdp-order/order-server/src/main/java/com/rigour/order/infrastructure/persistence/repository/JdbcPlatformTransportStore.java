@@ -74,6 +74,11 @@ public class JdbcPlatformTransportStore implements PlatformTransportStore {
                             ? nextAmount == null
                             : nextAmount != null && prior.amount().compareTo(nextAmount) == 0)
                     && Objects.equals(prior.costDate(), costDate)) return row;
+            if (prior.ledger() != null) {
+                var sources = json.readValue(
+                        state.get("sources_json").toString(), LogisticsCostLedger.Source[].class);
+                prior = prior.withLedger(prior.ledger().withSources(Arrays.asList(sources)), prior.amount());
+            }
             var next =
                     com.rigour.order.application.service.cost.TransportAllocationPlan.reprice(
                             prior, nextAmount);
