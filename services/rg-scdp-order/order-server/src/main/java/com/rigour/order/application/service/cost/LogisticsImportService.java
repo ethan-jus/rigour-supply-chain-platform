@@ -9,6 +9,7 @@ import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.annotation.Isolation;
 
 import java.time.LocalDate;
 import java.util.*;
@@ -132,7 +133,7 @@ public class LogisticsImportService {
         return store.query(tenant(), actor(), administrator(), q);
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public Row receive(ApiSource source) {
         var caller = AuthorizationContext.requireCurrent();
         if (!"SERVICE".equals(caller.principalScope()) || caller.tenantId() == null)

@@ -291,17 +291,13 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         case "SALES_ORDER" -> "DELIVERY";
                         default -> filter.orderTypeCode();
                     });
+        String shipmentSourceExists =
+                "EXISTS(SELECT 1 FROM order_transport_shipment_source s WHERE"
+                        + " s.tenant_id=order_logistics_cost.tenant_id AND"
+                        + " s.cost_id=order_logistics_cost.id)";
         if ("MANUAL_ENTRY".equals(filter.sourceSystem()))
-            q.ne("source_system", "HUOLALA")
-                    .apply(
-                            "NOT EXISTS(SELECT 1 FROM order_transport_shipment_source s WHERE"
-                                    + " s.tenant_id=order_logistics_cost.tenant_id AND"
-                                    + " s.cost_id=order_logistics_cost.id)");
-        else if ("DHB".equals(filter.sourceSystem()))
-            q.apply(
-                    "EXISTS(SELECT 1 FROM order_transport_shipment_source s WHERE"
-                            + " s.tenant_id=order_logistics_cost.tenant_id AND"
-                            + " s.cost_id=order_logistics_cost.id)");
+            q.ne("source_system", "HUOLALA").apply("NOT " + shipmentSourceExists);
+        else if ("DHB".equals(filter.sourceSystem())) q.apply(shipmentSourceExists);
         else q.eq(text(filter.sourceSystem()), "source_system", filter.sourceSystem());
         if ("LINKED".equals(filter.relationState()) || "UNLINKED".equals(filter.relationState())) {
             String condition =
@@ -326,7 +322,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                     "(" + sourceExists
                             + "({0}='' OR " + platformEmployee + "={0})"
                             + " AND ({1}='' OR " + platformDepartment + "={1}))"
-                            + " OR (NOT EXISTS(SELECT 1" + platformSource + ")"
+                            + " OR ((NOT EXISTS(SELECT 1" + platformSource + ") OR "
+                            + shipmentSourceExists + ")"
                             + " AND (SELECT COUNT(*) FROM JSON_TABLE(COALESCE(" + salesSources + ",JSON_ARRAY()),"
                             + " '$[*]' COLUMNS(order_type VARCHAR(32) PATH '$.orderTypeCode',"
                             + " source_type VARCHAR(32) PATH '$.sourceType',"

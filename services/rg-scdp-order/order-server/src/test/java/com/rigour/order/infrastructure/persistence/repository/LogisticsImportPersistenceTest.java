@@ -72,7 +72,8 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
         if (body == null) return null;
         var node = new tools.jackson.databind.ObjectMapper().readTree(body);
         for (String key : path.substring(2).split("\\.")) node = node.path(key);
-        return node.isMissingNode() || node.isNull() ? null : node.asText();
+        if (node.isMissingNode() || node.isNull()) return null;
+        return node.isArray() || node.isObject() ? node.toString() : node.asText();
     }
 
     public static String jsonUnquote(String text) {

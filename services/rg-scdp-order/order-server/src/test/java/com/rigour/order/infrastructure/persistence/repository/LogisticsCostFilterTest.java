@@ -264,6 +264,22 @@ public class LogisticsCostFilterTest {
                 .containsExactly("platform");
         assertThat(transportIds("\"orderPlacerDepartment\":\"平台部门\"")).isEmpty();
         assertThat(transportIds("\"orderPlacerEmployeeCode\":\"E4\",\"businessOrderNo\":\"XS_001\"")).isEmpty();
+
+        jdbc.update("INSERT INTO order_transport_shipment_source VALUES('T2','platform','{}')");
+        String salesFilters =
+                "\"orderPlacerEmployeeCode\":\"E1\",\"orderPlacerDepartment\":\"武汉销售部\","
+                        + "\"businessOrderNo\":\"HLL-SALES-1\"";
+        assertThat(transportIds(salesFilters)).isEmpty();
+
+        jdbc.update("INSERT INTO order_transport_shipment_source VALUES('T1','platform','{}')");
+        assertThat(transportIds(salesFilters)).containsExactly("platform");
+        assertThat(transportIds(
+                        "\"orderPlacerEmployeeCode\":\"E4\",\"orderPlacerDepartment\":\"本系统运营部\","
+                                + "\"businessOrderNo\":\"HLL-SALES-1\""))
+                .containsExactly("platform");
+        assertThat(transportIds(
+                        "\"orderPlacerEmployeeCode\":\"E1\",\"orderPlacerDepartment\":\"本系统运营部\""))
+                .isEmpty();
     }
 
     private List<String> transportIds(String filters) {

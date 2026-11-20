@@ -9,6 +9,7 @@ import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.ZoneId;
@@ -32,7 +33,7 @@ public class ShipmentTransportService {
         this.refs = refs;
     }
 
-    @Transactional
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public ShipmentTransportModels.Source sync(Command c) {
         var caller = sourceCaller();
         if (c == null
