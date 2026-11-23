@@ -43,7 +43,7 @@ public class ShipmentTransportService {
                 || c.shipmentId().length() > 128
                 || c.shipmentNo().length() > 128
                 || c.shipTime() == null
-                || c.trackingNumbers().isEmpty()
+                || c.trackingNumbers().isEmpty() && !c.employeeImmediateDelivery()
                 || c.trackingNumbers().size() > 100
                 || c.trackingNumbers().stream().anyMatch(n -> blank(n) || n.length() > 80)
                 || !Set.of("shipped", "receivedin", "received", "cancelled", "unknown")

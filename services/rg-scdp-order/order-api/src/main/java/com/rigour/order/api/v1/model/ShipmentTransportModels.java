@@ -30,6 +30,16 @@ public final class ShipmentTransportModels {
                     deliveryModeName, trackingNumbers, receiver, sourceFields, goods);
         }
 
+        public static boolean immediateDeliveryCarrier(String name) {
+            return "立即送".equals(name);
+        }
+
+        public boolean employeeImmediateDelivery() {
+            return immediateDeliveryCarrier(carrierName)
+                    && "SELF".equals(deliveryModeCode) && carrierCode == null
+                    && trackingNumbers.isEmpty();
+        }
+
         public Command {
             trackingNumbers = trackingNumbers == null ? List.of() : List.copyOf(trackingNumbers);
             sourceFields =

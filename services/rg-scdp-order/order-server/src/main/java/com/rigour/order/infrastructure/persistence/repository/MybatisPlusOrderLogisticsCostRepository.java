@@ -311,6 +311,9 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                 " FROM order_logistics_import_order i WHERE i.tenant_id=order_logistics_cost.tenant_id"
                         + " AND i.cost_id=order_logistics_cost.id AND i.source_channel='API'";
         String sourceExists = "EXISTS(SELECT 1" + platformSource + " AND ";
+        if (text(filter.deliveryModeCode()))
+            q.apply("(CASE WHEN EXISTS(SELECT 1" + platformSource + ") THEN 'THIRD_PARTY'"
+                    + " ELSE delivery_mode_code END)={0}", filter.deliveryModeCode().strip());
         if (text(filter.orderPlacerEmployeeCode()) || text(filter.orderPlacerDepartment())) {
             String sourceJson = "COALESCE(i.latest_source_json,i.source_json)";
             String platformEmployee = jsonText(sourceJson, "$.facts.mappedEmployeeCode");

@@ -373,6 +373,31 @@ public class LogisticsCostFilterTest {
     }
 
     @Test
+    void deliveryModeFiltersTotalsAndIncludesLegacyPlatformRecords() {
+        jdbc.execute("ALTER TABLE order_logistics_cost ADD delivery_mode_code VARCHAR(50)");
+        jdbc.execute("ALTER TABLE order_logistics_import_order ADD source_channel VARCHAR(8)");
+        insert("platform", "T1", "PLATFORM", 7L);
+        insert("express", "T1", "EXPRESS", 7L);
+        jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");
+        jdbc.update("UPDATE order_logistics_cost SET delivery_mode_code='SELF' WHERE id IN ('good','hidden')");
+        jdbc.update("UPDATE order_logistics_cost SET delivery_mode_code='THIRD_PARTY' WHERE id='express'");
+        jdbc.update("INSERT INTO order_logistics_import_order(id,tenant_id,cost_id,source_channel,source_json)"
+                + " VALUES('source','T1','platform','API','{}')");
+
+        var self = JSON.readValue("{\"begin\":0,\"step\":1,\"deliveryModeCode\":\"SELF\"}", LogisticsCostQuery.class);
+        var selfPage = store.entries("T1", "LOGISTICS", self, "cost:read");
+        assertThat(selfPage.items()).extracting(row -> row.id()).containsExactly("good");
+        assertThat(selfPage.total()).isEqualTo(1);
+        assertThat(selfPage.registeredAmount()).isEqualByComparingTo("100.00");
+
+        var thirdParty = JSON.readValue("{\"begin\":0,\"step\":1,\"deliveryModeCode\":\"THIRD_PARTY\"}", LogisticsCostQuery.class);
+        var thirdPartyPage = store.entries("T1", "LOGISTICS", thirdParty, "cost:read");
+        assertThat(thirdPartyPage.items()).hasSize(1);
+        assertThat(thirdPartyPage.total()).isEqualTo(2);
+        assertThat(thirdPartyPage.registeredAmount()).isEqualByComparingTo("200.00");
+    }
+
+    @Test
     void keywordSearchCoversDocumentsAndPartiesWithinScope() {
         assertThat(countObject("SENDER-ONLY")).isEqualTo(1);
         assertThat(countObject("SRC-A")).isEqualTo(1);

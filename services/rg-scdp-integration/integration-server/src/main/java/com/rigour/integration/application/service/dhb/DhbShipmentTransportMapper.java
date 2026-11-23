@@ -113,17 +113,33 @@ final class DhbShipmentTransportMapper {
     }
 
     static List<String> trackingNumbers(Map<String, Object> payload, Shipment summary) {
+        var result = new LinkedHashSet<String>();
+        collectTracking(rawTracking(payload, summary), result);
+        return List.copyOf(result);
+    }
+
+    static boolean trackingNotProvided(Map<String, Object> payload, Shipment summary) {
+        return trackingNotProvided(map(payload.get("detail")).get("express_num"))
+                && trackingNotProvided(map(payload.get("list")).get("express_num"))
+                && trackingNotProvided(summary == null ? null : summary.trackingNumber());
+    }
+
+    private static boolean trackingNotProvided(Object value) {
+        return switch (value) {
+            case null -> true;
+            case String text -> text.isBlank() || Set.of("未添加", "未填写", "-").contains(text.strip());
+            case List<?> values -> values.stream().allMatch(DhbShipmentTransportMapper::trackingNotProvided);
+            case Map<?, ?> values -> values.values().stream().allMatch(DhbShipmentTransportMapper::trackingNotProvided);
+            default -> false;
+        };
+    }
+
+    private static Object rawTracking(Map<String, Object> payload, Shipment summary) {
         var detail = map(payload.get("detail"));
         var list = map(payload.get("list"));
-        var result = new LinkedHashSet<String>();
-        collectTracking(
-                detail.containsKey("express_num")
-                        ? detail.get("express_num")
-                        : list.containsKey("express_num")
-                                ? list.get("express_num")
-                                : summary == null ? null : summary.trackingNumber(),
-                result);
-        return List.copyOf(result);
+        if (detail.containsKey("express_num")) return detail.get("express_num");
+        if (list.containsKey("express_num")) return list.get("express_num");
+        return summary == null ? null : summary.trackingNumber();
     }
 
     private static void collectTracking(Object value, Set<String> result) {
@@ -135,7 +151,10 @@ final class DhbShipmentTransportMapper {
                     return;
                 }
         } else if (value instanceof String text && !text.isBlank())
-            for (String no : text.split("[,，;；\\r\\n]+")) if (!no.isBlank()) result.add(no.strip());
+            for (String raw : text.split("[,，;；\\r\\n]+")) {
+                String no = raw.strip();
+                if (!no.isEmpty() && !Set.of("未添加", "未填写", "-").contains(no)) result.add(no);
+            }
         // 数值编号可能已经丢失前导0，保留原文但不作为去重匹配键。
     }
 

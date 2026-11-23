@@ -3,6 +3,7 @@ package com.rigour.order.application.service.cost;
 import com.rigour.order.api.v1.model.*;
 import com.rigour.order.api.v1.model.LogisticsImportModels.*;
 import com.rigour.order.application.port.out.LogisticsImportStore;
+import com.rigour.order.application.port.out.ShipmentTransportStore;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
@@ -21,6 +22,9 @@ public class LogisticsImportService {
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.rigour.order.application.port.out.PlatformTransportStore platform;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ShipmentTransportStore shipments;
 
     public LogisticsImportService(LogisticsImportStore store, OrderLogisticsCostService costs) {
         this.store = store;
@@ -162,7 +166,11 @@ public class LogisticsImportService {
         String t = caller.tenantId().toString(), a = caller.principalId().toString();
         if (platform != null) platform.lockTenant(t);
         var received = store.receive(t, a, source);
-        return platform == null ? received : platform.materialize(t, a, received);
+        if (platform == null) return received;
+        var result = platform.materialize(t, a, received);
+        if (shipments != null && result.costId() != null)
+            shipments.reconcileHuolala(t, a, o.orderNo(), result.costId());
+        return result;
     }
 
     @Transactional

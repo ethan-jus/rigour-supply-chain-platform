@@ -2628,8 +2628,6 @@ public final class DhbOrderSyncService {
             Shipment summary,
             DhbShipmentTransportMapper.ShippingContext shipment,
             Map<String, Object> payload) {
-        // 无快递单号不生成运输成本；发货履约仍按原职责同步。
-        if (DhbShipmentTransportMapper.trackingNumbers(payload, summary).isEmpty()) return false;
         String carrier =
                 DhbShipmentTransportMapper.rawValue(payload, "logistics_code", "logistics_name");
         String mode =
@@ -2641,15 +2639,22 @@ public final class DhbOrderSyncService {
                 DhbShipmentTransportMapper.rawValue(
                         payload, "distribution_mode_name", "distribution_mode_name");
         boolean doorDelivery = "送货上门".equals(modeName);
+        carrierName = firstNonBlank(carrierName, shipment.carrierName());
+        boolean noTracking = DhbShipmentTransportMapper.trackingNumbers(payload, summary).isEmpty();
+        boolean employeeCarrier = com.rigour.order.api.v1.model.ShipmentTransportModels.Command
+                .immediateDeliveryCarrier(carrierName);
+        boolean employeeDelivery = employeeCarrier && noTracking
+                && DhbShipmentTransportMapper.trackingNotProvided(payload, summary);
+        if (noTracking && !employeeDelivery) return false;
         var observations = new ArrayList<Observation>();
-        if (carrier != null)
+        if (carrier != null && !employeeDelivery)
             observations.add(
                     new Observation(
                             "COST_CARRIER",
                             "shipment.logistics",
                             carrier,
                             carrierName));
-        if (mode != null && !doorDelivery)
+        if (mode != null && !doorDelivery && !employeeDelivery)
             observations.add(
                     new Observation(
                             "COST_DELIVERY_MODE",
@@ -2679,9 +2684,12 @@ public final class DhbOrderSyncService {
             modeCode = DhbShipmentTransportMapper.doorDeliveryMode(carrierName, carrierCode);
             if ("SELF".equals(modeCode)) carrierCode = null;
         }
+        if (employeeDelivery) modeCode = "SELF";
+        else if (employeeCarrier && "SELF".equals(modeCode)) modeCode = null;
         var command =
                 DhbShipmentTransportMapper.command(
                         task.connectorId(), no, summary, shipment, payload, carrierCode, modeCode);
+        if (noTracking && !command.employeeImmediateDelivery()) return false;
         var result =
                 orderProjectionClient.syncShipmentTransport(
                         orderServiceCaller(caller.tenantId()), command);

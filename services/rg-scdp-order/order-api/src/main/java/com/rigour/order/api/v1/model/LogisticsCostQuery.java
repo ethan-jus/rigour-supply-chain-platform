@@ -39,7 +39,8 @@ public record LogisticsCostQuery(
         Boolean salesSelectable,
         String orderPlacerEmployeeCode,
         String orderPlacerDepartment,
-        String businessOrderNo) {
+        String businessOrderNo,
+        String deliveryModeCode) {
     public LogisticsCostQuery(
         int begin,
         int step,
@@ -75,7 +76,7 @@ public record LogisticsCostQuery(
         String contactPhone,
         String mappedEmployeeCode
     ) {
-        this(begin, step, documentNo, title, remark, trackingNo, sourceDocumentNo, typeCode, cityCode, statusCode, paymentStatusCode, dateFrom, dateTo, warehouseId, ownerEmployeeCode, objectName, sourceSystem, payerCode, missingAmount, senderName, receiverName, carrierName, costMonth, orderTypeCode, carrierCode, sourceEmployeeName, sourceDepartmentName, relationState, platformOrderNo, platformEmployeeName, employeeRelationState, contactPhone, mappedEmployeeCode, null, null, null, null);
+        this(begin, step, documentNo, title, remark, trackingNo, sourceDocumentNo, typeCode, cityCode, statusCode, paymentStatusCode, dateFrom, dateTo, warehouseId, ownerEmployeeCode, objectName, sourceSystem, payerCode, missingAmount, senderName, receiverName, carrierName, costMonth, orderTypeCode, carrierCode, sourceEmployeeName, sourceDepartmentName, relationState, platformOrderNo, platformEmployeeName, employeeRelationState, contactPhone, mappedEmployeeCode, null, null, null, null, null);
     }
 
     public LogisticsCostQuery(

@@ -135,6 +135,7 @@ public final class OrderLogisticsCostService {
         text(q.orderPlacerEmployeeCode(), 50, "下单人员工编号");
         text(q.orderPlacerDepartment(), 128, "下单人所属部门");
         text(q.businessOrderNo(), 100, "业务单号");
+        text(q.deliveryModeCode(), 50, "配送方式");
         for (String state : Arrays.asList(q.relationState(), q.employeeRelationState()))
             if (state != null && !state.isBlank() && !Set.of("LINKED", "UNLINKED").contains(state))
                 throw bad("关联状态无效");
@@ -181,7 +182,8 @@ public final class OrderLogisticsCostService {
                                 q.salesSelectable(),
                                 q.orderPlacerEmployeeCode(),
                                 q.orderPlacerDepartment(),
-                                q.businessOrderNo()),
+                                q.businessOrderNo(),
+                                q.deliveryModeCode()),
                         p);
         var rows = withBusinessStatuses(page.items(), p);
         return page.withItems(

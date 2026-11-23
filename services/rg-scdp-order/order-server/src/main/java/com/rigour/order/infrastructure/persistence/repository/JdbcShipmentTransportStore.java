@@ -23,6 +23,8 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
     private static final String DOOR_ISSUE = "订货宝仅标记送货上门";
     private static final String DELIVERY_MODE_ISSUE = "来源配送方式尚未映射";
     private static final String TRACKING_CONFLICT = "快递单号已有运输记录，请核对原发货单";
+    private static final String AWAITING_HUOLALA = "等待货拉拉已完成订单，核实后自动关联";
+    private static final String EMPLOYEE_DELIVERY_REASON = "员工配送，无外部运费";
     private static final String ALLOCATION_CONFLICT = "已有费用明细或多个收货点，请核对后关联销售订单";
     private final JdbcTemplate jdbc;
     private final ObjectMapper json;
@@ -91,6 +93,13 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         }
         String costId = old == null ? null : Objects.toString(old.get("cost_id"), null);
         boolean shipped = Set.of("receivedin", "received").contains(command.sourceStatus());
+        boolean employeeDelivery = command.employeeImmediateDelivery();
+        if (employeeDelivery) {
+            var zero = java.math.BigDecimal.ZERO.setScale(2);
+            var fee = new LogisticsCostLedger.Fee("freight", "FREIGHT", zero, "COMPANY", zero,
+                    "EQUAL", EMPLOYEE_DELIVERY_REASON, null);
+            transport = transport.withLedger(transport.ledger().withFeeItems(List.of(fee)), zero);
+        }
         var numbers = JdbcTransportTrackingLookup.numbers(command.trackingNumbers());
         String sourceId = old == null ? UUID.randomUUID().toString() : old.get("id").toString();
         // 仅对“无单号、无运费、无人工凭证”的旧记录清理允许补单号后重新建有效运输。
@@ -145,8 +154,16 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
             return source(old);
         String issue = null;
         boolean difference = false;
+        String awaitingHuolala = null;
+        PendingAssociation pending = null;
         if (shipped && costId == null) {
-            if (!matches.isEmpty() && (match == null || numbers.size() != 1
+            if (match != null && numbers.size() == 1 && match.adoptableByHuolala()
+                    && eligibleForHuolala(command) && order != null) {
+                awaitingHuolala = numbers.getFirst();
+                pending = new PendingAssociation(order, transport);
+                issue = AWAITING_HUOLALA;
+                difference = true;
+            } else if (!matches.isEmpty() && (match == null || numbers.size() != 1
                     || !match.huolalaOrder() || !"HLL".equals(transport.ledger().carrierCode())
                     || "SELF".equals(command.deliveryModeCode()))) {
                 issue = TRACKING_CONFLICT;
@@ -174,11 +191,11 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                                                                         order.documentAmount(),
                                                                         order.documentDate(),
                                                                         Instant.now())));
-                data = data.withLedger(linked, null);
+                data = TransportAllocationPlan.reprice(data.withLedger(linked, null), transport.amount());
                 jdbc.update(
                         "INSERT INTO"
                             + " order_logistics_cost(id,tenant_id,document_no,request_id,category_code,title,type_code,transport_purpose_code,city_code,warehouse_id,source_warehouse_id,cost_date,amount,payment_status_code,status_code,data_json,sources_json,created_by,updated_by,source_system,carrier_code,delivery_mode_code,cost_month,origin_biz_key)"
-                            + " VALUES(?,?,?,?,'LOGISTICS',?,'DELIVERY','DELIVERY',?,?,?,?,NULL,'UNKNOWN','ACTIVE',?,?,?,?,'DHB',?,?,?,?)",
+                            + " VALUES(?,?,?,?,'LOGISTICS',?,'DELIVERY','DELIVERY',?,?,?,?,?,'UNKNOWN','ACTIVE',?,?,?,?,'DHB',?,?,?,?)",
                         costId,
                         tenant,
                         CostDocumentNumber.next(),
@@ -188,8 +205,9 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                         warehouseId,
                         warehouseId,
                         data.costDate(),
+                        data.amount(),
                         json.writeValueAsString(data),
-                        json.writeValueAsString(linked.sources()),
+                        json.writeValueAsString(data.ledger().sources()),
                         actor,
                         actor,
                         linked.carrierCode(),
@@ -359,8 +377,8 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         if (old == null)
             jdbc.update(
                     "INSERT INTO"
-                        + " order_transport_shipment_source(id,tenant_id,platform_code,connector_id,source_shipment_id,source_shipment_no,sales_order_id,cost_id,latest_json,fingerprint,issue,difference_pending,created_by,updated_by)"
-                        + " VALUES(?,?,'DHB',?,?,?,?,?,?,?,?,?,?,?)",
+                        + " order_transport_shipment_source(id,tenant_id,platform_code,connector_id,source_shipment_id,source_shipment_no,sales_order_id,cost_id,latest_json,fingerprint,issue,difference_pending,created_by,updated_by,awaiting_huolala_no,awaiting_huolala_data)"
+                        + " VALUES(?,?,'DHB',?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     sourceId,
                     tenant,
                     command.connectorId().toString(),
@@ -373,12 +391,14 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                     issue,
                     difference ? 1 : 0,
                     actor,
-                    actor);
+                    actor,
+                    awaitingHuolala,
+                    pending == null ? null : json.writeValueAsString(pending));
         else
             jdbc.update(
                     "UPDATE order_transport_shipment_source SET"
-                        + " source_shipment_id=?,source_shipment_no=?,sales_order_id=?,cost_id=?,latest_json=?,fingerprint=?,issue=?,difference_pending=?,updated_by=?,updated_time=CURRENT_TIMESTAMP(6)"
-                        + " WHERE tenant_id=? AND id=?",
+                        + " source_shipment_id=?,source_shipment_no=?,sales_order_id=?,cost_id=?,latest_json=?,fingerprint=?,issue=?,difference_pending=?,updated_by=?,awaiting_huolala_no=?,awaiting_huolala_data=?,"
+                        + "updated_time=CURRENT_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
                     old.get("source_shipment_id").equals(old.get("source_shipment_no"))
                             ? command.shipmentId()
                             : old.get("source_shipment_id"),
@@ -392,6 +412,8 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                     issue,
                     difference ? 1 : 0,
                     actor,
+                    awaitingHuolala,
+                    pending == null ? null : json.writeValueAsString(pending),
                     tenant,
                     sourceId);
         jdbc.update(
@@ -407,6 +429,42 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         return new Source(sourceId, costId, command, issue, difference);
     }
 
+    private record PendingAssociation(LogisticsCostSourceView order, LogisticsCostCommand transport) {}
+
+    private static boolean eligibleForHuolala(Command shipment) {
+        return !"SELF".equals(shipment.deliveryModeCode())
+                && ("HLL".equals(shipment.carrierCode()) || carrierNotProvided(shipment));
+    }
+
+    @Override
+    public void reconcileHuolala(String tenant, String actor, String orderNo, String costId) {
+        var numbers = JdbcTransportTrackingLookup.numbers(List.of(orderNo));
+        if (numbers.isEmpty()) return;
+        var number = numbers.getFirst();
+        var waiting = jdbc.queryForList(
+                "SELECT id,latest_json,awaiting_huolala_data FROM order_transport_shipment_source"
+                        + " WHERE tenant_id=? AND awaiting_huolala_no=? AND cost_id IS NULL"
+                        + " ORDER BY source_shipment_no,id FOR UPDATE",
+                tenant, number);
+        if (waiting.isEmpty() || !tracking.linkedHuolala(tenant, costId, number)) return;
+        var matches = tracking.find(tenant, List.of(number));
+        if (matches.size() != 1 || !costId.equals(matches.getFirst().costId())
+                || !matches.getFirst().huolalaOrder()) return;
+        for (var row : waiting) {
+            var shipment = json.readValue(row.get("latest_json").toString(), Command.class);
+            if (!eligibleForHuolala(shipment)) continue;
+            var pending = json.readValue(row.get("awaiting_huolala_data").toString(), PendingAssociation.class);
+            String issue = attachPlatformOrder(tenant, actor, costId, pending.order(), pending.transport());
+            jdbc.update(
+                    "UPDATE order_transport_shipment_source SET cost_id=?,issue=?,difference_pending=?,"
+                            + "latest_json=?,awaiting_huolala_no=NULL,awaiting_huolala_data=NULL,"
+                            + "updated_by=?,updated_time=CURRENT_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
+                    issue == null ? costId : null, issue, issue == null ? 0 : 1,
+                    json.writeValueAsString(shipment.withCarrierClassification("HLL", "THIRD_PARTY")),
+                    actor, tenant, row.get("id"));
+        }
+    }
+
     private String attachPlatformOrder(
             String tenant,
             String actor,
@@ -417,20 +475,27 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         var codes = codes(row);
         if (!"ACTIVE".equals(row.statusCode())) return "匹配运输已作废，请先核对原记录";
         if (codes.contains(order.documentNo())) return null;
-        if (!codes.isEmpty()) return "同一快递单号已有其他业务关联，请核对是否同一运输";
+        if (row.data().typeCode() != null && !"DELIVERY".equals(row.data().typeCode()))
+            return "同一运输已用于其他业务，请核对原关联";
         var existingLedger = row.data().ledger();
-        if (existingLedger != null
-                && (TransportAllocationPlan.complex(existingLedger)
-                        || existingLedger.receivingPoints() == null
-                        || existingLedger.receivingPoints().size() != 1))
+        if (existingLedger == null && !codes.isEmpty()
+                || existingLedger != null
+                        && (TransportAllocationPlan.complex(existingLedger)
+                                || existingLedger.receivingPoints() == null
+                                || existingLedger.receivingPoints().size() != 1
+                                || existingLedger.feeItems().stream().anyMatch(
+                                        fee -> "MANUAL".equals(fee.allocationMethodCode()))
+                                || existingLedger.manualBillItems() != null
+                                        && !existingLedger.manualBillItems().isEmpty()))
             return ALLOCATION_CONFLICT;
         var p = platform.detail(tenant, row.id());
         if (p == null) return "匹配运输未关联当前销售单，请核对后手工关联";
         var o = p.source().latestOrder() == null ? p.source().order() : p.source().latestOrder();
         var draft = p.draft();
-        var documents = new ArrayList<>(row.sources());
-        documents.add(order);
-        var orderCodes = documents.stream().map(LogisticsCostSourceView::documentNo).distinct().toList();
+        if (!codes.isEmpty() && o.facts() != null && o.facts().stops() != null
+                && o.facts().stops().size() > 2) return ALLOCATION_CONFLICT;
+        var orderCodes = new ArrayList<>(codes);
+        orderCodes.add(order.documentNo());
         var draftToSave =
                 new Draft(
                         row.revision(),
@@ -455,34 +520,31 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                         row.data().paymentStatusCode(),
                         List.of());
         // 同一货拉拉运输补上订货宝原单时，保存完整成本分摊，不退回仅有关系的中间状态。
-        var l = shipment.ledger();
-        var ledger = existingLedger == null ?
-                new LogisticsCostLedger(
-                                2,
-                                "DELIVERY",
-                                "THIRD_PARTY",
-                                "HLL",
-                                row.data().costDate().toString().substring(0, 7),
-                                null,
-                                null,
-                                l.sender(),
-                                l.receivingPoints(),
-                                l.feeItems(),
-                                l.sources(),
-                                null,
-                                "实际无运单号",
-                                null,
-                                l.scopeWarehouseIds(),
-                                l.scopeCityCodes())
+        var incoming = shipment.ledger();
+        var link = incoming.sources().stream()
+                .filter(source -> order.documentNo().equals(source.orderCode()))
+                .findFirst().orElse(null);
+        if (link == null) return "缺少发货对应的销售订单，请核对后关联";
+        var ledger = existingLedger == null
+                ? incoming.withTransportType("DELIVERY")
+                        .withCarrierClassification("HLL", "THIRD_PARTY")
                         .withPlatformOrderNo(o.orderNo())
-                : existingLedger.withTransportType("DELIVERY")
-                        .withSources(l.sources().stream()
-                                .map(s -> new LogisticsCostLedger.Source(
-                                        s.orderTypeCode(), s.orderCode(), s.linkRoleCode(), List.of(),
-                                        s.noSourceReason(), s.employeeCode(), s.employeeName(),
-                                        s.departmentId(), s.departmentName(), s.sourceWarehouseCode(),
-                                        s.documentAmount(), s.documentDate(), s.linkedAt()))
-                                .toList());
+                : existingLedger.withTransportType("DELIVERY").withPlatformOrderNo(o.orderNo());
+        var links = new ArrayList<LogisticsCostLedger.Source>();
+        if (existingLedger != null) links.addAll(existingLedger.sources());
+        var point = ledger.receivingPoints().getFirst();
+        String city = first(order.cityCode(), first(point.cityCode(), row.data().cityCode()));
+        var allocation = new LogisticsCostLedger.Allocation(
+                ledger.feeItems().getFirst().feeKey(), point.pointCode(), city,
+                java.math.BigDecimal.ONE, java.math.BigDecimal.ZERO);
+        links.add(new LogisticsCostLedger.Source(
+                link.orderTypeCode(), link.orderCode(), link.linkRoleCode(), List.of(allocation),
+                link.noSourceReason(), link.employeeCode(), link.employeeName(),
+                link.departmentId(), link.departmentName(), link.sourceWarehouseCode(),
+                order.documentAmount(), order.documentDate(), Instant.now()));
+        var cities = new LinkedHashSet<String>(ledger.scopeCityCodes());
+        if (city != null) cities.add(city);
+        ledger = ledger.withSources(links).withScopeCities(List.copyOf(cities));
         var data = row.data();
         var next =
                 new LogisticsCostCommand(
@@ -490,8 +552,8 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                         row.revision(),
                         "销售订单配送",
                         "DELIVERY",
-                        shipment.cityCode(),
-                        shipment.cityName(),
+                        first(data.cityCode(), shipment.cityCode()),
+                        first(data.cityName(), shipment.cityName()),
                         data.departmentId(),
                         data.ownerEmployeeCode(),
                         data.costDate(),
@@ -512,7 +574,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                 row.ownerEmployeeName(),
                 actor,
                 "order:logistics-cost:read");
-        platform.saveAssociations(tenant, row.id(), draftToSave, documents, actor);
+        platform.saveAssociations(tenant, row.id(), draftToSave, List.of(), actor);
         return null;
     }
 

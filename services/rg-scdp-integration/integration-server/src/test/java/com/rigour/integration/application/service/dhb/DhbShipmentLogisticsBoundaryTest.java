@@ -146,6 +146,10 @@ class DhbShipmentLogisticsBoundaryTest {
     }
 
     DhbClient.Shipment shipment(String orderNo) {
+        return shipment(orderNo, "顺丰", "SF001");
+    }
+
+    DhbClient.Shipment shipment(String orderNo, String carrier, String trackingNumber) {
         return new DhbClient.Shipment(
                 "D1",
                 "FH001",
@@ -161,8 +165,8 @@ class DhbShipmentLogisticsBoundaryTest {
                 "来源仓库",
                 null,
                 from.plusSeconds(60),
-                "顺丰",
-                "SF001",
+                carrier,
+                trackingNumber,
                 null,
                 from,
                 from.plusSeconds(60),
@@ -224,6 +228,13 @@ class DhbShipmentLogisticsBoundaryTest {
                 .isEmpty();
         assertThat(DhbShipmentTransportMapper.trackingNumbers(Map.of(), shipment("DH001")))
                 .containsExactly("SF001");
+        assertThat(DhbShipmentTransportMapper.trackingNotProvided(
+                        Map.of("detail", Map.of("express_num", "未添加"),
+                                "list", Map.of("express_num", "SF001")), null))
+                .isFalse();
+        assertThat(DhbShipmentTransportMapper.trackingNotProvided(
+                        Map.of("detail", Map.of("express_num", "未添加")), shipment("DH001")))
+                .isFalse();
     }
 
     @Test
@@ -255,6 +266,63 @@ class DhbShipmentLogisticsBoundaryTest {
         verify(store, never()).markRawProcessed(any(), any());
         verifyNoInteractions(erp);
         verify(order, never()).createSalesShipment(any(), any());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"送货上门, ''", "送货上门, 未添加"})
+    void immediateDeliveryInCarrierFieldProjectsSelfDeliveryWithoutTracking(
+            String mode, String trackingNumber) {
+        mappedSalesOrder();
+        org.mockito.Mockito.doAnswer(call -> {
+            DhbClient.ShipmentQuery query = call.getArgument(1);
+            var shipments = "F".equals(query.isApi())
+                    ? List.of(shipment("DH001", "立即送", null)) : List.<DhbClient.Shipment>of();
+            return new DhbClient.Page<>(query.page(), shipments.size(), shipments);
+        }).when(client).getShipments(any(), any());
+        when(client.getShipmentContent(any(), eq("FH001")))
+                .thenReturn(new DhbClient.ShipmentDetail(
+                        "FH001",
+                        Map.of(
+                                "ships_id", "D1",
+                                "type_id", "10",
+                                "status", "receivedin",
+                                "orders_num", "DH001",
+                                "logistics_name", "立即送",
+                                "distribution_mode_name", mode,
+                                "express_num", trackingNumber)));
+        run();
+        var command = ArgumentCaptor.forClass(ShipmentTransportModels.Command.class);
+        verify(order).syncShipmentTransport(any(), command.capture());
+        assertThat(command.getValue().employeeImmediateDelivery()).isTrue();
+        assertThat(command.getValue().carrierCode()).isNull();
+        assertThat(command.getValue().trackingNumbers()).isEmpty();
+        assertThat(command.getValue().salesOrderId()).isEqualTo(11L);
+        verify(dictionaries, never()).sync(any(), eq("DHB_SHIPMENT_LOGISTICS"), anyCollection());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"极兔速递, 立即送, 未添加", ", 立即送, 未添加", "极兔速递, 快递, ''"})
+    void shipmentWithoutTrackingNeedsExactImmediateDeliveryCarrier(
+            String carrier, String mode, String trackingNumber) {
+        mappedSalesOrder();
+        var detail = new HashMap<String, Object>(Map.of(
+                "ships_id", "D1", "type_id", "10", "status", "receivedin",
+                "orders_num", "DH001", "distribution_mode_name", mode, "express_num", trackingNumber));
+        if (carrier != null) detail.put("logistics_name", carrier);
+        when(client.getShipmentContent(any(), eq("FH001")))
+                .thenReturn(new DhbClient.ShipmentDetail("FH001", detail));
+        run();
+        verify(order, never()).syncShipmentTransport(any(), any());
+    }
+
+    @Test
+    void numericTrackingIsNotMissingEvenWhenItCannotBeUsedForDeduplication() {
+        mappedSalesOrder();
+        when(client.getShipmentContent(any(), eq("FH001"))).thenReturn(new DhbClient.ShipmentDetail(
+                "FH001", Map.of("ships_id", "D1", "type_id", "10", "status", "receivedin",
+                        "orders_num", "DH001", "logistics_name", "立即送", "express_num", 12345L)));
+        run();
+        verify(order, never()).syncShipmentTransport(any(), any());
     }
 
     @ParameterizedTest
