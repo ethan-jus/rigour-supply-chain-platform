@@ -44,6 +44,135 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         this.tracking = new JdbcTransportTrackingLookup(jdbc, json);
     }
 
+    void lockTenant(String tenant) {
+        platform.lockTenant(tenant);
+    }
+
+    @Override
+    public Command withShipmentLogisticsEdit(String tenant, Command source) {
+        lockTenant(tenant);
+        var overrides = jdbc.query(
+                "SELECT logistics_overrides FROM order_sales_shipment WHERE tenant_id=? AND connector_id=?"
+                        + " AND source_system_code='DINGHUOBAO' AND source_document_no=? AND deleted=0",
+                (rs, i) -> rs.getString(1), tenant, source.connectorId().toString(), source.shipmentNo());
+        if (overrides.isEmpty() || overrides.getFirst() == null) return source;
+        return json.readValue(overrides.getFirst(), LogisticsEdit.class).apply(source);
+    }
+
+    void updateLinkedShipment(
+            String tenant, String actor, String connector, String shipmentNo, LogisticsEdit edit) {
+        var rows = jdbc.queryForList(
+                "SELECT * FROM order_transport_shipment_source WHERE tenant_id=? AND platform_code='DHB'"
+                        + " AND connector_id=? AND source_shipment_no=? FOR UPDATE",
+                tenant, connector, shipmentNo);
+        if (rows.size() > 1) throw editConflict("发货单关联了多条运输记录，请核对后修改");
+        if (rows.isEmpty()) return;
+        var source = source(rows.getFirst());
+        Command old = source.latest();
+        Command next = edit.apply(old);
+        var numbers = JdbcTransportTrackingLookup.numbers(next.trackingNumbers());
+        boolean trackingChanged = !numbers.equals(JdbcTransportTrackingLookup.numbers(old.trackingNumbers()));
+        boolean carrierChanged = !Objects.equals(old.carrierCode(), next.carrierCode())
+                || !Objects.equals(old.deliveryModeCode(), next.deliveryModeCode());
+        String costId = source.costId();
+        if (costId != null) {
+            var cost = jdbc.queryForMap(
+                    "SELECT data_json,status_code,source_system,deleted FROM order_logistics_cost"
+                            + " WHERE tenant_id=? AND id=? FOR UPDATE", tenant, costId);
+            boolean shared = !"DHB".equals(cost.get("source_system"))
+                    || hasOtherShipments(tenant, costId, source.id());
+            if (shared && (trackingChanged || carrierChanged))
+                throw editConflict("这张运输费用单由多个来源共用，请先核对关联再修改物流公司或单号");
+            if (("VOID".equals(cost.get("status_code")) || JdbcFlags.isSet(cost.get("deleted")))
+                    && (trackingChanged || carrierChanged || edit.shipTime() != null))
+                throw editConflict("已作废的运输费用单请先核对后再修改发货物流");
+            if ((trackingChanged || carrierChanged)
+                    && (old.employeeImmediateDelivery() != next.employeeImmediateDelivery()
+                            || numbers.isEmpty() && !next.employeeImmediateDelivery()))
+                throw editConflict("已关联费用单的发货单需保留可识别的物流单号或原自配送方式");
+            if (trackingChanged && tracking.find(tenant, numbers).stream()
+                    .anyMatch(match -> !costId.equals(match.costId())))
+                throw editConflict(TRACKING_CONFLICT);
+            if (!shared && (carrierChanged || trackingChanged || edit.shipTime() != null))
+                updateShipmentCost(tenant, actor, costId, cost.get("data_json").toString(), next,
+                        carrierChanged, trackingChanged, edit.shipTime() != null);
+            var evidence = json.createObjectNode()
+                    .put("shipmentNo", next.shipmentNo())
+                    .put("carrierCode", next.carrierCode())
+                    .put("carrierName", next.carrierName());
+            evidence.set("shipTime", json.valueToTree(next.shipTime()));
+            evidence.set("trackingNumbers", json.valueToTree(next.trackingNumbers()));
+            if (edit.remark() != null) evidence.put("shipmentRemark", edit.remark());
+            changed(tenant, costId, actor, LogisticsCostAuditView.SHIPMENT_LOGISTICS_EDIT,
+                    "从发货单修改物流信息", evidence);
+        }
+        String body = json.writeValueAsString(next);
+        String fp = fingerprint("SHIPMENT_EDIT\n" + body);
+        boolean resetPending = costId == null && (trackingChanged || carrierChanged);
+        String issue = source.issue();
+        boolean resolvedIssue = costId != null && issue != null
+                && (trackingChanged && TRACKING_CONFLICT.equals(issue)
+                        || carrierChanged && (issue.startsWith(CARRIER_ISSUE)
+                                || issue.startsWith(DOOR_ISSUE) || issue.startsWith(DELIVERY_MODE_ISSUE)));
+        boolean clearIssue = resetPending || resolvedIssue;
+        jdbc.update(
+                "UPDATE order_transport_shipment_source SET latest_json=?,fingerprint=?,issue=?,difference_pending=?,"
+                        + "awaiting_huolala_no=CASE WHEN ? THEN NULL ELSE awaiting_huolala_no END,"
+                        + "awaiting_huolala_data=CASE WHEN ? THEN NULL ELSE awaiting_huolala_data END,"
+                        + "updated_by=?,updated_time=CURRENT_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
+                body, fp, clearIssue ? null : issue, !clearIssue && source.differencePending(),
+                resetPending, resetPending, actor, tenant, source.id());
+        jdbc.update(
+                "INSERT INTO order_transport_shipment_history"
+                        + "(id,tenant_id,platform_code,source_id,fingerprint,source_json,created_by)"
+                        + " VALUES(?,?,'DHB',?,?,?,?) ON DUPLICATE KEY UPDATE fingerprint=fingerprint",
+                UUID.randomUUID().toString(), tenant, source.id(), fp, body, actor);
+    }
+
+    private void updateShipmentCost(
+            String tenant, String actor, String costId, String saved, Command shipment,
+            boolean carrierChanged, boolean trackingChanged, boolean dateChanged) {
+        var data = (tools.jackson.databind.node.ObjectNode) json.readTree(saved);
+        if (!(data.get("ledger") instanceof tools.jackson.databind.node.ObjectNode ledger))
+            throw editConflict("运输费用单缺少物流明细，请先核对费用单");
+        if (carrierChanged) {
+            ledger.put("carrierCode", shipment.carrierCode());
+            ledger.put("deliveryModeCode", shipment.deliveryModeCode());
+        }
+        if (trackingChanged) {
+            String number = shipment.trackingNumbers().size() == 1 ? shipment.trackingNumbers().getFirst() : null;
+            ledger.put("platformOrderNo", number);
+            if (!ledger.path("trackingNo").isNull() && !ledger.path("trackingNo").isMissingNode())
+                ledger.put("trackingNo", number);
+            if (data.get("logistics") instanceof tools.jackson.databind.node.ObjectNode legacy
+                    && legacy.hasNonNull("trackingNo"))
+                legacy.put("trackingNo", number);
+        }
+        if (dateChanged) {
+            var date = shipment.shipTime().atZone(ZoneId.of("Asia/Shanghai")).toLocalDate();
+            data.put("costDate", date.toString());
+            ledger.put("costMonth", YearMonth.from(date).toString());
+            ledger.set("shippingTime", json.valueToTree(
+                    LocalDateTime.ofInstant(shipment.shipTime(), ZoneId.of("Asia/Shanghai"))));
+        }
+        jdbc.update(
+                "UPDATE order_logistics_cost SET data_json=?,"
+                        + "carrier_code=CASE WHEN ? THEN ? ELSE carrier_code END,"
+                        + "delivery_mode_code=CASE WHEN ? THEN ? ELSE delivery_mode_code END,"
+                        + "tracking_no=CASE WHEN ? THEN ? ELSE tracking_no END,"
+                        + "cost_date=CASE WHEN ? THEN ? ELSE cost_date END,"
+                        + "cost_month=CASE WHEN ? THEN ? ELSE cost_month END,"
+                        + "revision=revision+1,updated_by=?,updated_time=CURRENT_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
+                json.writeValueAsString(data), carrierChanged, shipment.carrierCode(),
+                carrierChanged, shipment.deliveryModeCode(), trackingChanged, ledger.path("platformOrderNo").asText(null),
+                dateChanged, data.path("costDate").asText(null), dateChanged, ledger.path("costMonth").asText(null),
+                actor, tenant, costId);
+    }
+
+    private static BusinessException editConflict(String message) {
+        return new BusinessException(ErrorCode.CONFLICT, message, List.of());
+    }
+
     @Override
     public Source sync(
             String tenant,
@@ -129,7 +258,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
             boolean occupied = tracking.find(tenant, numbers).stream()
                     .anyMatch(match -> !match.costId().equals(currentCostId));
             boolean platformCost = !platform.byCosts(tenant, List.of(costId)).isEmpty();
-            if (occupied || platformCost) {
+            if (occupied || platformCost || hasOtherShipments(tenant, costId, sourceId)) {
                 jdbc.update(
                         "UPDATE order_transport_shipment_source SET issue=?,difference_pending=1,"
                                 + "updated_by=?,updated_time=CURRENT_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
@@ -157,7 +286,9 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
         String awaitingHuolala = null;
         PendingAssociation pending = null;
         if (shipped && costId == null) {
-            if (match != null && numbers.size() == 1 && match.adoptableByHuolala()
+            if (sameSalesDelivery(tenant, match, numbers, command, order)) {
+                costId = match.costId();
+            } else if (match != null && numbers.size() == 1 && match.adoptableByHuolala()
                     && eligibleForHuolala(command) && order != null) {
                 awaitingHuolala = numbers.getFirst();
                 pending = new PendingAssociation(order, transport);
@@ -260,7 +391,8 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                     difference = issue != null;
                 } else if ("ACTIVE".equals(state.get("status_code"))
                         && !JdbcFlags.isSet(state.get("deleted"))
-                        && "DHB".equals(state.get("source_system"))) {
+                        && "DHB".equals(state.get("source_system"))
+                        && !hasOtherShipments(tenant, costId, sourceId)) {
                     var prior =
                             json.readValue(
                                     state.get("data_json").toString(), LogisticsCostCommand.class);
@@ -323,7 +455,9 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                                     oldLedger.driverName(),
                                     oldLedger.vehicleNo(),
                                     nextLedger.platformOrderNo(),
-                                    oldLedger.manualBillItems());
+                                    oldLedger.manualBillItems(),
+                                    oldLedger.shippingTime(),
+                                    oldLedger.receivingMethodCode());
                     var data =
                             new LogisticsCostCommand(
                                     prior.requestId(),
@@ -430,6 +564,32 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
     }
 
     private record PendingAssociation(LogisticsCostSourceView order, LogisticsCostCommand transport) {}
+
+    private boolean hasOtherShipments(String tenant, String costId, String sourceId) {
+        return jdbc.queryForObject(
+                "SELECT EXISTS(SELECT 1 FROM order_transport_shipment_source"
+                        + " WHERE tenant_id=? AND cost_id=? AND id<>?)",
+                Integer.class, tenant, costId, sourceId) == 1;
+    }
+
+    private boolean sameSalesDelivery(
+            String tenant, JdbcTransportTrackingLookup.Match match, List<String> numbers,
+            Command command, LogisticsCostSourceView order) {
+        if (match == null || match.huolalaOrder() || numbers.size() != 1
+                || order == null || command.salesOrderId() == null
+                || command.carrierCode() == null || !command.carrierCode().equals(match.carrierCode())
+                || !"THIRD_PARTY".equals(command.deliveryModeCode())) return false;
+        var sources = jdbc.query(
+                "SELECT s.latest_json FROM order_transport_shipment_source s"
+                        + " JOIN order_logistics_cost c ON c.tenant_id=s.tenant_id AND c.id=s.cost_id"
+                        + " WHERE s.tenant_id=? AND s.cost_id=? AND c.source_system='DHB'",
+                (row, index) -> json.readValue(row.getString(1), Command.class), tenant, match.costId());
+        return !sources.isEmpty() && sources.stream().allMatch(source ->
+                command.connectorId().equals(source.connectorId())
+                        && command.salesOrderId().equals(source.salesOrderId())
+                        && command.carrierCode().equals(source.carrierCode())
+                        && numbers.equals(JdbcTransportTrackingLookup.numbers(source.trackingNumbers())));
+    }
 
     private static boolean eligibleForHuolala(Command shipment) {
         return !"SELF".equals(shipment.deliveryModeCode())

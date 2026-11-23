@@ -5,7 +5,12 @@ import static org.mockito.Mockito.*;
 
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
+import com.rigour.order.api.controller.OrderSalesShipmentController;
+import com.rigour.order.api.v1.model.ShipmentTransportModels.LogisticsEdit;
+import com.rigour.order.application.port.out.OrderSalesOrderStore;
+import com.rigour.order.application.port.out.OrderStatusDictionary;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore.*;
+import com.rigour.order.application.service.sales.OrderSalesShipmentService;
 import com.rigour.order.infrastructure.persistence.mapper.*;
 import com.rigour.shared.context.*;
 
@@ -13,6 +18,9 @@ import org.apache.ibatis.session.SqlSession;
 import org.junit.jupiter.api.*;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
+import org.springframework.test.web.servlet.request.MockMvcRequestBuilders;
+import org.springframework.test.web.servlet.result.MockMvcResultMatchers;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import java.math.BigDecimal;
 import java.time.*;
@@ -24,6 +32,7 @@ class SalesShipmentLineReplacementTest {
     JdbcTemplate jdbc;
     MybatisPlusSalesShipmentRepository repository;
     OrderDataScope scopes = mock(OrderDataScope.class);
+    JdbcShipmentTransportStore shipmentTransport = mock(JdbcShipmentTransportStore.class);
     UUID connector = UUID.randomUUID();
 
     @BeforeEach
@@ -43,7 +52,7 @@ class SalesShipmentLineReplacementTest {
                   ship_time TIMESTAMP,total_quantity DECIMAL(20,6),remark VARCHAR(1000),revision INT,
                   created_by VARCHAR(50),created_time TIMESTAMP,updated_by VARCHAR(50),updated_time TIMESTAMP,
                   deleted INT,source_warehouse_name VARCHAR(200),stock_out_time TIMESTAMP,
-                  source_updated_at TIMESTAMP,source_payload_json LONGTEXT)
+                  source_updated_at TIMESTAMP,source_payload_json LONGTEXT,logistics_overrides LONGTEXT)
                 """);
         jdbc.execute("""
                 CREATE TABLE order_sales_shipment_line (
@@ -71,7 +80,8 @@ class SalesShipmentLineReplacementTest {
         session = factory.getObject().openSession(true);
         repository = new MybatisPlusSalesShipmentRepository(session.getMapper(InternalSalesShipmentMapper.class),
                 session.getMapper(InternalSalesShipmentLineMapper.class),session.getMapper(InternalSalesOrderMapper.class),
-                Clock.fixed(Instant.parse("2026-11-17T00:00:00Z"),ZoneOffset.UTC),scopes,jdbc);
+                Clock.fixed(Instant.parse("2026-11-17T00:00:00Z"),ZoneOffset.UTC),scopes,jdbc,
+                shipmentTransport, tools.jackson.databind.json.JsonMapper.builder().build());
         UUID actor = UUID.randomUUID();
         TestAuthorizationContext.set(new CallerIdentity("SERVICE",actor,UUID.randomUUID(),null,null,
                 UUID.randomUUID(),0,0,0,Set.of(),Set.of("order:shipment:create","order:shipment:update")));
@@ -113,6 +123,73 @@ class SalesShipmentLineReplacementTest {
                 .isEqualByComparingTo("36");
         verify(scopes).requireRelated("T",first.id(),"order:shipment:update","order_sales_shipment");
         verify(scopes).requireRelatedOrder("T",1L,"order:shipment:update");
+    }
+
+    @Test
+    void editLogisticsDoesNotReplaceLinesAndRejectsAStaleOrConflictingWrite() {
+        var original = repository.create("T", "DHB-INTERNAL-1",
+                command("FH-SOURCE-1", 1, List.of(line("36"))), "actor");
+        var change = new LogisticsEdit("JT", "极兔速递", List.of("JT456"),
+                Instant.parse("2026-11-17T09:30:00Z"), "");
+        doThrow(new IllegalStateException("运输记录冲突")).when(shipmentTransport)
+                .updateLinkedShipment("T", "actor", connector.toString(), "FH-SOURCE-1", change);
+
+        assertThatThrownBy(() -> repository.updateLogistics("T", original.id(), 1, change, "actor"))
+                .hasMessageContaining("运输记录冲突");
+        assertThat(jdbc.queryForObject("SELECT logistics_overrides FROM order_sales_shipment", String.class))
+                .isNull();
+        doNothing().when(shipmentTransport)
+                .updateLinkedShipment("T", "actor", connector.toString(), "FH-SOURCE-1", change);
+        var result = repository.updateLogistics("T", original.id(), 1, change, "actor");
+        assertThat(result.trackingNo()).isEqualTo("JT456");
+        assertThat(result.shipTime()).isEqualTo(change.shipTime());
+        assertThat(result.remark()).isEmpty();
+        assertThat(result.salesOrderId()).isEqualTo(original.salesOrderId());
+        assertThat(result.lines()).isEqualTo(original.lines());
+        assertThat(result.revision()).isEqualTo(2);
+        assertThatThrownBy(() -> repository.updateLogistics("T", original.id(), 1, change, "actor"))
+                .hasMessageContaining("已被其他人修改");
+        verify(shipmentTransport, times(2))
+                .updateLinkedShipment("T", "actor", connector.toString(), "FH-SOURCE-1", change);
+        var resynced = repository.update("T", original.id(),
+                command("FH-SOURCE-1", 2, List.of(line("36"))), "SYSTEM");
+        assertThat(resynced.logisticsCompany()).isEqualTo("极兔速递");
+        assertThat(resynced.trackingNo()).isEqualTo("JT456");
+        assertThat(resynced.shipTime()).isEqualTo(change.shipTime());
+        assertThat(resynced.remark()).isEmpty();
+    }
+
+    @Test
+    void shipmentLogisticsPutBindsTheRequestAndSavesTheExistingShipment() throws Exception {
+        var tenantId = UUID.randomUUID();
+        var actor = UUID.randomUUID();
+        TestAuthorizationContext.set(new CallerIdentity("TENANT", actor, tenantId, actor, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("order:write")));
+        String tenant = tenantId.toString();
+        jdbc.update("UPDATE order_sales_order SET tenant_id=? WHERE id=1", tenant);
+        var original = repository.create(tenant, "DHB-INTERNAL-1",
+                command("FH-SOURCE-1", 1, List.of(line("36"))), actor.toString());
+        var dictionaries = mock(OrderStatusDictionary.class);
+        when(dictionaries.labels(tenant, "COST_CARRIER")).thenReturn(Map.of("JT", "极兔速递"));
+        when(dictionaries.activeCodes(tenant, "COST_CARRIER")).thenReturn(Set.of("JT"));
+        var service = new OrderSalesShipmentService(repository, mock(OrderSalesOrderStore.class), dictionaries);
+        MockMvcBuilders.standaloneSetup(new OrderSalesShipmentController(service)).build()
+                .perform(MockMvcRequestBuilders.put("/api/v1/orders/sales-shipments/{id}/logistics", original.id())
+                        .contentType("application/json")
+                        .content("""
+                                {"revision":1,"carrierCode":"JT","trackingNo":"JT456",
+                                 "shipTime":"2026-11-17T09:30:00Z","remark":"修正发货备注"}
+                                """))
+                .andExpect(MockMvcResultMatchers.status().isOk())
+                .andExpect(MockMvcResultMatchers.jsonPath("$.data.revision").value(2));
+        when(scopes.visibleRelated(tenant, original.id(), "order:shipment:read", "order_sales_shipment"))
+                .thenReturn(true);
+        var saved = repository.shipment(tenant, original.id()).orElseThrow();
+        assertThat(saved.logisticsCompany()).isEqualTo("极兔速递");
+        assertThat(saved.trackingNo()).isEqualTo("JT456");
+        assertThat(saved.shipTime()).isEqualTo(Instant.parse("2026-11-17T09:30:00Z"));
+        assertThat(saved.remark()).isEqualTo("修正发货备注");
+        assertThat(saved.lines()).isEqualTo(original.lines());
     }
 
     @Test

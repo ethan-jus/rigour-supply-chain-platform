@@ -50,6 +50,39 @@ public final class ShipmentTransportModels {
         }
     }
 
+    /** Only fields supplied by a business user override subsequent source snapshots. */
+    public record LogisticsEdit(
+            String carrierCode, String carrierName, List<String> trackingNumbers,
+            Instant shipTime, String remark) {
+        public LogisticsEdit merge(LogisticsEdit changes) {
+            return new LogisticsEdit(
+                    first(changes.carrierCode, carrierCode),
+                    first(changes.carrierName, carrierName),
+                    first(changes.trackingNumbers, trackingNumbers),
+                    first(changes.shipTime, shipTime),
+                    first(changes.remark, remark));
+        }
+
+        public Command apply(Command source) {
+            boolean self = "SELF".equals(carrierCode);
+            Map<String, Object> fields = new LinkedHashMap<>(source.sourceFields());
+            if (remark != null) fields.put("shipmentRemark", remark);
+            return new Command(
+                    source.connectorId(), source.shipmentId(), source.shipmentNo(),
+                    source.salesOrderId(), source.warehouseId(), source.sourceStatus(),
+                    first(shipTime, source.shipTime()), source.sourceUpdatedAt(),
+                    self ? null : first(carrierCode, source.carrierCode()),
+                    first(carrierName, source.carrierName()),
+                    carrierCode == null ? source.deliveryModeCode() : self ? "SELF" : "THIRD_PARTY",
+                    source.deliveryModeName(), first(trackingNumbers, source.trackingNumbers()),
+                    source.receiver(), fields, source.goods());
+        }
+
+        private static <T> T first(T value, T fallback) {
+            return value == null ? fallback : value;
+        }
+    }
+
     public record CarrierBackfill(String sourceValue, String carrierCode) {
         public static final int BATCH_SIZE = 100;
     }

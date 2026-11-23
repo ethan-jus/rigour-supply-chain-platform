@@ -454,7 +454,7 @@ public final class DhbOrderSyncService {
         validateTask(task);
         String selectedScope = command == null ? null : command.syncScope();
         if (selectedScope != null
-                && !Set.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT", "TRANSFER")
+                && !Set.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT", "TRANSFER", "SHIPMENT_LOGISTICS")
                         .contains(selectedScope)) throw new IllegalArgumentException("不支持的订单同步范围");
         if (selectedScope != null
                 && (command.from() == null || command.to() == null || command.sourceId() != null))
@@ -520,7 +520,7 @@ public final class DhbOrderSyncService {
                 if (incrementalWork != null
                         // 发货页按所选窗口先留存来源事实，不能先扫描窗口外历史失败项。
                         // 当前窗口保存后再自动复核历史依赖；仍缺资料的原工作项继续保留。
-                        && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT")
+                        && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT_LOGISTICS")
                                 .contains(selectedScope == null ? "" : selectedScope))
                     retriedShipments =
                             retryPending(
@@ -614,7 +614,7 @@ public final class DhbOrderSyncService {
                             counts,
                             employeeCache,
                             detailExecutor);
-                if ("SHIPMENT".equals(selectedScope))
+                if ("SHIPMENT".equals(selectedScope) || "SHIPMENT_LOGISTICS".equals(selectedScope))
                     syncShipments(
                             caller,
                             task,
@@ -627,6 +627,7 @@ public final class DhbOrderSyncService {
                             sourceOrderLocks,
                             detailExecutor,
                             retriedShipments,
+                            selectedScope,
                             progress);
                 if (incrementalWork != null && "SHIPMENT".equals(selectedScope)) {
                     progress.accept("正在自动复核已补齐资料的历史发货单");
@@ -694,7 +695,7 @@ public final class DhbOrderSyncService {
             boolean durable =
                     incrementalWork != null
                             && replayTarget == null
-                            && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT")
+                            && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT", "SHIPMENT_LOGISTICS")
                                     .contains(selectedScope == null ? "" : selectedScope);
             long remaining =
                     incrementalWork != null && replayTarget == null && selectedScope == null
@@ -730,7 +731,9 @@ public final class DhbOrderSyncService {
                 // 到这里列表已完整读取且每项已可靠保存。业务待处理不能误称全部成功。
                 status = "PARTIAL";
                 errorCode = "DHB_DURABLE_PROJECTION_PENDING";
-                errorMessage =
+                errorMessage = "SHIPMENT_LOGISTICS".equals(selectedScope)
+                        ? "发货资料已扫描，仍有 " + remaining + " 张等待补齐快递单号或核对销售订单，下次继续检查"
+                        :
                         (counts.logisticsPreserved > 0
                                         ? counts.logisticsPreserved + "张销售发货的物流已保存；"
                                         : "来源已保存；")
@@ -1006,13 +1009,17 @@ public final class DhbOrderSyncService {
                                                                 item.payload(), Shipment.class),
                                                         employees,
                                                         sourceOrderLocks);
+                                        case "SHIPMENT_LOGISTICS" ->
+                                                projectShipmentLogistics(
+                                                        caller, task, runId,
+                                                        replayShipmentSummary(item.id()));
                                         default -> throw new IllegalArgumentException("不支持的重试对象");
                                     });
             counts.fetched++;
             counts.add(outcome);
             page.completed(outcome);
         }
-        return "SHIPMENT".equals(type)
+        return Set.of("SHIPMENT", "SHIPMENT_LOGISTICS").contains(type)
                 ? pending.stream()
                         .map(DhbIncrementalWorkStore.Item::id)
                         .collect(java.util.stream.Collectors.toSet())
@@ -2047,8 +2054,10 @@ public final class DhbOrderSyncService {
             Map<String, Object> sourceOrderLocks,
             ExecutorService detailExecutor,
             Set<String> retried,
+            String scope,
             java.util.function.Consumer<String> progress) {
         Set<String> seen = new java.util.HashSet<>(retried);
+        boolean logisticsOnly = "SHIPMENT_LOGISTICS".equals(scope);
         // 接口默认只返回未下载单。显式覆盖两种状态，按更新时间增量回查历史发货变更。
         for (String downloaded : List.of("F", "T")) {
             PageRequest pageRequest = PageRequest.first(pageSize);
@@ -2062,7 +2071,7 @@ public final class DhbOrderSyncService {
                                         pageRequest,
                                         null,
                                         downloaded,
-                                        null,
+                                        logisticsOnly ? "10" : null,
                                         null,
                                         timeWindow(window),
                                         null,
@@ -2080,7 +2089,7 @@ public final class DhbOrderSyncService {
                                 .toList();
                 counts.fetched += unique.size();
                 var items = workItems(unique);
-                var skip = stageWork(caller, task, "SHIPMENT", items);
+                var skip = stageWork(caller, task, scope, items);
                 counts.duplicate +=
                         unique.stream().filter(row -> skip.contains(workId(row))).count();
                 counts.addAll(
@@ -2092,10 +2101,12 @@ public final class DhbOrderSyncService {
                                         applyWork(
                                                 caller,
                                                 task,
-                                                "SHIPMENT",
+                                                scope,
                                                 items.get(workId(shipment)),
                                                 () ->
-                                                        projectShipment(
+                                                        logisticsOnly
+                                                                ? projectShipmentLogistics(caller, task, runId, shipment)
+                                                                : projectShipment(
                                                                 caller,
                                                                 task,
                                                                 runId,
@@ -2109,6 +2120,47 @@ public final class DhbOrderSyncService {
                 if (!page.hasNext()) break;
                 pageRequest = page.nextRequest();
             }
+        }
+    }
+
+    private ProjectionOutcome projectShipmentLogistics(
+            CallerIdentity caller, SyncTaskContext task, UUID runId, Shipment summary) {
+        String no = workId(summary);
+        try {
+            var detail = client.getShipmentContent(task.connector(), no);
+            var payload = combinedShipmentPayload(summary, detail);
+            if (!"SALES".equals(stockOutTypeCode(summary, payload))) return ProjectionOutcome.DUPLICATE;
+            var facts = DhbShipmentSourceMapper.command(task.connectorId(), no, summary, payload);
+            var sourceCaller = orderServiceCaller(caller.tenantId());
+            orderProjectionClient.saveShipmentSnapshot(sourceCaller, facts);
+            if (!Set.of("SHIPPED", "SIGNED").contains(facts.statusCode()))
+                return ProjectionOutcome.DUPLICATE;
+            if (blank(facts.trackingNo())
+                    && !com.rigour.order.api.v1.model.ShipmentTransportModels.Command
+                            .immediateDeliveryCarrier(facts.logisticsCompany()))
+                return DhbShipmentTransportMapper.awaitingThirdPartyTracking(payload)
+                        ? ProjectionOutcome.REVIEW : ProjectionOutcome.DUPLICATE;
+            String orderNo = shipmentSourceOrderNo(summary, payload);
+            if (blank(orderNo) || facts.shipTime() == null) return ProjectionOutcome.REVIEW;
+            var mapping = store.findActiveMapping(
+                    caller.tenantId(), task.connectorId(), SOURCE_OBJECT_SALES_ORDER, orderNo);
+            if (mapping == null || mapping.internalObjectId() == null) return ProjectionOutcome.REVIEW;
+            var order = orderProjectionClient.salesOrder(sourceCaller, mapping.internalObjectId());
+            if (order == null) return ProjectionOutcome.REVIEW;
+            Long warehouse = warehouseId(caller.tenantId(), task.connectorId(), no, summary,
+                    DhbShipmentTransportMapper.map(payload.get("detail")),
+                    DhbShipmentTransportMapper.map(payload.get("list")));
+            var context = new DhbShipmentTransportMapper.ShippingContext(
+                    order.id(), warehouse, order.customerCodeSnapshot(), order.regionCode(),
+                    facts.shipTime(), facts.logisticsCompany());
+            return projectShipmentTransport(caller, task, runId, no, summary, context, payload)
+                    ? ProjectionOutcome.ACCEPTED : ProjectionOutcome.REVIEW;
+        } catch (RuntimeException error) {
+            store.recordSyncLog(
+                    caller.tenantId(), task.taskId(), runId, "WARN",
+                    "发货物流待重试 shipmentNo=" + no + " " + safeMessage(error),
+                    "DHB_SHIPMENT_LOGISTICS_RETRY");
+            return ProjectionOutcome.REJECTED;
         }
     }
 

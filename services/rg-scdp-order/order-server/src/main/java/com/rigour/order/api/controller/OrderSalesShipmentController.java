@@ -4,6 +4,7 @@ import com.rigour.order.api.v1.OrderSalesShipmentApi;
 import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesShipmentCommand;
 import com.rigour.order.api.v1.model.SalesShipmentDetailView;
+import com.rigour.order.api.v1.model.SalesShipmentLogisticsCommand;
 import com.rigour.order.api.v1.model.SalesShipmentSummaryView;
 import com.rigour.order.application.service.sales.OrderSalesShipmentService;
 import com.rigour.shared.core.api.ApiResponse;
@@ -40,6 +41,11 @@ public final class OrderSalesShipmentController implements OrderSalesShipmentApi
     @Override
     public ApiResponse<SalesShipmentDetailView> updateShipment(Long id, SalesShipmentCommand command) {
         return ApiResponse.success(service.update(id, command));
+    }
+
+    @Override
+    public ApiResponse<SalesShipmentDetailView> updateShipmentLogistics(Long id, SalesShipmentLogisticsCommand command) {
+        return ApiResponse.success(service.updateLogistics(id, command));
     }
 
     @Override

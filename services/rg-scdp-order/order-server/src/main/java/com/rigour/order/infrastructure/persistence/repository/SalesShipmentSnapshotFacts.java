@@ -66,6 +66,14 @@ final class SalesShipmentSnapshotFacts {
         return List.copyOf(rows);
     }
 
+    static String remark(String payload) {
+        if (payload == null) return null;
+        var root = JSON.readTree(payload);
+        var remark = root.path("detail").path("remark");
+        if (!remark.isString()) remark = root.path("list").path("remark");
+        return remark.isString() ? remark.asText() : null;
+    }
+
     private static String specification(JsonNode r) {
         if (r.path("options_info").isArray()) {
             var names = new ArrayList<String>();

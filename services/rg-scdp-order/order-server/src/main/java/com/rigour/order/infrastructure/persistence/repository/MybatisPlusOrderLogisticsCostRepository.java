@@ -23,6 +23,8 @@ import com.rigour.shared.core.exception.BusinessException;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigDecimal;
@@ -30,13 +32,18 @@ import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 
 @Repository
 public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCostStore {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.rigour.order.application.port.out.PlatformTransportStore platformRecords;
+
+    private static final Set<String> EVIDENCE_ACTIONS = Set.of("SOURCE_ACCEPT", "BILL_VERIFY", "SOURCE_SYNC");
+    private static final TypeReference<Map<String, Object>> EVIDENCE_TYPE = new TypeReference<>() {};
 
     private final OrderLogisticsCostMapper mapper;
     private final OrderLogisticsCostAuditMapper audits;
@@ -1106,29 +1113,36 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                 .eq("entry_id", id)
                                 .orderByDesc("id"))
                 .stream()
-                .map(
-                        a -> {
-                            boolean evidence =
-                                    java.util.Set.of("SOURCE_ACCEPT", "BILL_VERIFY", "SOURCE_SYNC")
-                                            .contains(a.getActionCode());
-                            return new LogisticsCostAuditView(
-                                    a.getActionCode(),
-                                    a.getActorId(),
-                                    a.getReason(),
-                                    a.getCreatedTime().toInstant(ZoneOffset.UTC),
-                                    evidence
-                                            ? null
-                                            : json.readValue(
-                                                    a.getSnapshotJson(),
-                                                    LogisticsCostDetailView.class),
-                                    evidence
-                                            ? json.readValue(
-                                                    a.getSnapshotJson(),
-                                                    new tools.jackson.core.type.TypeReference<
-                                                            java.util.Map<String, Object>>() {})
-                                            : null);
-                        })
+                .map(this::auditView)
                 .toList();
+    }
+
+    private LogisticsCostAuditView auditView(OrderLogisticsCostAuditEntity row) {
+        var payload = json.readTree(row.getSnapshotJson());
+        String action = row.getActionCode();
+        var occurredTime = row.getCreatedTime().toInstant(ZoneOffset.UTC);
+        // 早期发货编辑把发货快照存为 UPDATE；常规费用 UPDATE 的根节点是费用详情。
+        boolean legacyShipmentEdit = "UPDATE".equals(action)
+                && payload.hasNonNull("shipmentNo") && payload.hasNonNull("connectorId");
+        if (legacyShipmentEdit || LogisticsCostAuditView.SHIPMENT_LOGISTICS_EDIT.equals(action)) {
+            return new LogisticsCostAuditView(LogisticsCostAuditView.SHIPMENT_LOGISTICS_EDIT,
+                    row.getActorId(), row.getReason(), occurredTime, null, shipmentEvidence(payload));
+        }
+        boolean evidence = EVIDENCE_ACTIONS.contains(action);
+        return new LogisticsCostAuditView(action, row.getActorId(), row.getReason(), occurredTime,
+                evidence ? null : json.treeToValue(payload, LogisticsCostDetailView.class),
+                evidence ? json.convertValue(payload, EVIDENCE_TYPE) : null);
+    }
+
+    private Map<String, Object> shipmentEvidence(JsonNode payload) {
+        var evidence = json.createObjectNode();
+        for (String field : List.of("shipmentNo", "carrierCode", "carrierName", "trackingNumbers", "shipTime")) {
+            if (payload.has(field)) evidence.set(field, payload.get(field));
+        }
+        var remark = payload.path("shipmentRemark");
+        if (remark.isMissingNode()) remark = payload.path("sourceFields").path("shipmentRemark");
+        if (!remark.isMissingNode()) evidence.set("shipmentRemark", remark);
+        return json.convertValue(evidence, EVIDENCE_TYPE);
     }
 
     /** 关联时间由保存端产生；重试和普通编辑不刷新，历史缺失不猜测。 */

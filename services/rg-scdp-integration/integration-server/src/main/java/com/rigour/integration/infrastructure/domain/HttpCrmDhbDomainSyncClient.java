@@ -92,7 +92,12 @@ public final class HttpCrmDhbDomainSyncClient implements CrmDhbDomainSyncClient 
 
     @Override
     public CustomerSyncJob customerJob(CallerIdentity caller, UUID jobId) {
-        return customerJob(caller, jobId, null);
+        try {
+            return customerJob(caller, jobId, null);
+        } catch (org.springframework.web.client.RestClientResponseException response) {
+            if (response.getStatusCode().value() == 404) return null;
+            throw response;
+        }
     }
 
     @Override

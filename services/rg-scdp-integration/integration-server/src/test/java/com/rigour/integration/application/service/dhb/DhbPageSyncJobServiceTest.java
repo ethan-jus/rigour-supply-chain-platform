@@ -58,6 +58,25 @@ class DhbPageSyncJobServiceTest {
         } finally { service.close(); }
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void oldUnknownWithNoCrmReceiptReleasesTheOriginalSchedule(boolean knownRequest) {
+        var store = mock(DhbPageSyncJobStore.class);
+        var crm = mock(CrmDhbDomainSyncClient.class);
+        var ended = now.minus(Duration.ofHours(1));
+        var started = ended.minusSeconds(20);
+        var job = new DhbPageSyncJob(id, connector, "BUSINESS_CHAIN", "UNKNOWN", "待核实",
+                started, ended, ended, null, knownRequest ? UUID.randomUUID() : null);
+        when(crm.customerJobs(any(), eq(connector), eq(started), eq(ended))).thenReturn(List.of());
+        var service = new DhbPageSyncJobService(mock(DhbSyncOrchestrationService.class), store,
+                Clock.fixed(now, ZoneOffset.UTC), crm);
+        try {
+            service.reconcile(tenant, job);
+            verify(store).finish(eq(tenant), eq(id), eq("FAILED"), contains("原计划"), isNull(), eq(now));
+            verify(crm, never()).syncLatestCustomersInBackground(any(), any(), any(), anyInt(), any(), any());
+        } finally { service.close(); }
+    }
+
     @Test
     void legacyUniqueRemoteFinalResultReleasesSlotWithoutPretendingChainSucceeded() {
         var store = mock(DhbPageSyncJobStore.class);

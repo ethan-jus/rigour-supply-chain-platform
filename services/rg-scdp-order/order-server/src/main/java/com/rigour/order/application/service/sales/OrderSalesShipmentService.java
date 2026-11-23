@@ -6,9 +6,12 @@ import com.rigour.order.api.v1.model.SalesOrderLineView;
 import com.rigour.order.api.v1.model.SalesShipmentCommand;
 import com.rigour.order.api.v1.model.SalesShipmentDetailView;
 import com.rigour.order.api.v1.model.SalesShipmentLineCommand;
+import com.rigour.order.api.v1.model.SalesShipmentLogisticsCommand;
+import com.rigour.order.api.v1.model.ShipmentTransportModels.LogisticsEdit;
 import com.rigour.order.api.v1.model.SalesShipmentSummaryView;
 import com.rigour.order.application.port.out.OrderSalesOrderStore;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore;
+import com.rigour.order.application.port.out.OrderStatusDictionary;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentLineWrite;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentSearchCriteria;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentWrite;
@@ -50,16 +53,26 @@ public final class OrderSalesShipmentService {
     private final OrderSalesOrderStore orderStore;
     private final BusinessCodeGenerator codeGenerator;
 
+    private final OrderStatusDictionary dictionaries;
+
     @Autowired
     public OrderSalesShipmentService(
-            OrderSalesShipmentStore store, OrderSalesOrderStore orderStore) {
-        this(store, orderStore, new BusinessCodeGenerator());
+            OrderSalesShipmentStore store, OrderSalesOrderStore orderStore,
+            OrderStatusDictionary dictionaries) {
+        this(store, orderStore, new BusinessCodeGenerator(), dictionaries);
     }
 
     OrderSalesShipmentService(
             OrderSalesShipmentStore store,
             OrderSalesOrderStore orderStore,
             BusinessCodeGenerator codeGenerator) {
+        this(store, orderStore, codeGenerator, null);
+    }
+
+    private OrderSalesShipmentService(
+            OrderSalesShipmentStore store, OrderSalesOrderStore orderStore,
+            BusinessCodeGenerator codeGenerator, OrderStatusDictionary dictionaries) {
+        this.dictionaries = dictionaries;
         this.store = Objects.requireNonNull(store, "store");
         this.orderStore = Objects.requireNonNull(orderStore, "orderStore");
         this.codeGenerator = Objects.requireNonNull(codeGenerator, "codeGenerator");
@@ -158,6 +171,39 @@ public final class OrderSalesShipmentService {
                 updated.revision(),
                 actor.principalId());
         return updated;
+    }
+
+    public SalesShipmentDetailView updateLogistics(Long id, SalesShipmentLogisticsCommand command) {
+        CallerIdentity actor = actionActor("order:shipment:update");
+        if (command == null) throw badRequest("发货物流参数不能为空");
+        checkRevision(command.revision(), true);
+        String tenant = actor.tenantId().toString();
+        String carrier = command.carrierCode() == null
+                ? null : code(command.carrierCode(), "物流公司", true);
+        String carrierName = null;
+        if ("SELF".equals(carrier)) {
+            carrierName = "立即送";
+        } else if (carrier != null) {
+            carrierName = dictionaries.labels(tenant, "COST_CARRIER").get(carrier);
+            if (carrierName == null || !dictionaries.activeCodes(tenant, "COST_CARRIER").contains(carrier))
+                throw badRequest("请选择有效的物流公司");
+        }
+        List<String> numbers = null;
+        if (command.trackingNo() != null) {
+            String trackingNo = text(command.trackingNo(), 120, "物流单号");
+            numbers = trackingNo == null ? List.of()
+                    : java.util.Arrays.stream(trackingNo.split("[,，;；、\\s]+"))
+                            .distinct().toList();
+            if (numbers.stream().anyMatch(n -> n.length() > 80))
+                throw badRequest("每个物流单号不能超过80个字符");
+        }
+        String remark = command.remark() == null
+                ? null : Objects.toString(text(command.remark(), 1000, "发货备注"), "");
+        if (carrier == null && numbers == null && command.shipTime() == null && remark == null)
+            throw badRequest("请选择需要修改的发货物流字段");
+        return store.updateLogistics(tenant, requireId(id, "销售发货单ID无效"), command.revision(),
+                new LogisticsEdit(carrier, carrierName, numbers, command.shipTime(), remark),
+                OrderAuditActors.writeActor(actor));
     }
 
     public void delete(Long id, int revision) {

@@ -9,6 +9,8 @@ public record LogisticsCostAuditView(
         Instant occurredTime,
         LogisticsCostDetailView snapshot,
         java.util.Map<String, Object> evidence) {
+    public static final String SHIPMENT_LOGISTICS_EDIT = "SHIPMENT_LOGISTICS_EDIT";
+
     public LogisticsCostAuditView(
             String action,
             String actorId,

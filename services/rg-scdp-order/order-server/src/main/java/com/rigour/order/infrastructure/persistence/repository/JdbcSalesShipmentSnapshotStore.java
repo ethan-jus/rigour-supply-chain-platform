@@ -1,6 +1,7 @@
 package com.rigour.order.infrastructure.persistence.repository;
 
 import com.rigour.order.api.v1.model.SalesShipmentSnapshotCommand;
+import com.rigour.order.api.v1.model.ShipmentTransportModels.LogisticsEdit;
 import com.rigour.order.application.port.out.SalesShipmentSnapshotStore;
 
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -41,15 +42,16 @@ public class JdbcSalesShipmentSnapshotStore implements SalesShipmentSnapshotStor
                 tenant);
         var existing =
                 jdbc.query(
-                        "SELECT id,source_updated_at,source_payload_json,source_document_no FROM"
+                        "SELECT id,source_updated_at,source_payload_json,logistics_overrides FROM"
                                 + " order_sales_shipment WHERE tenant_id=? AND connector_id=? AND"
-                                + " source_system_code='DINGHUOBAO' AND source_document_no=?",
+                                + " source_system_code='DINGHUOBAO' AND source_document_no=? FOR UPDATE",
                         (r, n) -> {
                             // MySQL DATETIME 的默认 Object 类型随驱动配置变化，显式读取时间类型。
                             Map<String, Object> row = new LinkedHashMap<>();
                             row.put("id", r.getLong("id"));
                             row.put("source_updated_at", r.getTimestamp("source_updated_at"));
                             row.put("source_payload_json", r.getString("source_payload_json"));
+                            row.put("logistics_overrides", r.getString("logistics_overrides"));
                             return row;
                         },
                         tenant,
@@ -93,6 +95,9 @@ public class JdbcSalesShipmentSnapshotStore implements SalesShipmentSnapshotStor
                         tenant,
                         c.connectorId().toString(),
                         c.shipmentNo());
+        String override = existing.isEmpty()
+                ? null : (String) existing.getFirst().get("logistics_overrides");
+        LogisticsEdit logistics = override == null ? null : json.readValue(override, LogisticsEdit.class);
         var quantity =
                 SalesShipmentSnapshotFacts.lines(json.writeValueAsString(c.payload())).stream()
                         .map(l -> l.shippedQuantity())
@@ -100,7 +105,7 @@ public class JdbcSalesShipmentSnapshotStore implements SalesShipmentSnapshotStor
                         .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
         jdbc.update(
                 "UPDATE order_sales_shipment SET"
-                    + " sales_order_no_snapshot=?,customer_code_snapshot=?,customer_name_snapshot=?,contact_phone_snapshot=?,source_warehouse_name=?,shipment_status_code=?,logistics_company=?,tracking_no=?,ship_time=?,stock_out_time=?,source_updated_at=?,source_payload_json=?,total_quantity=?,updated_time=?,updated_by='SYSTEM',revision=revision+1"
+                    + " sales_order_no_snapshot=?,customer_code_snapshot=?,customer_name_snapshot=?,contact_phone_snapshot=?,source_warehouse_name=?,shipment_status_code=?,logistics_company=?,tracking_no=?,ship_time=CASE WHEN ? THEN ship_time ELSE ? END,stock_out_time=?,source_updated_at=?,source_payload_json=?,total_quantity=?,updated_time=?,updated_by='SYSTEM',revision=revision+1"
                     + " WHERE tenant_id=? AND id=? AND deleted=0",
                 c.sourceOrderNo(),
                 c.customerCode(),
@@ -108,8 +113,11 @@ public class JdbcSalesShipmentSnapshotStore implements SalesShipmentSnapshotStor
                 c.contactPhone(),
                 c.warehouseName(),
                 c.statusCode(),
-                c.logisticsCompany(),
-                c.trackingNo(),
+                logistics == null || logistics.carrierName() == null
+                        ? c.logisticsCompany() : logistics.carrierName(),
+                logistics == null || logistics.trackingNumbers() == null ? c.trackingNo()
+                        : logistics.trackingNumbers().isEmpty() ? null : String.join(",", logistics.trackingNumbers()),
+                logistics != null && logistics.shipTime() != null,
                 ts(c.shipTime()),
                 ts(c.stockOutTime()),
                 ts(c.sourceUpdatedAt()),

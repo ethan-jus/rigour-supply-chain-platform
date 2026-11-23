@@ -245,6 +245,7 @@ public final class DhbSyncOrchestrationService {
                             validateBusinessChain(actor.tenantId(), command.connectorId());
                             if (!refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, true)) break;
                             runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true);
+                            appendScheduledShipmentLogistics(caller, bucket, pages, steps, progress);
                         }
                         case VOUCHER_BACKFILL -> {
                             if(bucket.orderTarget==null) throw new IllegalArgumentException("未配置订单同步任务");
@@ -704,14 +705,10 @@ public final class DhbSyncOrchestrationService {
                                                  int pages, List<DhbSyncOrchestrationStepView> steps,
                                                  java.util.function.Consumer<String> progress, boolean background) {
         // 页面与定时增量都可能读取近期修改的历史单据，统一保留切换日前的历史校准。
-        var protectedCaller = new CallerIdentity(caller.principalScope(), caller.principalId(),
-                caller.tenantId(), null, null, caller.sessionId(), 0, 0, 0,
-                Set.of("DHB_SYNC_ORCHESTRATOR", "DHB_PROTECT_HISTORY"), caller.permissions());
-        Instant bootstrap = properties.incrementalWindowFromInstant();
-        if (bootstrap.isBefore(Instant.parse("2026-09-03T16:00:00Z")))
-            bootstrap = Instant.parse("2026-09-03T16:00:00Z");
+        var protectedCaller = protectHistory(caller);
+        Instant bootstrap = businessBootstrap();
         Instant end = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
-        // 发货和调拨尚未启用业务流程，自动同步只处理订单、收款、付款及删除状态。
+        // 订单金额链与物流补查独立，物流补查不执行出库和调拨。
         var scopes = List.of("SALES_ORDER", "RECEIPT", "PAYMENT");
         for (String type : scopes) {
             Instant cursor = objectCheckpoints.successfulTo(
@@ -731,6 +728,31 @@ public final class DhbSyncOrchestrationService {
             catch (RuntimeException error) { steps.add(failed("ORDER", "VOUCHER_BACKFILL", error)); }
         }
 
+    }
+
+    private void appendScheduledShipmentLogistics(
+            CallerIdentity caller, TargetBucket bucket, int pages,
+            List<DhbSyncOrchestrationStepView> steps, java.util.function.Consumer<String> progress) {
+        String scope = "SHIPMENT_LOGISTICS";
+        Instant bootstrap = businessBootstrap();
+        Instant cursor = objectCheckpoints.successfulTo(caller.tenantId(), bucket.key.connectorId(), scope);
+        Instant from = cursor == null ? bootstrap : cursor.minus(INCREMENTAL_OVERLAP);
+        if (from.isBefore(bootstrap)) from = bootstrap;
+        Instant end = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
+        if (!from.isBefore(end)) return;
+        steps.add(runIncrementalOrderScope(protectHistory(caller), bucket, scope, from, end, pages, progress, true));
+    }
+
+    private Instant businessBootstrap() {
+        Instant earliest = Instant.parse("2026-09-03T16:00:00Z");
+        Instant configured = properties.incrementalWindowFromInstant();
+        return configured.isBefore(earliest) ? earliest : configured;
+    }
+
+    private static CallerIdentity protectHistory(CallerIdentity caller) {
+        return new CallerIdentity(caller.principalScope(), caller.principalId(),
+                caller.tenantId(), null, null, caller.sessionId(), 0, 0, 0,
+                Set.of("DHB_SYNC_ORCHESTRATOR", "DHB_PROTECT_HISTORY"), caller.permissions());
     }
 
     /**
@@ -753,7 +775,7 @@ public final class DhbSyncOrchestrationService {
         for (int slice = 0; (background || slice < MAX_INCREMENTAL_SLICES) && windowFrom.isBefore(end); slice++) {
             Instant windowTo = windowFrom.plus(sliceWindow);
             if (windowTo.isAfter(end)) windowTo = end;
-            String label = switch (type) { case "SALES_ORDER" -> "订单及明细"; case "SHIPMENT" -> "发货及物流"; case "RECEIPT" -> "收款"; default -> "付款"; };
+            String label = switch (type) { case "SALES_ORDER" -> "订单及明细"; case "SHIPMENT", "SHIPMENT_LOGISTICS" -> "发货及物流"; case "RECEIPT" -> "收款"; default -> "付款"; };
             progress.accept("正在同步" + label + "：" + incrementalWindowText(windowFrom) + " 至 "
                     + incrementalWindowText(windowTo) + "；本阶段已核对 " + totals.fetched + " 条");
             SyncRunView result;

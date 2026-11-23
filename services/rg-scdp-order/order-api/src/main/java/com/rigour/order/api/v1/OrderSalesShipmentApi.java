@@ -3,6 +3,7 @@ package com.rigour.order.api.v1;
 import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesShipmentCommand;
 import com.rigour.order.api.v1.model.SalesShipmentDetailView;
+import com.rigour.order.api.v1.model.SalesShipmentLogisticsCommand;
 import com.rigour.order.api.v1.model.SalesShipmentSummaryView;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
@@ -39,6 +40,10 @@ public interface OrderSalesShipmentApi {
     @PutMapping(BASE_PATH + "/{id}")
     ApiResponse<SalesShipmentDetailView> updateShipment(
             @PathVariable("id") Long id, @RequestBody SalesShipmentCommand command);
+
+    @PutMapping(BASE_PATH + "/{id}/logistics")
+    ApiResponse<SalesShipmentDetailView> updateShipmentLogistics(
+            @PathVariable("id") Long id, @RequestBody SalesShipmentLogisticsCommand command);
 
     @DeleteMapping(BASE_PATH + "/{id}")
     ApiResponse<Void> deleteShipment(@PathVariable("id") Long id, @RequestParam int revision);

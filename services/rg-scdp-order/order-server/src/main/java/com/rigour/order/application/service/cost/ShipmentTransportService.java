@@ -42,13 +42,16 @@ public class ShipmentTransportService {
                 || blank(c.shipmentNo())
                 || c.shipmentId().length() > 128
                 || c.shipmentNo().length() > 128
-                || c.shipTime() == null
-                || c.trackingNumbers().isEmpty() && !c.employeeImmediateDelivery()
-                || c.trackingNumbers().size() > 100
-                || c.trackingNumbers().stream().anyMatch(n -> blank(n) || n.length() > 80)
+                || c.sourceStatus() == null
                 || !Set.of("shipped", "receivedin", "received", "cancelled", "unknown")
                         .contains(c.sourceStatus())) throw bad("来源发货信息不完整或状态无效");
         String tenant = caller.tenantId().toString();
+        c = store.withShipmentLogisticsEdit(tenant, c);
+        if (c.shipTime() == null
+                || c.trackingNumbers().isEmpty() && !c.employeeImmediateDelivery()
+                || c.trackingNumbers().size() > 100
+                || c.trackingNumbers().stream().anyMatch(n -> blank(n) || n.length() > 80))
+            throw bad("来源发货信息不完整或状态无效");
         if (c.salesOrderId() == null) return unlinked(c, caller);
         var order =
                 orders.salesOrder(tenant, c.salesOrderId()).orElseThrow(() -> bad("来源销售订单尚未同步"));

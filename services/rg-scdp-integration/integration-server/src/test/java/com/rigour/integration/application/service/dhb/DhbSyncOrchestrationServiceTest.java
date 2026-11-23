@@ -127,7 +127,7 @@ class DhbSyncOrchestrationServiceTest {
     }
 
     @Test
-    void scheduledChainSkipsShipmentAndTransferButKeepsMoneyAndDeletionChecks() {
+    void scheduledChainIncludesLogisticsOnlyWithItsOwnCursor() {
         service = serviceWithIncrementalWindow(null, Instant.parse("2026-11-17T07:00:00Z"));
         when(objectCheckpoints.successfulTo(any(), any(), any()))
                 .thenReturn(Instant.parse("2026-11-17T06:00:00Z"));
@@ -135,12 +135,13 @@ class DhbSyncOrchestrationServiceTest {
         when(orderSyncService.runOrderPull(any(), any(), any(), anyInt(), any())).thenReturn(orderResult());
         var result = service.runScheduledChain(TENANT_ID, CONNECTOR_ID, ignored -> {});
         var commands = org.mockito.ArgumentCaptor.forClass(SyncRunCommand.class);
-        verify(orderSyncService, org.mockito.Mockito.times(3)).runOrderPull(any(), eq(ORDER_TASK_ID), commands.capture(), anyInt(), any());
+        verify(orderSyncService, org.mockito.Mockito.times(4)).runOrderPull(any(), eq(ORDER_TASK_ID), commands.capture(), anyInt(), any());
         assertThat(commands.getAllValues()).extracting(SyncRunCommand::syncScope)
-                .containsExactly("SALES_ORDER", "RECEIPT", "PAYMENT");
+                .containsExactly("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT_LOGISTICS");
         assertThat(result.status()).isEqualTo("SUCCEEDED");
         verify(orderSyncService).reconcileDeletedOrders(any(), eq(ORDER_TASK_ID), anyInt(), any());
         verify(objectCheckpoints, org.mockito.Mockito.never()).completed(any(), any(), eq("SHIPMENT"), any(), any());
+        verify(objectCheckpoints).completed(any(), any(), eq("SHIPMENT_LOGISTICS"), any(), any());
     }
 
     @Test

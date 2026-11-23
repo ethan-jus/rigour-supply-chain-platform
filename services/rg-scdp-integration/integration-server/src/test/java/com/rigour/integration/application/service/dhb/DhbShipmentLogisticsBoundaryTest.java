@@ -183,6 +183,72 @@ class DhbShipmentLogisticsBoundaryTest {
     }
 
     @Test
+    void scheduledLogisticsRetriesAFormerlyUnnumberedShipmentOutsideTheNextScan() {
+        mappedSalesOrder();
+        var work = mock(DhbIncrementalWorkStore.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "incrementalWork", work);
+        when(client.getShipmentContent(any(), eq("FH001")))
+                .thenReturn(logisticsDetail("极兔速递", ""), logisticsDetail("极兔速递", "JT001"));
+
+        runLogistics();
+        verify(order, never()).syncShipmentTransport(any(), any());
+        var pending = ArgumentCaptor.forClass(DhbIncrementalWorkStore.Item.class);
+        verify(work).complete(eq(tenant), eq(connector), eq("SHIPMENT_LOGISTICS"),
+                pending.capture(), eq(false), any());
+
+        when(work.pending(eq(tenant), eq(connector), eq("SHIPMENT_LOGISTICS"), anyInt(), any()))
+                .thenReturn(List.of(pending.getValue()));
+        doAnswer(call -> new DhbClient.Page<>(
+                        call.<DhbClient.ShipmentQuery>getArgument(1).page(), 0, List.of()))
+                .when(client).getShipments(any(), any());
+        runLogistics();
+        var command = ArgumentCaptor.forClass(ShipmentTransportModels.Command.class);
+        verify(order).syncShipmentTransport(any(), command.capture());
+        assertThat(command.getValue().shipmentNo()).isEqualTo("FH001");
+        assertThat(command.getValue().salesOrderId()).isEqualTo(11L);
+        assertThat(command.getValue().trackingNumbers()).containsExactly("JT001");
+        verify(work).complete(eq(tenant), eq(connector), eq("SHIPMENT_LOGISTICS"),
+                eq(pending.getValue()), eq(true), any());
+        verifyNoInteractions(erp);
+        verify(order, never()).createSalesShipment(any(), any());
+    }
+
+    @Test
+    void scheduledLogisticsIncludesPreviouslyUnseenImmediateDeliveryWithoutInventoryProjection() {
+        mappedSalesOrder();
+        doAnswer(call -> {
+            DhbClient.ShipmentQuery query = call.getArgument(1);
+            var shipments = "F".equals(query.isApi())
+                    ? List.of(shipment("DH001", "立即送", null)) : List.<DhbClient.Shipment>of();
+            return new DhbClient.Page<>(query.page(), shipments.size(), shipments);
+        }).when(client).getShipments(any(), any());
+        when(client.getShipmentContent(any(), eq("FH001")))
+                .thenReturn(logisticsDetail("立即送", ""));
+        runLogistics();
+        var command = ArgumentCaptor.forClass(ShipmentTransportModels.Command.class);
+        verify(order).syncShipmentTransport(any(), command.capture());
+        assertThat(command.getValue().employeeImmediateDelivery()).isTrue();
+        assertThat(command.getValue().deliveryModeCode()).isEqualTo("SELF");
+        assertThat(command.getValue().carrierCode()).isNull();
+        assertThat(command.getValue().trackingNumbers()).isEmpty();
+        assertThat(command.getValue().salesOrderId()).isEqualTo(11L);
+        verifyNoInteractions(erp);
+    }
+
+    private DhbClient.ShipmentDetail logisticsDetail(String carrier, String tracking) {
+        return new DhbClient.ShipmentDetail("FH001", Map.of(
+                "ships_id", "D1", "type_id", "10", "status", "receivedin",
+                "orders_num", "DH001", "ships_date", "2026-11-02 10:30:00",
+                "logistics_name", carrier, "express_num", tracking));
+    }
+
+    private void runLogistics() {
+        service.runOrderPull(DhbSyncOrchestrationService.serviceCaller(tenant), task,
+                new SyncRunCommand(from, to, null, null, null, "SHIPMENT_LOGISTICS"),
+                500, ignored -> {});
+    }
+
+    @Test
     void detailExplicitlyWithoutTrackingNeverCreatesTransportButRetainsNativeShipmentWork() {
         mappedSalesOrder();
         when(client.getShipmentContent(any(), eq("FH001")))

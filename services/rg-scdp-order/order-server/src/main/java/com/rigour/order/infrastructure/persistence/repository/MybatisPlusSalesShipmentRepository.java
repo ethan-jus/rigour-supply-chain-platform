@@ -7,6 +7,7 @@ import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesShipmentDetailView;
 import com.rigour.order.api.v1.model.SalesShipmentLineView;
 import com.rigour.order.api.v1.model.SalesShipmentSummaryView;
+import com.rigour.order.api.v1.model.ShipmentTransportModels.LogisticsEdit;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentLineWrite;
 import com.rigour.order.application.port.out.OrderSalesShipmentStore.SalesShipmentSearchCriteria;
@@ -22,8 +23,12 @@ import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -48,7 +53,9 @@ public class MybatisPlusSalesShipmentRepository
     private final InternalSalesOrderMapper orderMapper;
     private final Clock clock;
     private final OrderDataScope scopes;
-    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final JdbcTemplate jdbc;
+    private final JdbcShipmentTransportStore shipmentTransport;
+    private final ObjectMapper json;
 
     public MybatisPlusSalesShipmentRepository(
             InternalSalesShipmentMapper mapper,
@@ -56,13 +63,17 @@ public class MybatisPlusSalesShipmentRepository
             InternalSalesOrderMapper orderMapper,
             Clock orderClock,
             OrderDataScope scopes,
-            org.springframework.jdbc.core.JdbcTemplate jdbc) {
+            JdbcTemplate jdbc,
+            JdbcShipmentTransportStore shipmentTransport,
+            ObjectMapper json) {
         this.baseMapper = mapper;
         this.lineMapper = lineMapper;
         this.orderMapper = orderMapper;
         this.clock = orderClock;
         this.scopes = scopes;
         this.jdbc = jdbc;
+        this.shipmentTransport = shipmentTransport;
+        this.json = json;
     }
 
     @Override
@@ -163,30 +174,36 @@ public class MybatisPlusSalesShipmentRepository
                 selectActive(tenantId, id).orElseThrow(() -> notFound("销售发货单不存在"));
         scopes.requireStableAssociation(existing.getSalesOrderId(), command.salesOrderId());
         command = bindFulfillment(tenantId, command);
-        if (existing.getSourcePayloadJson() != null)
+        boolean hasSnapshot = existing.getSourcePayloadJson() != null;
+        LogisticsEdit override = "DINGHUOBAO".equals(existing.getSourceSystemCode())
+                ? shipmentLogisticsOverride(tenantId, id) : null;
+        if (hasSnapshot || override != null)
             command =
                     new SalesShipmentWrite(
                             command.connectorId(),
                             command.sourceSystemCode(),
                             command.sourceDocumentNo(),
                             command.salesOrderId(),
-                            existing.getSalesOrderNoSnapshot(),
+                            hasSnapshot ? existing.getSalesOrderNoSnapshot() : command.salesOrderNoSnapshot(),
                             command.customerId(),
-                            existing.getCustomerCodeSnapshot(),
-                            existing.getCustomerNameSnapshot(),
-                            existing.getContactPhoneSnapshot(),
+                            hasSnapshot ? existing.getCustomerCodeSnapshot() : command.customerCodeSnapshot(),
+                            hasSnapshot ? existing.getCustomerNameSnapshot() : command.customerNameSnapshot(),
+                            hasSnapshot ? existing.getContactPhoneSnapshot() : command.contactPhoneSnapshot(),
                             command.regionCode(),
                             command.ownerEmployeeCode(),
                             command.warehouseId(),
                             command.stockOutOrderId(),
                             command.stockOutNo(),
-                            existing.getShipmentStatusCode(),
-                            existing.getLogisticsCompany(),
-                            existing.getTrackingNo(),
-                            instant(existing.getShipTime()),
-                            existing.getTotalQuantity(),
+                            hasSnapshot ? existing.getShipmentStatusCode() : command.shipmentStatusCode(),
+                            hasSnapshot || override != null && override.carrierName() != null
+                                    ? existing.getLogisticsCompany() : command.logisticsCompany(),
+                            hasSnapshot || override != null && override.trackingNumbers() != null
+                                    ? existing.getTrackingNo() : command.trackingNo(),
+                            hasSnapshot || override != null && override.shipTime() != null
+                                    ? instant(existing.getShipTime()) : command.shipTime(),
+                            hasSnapshot ? existing.getTotalQuantity() : command.totalQuantity(),
                             command.lines(),
-                            command.remark(),
+                            override != null && override.remark() != null ? existing.getRemark() : command.remark(),
                             command.revision());
         LocalDateTime now = now();
         int updated =
@@ -292,6 +309,59 @@ public class MybatisPlusSalesShipmentRepository
     }
 
     @Override
+    @Transactional(rollbackFor = Exception.class, isolation = Isolation.READ_COMMITTED)
+    public SalesShipmentDetailView updateLogistics(
+            String tenant, Long id, int revision, LogisticsEdit edit, String actorId) {
+        scopes.requireRelated(tenant, id, "order:shipment:update", "order_sales_shipment");
+        shipmentTransport.lockTenant(tenant);
+        var existing = getBaseMapper().selectOne(Wrappers.<InternalSalesShipmentEntity>lambdaQuery()
+                .eq(InternalSalesShipmentEntity::getTenantId, tenant)
+                .eq(InternalSalesShipmentEntity::getId, id)
+                .eq(InternalSalesShipmentEntity::getDeleted, 0)
+                .last("FOR UPDATE"));
+        if (existing == null) throw notFound("销售发货单不存在");
+        if (existing.getRevision() != revision) throw conflict("销售发货单已被其他人修改，请刷新后重试");
+        if (SalesShipmentStatus.CANCELLED.code().equals(existing.getShipmentStatusCode()))
+            throw conflict("已取消的发货单无法修改物流信息");
+        boolean external = "DINGHUOBAO".equals(existing.getSourceSystemCode());
+        if (existing.getSourceSystemCode() != null && !external)
+            throw conflict("该来源的发货单暂不支持修改物流信息");
+
+        String company = edit.carrierName() == null ? existing.getLogisticsCompany() : edit.carrierName();
+        String trackingNo = edit.trackingNumbers() == null ? existing.getTrackingNo()
+                : edit.trackingNumbers().isEmpty() ? null : String.join(",", edit.trackingNumbers());
+        boolean selfDelivery = "SELF".equals(edit.carrierCode())
+                || edit.carrierCode() == null && "立即送".equals(existing.getLogisticsCompany())
+                        && (existing.getTrackingNo() == null || existing.getTrackingNo().isBlank());
+        if (selfDelivery && trackingNo != null && !trackingNo.isBlank())
+            throw conflict("立即送自配送请清空物流单号");
+
+        if (external) {
+            LogisticsEdit saved = shipmentLogisticsOverride(tenant, id);
+            LogisticsEdit overrides = saved == null ? edit : saved.merge(edit);
+            shipmentTransport.updateLinkedShipment(tenant, auditActor(actorId), existing.getConnectorId(),
+                    existing.getSourceDocumentNo(), edit);
+            jdbc.update("UPDATE order_sales_shipment SET logistics_overrides=? WHERE tenant_id=? AND id=?",
+                    json.writeValueAsString(overrides), tenant, id);
+        }
+        var now = now();
+        getBaseMapper().update(null, Wrappers.<InternalSalesShipmentEntity>lambdaUpdate()
+                .set(InternalSalesShipmentEntity::getLogisticsCompany, company)
+                .set(InternalSalesShipmentEntity::getTrackingNo, trackingNo)
+                .set(edit.shipTime() != null, InternalSalesShipmentEntity::getShipTime, local(edit.shipTime()))
+                .set(edit.remark() != null, InternalSalesShipmentEntity::getRemark, edit.remark())
+                .set(InternalSalesShipmentEntity::getRevision, revision + 1)
+                .set(InternalSalesShipmentEntity::getUpdatedBy, auditActor(actorId))
+                .set(InternalSalesShipmentEntity::getUpdatedTime, now)
+                .eq(InternalSalesShipmentEntity::getTenantId, tenant)
+                .eq(InternalSalesShipmentEntity::getId, id));
+        if (!external && edit.shipTime() != null)
+            refreshOrderShipmentTime(tenant, existing.getSalesOrderId(), actorId, now, false);
+        queryCache.changed(tenant);
+        return rawDetail(tenant, id).orElseThrow(() -> notFound("销售发货单不存在"));
+    }
+
+    @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(String tenantId, Long id, int revision, String actorId) {
         queryCache.changed(tenantId);
@@ -325,6 +395,13 @@ public class MybatisPlusSalesShipmentRepository
     }
 
     /** 租户录入的发货资料只能引用原订单的选仓和已完成回执；来源历史导入保留原始证据。 */
+    private LogisticsEdit shipmentLogisticsOverride(String tenant, Long id) {
+        String payload = jdbc.queryForObject(
+                "SELECT logistics_overrides FROM order_sales_shipment WHERE tenant_id=? AND id=?",
+                String.class, tenant, id);
+        return payload == null ? null : json.readValue(payload, LogisticsEdit.class);
+    }
+
     private SalesShipmentWrite bindFulfillment(String tenant, SalesShipmentWrite c) {
         var actor = com.rigour.shared.context.AuthorizationContext.requireCurrent();
         var context =
@@ -645,7 +722,8 @@ public class MybatisPlusSalesShipmentRepository
                 entity.getTrackingNo(),
                 instant(entity.getShipTime()),
                 entity.getTotalQuantity(),
-                entity.getRemark(),
+                entity.getRemark() == null ? SalesShipmentSnapshotFacts.remark(entity.getSourcePayloadJson())
+                        : entity.getRemark(),
                 entity.getRevision(),
                 entity.getCreatedBy(),
                 instant(entity.getCreatedTime()),

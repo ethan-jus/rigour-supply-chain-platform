@@ -139,6 +139,49 @@ class ManualCostPersistenceTest {
     }
 
     @Test
+    void historyReadsBothShipmentEditFormatsAlongsideNormalCostUpdates() {
+        String reason = "从发货单修改物流信息";
+        var saved = save(null, command(0, "35", ""));
+        save(saved.id(), command(saved.revision(), "42", reason));
+        String insert = """
+                INSERT INTO order_logistics_cost_audit
+                    (tenant_id,entry_id,action_code,actor_id,reason,snapshot_json)
+                VALUES ('T1', ?, ?, 'U', ?, ?)
+                """;
+        jdbc.update(insert, saved.id(), "UPDATE", reason, """
+                {"connectorId":"connector","shipmentNo":"FH-1","shipTime":"2026-11-27T08:51:00Z",
+                 "trackingNumbers":["JT123"],"sourceFields":{"shipmentRemark":"改过的备注","detail":{}},
+                 "receiver":{"contactPhone":"private"},"goods":[]}
+                """);
+        jdbc.update(insert, saved.id(), LogisticsCostAuditView.SHIPMENT_LOGISTICS_EDIT, reason, """
+                {"shipmentNo":"FH-2","carrierName":"极兔速递","trackingNumbers":["JT456"],
+                 "shipmentRemark":""}
+                """);
+
+        var history = store.history("T1", saved.id());
+        assertThat(history).filteredOn(a -> a.action().equals(LogisticsCostAuditView.SHIPMENT_LOGISTICS_EDIT))
+                .satisfiesExactly(
+                        newer -> {
+                            assertThat(newer.snapshot()).isNull();
+                            assertThat(newer.evidence()).containsEntry("shipmentNo", "FH-2")
+                                    .containsEntry("shipmentRemark", "");
+                        },
+                        older -> {
+                            assertThat(older.snapshot()).isNull();
+                            assertThat(older.evidence()).containsEntry("shipmentNo", "FH-1")
+                                    .containsEntry("shipTime", "2026-11-27T08:51:00Z")
+                                    .containsEntry("trackingNumbers", List.of("JT123"))
+                                    .containsEntry("shipmentRemark", "改过的备注")
+                                    .doesNotContainKeys("sourceFields", "receiver", "goods");
+                        });
+        assertThat(history).filteredOn(a -> "UPDATE".equals(a.action())).singleElement()
+                .satisfies(a -> {
+                    assertThat(a.snapshot().data().amount()).isEqualByComparingTo("42");
+                    assertThat(a.evidence()).isNull();
+                });
+    }
+
+    @Test
     void shipmentSyncAuditRetainsSourceEvidenceWithoutParsingItAsAnEntrySnapshot() {
         var saved = save(null, command(0, "35", "人工录入"));
         jdbc.update(

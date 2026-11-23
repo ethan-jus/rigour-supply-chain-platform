@@ -124,6 +124,14 @@ final class DhbShipmentTransportMapper {
                 && trackingNotProvided(summary == null ? null : summary.trackingNumber());
     }
 
+    static boolean awaitingThirdPartyTracking(Map<String, Object> payload) {
+        String carrier = rawValue(payload, "logistics_name", "logistics_name");
+        if (carrier != null)
+            return !SELF_CARRIER_NAMES.contains(carrier)
+                    && !ShipmentTransportModels.Command.immediateDeliveryCarrier(carrier);
+        return "快递".equals(rawValue(payload, "distribution_mode_name", "distribution_mode_name"));
+    }
+
     private static boolean trackingNotProvided(Object value) {
         return switch (value) {
             case null -> true;

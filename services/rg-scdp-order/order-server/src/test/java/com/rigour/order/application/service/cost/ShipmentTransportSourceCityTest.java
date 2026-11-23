@@ -37,6 +37,8 @@ class ShipmentTransportSourceCityTest {
                         0,
                         Set.of("DHB_ORDER_SYNC_SERVICE"),
                         Set.of("order:logistics-cost:sync-source")));
+        when(store.withShipmentLogisticsEdit(eq(tenant.toString()), any()))
+                .thenAnswer(call -> call.getArgument(1));
         var order = mock(SalesOrderDetailView.class);
         when(order.orderNo()).thenReturn("DH1");
         when(orders.salesOrder(tenant.toString(), 1L)).thenReturn(Optional.of(order));
@@ -101,7 +103,7 @@ class ShipmentTransportSourceCityTest {
                 .thenThrow(new AuthorizationDeniedException("order:logistics-cost:read"));
         assertThatThrownBy(() -> service.sync(command()))
                 .isInstanceOf(AuthorizationDeniedException.class);
-        verifyNoInteractions(store);
+        verify(store, never()).sync(any(), any(), any(), any(), any(), any());
     }
 
     @Test

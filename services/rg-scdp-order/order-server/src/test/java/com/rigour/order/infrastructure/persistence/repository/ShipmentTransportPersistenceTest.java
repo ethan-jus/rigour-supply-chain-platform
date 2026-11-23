@@ -107,6 +107,12 @@ class ShipmentTransportPersistenceTest {
                     order_code VARCHAR(100), updated_by VARCHAR(50),
                     PRIMARY KEY(tenant_id,source_id,order_type,order_code))
                 """);
+        db.execute("""
+                CREATE TABLE order_sales_shipment (
+                    tenant_id VARCHAR(64), connector_id VARCHAR(36), source_system_code VARCHAR(32),
+                    source_document_no VARCHAR(128), logistics_overrides LONGTEXT, deleted INT DEFAULT 0
+                )
+                """);
         db = new JdbcTemplate(ds);
         store = new JdbcShipmentTransportStore(db, json, platform, costs);
     }
@@ -160,6 +166,114 @@ class ShipmentTransportPersistenceTest {
     }
 
     @Test
+    void correctingShipmentUpdatesTheSameFeeAndRemainsAfterRepeatedSourceSync() {
+        var source = sync("receivedin", 1);
+        String costId = source.costId();
+        var initial = json.readValue(db.queryForObject(
+                "SELECT data_json FROM order_logistics_cost WHERE id=?", String.class, costId),
+                LogisticsCostCommand.class);
+        var priced = TransportAllocationPlan.reprice(initial, new BigDecimal("37.03"));
+        String links = json.writeValueAsString(priced.ledger().sources());
+        db.update("""
+                UPDATE order_logistics_cost SET amount=37.03,amount_manually_edited=1,
+                    data_json=?,sources_json=? WHERE id=?
+                """, json.writeValueAsString(priced), links, costId);
+        db.update("""
+                INSERT INTO order_logistics_cost_attachment
+                    (id,tenant_id,entry_id,file_key,file_name,content_type,file_size,created_by,created_time)
+                VALUES('A1','T',?,'T/manual-receipt.pdf','签收凭证.pdf','application/pdf',50,'U',CURRENT_TIMESTAMP)
+                """, costId);
+        var time = Instant.parse("2026-11-30T17:24:00Z");
+        var edit = new LogisticsEdit("JT", "极兔速递", List.of("JT456"), time, "送到前台");
+        var sale = json.readValue("{\"documentNo\":\"SO001\"}", LogisticsCostSourceView.class);
+        transactions.executeWithoutResult(status -> {
+            store.updateLinkedShipment("T", "EDITOR", connector.toString(), "FH001", edit);
+            db.update("INSERT INTO order_sales_shipment VALUES('T',?,'DINGHUOBAO','FH001',?,0)",
+                    connector.toString(), json.writeValueAsString(edit));
+        });
+        String oldDocumentNo = db.queryForObject("SELECT document_no FROM order_logistics_cost", String.class);
+        var audit = json.readTree(db.queryForObject(
+                "SELECT snapshot_json FROM order_logistics_cost_audit WHERE entry_id=? AND action_code=?",
+                String.class, costId, LogisticsCostAuditView.SHIPMENT_LOGISTICS_EDIT));
+        assertThat(audit.path("shipmentNo").asText()).isEqualTo("FH001");
+        assertThat(audit.path("trackingNumbers").get(0).asText()).isEqualTo("JT456");
+        assertThat(audit.path("shipmentRemark").asText()).isEqualTo("送到前台");
+        assertThat(audit.has("sourceFields")).isFalse();
+
+        for (int version : List.of(2, 2, 3)) {
+            transactions.executeWithoutResult(status -> {
+                var next = store.withShipmentLogisticsEdit("T", command("receivedin", version));
+                assertThat(next.shipTime()).isEqualTo(time);
+                assertThat(next.trackingNumbers()).containsExactly("JT456");
+                assertThat(next.sourceFields()).containsEntry("shipmentRemark", "送到前台");
+                var draft = transport();
+                var data = (tools.jackson.databind.node.ObjectNode) json.valueToTree(draft);
+                data.put("costDate", "2026-12-01");
+                draft = json.treeToValue(data, LogisticsCostCommand.class)
+                        .withLedger(draft.ledger().withCarrierClassification("JT", "THIRD_PARTY")
+                                .withPlatformOrderNo("JT456"), null);
+                assertThat(store.sync("T", "SYSTEM", next, draft, sale, null).costId()).isEqualTo(costId);
+            });
+        }
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class)).isEqualTo(1);
+        var saved = db.queryForMap("SELECT * FROM order_logistics_cost WHERE id=?", costId);
+        assertThat(saved).containsEntry("document_no", oldDocumentNo)
+                .containsEntry("carrier_code", "JT").containsEntry("cost_month", "2026-12")
+                .containsEntry("tracking_no", "JT456").containsEntry("sources_json", links);
+        assertThat((BigDecimal) saved.get("amount")).isEqualByComparingTo("37.03");
+        assertThat(saved.get("cost_date").toString()).isEqualTo("2026-12-01");
+        var data = json.readValue(saved.get("data_json").toString(), LogisticsCostCommand.class);
+        assertThat(data.ledger().shippingTime()).isEqualTo(LocalDateTime.parse("2026-12-01T01:24:00"));
+        assertThat(data.ledger().sources().getFirst().orderCode()).isEqualTo("SO001");
+        assertThat(db.queryForObject("SELECT file_key FROM order_logistics_cost_attachment WHERE entry_id=?",
+                String.class, costId)).isEqualTo("T/manual-receipt.pdf");
+        var lookup = new JdbcTransportTrackingLookup(db, json);
+        assertThat(lookup.find("T", List.of("JT456"))).extracting(JdbcTransportTrackingLookup.Match::costId)
+                .containsExactly(costId);
+        assertThat(lookup.find("T", List.of("SF001"))).isEmpty();
+    }
+
+    @Test
+    void correctingShipmentCannotTakeAnotherActiveCostsTrackingNumber() {
+        var source = sync("receivedin", 1);
+        var another = (tools.jackson.databind.node.ObjectNode) json.valueToTree(command("receivedin", 1));
+        another.put("shipmentId", "D2");
+        another.put("shipmentNo", "FH002");
+        another.putArray("trackingNumbers").add("SF002");
+        var second = store.sync("T", "U", json.treeToValue(another, Command.class), transport(), null, null);
+
+        assertThatThrownBy(() -> transactions.executeWithoutResult(status ->
+                store.updateLinkedShipment("T", "U", connector.toString(), "FH001",
+                        new LogisticsEdit(null, null, List.of("sf002"), null, null))))
+                .hasMessageContaining("快递单号已有运输记录");
+        var lookup = new JdbcTransportTrackingLookup(db, json);
+        assertThat(lookup.find("T", List.of("SF001"))).extracting(JdbcTransportTrackingLookup.Match::costId)
+                .containsExactly(source.costId());
+        assertThat(lookup.find("T", List.of("SF002"))).extracting(JdbcTransportTrackingLookup.Match::costId)
+                .containsExactly(second.costId());
+    }
+
+    @Test
+    void cannotChangeSharedTrackingButCanEditTheShipmentTimeAndRemark() {
+        var source = sync("receivedin", 1);
+        db.update("UPDATE order_logistics_cost SET source_system='HUOLALA' WHERE id=?", source.costId());
+        assertThatThrownBy(() -> transactions.executeWithoutResult(status ->
+                store.updateLinkedShipment("T", "U", connector.toString(), "FH001",
+                        new LogisticsEdit(null, null, List.of("NEW"), null, null))))
+                .isInstanceOf(com.rigour.shared.core.exception.BusinessException.class)
+                .hasMessageContaining("多个来源共用");
+        var time = Instant.parse("2026-11-14T02:00:00Z");
+        transactions.executeWithoutResult(status -> store.updateLinkedShipment("T", "U",
+                connector.toString(), "FH001", new LogisticsEdit(null, null, null, time, "门卫代收")));
+        var after = store.byCosts("T", List.of(source.costId())).get(source.costId()).getFirst();
+        assertThat(after.latest().trackingNumbers()).containsExactly("SF001");
+        assertThat(after.latest().shipTime()).isEqualTo(time);
+        assertThat(after.latest().sourceFields()).containsEntry("shipmentRemark", "门卫代收");
+        assertThat(db.queryForObject("SELECT cost_date FROM order_logistics_cost", String.class))
+                .isEqualTo("2026-11-13");
+    }
+
+    @Test
     void employeeImmediateDeliveryUsesItsShipmentIdentityAndZeroCostWithoutCarrier() {
         var source = (tools.jackson.databind.node.ObjectNode) json.valueToTree(command("receivedin", 1));
         source.put("carrierName", "立即送");
@@ -182,6 +296,50 @@ class ShipmentTransportPersistenceTest {
                 Integer.class)).isEqualTo(2);
         assertThat(db.queryForObject("SELECT data_json FROM order_logistics_cost WHERE id=?",
                 String.class, first.costId())).contains("员工配送，无外部运费");
+    }
+
+    @Test
+    void shipmentsForTheSameSaleSharingAConfirmedTrackingNumberReuseItsCost() {
+        var source = (tools.jackson.databind.node.ObjectNode) json.valueToTree(command("receivedin", 1));
+        source.put("carrierCode", "JT");
+        source.put("deliveryModeCode", "THIRD_PARTY");
+        var draft = transport();
+        draft = draft.withLedger(draft.ledger().withCarrierClassification("JT", "THIRD_PARTY"), null);
+        var sale = json.readValue("{\"documentNo\":\"SO001\"}", LogisticsCostSourceView.class);
+        var first = store.sync("T", "U", json.treeToValue(source, Command.class), draft, sale, null);
+        db.update("UPDATE order_logistics_cost SET amount=37.03,amount_manually_edited=1 WHERE id=?",
+                first.costId());
+        source.put("shipmentId", "D2");
+        source.put("shipmentNo", "FH002");
+        var secondCommand = json.treeToValue(source, Command.class);
+        assertThat(store.sync("T", "U", secondCommand, draft, sale, null).costId())
+                .isEqualTo(first.costId());
+        assertThat(store.sync("T", "U", secondCommand, draft, sale, null).costId())
+                .isEqualTo(first.costId());
+        assertThat(store.byCosts("T", List.of(first.costId())).get(first.costId())).hasSize(2);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class)).isOne();
+        assertThat(db.queryForObject("SELECT amount FROM order_logistics_cost", BigDecimal.class))
+                .isEqualByComparingTo("37.03");
+        assertThat(db.queryForObject("SELECT sources_json FROM order_logistics_cost", String.class))
+                .contains("SO001");
+
+        source.putArray("trackingNumbers").add("JT002");
+        assertThat(store.sync("T", "U", json.treeToValue(source, Command.class), draft, sale, null)
+                .differencePending()).isTrue();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class)).isOne();
+    }
+
+    @Test
+    void distinctShipmentsKeepTheirOwnCostsAndLinkToTheSameSalesOrder() {
+        var first = syncShipment(store, "T", "1", List.of("JT001"));
+        var second = syncShipment(store, "T", "2", List.of("JT002"));
+        assertThat(first.costId()).isNotBlank().isNotEqualTo(second.costId());
+        assertThat(second.costId()).isNotBlank();
+        assertThat(syncShipment(store, "T", "1", List.of("JT001")).costId()).isEqualTo(first.costId());
+        assertThat(syncShipment(store, "T", "2", List.of("JT002")).costId()).isEqualTo(second.costId());
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class)).isEqualTo(2);
+        assertThat(db.queryForList("SELECT sources_json FROM order_logistics_cost", String.class))
+                .allSatisfy(sources -> assertThat(sources).contains("SO001"));
     }
 
     @Test

@@ -36,8 +36,8 @@ class SalesShipmentSnapshotPersistenceTest {
                     + " VARCHAR(50),source_warehouse_name VARCHAR(200),shipment_status_code"
                     + " VARCHAR(64),logistics_company VARCHAR(120),tracking_no"
                     + " VARCHAR(120),ship_time TIMESTAMP,stock_out_time TIMESTAMP,source_updated_at"
-                    + " TIMESTAMP,source_payload_json LONGTEXT,total_quantity"
-                    + " DECIMAL(20,6),revision INT,created_by VARCHAR(50),created_time"
+                    + " TIMESTAMP,source_payload_json LONGTEXT,logistics_overrides LONGTEXT,total_quantity"
+                    + " DECIMAL(20,6),remark VARCHAR(1000),revision INT,created_by VARCHAR(50),created_time"
                     + " TIMESTAMP,updated_by VARCHAR(50),updated_time TIMESTAMP,deleted"
                     + " INT,UNIQUE(tenant_id,connector_id,source_system_code,source_document_no),UNIQUE(tenant_id,shipment_no))");
         store = new JdbcSalesShipmentSnapshotStore(jdbc, JsonMapper.builder().build());
@@ -139,6 +139,36 @@ class SalesShipmentSnapshotPersistenceTest {
                                         "SELECT source_payload_json FROM order_sales_shipment",
                                         String.class)))
                 .hasSize(1);
+    }
+
+    @Test
+    void newerSourceSnapshotKeepsBusinessLogisticsEditsAndOriginalPayload() {
+        var id = store.save("T", command("SHIPPED", "SF123", Instant.parse("2026-11-16T04:00:00Z")));
+        jdbc.update("""
+                UPDATE order_sales_shipment SET logistics_company='极兔',tracking_no=NULL,
+                    ship_time=TIMESTAMP '2026-12-02 09:10:11',remark='人工发货备注',
+                    logistics_overrides=?
+                WHERE id=?
+                """, """
+                {"carrierCode":"JT","carrierName":"极兔","trackingNumbers":[],
+                 "shipTime":"2026-12-02T09:10:11Z","remark":"人工发货备注"}
+                """, id);
+
+        var incoming = command("SIGNED", "SF456", Instant.parse("2026-11-16T05:00:00Z"));
+        assertThat(store.save("T", incoming)).isEqualTo(id);
+        assertThat(store.save("T", incoming)).isEqualTo(id);
+        var row = jdbc.queryForMap("""
+                SELECT logistics_company,tracking_no,ship_time,remark,
+                    shipment_status_code,source_payload_json,revision
+                FROM order_sales_shipment WHERE id=?
+                """, id);
+        assertThat(row.get("LOGISTICS_COMPANY")).isEqualTo("极兔");
+        assertThat(row.get("TRACKING_NO")).isNull();
+        assertThat(row.get("SHIP_TIME").toString()).startsWith("2026-12-02 09:10:11");
+        assertThat(row.get("REMARK")).isEqualTo("人工发货备注");
+        assertThat(row.get("SHIPMENT_STATUS_CODE")).isEqualTo("SIGNED");
+        assertThat(row.get("SOURCE_PAYLOAD_JSON").toString()).contains("SF456");
+        assertThat(row.get("REVISION")).isEqualTo(3);
     }
 
     @Test

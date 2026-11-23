@@ -3,6 +3,7 @@ package com.rigour.order.application.port.out;
 import com.rigour.order.api.v1.model.OrderPageView;
 import com.rigour.order.api.v1.model.SalesShipmentDetailView;
 import com.rigour.order.api.v1.model.SalesShipmentSummaryView;
+import com.rigour.order.api.v1.model.ShipmentTransportModels.LogisticsEdit;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -24,6 +25,9 @@ public interface OrderSalesShipmentStore {
 
     SalesShipmentDetailView update(
             String tenantId, Long id, SalesShipmentWrite command, String actorId);
+
+    SalesShipmentDetailView updateLogistics(
+            String tenantId, Long id, int revision, LogisticsEdit edit, String actorId);
 
     void delete(String tenantId, Long id, int revision, String actorId);
 
