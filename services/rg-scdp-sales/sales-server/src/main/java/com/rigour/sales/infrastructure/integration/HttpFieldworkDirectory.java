@@ -59,6 +59,11 @@ public class HttpFieldworkDirectory implements FieldworkDirectory {
                 List.of(), new ParameterizedTypeReference<>() {});
     }
 
+    public Map<Long, String> storeRegions(UUID tenant, List<Long> stores) {
+        return post(tenant, crm.resolve("store-regions"), "crm:fieldwork:source-read", stores,
+                new ParameterizedTypeReference<>() {});
+    }
+
     public FieldworkSources.Result sources(UUID tenant, FieldworkSources.Query query) {
         return post(
                 tenant,

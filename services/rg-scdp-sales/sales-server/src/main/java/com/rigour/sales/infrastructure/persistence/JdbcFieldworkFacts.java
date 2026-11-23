@@ -1,6 +1,8 @@
 package com.rigour.sales.infrastructure.persistence;
 
 import com.rigour.sales.api.v1.model.FieldworkReport.*;
+import com.rigour.merchant.api.v1.model.StoreVisitFieldworkModels.Accepted;
+import tools.jackson.databind.ObjectMapper;
 import com.rigour.sales.application.port.out.FieldworkFacts;
 import com.rigour.sales.application.port.out.SalesManagementDirectory.Access;
 
@@ -14,6 +16,7 @@ import java.util.*;
 @Repository
 public class JdbcFieldworkFacts implements FieldworkFacts {
     private final NamedParameterJdbcTemplate jdbc;
+    private final ObjectMapper json = new ObjectMapper();
 
     public JdbcFieldworkFacts(NamedParameterJdbcTemplate jdbc) {
         this.jdbc = jdbc;
@@ -220,6 +223,37 @@ WHERE p.tenant_id=:tenant AND d.business_date=:date AND c.status IN ('OPEN','AWA
                 });
     }
 
+    public Optional<VisitContent> visitContent(UUID tenant, Access access, UUID visitId) {
+        var params = args(tenant, null, access).addValue("visit", SalesUuidCodec.encode(visitId));
+        return jdbc.query("""
+                SELECT v.result_submitted_at, v.crm_fieldwork_json
+                FROM sales_visit v JOIN sales_profile p ON p.tenant_id=v.tenant_id AND p.id=v.sales_profile_id
+                WHERE v.tenant_id=:tenant AND v.id=:visit AND v.checked_in_at IS NOT NULL AND v.status<>'CANCELLED'
+                """ + scope(access), params, (r, n) -> {
+                    boolean submitted = r.getTimestamp("result_submitted_at") != null;
+                    String snapshot = r.getString("crm_fieldwork_json");
+                    return new VisitContent(submitted, submitted && snapshot != null
+                            ? visitForm(json.readValue(snapshot, Accepted.class)) : null);
+                }).stream().findFirst();
+    }
+
+    static VisitForm visitForm(Accepted accepted) {
+        var d = accepted.draft();
+        var labels = accepted.labels();
+        java.util.function.BiFunction<String, String, String> label = (dict, code) ->
+                code == null || code.isBlank() ? null : labels.getOrDefault(dict + ":" + code, code);
+        var contacts = accepted.contacts().stream().map(c -> new VisitContact(c.name(), c.role())).toList();
+        var businesses = d.businesses().stream().map(b -> new VisitBusiness(
+                label.apply("BUSINESS_LINE", b.businessLineCode()),
+                label.apply("CUSTOMER_INTENTION_LEVEL", b.intentionLevel()),
+                label.apply("CUSTOMER_COOP_STATUS", b.cooperationStatus()))).toList();
+        return new VisitForm(label.apply("STORE_BUSINESS_TYPE", d.businessTypeCode()),
+                label.apply("CRM_STORE_BUSINESS_STATUS", d.businessStatus()), d.businessStatusReason(),
+                label.apply("VISIT_CONTACT_OUTCOME", d.contactOutcome()), "CONTACTED".equals(d.contactOutcome()),
+                contacts, d.noIntention(), businesses, label.apply("VISIT_NO_CONTACT_REASON", d.noContactReason()),
+                d.noContactDetail(), label.apply("VISIT_NEXT_ACTION", d.nextAction()), d.nextContactDate());
+    }
+
     public List<VisitFact> visits(
             UUID tenant, LocalDate from, LocalDate to, Access scope, UUID profile) {
         var args = args(tenant, from, scope).addValue("to", to);
@@ -237,21 +271,31 @@ WITH visits AS (
                         + scope(scope)
                         + person
                         + """
-), recordings AS (
-  SELECT s.visit_id,COUNT(*) files,
-    SUM(c.verify_status='VERIFIED' AND c.verified_duration_ms IS NOT NULL) verified_files,
-    SUM(IF(c.verify_status='VERIFIED',COALESCE(c.verified_duration_ms,0),0)) duration
+), clips AS (
+  SELECT s.visit_id,c.verify_status,c.verified_duration_ms,
+    COALESCE(IF(c.verify_status='VERIFIED',NULLIF(c.verified_duration_ms,0),NULL),
+             NULLIF(c.client_duration_ms,0),
+             IF(c.recorded_to>c.recorded_from,TIMESTAMPDIFF(MICROSECOND,c.recorded_from,c.recorded_to) DIV 1000,NULL)) playback_ms
   FROM visits v JOIN sales_recording_session s ON s.tenant_id=v.tenant_id AND s.visit_id=v.id
   JOIN sales_recording_clip c ON c.tenant_id=s.tenant_id AND c.recording_session_id=s.id AND c.upload_status='RECEIVED'
-  GROUP BY s.visit_id
+), recordings AS (
+  SELECT visit_id,COUNT(*) files,
+    SUM(verify_status='VERIFIED' AND verified_duration_ms IS NOT NULL) verified_files,
+    SUM(IF(verify_status='VERIFIED',COALESCE(verified_duration_ms,0),0)) duration,
+    IF(COUNT(playback_ms)=COUNT(*),SUM(playback_ms),NULL) playback_duration
+  FROM clips GROUP BY visit_id
 ), storefront AS (
   SELECT e.visit_id,COUNT(*) total,SUM(e.evidence_status='TECHNICALLY_VERIFIED') verified
   FROM visits v JOIN sales_visit_evidence e ON e.tenant_id=v.tenant_id AND e.visit_id=v.id
   WHERE e.evidence_type='PHOTO' AND e.evidence_role='STOREFRONT' GROUP BY e.visit_id)
-SELECT v.*,t.store_name,t.customer_name,plan.objective,r.version_no,r.minimum_dwell_minutes,
+SELECT v.*,t.store_name,t.customer_name,
+  IF(v.result_submitted_at IS NULL, NULL,
+     JSON_UNQUOTE(JSON_EXTRACT(v.crm_fieldwork_json, CONCAT('$.labels.',JSON_QUOTE(CONCAT('VISIT_CONTACT_OUTCOME:',
+       JSON_UNQUOTE(JSON_EXTRACT(v.crm_fieldwork_json,'$.draft.contactOutcome')))))))) communication_result,
+  plan.objective,r.version_no,r.minimum_dwell_minutes,
   (SELECT MAX(cp.server_received_at) FROM sales_visit_checkpoint cp WHERE cp.tenant_id=v.tenant_id AND cp.visit_id=v.id) received_at,
   sf.verified photos,sf.total storefront_total,
-  rec.files,rec.verified_files,rec.duration
+  rec.files,rec.verified_files,rec.duration,rec.playback_duration
 FROM visits v LEFT JOIN sales_visit_target_snapshot t ON t.tenant_id=v.tenant_id AND t.visit_id=v.id
 LEFT JOIN sales_visit_plan plan ON plan.tenant_id=v.tenant_id AND plan.id=v.visit_plan_id
 LEFT JOIN sales_visit_policy_version r ON r.tenant_id=v.tenant_id AND r.id=v.visit_policy_version_id
@@ -263,8 +307,6 @@ ORDER BY v.business_date DESC,v.checked_in_at,v.id
                 (r, n) -> {
                     UUID store = uuid(r, "store_id");
                     Long crmStore = (Long) r.getObject("crm_store_id");
-                    var key =
-                            crmStore != null ? "C" + crmStore : store != null ? "S" + store : null;
                     String status = r.getString("status");
                     Instant departure = time(r, "checked_out_at");
                     String assessment =
@@ -307,9 +349,10 @@ ORDER BY v.business_date DESC,v.checked_in_at,v.id
                                     null,
                                     null,
                                     time(r, "received_at"),
-                                    r.getInt("storefront_total") > 0),
-                            key,
-                            (Long) r.getObject("crm_visit_id"));
+                                    r.getInt("storefront_total") > 0,
+                                    r.getObject("playback_duration", Long.class), r.getString("communication_result")),
+                            store == null ? null : "S" + store,
+                            (Long) r.getObject("crm_visit_id"), crmStore);
                 });
     }
 }

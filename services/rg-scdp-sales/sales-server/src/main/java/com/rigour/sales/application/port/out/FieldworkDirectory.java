@@ -11,5 +11,7 @@ public interface FieldworkDirectory {
 
     Map<String, String> salesDepartments(UUID tenant);
 
+    Map<Long, String> storeRegions(UUID tenant, List<Long> stores);
+
     FieldworkSources.Result sources(UUID tenant, FieldworkSources.Query query);
 }

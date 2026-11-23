@@ -496,8 +496,13 @@ class SalesWorkVisitIntegrationTests {
         assertThat(track.visits().get(1).storeName()).isEqualTo("附近测试便利店");
         assertThat(track.segments()).singleElement()
                 .satisfies(segment -> assertThat(segment.distanceSource()).isEqualTo("UNAVAILABLE"));
-        assertThat(attendanceService.managementTrack(profileId, workDay.businessDate()).workDayId())
-                .isEqualTo(workDay.id());
+        var managementTrack = attendanceService.managementTrack(profileId, workDay.businessDate());
+        assertThat(managementTrack.workDayId()).isEqualTo(workDay.id());
+        assertThat(managementTrack.segments()).hasSize(2);
+        var firstSegment = managementTrack.segments().getFirst();
+        assertThat(firstSegment.fromVisitId()).isNull();
+        assertThat(firstSegment.toVisitId()).isEqualTo(track.visits().getFirst().visitId());
+        assertThat(firstSegment.distanceSource()).isEqualTo("UNAVAILABLE");
 
         var management = managementService.dashboard(workDay.businessDate(), workDay.businessDate());
         assertThat(management.totals().activeSalesCount()).isEqualTo(1);

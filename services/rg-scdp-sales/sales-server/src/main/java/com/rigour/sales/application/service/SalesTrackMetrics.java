@@ -17,12 +17,7 @@ import java.util.UUID;
 /** Observed route estimates only; never joins sessions, missing samples or implausible jumps. */
 final class SalesTrackMetrics {
     record Result(int distanceMeters, int trackedMinutes, boolean available, int rejected,
-                  List<TrackLegView> legs, List<TrackGapView> gaps, List<ObservedEdge> confirmedEdges) {
-        Result(int distanceMeters, int trackedMinutes, boolean available, int rejected,
-               List<TrackLegView> legs, List<TrackGapView> gaps) {
-            this(distanceMeters, trackedMinutes, available, rejected, legs, gaps, List.of());
-        }
-    }
+                  List<TrackLegView> legs, List<TrackGapView> gaps, List<ObservedEdge> observedEdges) {}
     record ObservedEdge(Instant from, Instant to, double meters) {}
 
     static Result calculate(List<LocationPointRow> input, int sampleIntervalSeconds) {
@@ -36,7 +31,7 @@ final class SalesTrackMetrics {
         if (sessions.isEmpty()) return legacy;
         var legs = new ArrayList<>(legacy.legs());
         var gaps = new ArrayList<>(legacy.gaps());
-        var edges = new ArrayList<ObservedEdge>();
+        var edges = new ArrayList<>(legacy.observedEdges());
         int distance = legacy.distanceMeters(), minutes = legacy.trackedMinutes(), rejected = legacy.rejected();
         boolean available = legacy.available();
         for (var rows : sessions.values()) {
@@ -47,7 +42,7 @@ final class SalesTrackMetrics {
             available |= confirmed.available();
             legs.addAll(confirmed.legs());
             gaps.addAll(confirmed.gaps());
-            edges.addAll(confirmed.confirmedEdges());
+            edges.addAll(confirmed.observedEdges());
         }
         legs.sort(Comparator.comparing(leg -> leg.points().getFirst().clientOccurredAt()));
         gaps.sort(Comparator.comparing(TrackGapView::from));
@@ -61,6 +56,7 @@ final class SalesTrackMetrics {
         List<TrackLegView> legs = new ArrayList<>();
         List<TrackGapView> gaps = new ArrayList<>();
         List<TrackPointView> path = new ArrayList<>();
+        var edges = new ArrayList<ObservedEdge>();
         LocationPointRow previous = null, anchor = null;
         double total = 0, legDistance = 0;
         long seconds = 0;
@@ -95,14 +91,19 @@ final class SalesTrackMetrics {
                     // so slow walking can accumulate; draw exactly the path used for distance.
                     double movement = distance(anchor, row);
                     double uncertainty = anchor.accuracyMeters().doubleValue() + row.accuracyMeters().doubleValue();
-                    if (movement > uncertainty) { total += movement; legDistance += movement; anchor = row; path.add(view(row)); }
+                    if (movement > uncertainty) {
+                        edges.add(new ObservedEdge(time(anchor), time(row), movement));
+                        total += movement; legDistance += movement; anchor = row; path.add(view(row));
+                    } else {
+                        edges.add(new ObservedEdge(time(previous), time(row), 0));
+                    }
                 }
             }
             if (anchor == null) { anchor = row; path.add(view(row)); }
             previous = row; broken = false;
         }
         if (path.size() > 1) legs.add(new TrackLegView((int)Math.round(legDistance), path));
-        return new Result((int)Math.round(total), (int)(seconds / 60), pairs > 0, rejected, List.copyOf(legs), List.copyOf(gaps));
+        return new Result((int)Math.round(total), (int)(seconds / 60), pairs > 0, rejected, List.copyOf(legs), List.copyOf(gaps), List.copyOf(edges));
     }
 
     private static Result confirmed(List<LocationPointRow> input, int sampleIntervalSeconds) {
@@ -136,6 +137,8 @@ final class SalesTrackMetrics {
                 } else {
                     pairs++;
                     observedMs += elapsed;
+                    if (resting(previous) && resting(witness))
+                        edges.add(new ObservedEdge(time(previous), time(witness), 0));
                 }
             }
             previous = witness;

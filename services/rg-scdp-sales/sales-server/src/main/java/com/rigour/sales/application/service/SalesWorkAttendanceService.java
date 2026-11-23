@@ -589,7 +589,7 @@ public class SalesWorkAttendanceService {
         if (date == null) throw badRequest("业务日期不能为空");
         SalesWorkContextService.SalesIdentity identity =
                 contextService.resolveIdentity(caller, clock.instant());
-        return buildTrack(caller.tenantId(), identity.profile().id(), date);
+        return buildTrack(caller.tenantId(), identity.profile().id(), date, false);
     }
 
     /** 管理端精确轨迹查询；独立敏感权限控制并记录查看审计。 */
@@ -597,7 +597,7 @@ public class SalesWorkAttendanceService {
         CallerIdentity caller = requireCaller("sales:location:sensitive:read");
         if (salesProfileId == null || date == null) throw badRequest("销售人员和业务日期不能为空");
         fieldwork.requireProfile(salesProfileId, "sales:location:sensitive:read");
-        WorkDayTrackView result = buildTrack(caller.tenantId(), salesProfileId, date);
+        WorkDayTrackView result = buildTrack(caller.tenantId(), salesProfileId, date, true);
         appendAudit(
                 caller,
                 "SALES_LOCATION_SENSITIVE_READ",
@@ -610,7 +610,7 @@ public class SalesWorkAttendanceService {
         return result;
     }
 
-    private WorkDayTrackView buildTrack(UUID tenantId, UUID salesProfileId, LocalDate date) {
+    private WorkDayTrackView buildTrack(UUID tenantId, UUID salesProfileId, LocalDate date, boolean includeCheckInSegment) {
         WorkDaySnapshot workDay =
                 repository
                         .findWorkDay(tenantId, salesProfileId, date)
@@ -690,7 +690,7 @@ public class SalesWorkAttendanceService {
                             reviewStatus(visit), target.storeAddress()));
         }
         List<TrackTravelSegmentView> segments =
-                travelSegments(visitRows, targets, pointRows, metrics.confirmedEdges(), policy.locationSampleIntervalSeconds());
+                travelSegments(visitRows, targets, metrics.observedEdges(), includeCheckInSegment ? workDay.checkedInAt() : null);
         return new WorkDayTrackView(
                 workDay.id(),
                 workDay.businessDate(),
@@ -704,53 +704,30 @@ public class SalesWorkAttendanceService {
                 pointRows.stream().anyMatch(SalesWorkAttendanceRepository.LocationPointRow::confirmedTrack));
     }
 
-    private static List<TrackTravelSegmentView> travelSegments(
+    static List<TrackTravelSegmentView> travelSegments(
             List<VisitSnapshot> visits,
             Map<UUID, VisitTargetSnapshot> targets,
-            List<SalesWorkAttendanceRepository.LocationPointRow> points,
-            List<SalesTrackMetrics.ObservedEdge> confirmedEdges, int sampleIntervalSeconds) {
+            List<SalesTrackMetrics.ObservedEdge> edges, Instant checkedInAt) {
         List<TrackTravelSegmentView> segments = new ArrayList<>();
-        for (int index = 1; index < visits.size(); index++) {
-            VisitSnapshot fromVisit = visits.get(index - 1);
-            VisitSnapshot toVisit = visits.get(index);
-            VisitTargetSnapshot fromTarget = targets.get(fromVisit.id());
-            VisitTargetSnapshot toTarget = targets.get(toVisit.id());
-            if (fromTarget == null
-                    || toTarget == null
-                    || fromVisit.checkedOutAt() == null
-                    || toVisit.checkedInAt() == null) continue;
-            Instant from = fromVisit.checkedOutAt();
-            Instant to = toVisit.checkedInAt();
-            List<SalesWorkAttendanceRepository.LocationPointRow> segmentPoints =
-                    points.stream()
-                            .filter(
-                                    point ->
-                                            !point.confirmedTrack() && !pointTime(point).isBefore(from)
-                                                    && !pointTime(point).isAfter(to))
-                            .toList();
-            var measured = SalesTrackMetrics.calculate(segmentPoints, sampleIntervalSeconds);
-            double confirmedMeters = confirmedEdges.stream()
+        for (int index = checkedInAt == null ? 1 : 0; index < visits.size(); index++) {
+            VisitSnapshot previous = index == 0 ? null : visits.get(index - 1);
+            VisitSnapshot visit = visits.get(index);
+            Instant from = previous == null ? checkedInAt : previous.checkedOutAt();
+            Instant to = visit.checkedInAt();
+            if (from == null || to == null || to.isBefore(from)) continue;
+            var measured = edges.stream()
                     .filter(edge -> !edge.from().isBefore(from) && !edge.to().isAfter(to))
-                    .mapToDouble(SalesTrackMetrics.ObservedEdge::meters).sum();
-            segments.add(
-                    new TrackTravelSegmentView(
-                            fromVisit.id(),
-                            toVisit.id(),
-                            index,
-                            index + 1,
-                            fromTarget.storeName(),
-                            toTarget.storeName(),
-                            measured.distanceMeters() + (int)Math.round(confirmedMeters),
-                            (int) Math.max(0, Duration.between(from, to).toMinutes()),
-                            measured.available() || confirmedMeters > 0 ? "OBSERVED_ESTIMATE" : "UNAVAILABLE"));
+                    .mapToDouble(SalesTrackMetrics.ObservedEdge::meters).summaryStatistics();
+            var origin = previous == null ? null : targets.get(previous.id());
+            var destination = targets.get(visit.id());
+            segments.add(new TrackTravelSegmentView(
+                    previous == null ? null : previous.id(), visit.id(), index, index + 1,
+                    previous == null ? "签到" : origin == null ? null : origin.storeName(),
+                    destination == null ? null : destination.storeName(), (int)Math.round(measured.getSum()),
+                    (int)Duration.between(from, to).toMinutes(),
+                    measured.getCount() > 0 ? "OBSERVED_ESTIMATE" : "UNAVAILABLE"));
         }
         return List.copyOf(segments);
-    }
-
-    private static Instant pointTime(SalesWorkAttendanceRepository.LocationPointRow point) {
-        return point.clientOccurredAt() == null
-                ? point.serverReceivedAt()
-                : point.clientOccurredAt();
     }
 
     private static String reviewStatus(VisitSnapshot visit) {

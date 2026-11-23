@@ -105,9 +105,9 @@ class FieldworkReportServiceTest {
                         null,
                         null,
                         null,
-                        at("10:13"), true),
+                        at("10:13"), true, ms, null),
                 store,
-                null);
+                null, null);
     }
 
     @BeforeEach
@@ -186,6 +186,8 @@ class FieldworkReportServiceTest {
         assertThat(report.total()).isEqualTo(2);
         assertThat(report.items()).hasSize(1);
         var s = report.summary();
+        assertThat(s.signedInPeople()).isEqualTo(2);
+        assertThat(s.visitingPeople()).isZero();
         assertThat(
                         List.of(
                                 s.stores(),
@@ -315,9 +317,9 @@ class FieldworkReportServiceTest {
         var raw = old.visit();
         var historical = new Visit(raw.id(), b, oldDay, "B", "B", raw.store(), null, raw.status(),
                 raw.arrived().minus(Duration.ofDays(730)), raw.departed().minus(Duration.ofDays(730)),
-                null, null, null, null, 1, "VALID", null, null, null, 0, 0, 0, 0, null, null, null, null, false);
+                null, null, null, null, 1, "VALID", null, null, null, 0, 0, 0, 0, null, null, null, null, false, null, null);
         when(facts.visits(tenant, null, null, access, null)).thenReturn(List.of(
-                new VisitFact(historical, old.storeKey(), null), visit(a, "A", 1, "本月门店", null, 0, 0, 0)));
+                new VisitFact(historical, old.storeKey(), null, null), visit(a, "A", 1, "本月门店", null, 0, 0, 0)));
         var http = org.springframework.test.web.servlet.setup.MockMvcBuilders.standaloneSetup(
                 new com.rigour.sales.api.FieldworkReportController(service)).build();
         var get = org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get("/api/v1/sales/management/visits/records");
@@ -328,6 +330,87 @@ class FieldworkReportServiceTest {
                 null, null, null, 1, 25).items()).extracting(Visit::id).containsExactly(raw.id());
         assertThat(service.ledger(null, null, null, null, null, false, "乙", "",
                 null, null, null, 1, 25).items()).isEmpty();
+    }
+
+    @Test void visitingPeopleCountsEmployeesWithOpenVisitsAcrossTheWholeRoster() {
+        var first = spy(visit(b, "B", 1, "门店一", null, 0, 0, 0).visit());
+        var second = spy(visit(b, "B", 2, "门店二", null, 0, 0, 0).visit());
+        doReturn(null).when(first).departed();
+        doReturn(null).when(second).departed();
+        when(facts.visits(tenant, day, day, access, null)).thenReturn(List.of(
+                new VisitFact(first, null, null, 1L), new VisitFact(second, null, null, 2L)));
+        for (int page : List.of(1, 2)) {
+            var report = service.report(day, new FieldworkReportService.Filters(
+                    null, null, false, null, null, false, "visits", page, 1));
+            assertThat(report.items()).hasSize(1);
+            assertThat(report.summary().visitingPeople()).isOne();
+            assertThat(report.summary().signedInPeople()).isEqualTo(2);
+        }
+    }
+
+    @Test void ledgerSortsWholeResultBeforePagingAndUsesChineseNameOrder() {
+        var first = service.ledger(day, day, null, null, null, false, "", "", null, null, null,
+                1, 1, "person", null);
+        var second = service.ledger(day, day, null, null, null, false, "", "", null, null, null,
+                3, 1, "person", null);
+        assertThat(first.items()).extracting(Visit::name).containsExactly("甲");
+        assertThat(second.items()).extracting(Visit::name).containsExactly("乙");
+
+        Visit beijing = sortVisit(day, "10:00", null, "北京市");
+        Visit anshan = sortVisit(day, "09:00", "11:00", "鞍山市");
+        Visit suzhou = sortVisit(day.minusDays(1), "12:00", "12:30", "苏州市");
+        var rows = List.of(anshan, suzhou, beijing);
+        assertThat(rows.stream().sorted(FieldworkReportService.ledgerOrder("department", null)).toList())
+                .containsExactly(anshan, beijing, suzhou);
+        assertThat(rows.stream().sorted(FieldworkReportService.ledgerOrder("date", false)).toList())
+                .containsExactly(beijing, anshan, suzhou);
+        assertThat(rows.stream().sorted(FieldworkReportService.ledgerOrder("date", true)).toList())
+                .containsExactly(suzhou, beijing, anshan);
+        assertThat(rows.stream().sorted(FieldworkReportService.ledgerOrder("arrived", null)).toList())
+                .containsExactly(suzhou, beijing, anshan);
+        assertThat(rows.stream().sorted(FieldworkReportService.ledgerOrder("departed", null)).toList())
+                .containsExactly(suzhou, anshan, beijing);
+        assertThat(rows.stream().sorted(FieldworkReportService.ledgerOrder("departed", true)).toList())
+                .containsExactly(anshan, suzhou, beijing);
+    }
+
+    @Test void storeSortKeepsRenamedVisitsTogetherAndSeparatesStoresWithTheSameNameAcrossPages() {
+        var newest = visit(a, "A", 1, "北京店", null, 0, 0, 0).visit();
+        var old = spy(visit(b, "B", 1, "旧名店", null, 0, 0, 0).visit());
+        doReturn(at("09:00")).when(old).arrived();
+        var sameName = visit(b, "B", 2, "北京店", null, 0, 0, 0).visit();
+        var anshan = visit(a, "A", 2, "鞍山店", null, 0, 0, 0).visit();
+        when(facts.visits(tenant, day, day, access, null)).thenReturn(List.of(
+                new VisitFact(old, null, null, 1L), new VisitFact(sameName, null, null, 2L),
+                new VisitFact(anshan, null, null, 3L), new VisitFact(newest, null, null, 1L)));
+        assertThat(service.ledger(day, day, null, null, null, false, "", "", null, null, null,
+                1, 2, "store", null).items()).extracting(Visit::id).containsExactly(anshan.id(), newest.id());
+        assertThat(service.ledger(day, day, null, null, null, false, "", "", null, null, null,
+                2, 2, "store", null).items()).extracting(Visit::id).containsExactly(old.id(), sameName.id());
+        assertThat(service.ledger(day, day, null, null, null, false, "", "", null, null, null,
+                1, 20, "store", false).items()).extracting(Visit::id)
+                .containsExactly(newest.id(), old.id(), sameName.id(), anshan.id());
+    }
+
+    @Test void ledgerResolvesOnlyStoresOnThePageByIdEvenWhenNamesMatch() {
+        var first = visit(a, "A", 1, "同名门店", null, 0, 0, 0).visit();
+        var second = visit(b, "B", 2, "同名门店", null, 0, 0, 0).visit();
+        when(facts.visits(tenant, day, day, access, null)).thenReturn(List.of(
+                new VisitFact(first, null, null, 11L), new VisitFact(second, null, null, 22L)));
+        when(directory.storeRegions(tenant, List.of(11L))).thenReturn(Map.of(11L, "甘肃省庆阳市"));
+        var ledger = service.ledger(day, day, a, null, null, false, "", "", null, null, null,
+                1, 1, "date", false);
+        assertThat(ledger.storeRegions()).containsExactlyEntriesOf(Map.of(first.id(), "甘肃省庆阳市"));
+        verify(directory).storeRegions(tenant, List.of(11L));
+    }
+
+    private Visit sortVisit(LocalDate businessDay, String arrived, String departed, String department) {
+        Visit visit = mock(Visit.class);
+        when(visit.date()).thenReturn(businessDay);
+        when(visit.arrived()).thenReturn(at(arrived));
+        when(visit.departed()).thenReturn(departed == null ? null : at(departed));
+        when(visit.departmentName()).thenReturn(department);
+        return visit;
     }
 
     @Test void riskQueueIntersectsItsOwnEmployeeScopeWithDashboardScope() throws Exception {
