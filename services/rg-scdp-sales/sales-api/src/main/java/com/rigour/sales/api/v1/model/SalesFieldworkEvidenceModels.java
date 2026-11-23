@@ -16,6 +16,7 @@ public final class SalesFieldworkEvidenceModels {
             String captureStatus, String resultNote, String contactOutcome, String intentionLevel) {}
     public record VisitHistory(boolean storeLinked, Capture current, long ownVisits7, long ownDays7,
             long ownVisits30, long ownDays30, long visibleVisits30, long visibleDays30,
-            List<Capture> items, long total, int page, int pageSize) {}
+            List<Capture> items, long total, int page, int pageSize,
+            Long ownPriorVisits, Long visiblePriorVisits) {}
     public record StartReview(String requestId, String kind, String note) {}
 }

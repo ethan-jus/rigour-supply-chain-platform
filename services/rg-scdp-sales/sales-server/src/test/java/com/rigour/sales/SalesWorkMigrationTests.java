@@ -419,7 +419,12 @@ class SalesWorkMigrationTests {
                 """, Integer.class);
         assertThat(evidenceColumns).isEqualTo(12);
         assertThat(evidenceUniqueColumns).isEqualTo(7);
-        assertThat(migrationCount).isEqualTo(44);
+        assertThat(migrationCount).isEqualTo(45);
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE()
+                  AND ((table_name='sales_location_session' AND column_name='confirmed_track')
+                    OR (table_name='sales_location_point' AND column_name='route_path'))
+                """, Integer.class)).isEqualTo(2);
         assertThat(jdbc.queryForObject("""
                 SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE()
                   AND ((table_name='sales_field_policy_version' AND column_name IN ('allow_resume','work_hours_enabled'))

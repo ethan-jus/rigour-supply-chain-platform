@@ -18,6 +18,18 @@ class JdbcWecomStoreTest {
     CustomerFact customer(String id,String origin){return new CustomerFact(id,"王店长",now.minusSeconds(10),origin);}
     void sync(String employee,long sequence,CustomerFact... people){f.inTx(()->{wecom.accept(new Snapshot(f.tenant,"corp:app",employee,"销售"+employee,sequence,now,true,List.of(people)),now);return null;});}
     Page rows(String employee){return wecom.list(f.hangzhou("crm:pool:private-read",employee),true,false,null,20);}
+    @Test void dailySourceUsesShanghaiDayAndActualNewRelationships(){
+        var query=new FieldworkSourceQuery(new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(JdbcStorePoolStoreTest.jdbc));
+        var before=now;now=Instant.parse("2026-11-16T15:00:00Z");
+        sync("2",1,customer("baseline","NEW"));sync("3",1);
+        now=before;sync("2",2,customer("baseline","NEW"),customer("shared","NEW"),customer("transfer","TRANSFER"));sync("3",2,customer("shared","NEW"));
+        sync("4",1,customer("late-baseline","BASELINE"));
+        var cmd=new com.rigour.merchant.api.v1.model.FieldworkSources.Query(java.time.LocalDate.parse("2026-11-17"),now,List.of("2","3","4","5"),List.of());
+        var result=query.find(f.tenant,cmd);
+        assertThat(result.contacts().get("2").additions()).hasSize(1).isEqualTo(result.contacts().get("3").additions());
+        assertThat(result.contacts().get("4").status()).isEqualTo("PARTIAL");assertThat(result.contacts()).doesNotContainKey("5");
+        assertThat(query.find(UUID.randomUUID().toString(),cmd).contacts()).isEmpty();
+    }
     @Test void noConnectionIsUnknownAndBaselineIsNotAcquisition(){
         var s=f.hangzhou("crm:pool:private-read","2");assertThat(wecom.summary(s,true,now.minusSeconds(100),now).activeContacts()).isNull();
         sync("2",1,customer("first","NEW"));var result=wecom.summary(s,true,now.minusSeconds(100),now);

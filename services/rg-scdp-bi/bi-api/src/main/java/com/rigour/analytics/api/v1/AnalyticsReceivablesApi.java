@@ -16,6 +16,8 @@ public interface AnalyticsReceivablesApi {
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) String ownerStaffCode,
             @RequestParam(required = false) String customerId,
+            @RequestParam(required = false) Long departmentId,
+            @RequestParam(defaultValue = "false") boolean includeSubDepartments,
             @RequestParam(required = false) String aging,
             @RequestParam(required = false) String collector,
             @RequestParam(required = false) Boolean disputed,

@@ -1,6 +1,7 @@
 package com.rigour.hr.application.service;
 
 import com.rigour.hr.api.v1.model.*;
+
 import java.math.BigDecimal;
 import java.time.YearMonth;
 import java.time.temporal.ChronoUnit;
@@ -21,7 +22,8 @@ final class PayrollPerformanceReportFacts {
         String cityCode = subject != null && Objects.equals(row.cityName(), subject.cityName()) ? subject.cityCode() : null;
         var metrics = new ArrayList<PayrollPerformanceExportView.Metric>();
         for (var item : ManagerCityTargetResolver.METRICS.entrySet().stream().sorted(Map.Entry.comparingByKey()).toList()) {
-            if (Set.of("CONTACTED_STORE_COUNT", "ORDERED_STORE_COUNT").contains(item.getKey())) continue;
+            if (Set.of("CONTACTED_STORE_COUNT", "ORDERED_STORE_COUNT").contains(item.getKey()))
+                continue;
             var configured = definition == null || definition.manager() == null ? null : definition.manager().metrics().stream()
                     .filter(m -> item.getKey().equals(ManagerCityTargetResolver.metric(m))).findFirst().orElse(null);
             var saved = snapshot == null ? null : snapshot.metrics().stream()
@@ -37,42 +39,19 @@ final class PayrollPerformanceReportFacts {
             metrics.add(new PayrollPerformanceExportView.Metric(item.getKey(), item.getValue(), actual, target,
                     configured == null ? null : configured.weight(), evidence));
         }
-        var performance = row.calculation().performanceDetail();
-        var days = performance == null ? List.<PayrollPerformanceDayView>of() : performance.days();
-        boolean complete = performance != null && days.stream().allMatch(PayrollPerformanceDayView::evidenceComplete)
-                && (!days.isEmpty() || snapshot != null && snapshot.assessedDays() == 0 && performance.issues().isEmpty());
-        var confirmed = attendance != null && "CONFIRMED".equals(attendance.attendanceStatus());
-        var override = confirmed && attendance.assessmentOverride() != null ? attendance.assessmentOverride()
-                : performance == null ? null : performance.assessmentOverride();
-        Integer actualCheckins = complete ? days.stream().mapToInt(PayrollPerformanceDayView::checkins).sum() : null;
-        Integer actualVisits = complete ? days.stream().mapToInt(PayrollPerformanceDayView::effectiveVisits).sum() : null;
-        Integer expectedCheckins = complete ? days.stream().mapToInt(d -> d.checkins() + d.missingCheckins()).sum() : null;
-        Integer expectedVisits = complete ? days.stream().mapToInt(d -> d.effectiveVisits() + d.missingVisits()).sum() : null;
-        if (definition != null && definition.sales() != null && definition.calendar() != null && !days.isEmpty()) {
-            var dates = days.stream().map(PayrollPerformanceDayView::date).collect(java.util.stream.Collectors.toSet());
-            var fractions = PayrollProcessAssessment.fractions(definition.calendar().window(), dates,
-                    confirmed ? attendance.exceptions() : List.of());
-            expectedCheckins = fractions.values().stream().mapToInt(f -> f.multiply(BigDecimal.valueOf(definition.sales().dailyCheckins())).setScale(0, java.math.RoundingMode.CEILING).intValueExact()).sum();
-            expectedVisits = fractions.values().stream().mapToInt(f -> f.multiply(BigDecimal.valueOf(definition.sales().dailyVisits())).setScale(0, java.math.RoundingMode.CEILING).intValueExact()).sum();
-        }
-        if (override != null) {
-            if (override.expectedCheckins() != null) expectedCheckins = override.expectedCheckins();
-            if (override.expectedVisits() != null) expectedVisits = override.expectedVisits();
-            if (override.actualCheckins() != null) actualCheckins = override.actualCheckins();
-            if (override.actualVisits() != null) actualVisits = override.actualVisits();
-            if (override.actualCheckins() != null || override.actualVisits() != null) issues.add("打卡/拜访采用人工核定实绩");
-            else if (actualCheckins == null || actualVisits == null) issues.add("已有缺失次数核定，实际总次数待录入，不能由缺失次数反推");
-        }
+        boolean confirmed=attendance!=null && "CONFIRMED".equals(attendance.attendanceStatus());
+        var summary=processSummary(row,attendance,issues);
         BigDecimal target = report.collectionTarget();
         String basis = target == null ? "回款指标待匹配" : "工资快照的当月回款考核目标";
         var manualTarget = targets.stream().filter(t -> row.month().equals(t.month()) && "SALES_OWNER".equals(t.dimensionType())
                 && row.employeeCode().equals(t.code()) && "FULLY_PAID_RECEIPT_BASIS".equals(t.metric())).findFirst().orElse(null);
         if (manualTarget != null && target != null && manualTarget.value().compareTo(target) == 0)
             basis = "工资采用的本月人工核定回款目标";
-        else if (manualTarget != null && target != null) issues.add("本月核定目标已变更，报表保留工资原目标，需重新核算核对影响");
+        else if (manualTarget != null && target != null)
+            issues.add("本月核定目标已变更，报表保留工资原目标，需重新核算核对影响");
         if (definition != null && "SALES".equals(definition.performanceMode()) && employee.entryDate() != null) {
             long stage = ChronoUnit.MONTHS.between(YearMonth.from(employee.entryDate()), YearMonth.parse(row.month())) + 1;
-            if (stage == 1 && definition.sales().firstMonthExempt()) {
+            if (collectionExempt(YearMonth.parse(row.month()), employee.entryDate(), definition)) {
                 target = BigDecimal.ZERO;
                 basis = "入职首个自然月，回款免考核";
                 issues.remove("回款指标未配置");
@@ -89,11 +68,110 @@ final class PayrollPerformanceReportFacts {
             }
         }
         if (!confirmed) issues.add("考勤尚未确认，应/实出勤待核定");
-        var summary = new PayrollPerformanceExportView.Summary(confirmed && attendance.expectedDays() != null ? BigDecimal.valueOf(attendance.expectedDays()) : null,
-                confirmed ? attendance.actualDays() : null, expectedCheckins, actualCheckins, expectedVisits, actualVisits,
-                performance == null ? null : performance.processDeduction());
         return new PayrollPerformanceExportView(report.payrollId(), report.payrollRevision(), report.month(), report.employeeCode(), report.employeeName(), report.cityName(),
                 report.categories(), report.clothSales(), report.salesAmount(), report.collectionAmount(), report.refundAmount(), target, report.salesTarget(), report.commission(),
                 List.copyOf(issues), cityCode, role, employee.entryDate(), employee.leaveDate(), summary, List.copyOf(metrics), basis);
+    }
+
+    static boolean collectionExempt(
+            YearMonth period, java.time.LocalDate entryDate, PayrollSchemeDefinition rule) {
+        return entryDate != null
+                && period.equals(YearMonth.from(entryDate))
+                && rule != null
+                && "SALES".equals(rule.performanceMode())
+                && rule.sales() != null
+                && rule.sales().firstMonthExempt();
+    }
+
+    static PayrollPerformanceExportView.Summary processSummary(
+            PayrollDetailView row, AttendanceRow attendance, Set<String> issues) {
+        var snapshot = row.calculation().scheme();
+        var definition = snapshot == null ? null : snapshot.scheme().definition();
+        var performance = row.calculation().performanceDetail();
+        var days = performance == null ? List.<PayrollPerformanceDayView>of() : performance.days();
+        boolean complete =
+                performance != null
+                        && days.stream().allMatch(PayrollPerformanceDayView::evidenceComplete)
+                        && (!days.isEmpty()
+                                || snapshot != null
+                                        && snapshot.assessedDays() == 0
+                                        && performance.issues().isEmpty());
+        var confirmed = attendance != null && "CONFIRMED".equals(attendance.attendanceStatus());
+        var override =
+                confirmed && attendance.assessmentOverride() != null
+                        ? attendance.assessmentOverride()
+                        : performance == null ? null : performance.assessmentOverride();
+        Integer actualCheckins =
+                complete ? days.stream().mapToInt(PayrollPerformanceDayView::checkins).sum() : null;
+        Integer actualVisits =
+                complete
+                        ? days.stream().mapToInt(PayrollPerformanceDayView::effectiveVisits).sum()
+                        : null;
+        Integer expectedCheckins =
+                complete
+                        ? days.stream().mapToInt(d -> d.checkins() + d.missingCheckins()).sum()
+                        : null;
+        Integer expectedVisits =
+                complete
+                        ? days.stream().mapToInt(d -> d.effectiveVisits() + d.missingVisits()).sum()
+                        : null;
+        if (definition != null
+                && definition.sales() != null
+                && definition.calendar() != null
+                && !days.isEmpty()) {
+            var dates =
+                    days.stream()
+                            .map(PayrollPerformanceDayView::date)
+                            .collect(java.util.stream.Collectors.toSet());
+            var fractions =
+                    PayrollProcessAssessment.fractions(
+                            definition.calendar().window(),
+                            dates,
+                            confirmed ? attendance.exceptions() : List.of());
+            expectedCheckins =
+                    fractions.values().stream()
+                            .mapToInt(
+                                    f ->
+                                            f.multiply(
+                                                            BigDecimal.valueOf(
+                                                                    definition
+                                                                            .sales()
+                                                                            .dailyCheckins()))
+                                                    .setScale(0, java.math.RoundingMode.CEILING)
+                                                    .intValueExact())
+                            .sum();
+            expectedVisits =
+                    fractions.values().stream()
+                            .mapToInt(
+                                    f ->
+                                            f.multiply(
+                                                            BigDecimal.valueOf(
+                                                                    definition
+                                                                            .sales()
+                                                                            .dailyVisits()))
+                                                    .setScale(0, java.math.RoundingMode.CEILING)
+                                                    .intValueExact())
+                            .sum();
+        }
+        if (override != null) {
+            if (override.expectedCheckins() != null) expectedCheckins = override.expectedCheckins();
+            if (override.expectedVisits() != null) expectedVisits = override.expectedVisits();
+            if (override.actualCheckins() != null) actualCheckins = override.actualCheckins();
+            if (override.actualVisits() != null) actualVisits = override.actualVisits();
+            if (override.actualCheckins() != null || override.actualVisits() != null)
+                issues.add("打卡/拜访采用人工核定实绩");
+            else if (actualCheckins == null || actualVisits == null)
+                issues.add("已有缺失次数核定，实际总次数待录入，不能由缺失次数反推");
+        }
+        return new PayrollPerformanceExportView.Summary(
+                confirmed && attendance.expectedDays() != null
+                        ? BigDecimal.valueOf(attendance.expectedDays())
+                        : null,
+                confirmed ? attendance.actualDays() : null,
+                expectedCheckins,
+                actualCheckins,
+                expectedVisits,
+                actualVisits,
+                performance == null ? null : performance.processDeduction());
     }
 }

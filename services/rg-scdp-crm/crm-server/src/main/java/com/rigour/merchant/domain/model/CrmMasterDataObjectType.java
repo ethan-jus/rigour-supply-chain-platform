@@ -10,7 +10,7 @@ public enum CrmMasterDataObjectType {
     ADDRESS;
 
     public static final List<CrmMasterDataObjectType> SYNC_ORDER = List.of(
-            CUSTOMER_TYPE, CUSTOMER_AREA, CUSTOMER, ADDRESS);
+            CUSTOMER_TYPE, CUSTOMER, ADDRESS);
 
     public static CrmMasterDataObjectType parse(String value) {
         if (value == null || value.isBlank() || "ALL".equalsIgnoreCase(value)) return null;

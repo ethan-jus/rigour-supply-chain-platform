@@ -477,7 +477,48 @@ class IntegrationApplicationTests {
     }
 
     @Test
-    void orderSyncResolvesCustomerAreaMappingFallsBackToCustomerRegionAndRepairsBlankRegion() {
+    void retiringStaffSyncReleasesOnlyItsJobsAndKeepsTheirHistory() throws Exception {
+        try (var connection = java.sql.DriverManager.getConnection(
+                MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword())) {
+            String tenant = UUID.randomUUID().toString();
+            try (var insert = connection.prepareStatement("""
+                    INSERT INTO integration_dhb_page_job
+                        (tenant_id,job_id,connector_id,scope,status,stage,active_slot,started_at,heartbeat_at)
+                    VALUES (?,?,? ,?,'RUNNING','fixture',1,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
+                    """)) {
+                for (String scope : List.of("SALESPERSON", "BUSINESS_CHAIN")) {
+                    insert.setString(1, tenant);
+                    insert.setString(2, UUID.randomUUID().toString());
+                    insert.setString(3, UUID.randomUUID().toString());
+                    insert.setString(4, scope);
+                    insert.executeUpdate();
+                }
+            }
+            org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+                    new org.springframework.core.io.ClassPathResource("db/migration/V36__retire_dhb_staff_sync_jobs.sql"));
+            try (var select = connection.prepareStatement("""
+                    SELECT scope,status,active_slot,finished_at
+                    FROM integration_dhb_page_job WHERE tenant_id=? ORDER BY scope
+                    """)) {
+                select.setString(1, tenant);
+                try (var rows = select.executeQuery()) {
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString("scope")).isEqualTo("BUSINESS_CHAIN");
+                    assertThat(rows.getString("status")).isEqualTo("RUNNING");
+                    assertThat(rows.getInt("active_slot")).isEqualTo(1);
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString("scope")).isEqualTo("SALESPERSON");
+                    assertThat(rows.getString("status")).isEqualTo("FAILED");
+                    assertThat(rows.getObject("active_slot")).isNull();
+                    assertThat(rows.getObject("finished_at")).isNotNull();
+                    assertThat(rows.next()).isFalse();
+                }
+            }
+        }
+    }
+
+    @Test
+    void orderSyncUsesOnlyLocalCustomerRegionAndRepairsBlankRegion() {
         UUID tenant = UUID.randomUUID();
         UUID actor = UUID.randomUUID();
         ConnectorView connector =
@@ -577,17 +618,17 @@ class IntegrationApplicationTests {
         assertThat(result.acceptedCount()).isEqualTo(2);
         assertThat(orderProjection.rows.values())
                 .extracting(SalesOrderDetailView::regionCode)
-                .containsExactlyInAnyOrder("CUSAREA-WH", "CUSAREA-FALLBACK");
+                .containsExactlyInAnyOrder("CUSAREA-FALLBACK", "CUSAREA-FALLBACK");
         assertThat(
                         syncLogMapper.selectList(
                                 Wrappers.<IntegrationSyncLogEntity>query()
                                         .eq("tenant_id", IntegrationUuidCodec.encode(tenant))
                                         .eq("error_code", "DHB_ORDER_REGION_FROM_CUSTOMER")))
-                .hasSize(1);
+                .hasSize(2);
 
         SalesOrderDetailView areaRow =
                 orderProjection.rows.values().stream()
-                        .filter(row -> "CUSAREA-WH".equals(row.regionCode()))
+                        .filter(row -> "DHB-AREA-1".equals(row.sourceOrderNo()))
                         .findFirst()
                         .orElseThrow();
         orderProjection.blankRegionAndSubmit(areaRow.id());
@@ -597,7 +638,7 @@ class IntegrationApplicationTests {
 
         assertThat(repaired.status()).isEqualTo("SUCCEEDED");
         assertThat(orderProjection.salesOrder(caller, areaRow.id()).regionCode())
-                .isEqualTo("CUSAREA-WH");
+                .isEqualTo("CUSAREA-FALLBACK");
     }
 
     @Test
@@ -1823,12 +1864,6 @@ class IntegrationApplicationTests {
     }
 
     private static final class FakeHrDhbStaffSyncClient implements HrDhbStaffSyncClient {
-        @Override
-        public StaffSyncResult sync(CallerIdentity caller, List<DhbStaffRow> rows) {
-            int received = rows == null ? 0 : rows.size();
-            return new StaffSyncResult(received, 0, 0, received, 0, List.of());
-        }
-
         @Override
         public List<ResolvedEmployee> resolve(
                 CallerIdentity caller,

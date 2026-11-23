@@ -100,6 +100,18 @@ public class StorePoolService {
         listView(query.view());validate(query);var scope=scope(action(query.view()));
         return store.list(scope,query,typeCodes(scope,query));
     }
+    public FollowupEvidencePage followupEvidence(String view, java.time.LocalDate from,
+            java.time.LocalDate through, String ownerCode, String cursor, int size) {
+        var today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        if (!Set.of("MINE", "TEAM").contains(view) || from.isAfter(through)
+                || !java.time.YearMonth.from(from).equals(java.time.YearMonth.from(through))
+                || through.isAfter(today) || size < 1 || size > 100
+                || (ownerCode != null && (ownerCode.isBlank() || ownerCode.length() > 50)))
+            throw new RequestValidationException("请选择有效的跟进月份、员工与分页范围");
+        var query = new Query(view, null, null, null, null, null, null, null, null, null, cursor, size);
+        validate(query);
+        return store.followupEvidence(scope(action(view)), query, ownerCode, from, through);
+    }
     public NearbyModels.Page<Row> nearby(Query query,NearbyModels.Query near) {
         if(!Set.of("PUBLIC","MINE").contains(query.view()))throw new RequestValidationException("此门店视图不支持附近排序");
         validate(query);var scope=scope(action(query.view()));
@@ -306,6 +318,7 @@ public class StorePoolService {
         if(q.recordStatus()!=null&&!q.recordStatus().isBlank()&&!"ALL".equals(q.view()))
             throw new RequestValidationException("档案状态筛选仅供商家库管理使用");
         oneOf(q.phase(),Set.of("FIRST_VISIT","FOLLOW_UP","COOPERATING"));
+        oneOf(q.followup(),Set.of("VISITED_NO_ORDER"));
         oneOf(q.protection(),Set.of("DUE_SOON","OVERDUE","HELD"));
     }
     private static void oneOf(String value,Set<String> allowed) {if(value!=null&&!value.isBlank()&&!allowed.contains(value))throw new RequestValidationException("筛选编码无效");}

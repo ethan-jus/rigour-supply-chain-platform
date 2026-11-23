@@ -7,8 +7,6 @@ import com.rigour.tenant.iam.application.service.management.IamStaffManagementSe
 import com.rigour.tenant.iam.application.service.management.ManagementModels.Actor;
 import com.rigour.tenant.iam.application.service.management.StaffManagementModels.DhbStaffResolveRequest;
 import com.rigour.tenant.iam.application.service.management.StaffManagementModels.DhbStaffResolvedView;
-import com.rigour.tenant.iam.application.service.management.StaffManagementModels.DhbStaffSyncRequest;
-import com.rigour.tenant.iam.application.service.management.StaffManagementModels.StaffSyncResultView;
 import java.util.List;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -23,12 +21,6 @@ public final class InternalIamDhbStaffController {
 
     public InternalIamDhbStaffController(IamStaffManagementService service) {
         this.service = service;
-    }
-
-    @PostMapping("/sync")
-    public ApiResponse<StaffSyncResultView> sync(@RequestBody DhbStaffSyncRequest request) {
-        CallerIdentity caller = serviceCaller("iam:staff:sync");
-        return ApiResponse.success(service.syncDinghuobaoStaff(actor(caller), request));
     }
 
     @PostMapping("/resolve")

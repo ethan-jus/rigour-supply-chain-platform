@@ -135,7 +135,8 @@ public class SalesWorkManagementService {
         var clips = recordingRepository.findClips(caller.tenantId(), session.get().id());
         var views = clips.stream()
                 .map(clip -> new ManagementRecordingClipView(clip.id(), clip.clipIndex(),
-                        clip.objectSizeBytes(), clip.clientDurationMs(), clip.uploadStatus(), clip.createdAt()))
+                        clip.objectSizeBytes(), clip.clientDurationMs(), clip.uploadStatus(),
+                        clip.createdAt(), clip.verifyStatus(), clip.verifiedDurationMs()))
                 .toList();
         return new ManagementRecordingSessionView(visitId, views.size(),
                 recordingRepository.uploadedTotalDurationMs(caller.tenantId(), session.get().id()), views);

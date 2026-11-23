@@ -9,4 +9,8 @@ public record SalesPerformanceRow(
         BigDecimal target,
         Integer checkins,
         Integer visits,
-        Integer missingVisits) {}
+        Integer missingVisits,
+        Integer expectedVisits,
+        String employeeName,
+        String city,
+        boolean collectionExempt) {}

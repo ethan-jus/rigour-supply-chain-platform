@@ -1,7 +1,6 @@
 package com.rigour.order.infrastructure.integration;
 
-import com.rigour.order.application.port.out.EmployeePerformanceTargetClient;
-import java.math.BigDecimal;
+import com.rigour.order.application.port.out.EmployeeBusinessTargetClient;
 import org.springframework.web.util.UriComponentsBuilder;
 import com.rigour.shared.context.*;
 import com.rigour.shared.core.api.*;
@@ -18,12 +17,12 @@ import java.time.Duration;
 import java.util.*;
 
 @Component
-public final class HttpEmployeePerformanceTargetClient implements EmployeePerformanceTargetClient {
+public final class HttpEmployeeBusinessTargetClient implements EmployeeBusinessTargetClient {
     private final TrustedContextSigner signer;
     private final RestClient client;
     private final String base;
 
-    public HttpEmployeePerformanceTargetClient(
+    public HttpEmployeeBusinessTargetClient(
             TrustedContextSigner signer,
             RestClient.Builder builder,
             @Value("${rigour.hr.base-url:http://rigour-hr-payroll-service}")
@@ -36,17 +35,17 @@ public final class HttpEmployeePerformanceTargetClient implements EmployeePerfor
         this.client = builder.requestFactory(factory).build();
     }
 
-    public BigDecimal value(String tenant, String employee, String from, String to) {
+    public Targets values(String tenant, String employee, String from, String to) {
         java.time.YearMonth.parse(from);
         java.time.YearMonth.parse(to);
-        var uri = UriComponentsBuilder.fromUriString(base + "/api/v1/hr/target-settings/performance-value")
+        var uri = UriComponentsBuilder.fromUriString(base + "/api/v1/hr/target-settings/business-values")
                 .queryParam("employeeCode", employee).queryParam("from", from).queryParam("to", to)
                 .build().encode().toUri();
         var caller =
                 new CallerIdentity(
                         "SERVICE",
                         UUID.nameUUIDFromBytes(
-                                "rigour-order-performance-target-reader"
+                                "rigour-order-business-target-reader"
                                         .getBytes(java.nio.charset.StandardCharsets.UTF_8)),
                         UUID.fromString(tenant),
                         null,
@@ -63,8 +62,10 @@ public final class HttpEmployeePerformanceTargetClient implements EmployeePerfor
                             .uri(uri)
                             .headers(h -> signed(caller, uri, "GET").forEach(h::set))
                             .retrieve()
-                            .body(new ParameterizedTypeReference<ApiResponse<BigDecimal>>() {});
-            if (result == null || !"OK".equals(result.code()) || result.data() == null)
+                            .body(new ParameterizedTypeReference<ApiResponse<Targets>>() {});
+            if (result == null || !"OK".equals(result.code()) || result.data() == null
+                    || result.data().salesTargetAmount() == null || result.data().receiptTargetAmount() == null
+                    || result.data().salesTargetAmount().signum() < 0 || result.data().receiptTargetAmount().signum() < 0)
                 throw new IllegalStateException("HR target response unavailable");
             return result.data();
         } catch (org.springframework.web.client.RestClientException | IllegalStateException e) {

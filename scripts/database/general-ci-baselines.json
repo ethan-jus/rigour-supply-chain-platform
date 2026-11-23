@@ -52,7 +52,12 @@
     "baseline": "services/rg-scdp-iam/iam-server/src/main/resources/db/bootstrap/B118__general_ci_bootstrap.sql",
     "baseline_sha256": "d90349ec3d25739d3a8a3ed4a3a4b259f60edffeee0536719409885d6de9c29a",
     "legacy_migrations": {
-      "V120__iam_complete_supply_permission_nodes.sql": "890b239a3a1cf3a8ff760424f09c837553ca8503120f9380da2f1e7ecb04db1b"
+      "V120__iam_complete_supply_permission_nodes.sql": "890b239a3a1cf3a8ff760424f09c837553ca8503120f9380da2f1e7ecb04db1b",
+      "V158__scm_action_catalog_and_retired_navigation.sql": "a6cc9568471cfe734cc222d1a67fb42c208f1715f52f3e2f7353d0774d71398d",
+      "V159__scm_navigation_labels_and_action_grants.sql": "6fff2fc2f03641dd9ae0db0742dffdfe6bca0f73ad2480d6809a3262e6a7c2f8",
+      "V160__retire_unused_order_actions_and_attach_attribution.sql": "818a5dbedeb4ac811993709856bb4a5aeafdabb72f71d1c59d752f7f19e14ff1",
+      "V161__scm_grouped_navigation.sql": "144b0990a767c3be4be5886dc7db1eb6a351355432689a8f1f252ced259addc5",
+      "V163__sales_own_followup_actions.sql": "5d8dfcf486b02c33f80098a8174fc76fe05f731f317df545fed33e88a9e44278"
     }
   },
   {
@@ -62,7 +67,14 @@
     "source_sha256": "a5c303775fef69bc760489ad75e7325a49d6ff121e4077a647d417e000362c7c",
     "baseline": "services/rg-scdp-iam/iam-server/src/main/resources/db/bootstrap/B120__general_ci_bootstrap.sql",
     "baseline_sha256": "4e80f305ee1fa29ce7af6ae809a0a61425921d2950e1b781d2f02deda9f7104e",
-    "explicit_charset_collation": true
+    "explicit_charset_collation": true,
+    "legacy_migrations": {
+      "V158__scm_action_catalog_and_retired_navigation.sql": "a6cc9568471cfe734cc222d1a67fb42c208f1715f52f3e2f7353d0774d71398d",
+      "V159__scm_navigation_labels_and_action_grants.sql": "6fff2fc2f03641dd9ae0db0742dffdfe6bca0f73ad2480d6809a3262e6a7c2f8",
+      "V160__retire_unused_order_actions_and_attach_attribution.sql": "818a5dbedeb4ac811993709856bb4a5aeafdabb72f71d1c59d752f7f19e14ff1",
+      "V161__scm_grouped_navigation.sql": "144b0990a767c3be4be5886dc7db1eb6a351355432689a8f1f252ced259addc5",
+      "V163__sales_own_followup_actions.sql": "5d8dfcf486b02c33f80098a8174fc76fe05f731f317df545fed33e88a9e44278"
+    }
   },
   {
     "migration_directory": "services/rg-scdp-integration/integration-server/src/main/resources/db/migration",

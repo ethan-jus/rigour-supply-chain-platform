@@ -25,6 +25,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.Objects;
 import java.util.regex.Pattern;
 
@@ -191,6 +192,7 @@ public class CrmInternalCustomerService {
         CallerIdentity actor = serviceActor(SYNC_PERMISSION);
         if (command == null) throw badRequest("客户同步参数不能为空");
         String sourceSystem = sourceSystem(command.sourceSystem());
+        if (Set.of("DINGHUOBAO", "DHB").contains(sourceSystem)) throw badRequest("请通过订货宝客户档案同步入口更新客户");
         List<ExternalCrmCustomerRowCommand> rows = externalRows(command.rows());
         ExternalCrmCustomerSyncResult result =
                 store.syncExternalCustomers(

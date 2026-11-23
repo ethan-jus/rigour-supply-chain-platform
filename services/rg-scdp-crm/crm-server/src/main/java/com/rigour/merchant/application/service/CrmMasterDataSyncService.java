@@ -132,7 +132,7 @@ public final class CrmMasterDataSyncService {
         }
         AuthorizationContext.requirePermission("crm:customer:write");
         int maxPages = maxPages(command == null ? null : command.maxPages());
-        CrmMasterDataObjectType selected = CrmMasterDataObjectType.parse(
+        CrmMasterDataObjectType selected = syncObjectType(
                 command == null ? null : command.objectType());
         SyncTargetView target = uniqueTarget(caller.tenantId());
         validateWindow(command == null ? null : command.from(), command == null ? null : command.to());
@@ -140,6 +140,13 @@ public final class CrmMasterDataSyncService {
                 selected == null ? CrmMasterDataObjectType.SYNC_ORDER : List.of(selected),
                 maxPages, "MANUAL", command == null ? null : command.from(),
                 command == null ? null : command.to());
+    }
+
+    private static CrmMasterDataObjectType syncObjectType(String value) {
+        CrmMasterDataObjectType type = CrmMasterDataObjectType.parse(value);
+        if (type == CrmMasterDataObjectType.CUSTOMER_AREA)
+            throw new IllegalArgumentException("订货宝归属地区已停用同步，请在归属地区中维护");
+        return type;
     }
 
     public SyncResult runScheduled(CallerIdentity caller, UUID connectorId,
@@ -175,7 +182,7 @@ public final class CrmMasterDataSyncService {
             int maxPages, Instant from, Instant to, String objectType,
             boolean incremental, Instant createdBefore, UUID initiatedBy, java.util.function.Consumer<String> progress) {
         requireScheduledCaller(caller);
-        CrmMasterDataObjectType selected = CrmMasterDataObjectType.parse(objectType);
+        CrmMasterDataObjectType selected = syncObjectType(objectType);
         if ((incremental || createdBefore != null) && selected != CrmMasterDataObjectType.CUSTOMER)
             throw new IllegalArgumentException("增量及创建截止范围仅适用于客户");
         if ((incremental || createdBefore != null) && (from != null || to != null))
@@ -193,27 +200,13 @@ public final class CrmMasterDataSyncService {
                     guard -> {
                         leaseAcquired.set(true);
                         if (incremental || createdBefore != null) {
-                            List<SyncObjectResult> results = new ArrayList<>();
-                            if (incremental) {
-                                // 客户增量可能引用新地区；在同一租约内先更新地区，不推断来源删除。
-                                SyncObjectResult areas = runObject(caller.tenantId(), connectorId, initiatedBy,
-                                        sourceTaskId, CrmMasterDataObjectType.CUSTOMER_AREA, pages,
-                                        initiatedBy == null ? "SCHEDULED" : "MANUAL", guard,
-                                        null, null, null, null, progress, false);
-                                results.add(areas);
-                                if ("SKIPPED".equals(areas.status()))
-                                    return new SyncResult(UUID.randomUUID(), "SKIPPED", List.copyOf(results));
-                            }
                             Instant watermark = incremental ? Instant.now() : createdBefore;
                             Instant cursor = incremental ? store.customerSyncCursor(caller.tenantId(), connectorId) : null;
                             Instant lower = cursor == null ? null : cursor.minusSeconds(300);
                             SyncObjectResult result = runObject(caller.tenantId(), connectorId, initiatedBy,
                                     sourceTaskId, selected, pages, initiatedBy == null ? "SCHEDULED" : "MANUAL", guard,
                                     lower, lower == null ? null : watermark, createdBefore, watermark, progress);
-                            results.add(result);
-                            String status = results.stream().anyMatch(item -> !"SUCCEEDED".equals(item.status()))
-                                    ? results.size() == 1 ? result.status() : "SUCCEEDED_WITH_WARNINGS" : "SUCCEEDED";
-                            return new SyncResult(UUID.randomUUID(), status, List.copyOf(results));
+                            return new SyncResult(UUID.randomUUID(), result.status(), List.of(result));
                         }
                         return runBatchUnderLease(caller.tenantId(), connectorId, initiatedBy,
                                 sourceTaskId, selected == null ? CrmMasterDataObjectType.SYNC_ORDER : List.of(selected),
@@ -297,7 +290,11 @@ public final class CrmMasterDataSyncService {
         }
         Accumulator counts = new Accumulator();
         try {
-            String objectName = objectType == CrmMasterDataObjectType.CUSTOMER_AREA ? "客户地区" : "客户";
+            String objectName = switch (objectType) {
+                case CUSTOMER_TYPE -> "客户类型";
+                case ADDRESS -> "收货地址";
+                default -> "客户";
+            };
             progress.accept("正在读取订货宝" + objectName + "资料");
             Collected collected = from == null
                     ? client.collect(tenantServiceCaller(tenantId), connectorId, objectType, maxPages)

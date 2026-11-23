@@ -191,9 +191,9 @@ public class TargetSettingsService {
                 false);
     }
 
-    /** 个人工作台仅接收指定员工的整单付清目标；默认值仍由 HR 的入职阶段规则决定。 */
+    /** 个人工作台读取月度经营指标，与后台销售指标共用覆盖值和默认值。 */
     @Transactional(readOnly = true)
-    public BigDecimal performanceValue(String employee, String from, String to) {
+    public BusinessTargets businessValues(String employee, String from, String to) {
         var actor = AuthorizationContext.requireCurrent();
         if (!"SERVICE".equals(actor.principalScope()) || actor.tenantId() == null)
             throw new AuthorizationDeniedException("service-target-reader");
@@ -202,13 +202,15 @@ public class TargetSettingsService {
         var end = month(to);
         if (employee == null || employee.isBlank() || employee.length() > 80
                 || end.isBefore(start) || java.time.temporal.ChronoUnit.MONTHS.between(start, end) > 11)
-            throw invalid("业绩目标查询条件无效");
+            throw invalid("经营目标查询条件无效");
         String tenant = actor.tenantId().toString();
         var subject = store.subjects(tenant).stream()
                 .filter(s -> "SALES_OWNER".equals(s.dimensionType()) && employee.equals(s.code()))
-                .findFirst().orElseThrow(() -> invalid("业绩目标员工不存在"));
-        return effective(tenant, from, to, List.of(subject), Set.of("FULLY_PAID_RECEIPT_BASIS"), true)
-                .stream().map(Target::value).reduce(BigDecimal.ZERO, BigDecimal::add);
+                .findFirst().orElseThrow(() -> invalid("经营目标员工不存在"));
+        var targets = effective(tenant, from, to, List.of(subject), Set.of("SALES_AMOUNT", "RECEIPT_AMOUNT"), false);
+        return new BusinessTargets(
+                targets.stream().filter(t -> "SALES_AMOUNT".equals(t.metric())).map(Target::value).reduce(BigDecimal.ZERO, BigDecimal::add),
+                targets.stream().filter(t -> "RECEIPT_AMOUNT".equals(t.metric())).map(Target::value).reduce(BigDecimal.ZERO, BigDecimal::add));
     }
 
     private List<Target> effective(

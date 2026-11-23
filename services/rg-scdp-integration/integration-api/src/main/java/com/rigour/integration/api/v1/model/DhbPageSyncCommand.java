@@ -10,10 +10,8 @@ public record DhbPageSyncCommand(
         this(scope, connectorId, from, to, maxPages, false);
     }
     public enum Scope {
-        /** 业务员目录全量核对，HR 幂等关联/补录；不使用订单日期窗口。 */
-        SALESPERSON,
         VOUCHER_BACKFILL,
-        /** 定时业务链：业务员关联、客户、订单包。 */
+        /** 定时业务链：客户、订单包。 */
         BUSINESS_CHAIN,
         /** 订单页组合同步：按 SALES_ORDER（含明细）→ RECEIPT → PAYMENT 顺序执行。 */
         ORDER_SALES_PACKAGE,
@@ -24,7 +22,6 @@ public record DhbPageSyncCommand(
         TRANSFER,
         CUSTOMER,
         ADDRESS,
-        AREA,
         CLIENT_TYPE,
         CATEGORY,
         BRAND,
@@ -43,7 +40,7 @@ public record DhbPageSyncCommand(
         if (scope == null || connectorId == null)
             throw new IllegalArgumentException("请选择同步对象和连接器");
         if (Boolean.TRUE.equals(incremental)) {
-            if (scope != Scope.CUSTOMER && scope != Scope.ORDER_SALES_PACKAGE && scope != Scope.SALESPERSON && scope != Scope.BUSINESS_CHAIN && scope != Scope.VOUCHER_BACKFILL)
+            if (scope != Scope.CUSTOMER && scope != Scope.ORDER_SALES_PACKAGE && scope != Scope.BUSINESS_CHAIN && scope != Scope.VOUCHER_BACKFILL)
                 throw new IllegalArgumentException("该对象不支持服务端增量同步");
             if (from != null || to != null)
                 throw new IllegalArgumentException("增量同步由服务器确定时间范围，请勿显式指定窗口");

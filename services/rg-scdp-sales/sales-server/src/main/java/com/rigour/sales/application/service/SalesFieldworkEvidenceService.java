@@ -24,11 +24,11 @@ public class SalesFieldworkEvidenceService {
         String comparison=references.size()>1?"DIFFERENT":events.isEmpty()||events.stream().anyMatch(e->e.installationReference()==null)?"UNKNOWN":"SAME";
         return new DeviceEvidence(day,"NOT_OBTAINED","NOT_CONNECTED",comparison,events);
     }
-    public VisitHistory history(UUID visit,int page,int size) {
+    public VisitHistory history(UUID visit,int page,int size,boolean throughVisit) {
         var caller=SalesWorkContextService.requireTenantCaller();
         fieldwork.requireVisit(visit,"sales:risk:read");
         if(page<1||page>100000||size<1||size>50) throw new RequestValidationException("分页条件无效");
         var current=repository.capture(caller.tenantId(),visit).orElseThrow(()->new RequestValidationException("拜访不存在"));
-        return repository.history(caller.tenantId(),current,fieldwork.access("sales:risk:read"),page,size);
+        return repository.history(caller.tenantId(),current,fieldwork.access("sales:risk:read"),page,size,throughVisit);
     }
 }

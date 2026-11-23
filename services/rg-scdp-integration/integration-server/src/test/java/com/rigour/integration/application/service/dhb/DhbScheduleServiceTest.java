@@ -46,7 +46,7 @@ class DhbScheduleServiceTest {
     }
 
     @Test
-    void configuringChainRequiresBothIntegrationWriteAndHrSync() {
+    void configuringChainRequiresIntegrationWrite() {
         var command =
                 new SaveScheduleCommand(new ScheduleSettings(false, "FIXED_DELAY", 60, null), 0);
         assertThatThrownBy(
@@ -54,8 +54,7 @@ class DhbScheduleServiceTest {
                                 service.save(
                                         actor(
                                                 Set.of(
-                                                        "integration:dhb:read",
-                                                        "integration:dhb:write")),
+                                                        "integration:dhb:read")),
                                         connector,
                                         command))
                 .isInstanceOf(AuthorizationDeniedException.class);
@@ -65,7 +64,7 @@ class DhbScheduleServiceTest {
     @Test
     void planStorageUsesAuthenticatedTenantAndSaveDoesNotStartSync() {
         var who =
-                actor(Set.of("integration:dhb:read", "integration:dhb:write", "hr:employee:sync"));
+                actor(Set.of("integration:dhb:read", "integration:dhb:write"));
         var command =
                 new SaveScheduleCommand(new ScheduleSettings(true, "FIXED_DELAY", 60, null), 0);
         service.save(who, connector, command);

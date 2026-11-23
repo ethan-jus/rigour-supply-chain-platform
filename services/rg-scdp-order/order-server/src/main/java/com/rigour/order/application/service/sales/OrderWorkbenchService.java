@@ -2,7 +2,7 @@ package com.rigour.order.application.service.sales;
 
 import com.rigour.order.api.v1.OrderWorkbenchApi.*;
 import com.rigour.order.application.port.out.OrderWorkbenchStore;
-import com.rigour.order.application.port.out.EmployeePerformanceTargetClient;
+import com.rigour.order.application.port.out.EmployeeBusinessTargetClient;
 import com.rigour.shared.context.*;
 import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
@@ -15,8 +15,8 @@ import org.springframework.stereotype.Service;
 public final class OrderWorkbenchService {
     private final OrderWorkbenchStore store;
     private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
-    private final EmployeePerformanceTargetClient targets;
-    public OrderWorkbenchService(OrderWorkbenchStore store, EmployeePerformanceTargetClient targets) {
+    private final EmployeeBusinessTargetClient targets;
+    public OrderWorkbenchService(OrderWorkbenchStore store, EmployeeBusinessTargetClient targets) {
         this.store = store; this.targets = targets;
     }
 
@@ -26,14 +26,19 @@ public final class OrderWorkbenchService {
         var page = store.performanceTotals(AuthorizationContext.requireCurrent().tenantId().toString(),
                 employee.trim(), "order:payment:read", start(from), start(to.plusDays(1)));
         var tenant = AuthorizationContext.requireCurrent().tenantId().toString();
-        var target = targets.value(tenant, employee.trim(), YearMonth.from(from).toString(), YearMonth.from(to).toString());
-        return new Performance(page.amount(), target, page.total());
+        var target = targets.values(tenant, employee.trim(), YearMonth.from(from).toString(), YearMonth.from(to).toString());
+        return new Performance(page.amount(), target.receiptTargetAmount(), page.total());
     }
 
     public Summary summary(String employee, LocalDate from, LocalDate to) {
         validate(employee, "orders", from, to, 0, 1);
-        return store.summary(AuthorizationContext.requireCurrent().tenantId().toString(), employee.trim(),
-                "order:read", start(from), start(to.plusDays(1)));
+        store.requireSelf(employee.trim(), "order:read");
+        var tenant = AuthorizationContext.requireCurrent().tenantId().toString();
+        var summary = store.summary(tenant, employee.trim(), "order:read", start(from), start(to.plusDays(1)));
+        // HR targets are read outside the order aggregate cache so monthly edits take effect immediately.
+        var target = targets.values(tenant, employee.trim(), YearMonth.from(from).toString(), YearMonth.from(to).toString());
+        return new Summary(summary.tradeAmount(), summary.orderCount(), summary.pendingAmount(),
+                summary.pendingCount(), summary.outboundCount(), summary.pendingPreview(), target.salesTargetAmount());
     }
 
     private static Instant start(LocalDate date) { return date.atStartOfDay(BUSINESS_ZONE).toInstant(); }

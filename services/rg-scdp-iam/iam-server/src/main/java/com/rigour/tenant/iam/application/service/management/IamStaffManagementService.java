@@ -41,10 +41,6 @@ public final class IamStaffManagementService {
         return store.updateStaff(actor, id, command);
     }
 
-    public StaffSyncResultView syncDinghuobaoStaff(Actor actor, DhbStaffSyncRequest request) {
-        return store.syncDinghuobaoStaff(actor, request);
-    }
-
     public List<StaffDisplayView> resolveStaffDisplay(Actor actor, StaffDisplayRequest request) {
         return store.resolveStaffDisplay(actor, request);
     }

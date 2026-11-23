@@ -150,34 +150,6 @@ class DhbPageSyncJobServiceTest {
     }
 
     @Test
-    void salespersonDirectoryUsesTheSamePersistentBackgroundQueue() {
-        var delegate = mock(DhbSyncOrchestrationService.class);
-        var store = mock(DhbPageSyncJobStore.class);
-        var command =
-                new DhbPageSyncCommand(
-                        DhbPageSyncCommand.Scope.SALESPERSON, connector, null, null, 100, true);
-        var staffJob =
-                new DhbPageSyncJob(
-                        id, connector, "SALESPERSON", "RUNNING", "业务员", now, now, null, null);
-        when(store.reserve(eq(tenant), eq(id), eq(command), any())).thenReturn(staffJob);
-        when(store.claim(eq(tenant), eq(id), any())).thenReturn(true);
-        when(store.find(tenant, id)).thenReturn(Optional.of(staffJob));
-        when(delegate.runPage(any(), eq(command), any(), eq(true)))
-                .thenReturn(
-                        new DhbSyncOrchestrationResult(
-                                id, "SUCCEEDED", "MANUAL_SALESPERSON", now, now, List.of()));
-        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC), mock(com.rigour.integration.application.port.out.CrmDhbDomainSyncClient.class));
-        try {
-            assertThat(service.start(caller(tenant), id, command).scope()).isEqualTo("SALESPERSON");
-            verify(delegate).validatePageTarget(any(), eq(command));
-            verify(store, timeout(2000))
-                    .finish(eq(tenant), eq(id), eq("SUCCEEDED"), anyString(), any(), any());
-        } finally {
-            service.close();
-        }
-    }
-
-    @Test
     void shipmentWindowReturnsBeforeCompletionAndDuplicateSubmissionReusesJob() throws Exception {
         var delegate = mock(DhbSyncOrchestrationService.class);
         var store = mock(DhbPageSyncJobStore.class);

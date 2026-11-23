@@ -238,6 +238,13 @@ UPDATE hr_employee SET department_name_snapshot=?,revision=revision+1,updated_ti
                                 target,
                                 c.departmentName());
                     }
+                    if (old == null || !java.util.Objects.equals(old.parentId(),c.parentId()) || !old.departmentName().equals(c.departmentName())) {
+                        jdbc.update("""
+                            INSERT INTO hr_department_parent_history(tenant_id,department_id,effective_at,parent_id,department_name)
+                            SELECT tenant_id,id,updated_time,parent_id,department_name FROM hr_department WHERE tenant_id=? AND id=?
+                            ON DUPLICATE KEY UPDATE parent_id=?,department_name=?
+                            """,tenant,target,c.parentId(),c.departmentName());
+                    }
                     rebuild(tenant);
                     change(
                             tenant,

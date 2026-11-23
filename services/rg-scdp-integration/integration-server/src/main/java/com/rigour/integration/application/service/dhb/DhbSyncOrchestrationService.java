@@ -9,20 +9,10 @@ import com.rigour.integration.api.v1.model.DhbSyncOrchestrationResult;
 import com.rigour.integration.api.v1.model.DhbSyncOrchestrationStepView;
 import com.rigour.integration.api.v1.model.DhbSyncOrchestrationTenantView;
 import com.rigour.integration.application.port.out.CrmDhbDomainSyncClient;
-import com.rigour.integration.application.port.out.DhbClient;
-import com.rigour.integration.application.port.out.DhbClient.Page;
-import com.rigour.integration.application.port.out.DhbClient.PageRequest;
-import com.rigour.integration.application.port.out.DhbClient.Staff;
-import com.rigour.integration.application.port.out.DhbClient.StaffQuery;
-import com.rigour.integration.application.port.out.DhbClient.TimeWindow;
 import com.rigour.integration.application.port.out.DhbIntegrationStore;
-import com.rigour.integration.application.port.out.DhbIntegrationStore.RawLanding;
 import com.rigour.integration.application.port.out.DhbObjectCheckpointStore;
 import com.rigour.integration.application.port.out.DhbOrchestrationLease;
 import com.rigour.integration.application.port.out.ErpDhbDomainSyncClient;
-import com.rigour.integration.application.port.out.HrDhbStaffSyncClient;
-import com.rigour.integration.application.port.out.HrDhbStaffSyncClient.DhbStaffRow;
-import com.rigour.integration.application.port.out.HrDhbStaffSyncClient.StaffSyncResult;
 import com.rigour.merchant.api.v1.model.SyncObjectResult;
 import com.rigour.merchant.api.v1.model.SyncResult;
 import com.rigour.shared.context.AuthorizationDeniedException;
@@ -33,15 +23,12 @@ import com.rigour.settings.client.BusinessDictionaryBatchClient.MappingIssue;
 import com.rigour.settings.client.BusinessDictionaryBatchClient.Observation;
 import com.rigour.shared.core.sync.SyncConflictClassifier;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
-import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,7 +39,6 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import tools.jackson.databind.ObjectMapper;
 
 /** 订货宝统一同步编排器；按新业务表依赖顺序调用各领域同步能力。 */
 public final class DhbSyncOrchestrationService {
@@ -75,7 +61,7 @@ public final class DhbSyncOrchestrationService {
             "service:rigour-dhb-sync-orchestrator".getBytes(StandardCharsets.UTF_8));
     private static final Set<String> SERVICE_PERMISSIONS = Set.of(
             "integration:dhb:read", "integration:dhb:write", "integration:dhb:sync-discovery",
-            "business-settings:dict:sync", "hr:employee:read", "hr:employee:sync");
+            "business-settings:dict:sync", "hr:employee:read");
     private static final List<String> PRODUCT_OBJECTS = List.of(
             "CATEGORY", "BRAND", "SPECIFICATION", "TAG", "PRODUCT_SPU");
     private static final List<String> SUPPLY_OBJECTS = List.of(
@@ -154,8 +140,6 @@ public final class DhbSyncOrchestrationService {
     private final DhbIntegrationStore store;
     private final ErpDhbDomainSyncClient erpClient;
     private final CrmDhbDomainSyncClient crmClient;
-    private final HrDhbStaffSyncClient hrEmployeeClient;
-    private final DhbClient dhbClient;
     private final DhbOrderSyncService orderSyncService;
     private final DhbObjectCheckpointStore objectCheckpoints;
     private final BusinessDictionaryBatchClient dictionaryClient;
@@ -164,33 +148,26 @@ public final class DhbSyncOrchestrationService {
     private final DhbOrchestrationLease orchestrationLease;
     private final DhbSyncOrchestrationProperties properties;
     private final Clock clock;
-    private final ObjectMapper objectMapper;
     private final ConcurrentMap<TenantConnector, ReentrantLock> tenantConnectorLocks = new ConcurrentHashMap<>();
 
     public DhbSyncOrchestrationService(DhbIntegrationStore store,
                                        ErpDhbDomainSyncClient erpClient,
                                        CrmDhbDomainSyncClient crmClient,
-                                       HrDhbStaffSyncClient hrEmployeeClient,
-                                       DhbClient dhbClient,
                                        DhbOrderSyncService orderSyncService,
                                        DhbObjectCheckpointStore objectCheckpoints,
                                        BusinessDictionaryBatchClient dictionaryClient,
                                        DhbOrchestrationLease orchestrationLease,
                                        DhbSyncOrchestrationProperties properties,
-                                       Clock clock,
-                                       ObjectMapper objectMapper) {
+                                       Clock clock) {
         this.store = store;
         this.erpClient = erpClient;
         this.crmClient = crmClient;
-        this.hrEmployeeClient = hrEmployeeClient;
-        this.dhbClient = dhbClient;
         this.orderSyncService = orderSyncService;
         this.objectCheckpoints = objectCheckpoints;
         this.dictionaryClient = dictionaryClient;
         this.orchestrationLease = orchestrationLease;
         this.properties = properties;
         this.clock = clock;
-        this.objectMapper = objectMapper;
     }
 
     /** 单页入口不运行前置目录或其他领域，缺少依赖时保留失败供该页补齐后重试。 */
@@ -202,7 +179,6 @@ public final class DhbSyncOrchestrationService {
     public void validatePageTarget(CallerIdentity actor,
             com.rigour.integration.api.v1.model.DhbPageSyncCommand command) {
         requireManualCaller(actor);
-        requireSalespersonPermission(actor, command);
         if (command == null || targets(actor.tenantId(), TargetSelection.CONFIGURED).values().stream()
                 .noneMatch(b -> b.key.connectorId().equals(command.connectorId())))
             throw new IllegalArgumentException("当前租户没有该连接器同步任务");
@@ -212,7 +188,6 @@ public final class DhbSyncOrchestrationService {
             com.rigour.integration.api.v1.model.DhbPageSyncCommand command,
             java.util.function.Consumer<String> progress, boolean background) {
         requireManualCaller(actor);
-        requireSalespersonPermission(actor, command);
         if (command == null) throw new IllegalArgumentException("同步范围不能为空");
         TargetBucket bucket = targets(actor.tenantId(), TargetSelection.CONFIGURED).values().stream()
                 .filter(b -> b.key.connectorId().equals(command.connectorId())).findFirst()
@@ -268,12 +243,6 @@ public final class DhbSyncOrchestrationService {
                     switch (command.scope()) {
                         case BUSINESS_CHAIN -> {
                             validateBusinessChain(actor.tenantId(), command.connectorId());
-                            runStaffStep(bucket, caller, pages, null, steps, true, progress);
-                            if (!dependenciesReady(steps)) {
-                                steps.add(skipped("CRM", "CUSTOMER", "业务员同步未完成，暂停客户及订单同步"));
-                                steps.add(skipped("ORDER", "ORDER_SALES_PACKAGE", "等待业务员关联完成"));
-                                break;
-                            }
                             if (!refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, true)) break;
                             runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true);
                         }
@@ -282,7 +251,6 @@ public final class DhbSyncOrchestrationService {
                             if(!background) throw new IllegalArgumentException("凭证补齐请使用后台任务入口");
                             steps.add(orderSyncService.backfillVouchers(caller,bucket.orderTarget.taskId(),Integer.MAX_VALUE,progress));
                         }
-                        case SALESPERSON -> runStaffStep(bucket, caller, pages, null, steps, true, progress);
                         case SALES_ORDER, RECEIPT, PAYMENT, SHIPMENT, TRANSFER -> {
                             if (bucket.orderTarget == null) throw new IllegalArgumentException("未配置订单同步任务");
                             if (command.scope() == com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.RECEIPT
@@ -300,7 +268,7 @@ public final class DhbSyncOrchestrationService {
                                 runOrderPackageSteps(caller, bucket, command, pages, steps);
                             }
                         }
-                        case CUSTOMER, ADDRESS, AREA, CLIENT_TYPE -> {
+                        case CUSTOMER, ADDRESS, CLIENT_TYPE -> {
                             if (bucket.crmTarget == null) throw new IllegalArgumentException("未配置客户同步任务");
                             progress.accept("正在同步客户资料及待关联记录");
                             var r=background && Boolean.TRUE.equals(command.incremental())
@@ -308,7 +276,7 @@ public final class DhbSyncOrchestrationService {
                                 : Boolean.TRUE.equals(command.incremental())
                                 ? crmClient.syncLatestCustomers(caller,bucket.key.connectorId(),bucket.crmTarget.taskId(),pages,actor.principalId())
                                 : crmClient.syncObject(caller,bucket.key.connectorId(),bucket.crmTarget.taskId(),
-                                switch(command.scope()){case AREA -> "CUSTOMER_AREA";case CLIENT_TYPE -> "CUSTOMER_TYPE";default -> type;},pages,command.from(),command.to());
+                                switch(command.scope()){case CLIENT_TYPE -> "CUSTOMER_TYPE";default -> type;},pages,command.from(),command.to());
                             for (var item:r.objects()) steps.add(crmStep(item));
                         }
                         default -> {
@@ -342,10 +310,6 @@ public final class DhbSyncOrchestrationService {
         return ready;
     }
 
-    static boolean dependenciesReady(List<DhbSyncOrchestrationStepView> steps) {
-        return !steps.isEmpty() && steps.stream().allMatch(s -> dependencyCompleted(s.status()));
-    }
-
     private static boolean dependencyCompleted(String status) {
         // Row-level risks are durable and checked again by each order; only an incomplete batch stops the chain.
         return "SUCCEEDED".equals(status) || "SUCCEEDED_WITH_WARNINGS".equals(status);
@@ -354,13 +318,13 @@ public final class DhbSyncOrchestrationService {
     public DhbSyncOrchestrationResult runScheduled() {
         properties.validate();
         return run(null, "SCHEDULED", null, properties.getMaxPages(),
-                TargetSelection.ACTIVE, true, true, true, true, true, true, scheduledWindow());
+                TargetSelection.ACTIVE, true, true, true, true, true, scheduledWindow());
     }
 
     /** 定时基础资料链不再夹带订单、回款和履约；这些对象由独立游标接续。 */
     public DhbSyncOrchestrationResult runScheduledMasterData(){
         properties.validate();
-        return run(null,"SCHEDULED",null,properties.getMaxPages(),TargetSelection.ACTIVE,true,true,true,false,true,true,scheduledWindow());
+        return run(null,"SCHEDULED",null,properties.getMaxPages(),TargetSelection.ACTIVE,true,true,true,false,true,scheduledWindow());
     }
 
     public DhbSyncOrchestrationResult runManual(CallerIdentity caller,
@@ -372,18 +336,17 @@ public final class DhbSyncOrchestrationService {
         boolean includeErpSupply = enabled(command == null ? null : command.includeErpSupply(), includeErp);
         boolean includeCrm = enabled(command == null ? null : command.includeCrm());
         boolean includeOrder = enabled(command == null ? null : command.includeOrder());
-        boolean includeIam = enabled(command == null ? null : command.includeIam());
         boolean includeDictionary = enabled(command == null ? null : command.includeDictionary());
         return run(caller.tenantId(), "MANUAL", caller.principalId(), maxPages,
                 TargetSelection.CONFIGURED, includeErpProduct, includeErpSupply, includeCrm,
-                includeOrder, includeIam, includeDictionary, manualWindow(command));
+                includeOrder, includeDictionary, manualWindow(command));
     }
 
     private DhbSyncOrchestrationResult run(UUID tenantFilter, String triggerType, UUID actorId,
                                            int maxPages, TargetSelection targetSelection,
                                            boolean includeErpProduct, boolean includeErpSupply,
                                            boolean includeCrm, boolean includeOrder,
-                                           boolean includeIam, boolean includeDictionary,
+                                           boolean includeDictionary,
                                            SyncWindow syncWindow) {
         UUID batchId = UUID.randomUUID();
         Instant startedAt = clock.instant();
@@ -391,7 +354,7 @@ public final class DhbSyncOrchestrationService {
         List<DhbSyncOrchestrationTenantView> tenantResults = new ArrayList<>();
         for (TargetBucket bucket : targets.values()) {
             tenantResults.add(runTenant(bucket, maxPages, includeErpProduct, includeErpSupply,
-                    includeCrm, includeOrder, includeIam, includeDictionary, triggerType, syncWindow));
+                    includeCrm, includeOrder, includeDictionary, triggerType, syncWindow));
         }
         String status = aggregateTenantStatus(tenantResults);
         DhbSyncOrchestrationResult result = new DhbSyncOrchestrationResult(
@@ -405,7 +368,7 @@ public final class DhbSyncOrchestrationService {
     private DhbSyncOrchestrationTenantView runTenant(TargetBucket bucket, int maxPages,
                                                      boolean includeErpProduct, boolean includeErpSupply,
                                                      boolean includeCrm, boolean includeOrder,
-                                                     boolean includeIam,
+
                                                      boolean includeDictionary,
                                                      String triggerType,
                                                      SyncWindow syncWindow) {
@@ -419,7 +382,7 @@ public final class DhbSyncOrchestrationService {
             return orchestrationLease.execute(bucket.key.tenantId(), bucket.key.connectorId(),
                     ORCHESTRATION_LEASE_OWNER,
                     () -> runTenantUnderLock(bucket, maxPages, includeErpProduct, includeErpSupply,
-                            includeCrm, includeOrder, includeIam, includeDictionary, triggerType, syncWindow));
+                            includeCrm, includeOrder, includeDictionary, triggerType, syncWindow));
         } catch (RuntimeException error) {
             if (SyncConflictClassifier.isAlreadyRunning(error)) {
                 return new DhbSyncOrchestrationTenantView(bucket.key.tenantId(), bucket.key.connectorId(),
@@ -437,7 +400,7 @@ public final class DhbSyncOrchestrationService {
                                                              boolean includeErpSupply,
                                                              boolean includeCrm,
                                                              boolean includeOrder,
-                                                             boolean includeIam,
+
                                                              boolean includeDictionary,
                                                              String triggerType,
                                                              SyncWindow syncWindow) {
@@ -446,9 +409,6 @@ public final class DhbSyncOrchestrationService {
         boolean failed = false;
         if (includeDictionary) {
             failed = runDictionaryStep(bucket, steps);
-        }
-        if (!failed && includeIam) {
-            failed = runIamStaffStep(bucket, caller, maxPages, syncWindow, steps);
         }
         if (!failed && includeErpProduct) {
             failed = runErpSteps(bucket, caller, maxPages, triggerType, syncWindow, steps);
@@ -484,89 +444,6 @@ public final class DhbSyncOrchestrationService {
                 status, null, BASELINE_DICTIONARY_OBSERVATIONS.size(), audit.revisions().size(),
                 audit.unmapped(), audit.revisions(), dictionaryMessage(audit)));
         return false;
-    }
-
-    private boolean runIamStaffStep(TargetBucket bucket, CallerIdentity caller, int maxPages,
-                                    SyncWindow syncWindow,
-                                    List<DhbSyncOrchestrationStepView> steps) {
-        return runStaffStep(bucket, caller, maxPages, syncWindow, steps, false, stage -> {});
-    }
-
-    private boolean runStaffStep(TargetBucket bucket, CallerIdentity caller, int maxPages,
-                                    SyncWindow syncWindow, List<DhbSyncOrchestrationStepView> steps,
-                                    boolean salespeopleOnly, java.util.function.Consumer<String> progress) {
-        try {
-            DhbClient.Connector connector = connector(bucket);
-            PageRequest request = PageRequest.first(salespeopleOnly ? 100 : 1_000);
-            long fetched = 0;
-            int created = 0;
-            int updated = 0;
-            int unchanged = 0;
-            int failed = 0;
-            boolean incomplete = false;
-            List<String> failures = new ArrayList<>();
-            for (int pageNo = 0; pageNo < maxPages; pageNo++) {
-                progress.accept("正在读取订货宝业务员第 " + (pageNo + 1) + " 页");
-                Page<Staff> page = dhbClient.getStaff(connector,
-                        new StaffQuery(request, salespeopleOnly ? "salesman" : null, null, null, null, timeWindow(syncWindow)));
-                List<Staff> items = salespeopleOnly ? page.items().stream()
-                        .filter(item -> "salesman".equalsIgnoreCase(item.staffType())).toList() : page.items();
-                fetched += items.size();
-                List<RawLanding> raw = new ArrayList<>();
-                List<DhbStaffRow> rows = new ArrayList<>();
-                String sourceTenantKey = sourceTenantKey(bucket);
-                for (Staff item : items) {
-                    String sourceStaffId = salespeopleOnly ? firstNonBlank(item.staffId())
-                            : firstNonBlank(item.sourceId(), item.staffId(), item.accountId());
-                    if (sourceStaffId == null) {
-                        failed++;
-                        failures.add("sourceStaffId为空");
-                        continue;
-                    }
-                    if (salespeopleOnly && (item.staffName() == null || item.staffName().isBlank())) {
-                        failed++;
-                        failures.add("来源员工 " + sourceStaffId + " 缺少姓名，请先在订货宝补齐");
-                        continue;
-                    }
-                    String payloadJson = payloadJson(item.attributes());
-                    String payloadHash = sha256(payloadJson);
-                    raw.add(new RawLanding("STAFF", sourceStaffId, item.updatedAt(), item.attributes()));
-                    rows.add(new DhbStaffRow(bucket.key.connectorId(), sourceTenantKey, sourceStaffId,
-                            item.staffType(), item.accountName(), item.staffName(), item.title(),
-                            item.branchName(), item.accountMobile(), item.remark(), item.roleName(),
-                            item.inviteCode(), item.mobile(), item.email(), item.qq(), item.status(),
-                            item.createdAt(), item.updatedAt(), payloadHash, payloadJson));
-                }
-                store.persistRawLandings(caller.tenantId(), bucket.key.connectorId(), raw);
-                if (!rows.isEmpty()) {
-                    progress.accept("正在关联/补录业务员第 " + (pageNo + 1) + " 页，累计读取 " + fetched + " 人");
-                    StaffSyncResult result = hrEmployeeClient.sync(caller, rows);
-                    created += result.created();
-                    updated += result.updated();
-                    unchanged += result.unchanged();
-                    failed += result.failed();
-                    failures.addAll(result.failureMessages());
-                }
-                if (!page.hasNext()) break;
-                if (pageNo + 1 == maxPages) {
-                    failed++;
-                    incomplete = true;
-                    failures.add("达到分页上限，仍有来源业务员未核对，请继续同步");
-                }
-                request = page.nextRequest();
-            }
-            String status = incomplete ? "PARTIAL" : failed > 0 ? "SUCCEEDED_WITH_WARNINGS" : "SUCCEEDED";
-            String message = failed > 0
-                    ? "失败" + failed + "条；未变化" + unchanged + "条；" + oneLine(String.join("；", failures))
-                    : "未变化" + unchanged + "条";
-            steps.add(new DhbSyncOrchestrationStepView("HR", "STAFF", status, null,
-                    fetched, created + updated, 0, Map.of(), message,
-                    (long) created, (long) updated, 0L, (long) unchanged, (long) failed));
-            return false;
-        } catch (RuntimeException error) {
-            steps.add(failed("HR", "STAFF", error));
-            return true;
-        }
     }
 
     private boolean runErpSteps(TargetBucket bucket, CallerIdentity caller, int maxPages,
@@ -676,10 +553,6 @@ public final class DhbSyncOrchestrationService {
 
     private static SyncRunCommand orderCommand(SyncWindow syncWindow) {
         return syncWindow == null ? null : new SyncRunCommand(syncWindow.from(), syncWindow.to(), null);
-    }
-
-    private static TimeWindow timeWindow(SyncWindow syncWindow) {
-        return syncWindow == null ? null : new TimeWindow(syncWindow.from(), syncWindow.to());
     }
 
     private Map<TenantConnector, TargetBucket> targets(UUID tenantFilter, TargetSelection targetSelection) {
@@ -974,40 +847,6 @@ public final class DhbSyncOrchestrationService {
                 null, 0, 0, 0, Map.of(), oneLine(error.getMessage()));
     }
 
-    private DhbClient.Connector connector(TargetBucket bucket) {
-        var view = store.connector(bucket.key.tenantId(), bucket.key.connectorId());
-        return new DhbClient.Connector(bucket.key.tenantId(), view.id(), view.baseUrl(), view.authSecretRef());
-    }
-
-    private String payloadJson(Map<String, Object> payload) {
-        try {
-            return objectMapper.writeValueAsString(payload == null ? Map.of() : payload);
-        } catch (RuntimeException exception) {
-            throw new IllegalStateException("订货宝员工原始字段序列化失败", exception);
-        }
-    }
-
-    private static String sha256(String value) {
-        try {
-            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256")
-                    .digest((value == null ? "" : value).getBytes(StandardCharsets.UTF_8)));
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256不可用", exception);
-        }
-    }
-
-    private static String sourceTenantKey(TargetBucket bucket) {
-        return bucket.key.connectorId().toString();
-    }
-
-    private static String firstNonBlank(String... values) {
-        if (values == null) return null;
-        for (String value : values) {
-            if (value != null && !value.isBlank()) return value.strip();
-        }
-        return null;
-    }
-
     private static String aggregateStepStatus(List<DhbSyncOrchestrationStepView> steps) {
         if (steps.stream().anyMatch(step -> "FAILED".equals(step.status()))) return "FAILED";
         if (steps.stream().anyMatch(step -> "PARTIAL".equals(step.status()))) return "PARTIAL";
@@ -1071,15 +910,6 @@ public final class DhbSyncOrchestrationService {
                 || !caller.permissions().contains("integration:dhb:write"))
                 && !caller.permissions().contains("*:*:*")) {
             throw new AuthorizationDeniedException("integration:dhb:write");
-        }
-    }
-
-    private static void requireSalespersonPermission(CallerIdentity actor,
-            com.rigour.integration.api.v1.model.DhbPageSyncCommand command) {
-        if (command != null && (command.scope() == com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.SALESPERSON
-                || command.scope() == com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.BUSINESS_CHAIN)
-                && !actor.permissions().contains("hr:employee:sync") && !actor.permissions().contains("*:*:*")) {
-            throw new AuthorizationDeniedException("hr:employee:sync");
         }
     }
 

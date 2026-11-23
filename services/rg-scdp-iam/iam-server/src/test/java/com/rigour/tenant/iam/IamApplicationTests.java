@@ -1340,7 +1340,7 @@ INSERT INTO iam_user_credential (
                                 page.type(),
                                 page.resourceId(),
                                 "运营页面自定义名称",
-                                "Shop",
+                                "Storefront",
                                 8,
                                 true,
                                 "ACTIVE",
@@ -1358,6 +1358,7 @@ INSERT INTO iam_user_credential (
                             assertThat(n.children())
                                     .extracting(NavigationNode::displayName)
                                     .contains("运营页面自定义名称");
+                            assertThat(n.children()).extracting(NavigationNode::iconKey).contains("Storefront");
                         });
         assertThatThrownBy(
                         () ->

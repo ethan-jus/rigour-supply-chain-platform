@@ -164,7 +164,7 @@ class SalesPayrollBoardServiceTest {
         var store = mock(HrPayrollStore.class);
         var published = mock(SalesStatementPublications.class);
         var service =
-                new SalesPayrollBoardService(store, mock(HrPayrollSource.class), iam, published);
+                new SalesPayrollBoardService(store, mock(HrPayrollSource.class), iam, published,mock(com.rigour.hr.application.port.out.HrAttendanceStore.class));
         assertThat(service.personal("2026-10").employees()).isEmpty();
         verify(published).published(tenant.toString(), "A", "2026-10");
         verifyNoInteractions(store);

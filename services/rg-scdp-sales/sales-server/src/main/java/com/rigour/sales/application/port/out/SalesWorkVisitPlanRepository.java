@@ -1,5 +1,6 @@
 package com.rigour.sales.application.port.out;
 
+import com.rigour.sales.application.port.out.SalesManagementDirectory.Access;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -16,13 +17,15 @@ public interface SalesWorkVisitPlanRepository {
             UUID tenantId, UUID salesProfileId, UUID planId, boolean lock);
 
     List<VisitPlanRow> findManagementPlans(
-            UUID tenantId, LocalDate from, LocalDate to, String status, int limit, int offset);
+            UUID tenantId, LocalDate from, LocalDate to, String status, int limit, int offset, Access access);
 
-    long countManagementPlans(UUID tenantId, LocalDate from, LocalDate to, String status);
+    long countManagementPlans(UUID tenantId, LocalDate from, LocalDate to, String status, Access access);
 
     Optional<VisitPlanRow> findManagementPlan(UUID tenantId, UUID planId, boolean lock);
 
-    List<ProfileOptionRow> findActiveProfiles(UUID tenantId);
+    List<ProfileOptionRow> findActiveProfiles(UUID tenantId,Access access);
+
+    boolean canManageProfile(UUID tenantId,UUID profileId,Access access);
 
     Optional<ProfileOptionRow> findActiveProfile(UUID tenantId, UUID salesProfileId);
 

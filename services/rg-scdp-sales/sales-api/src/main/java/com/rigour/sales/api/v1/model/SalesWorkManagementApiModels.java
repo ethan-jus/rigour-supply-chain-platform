@@ -87,7 +87,8 @@ public final class SalesWorkManagementApiModels {
 
     public record ManagementRecordingClipView(
             UUID clipId, int clipIndex, long objectSizeBytes,
-            Long clientDurationMs, String uploadStatus, Instant createdAt) {
+            Long clientDurationMs, String uploadStatus, Instant createdAt,
+            String verifyStatus, Long verifiedDurationMs) {
     }
 
     public record ManagementRecordingSessionView(

@@ -114,124 +114,15 @@ class HrApplicationTests {
     }
 
     @Test
-    void dhbSalespeopleOnlyBindExistingAndCreateBasicAssignedEmployeesIdempotently() {
-        String tenant = java.util.UUID.randomUUID().toString();
-        jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
-        var sales = organizations.saveDepartment(tenant, null,
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "销售部", 0, "ACTIVE", 0, null, null, null), "admin");
-        var province = organizations.saveDepartment(tenant, null,
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(sales.id(), "河北省", 0, "ACTIVE", 0, null, null, null), "admin");
-        var city = organizations.saveDepartment(tenant, null,
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(province.id(), "石家庄", 0, "ACTIVE", 0, null, null, null), "admin");
-        var otherRoot = organizations.saveDepartment(tenant, null,
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "运营部", 0, "ACTIVE", 0, null, null, null), "admin");
-        organizations.saveDepartment(tenant, null,
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(otherRoot.id(), "石家庄市", 0, "ACTIVE", 0, null, null, null), "admin");
-        long existing = organizations.saveEmployee(tenant, null, employee("张三", city.id(), "LEFT", 0), "admin");
-        jdbcTemplate.update("UPDATE hr_employee SET mobile='13800000001' WHERE tenant_id=? AND id=?", tenant, existing);
-        var before = jdbcTemplate.queryForMap("SELECT * FROM hr_employee WHERE tenant_id=? AND id=?", tenant, existing);
-        var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();
-        var result = employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(
-                salesperson("s1", "张三", "13800000001", "石家庄市"),
-                salesperson("s2", "新业务员", "13800000002", "石家庄市")), "sync", codes);
-        assertThat(result.failed()).isZero();
-        assertThat(result.updated()).isEqualTo(1);
-        assertThat(result.created()).isEqualTo(1);
-        assertThat(jdbcTemplate.queryForMap("SELECT * FROM hr_employee WHERE tenant_id=? AND id=?", tenant, existing)).isEqualTo(before);
-        var newEmployee = employeeStore.resolveExternalEmployees(tenant, "DINGHUOBAO", "test-source", java.util.List.of("s2"), java.util.List.of()).getFirst();
-        var detail = employeeStore.employee(tenant, newEmployee.employeeId()).orElseThrow();
-        assertThat(detail.departmentId()).isEqualTo(city.id());
-        assertThat(detail.positionName()).isEqualTo("业务员");
-        assertThat(detail.mobile()).isEqualTo("13800000002");
-        assertThat(detail.entryDate()).isNull();
-        assertThat(detail.email()).isNull();
-        assertThat(detail.employmentStatus()).isEqualTo("PENDING");
-        assertThat(detail.dhbStaffIds()).containsExactly("s2");
-        assertThat(detail.dhbAccountNames()).containsExactly("login-s2");
-        var accountFilter = new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(
-                "login-s2", null, null, null, null, null, null, null, null, null, null, null, null, null);
-        var found = employeeStore.employees(tenant, 0, 20, accountFilter);
-        assertThat(found.total()).isEqualTo(1);
-        assertThat(found.items()).extracting(com.rigour.hr.api.v1.model.HrEmployeeView::id)
-                .containsExactly(newEmployee.employeeId());
-        assertThat(found.items().getFirst().dhbAccountNames()).containsExactly("login-s2");
-        // A binding in another tenant, or a deleted binding, must not satisfy account search.
-        String otherTenant = java.util.UUID.randomUUID().toString();
-        jdbcTemplate.update("INSERT INTO hr_employee_source_binding(tenant_id,employee_code,source_system,source_tenant_key,source_employee_id,source_account_name,deleted) VALUES(?,?,'DINGHUOBAO','test','foreign','foreign-only',0)",
-                otherTenant, detail.employeeCode());
-        jdbcTemplate.update("INSERT INTO hr_employee_source_binding(tenant_id,employee_code,source_system,source_tenant_key,source_employee_id,source_account_name,deleted) VALUES(?,?,'DINGHUOBAO','test','removed','removed-only',1)",
-                tenant, detail.employeeCode());
-        for (String keyword : java.util.List.of("foreign-only", "removed-only", "' OR 1=1 --")) {
-            var filter = new com.rigour.hr.application.port.out.HrEmployeeStore.EmployeeSearchCriteria(
-                    keyword, null, null, null, null, null, null, null, null, null, null, null, null, null);
-            assertThat(employeeStore.employees(tenant, 0, 20, filter).total()).isZero();
-        }
-        assertThat(employeeStore.employee(tenant, newEmployee.employeeId()).orElseThrow().dhbAccountNames())
-                .containsExactly("login-s2");
-        var repeated = employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(
-                salesperson("s1", "来源改名", "13900000000", "未知部门"),
-                salesperson("s2", "来源改名", "13900000000", "未知部门")), "sync", codes);
-        assertThat(repeated.unchanged()).isEqualTo(2);
-        assertThat(repeated.created()).isZero();
-        assertThat(jdbcTemplate.queryForMap("SELECT * FROM hr_employee WHERE tenant_id=? AND id=?", tenant, existing)).isEqualTo(before);
-        assertThat(employeeStore.employee(tenant, newEmployee.employeeId()).orElseThrow().mobile()).isEqualTo("13800000002");
-        var secondId = employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(
-                salesperson("s3", "张三", "13800000001", "石家庄市")), "sync", codes);
-        assertThat(secondId.updated()).isEqualTo(1);
-        assertThat(employeeStore.employee(tenant, existing).orElseThrow().dhbStaffIds()).containsExactly("s1", "s3");
-        assertThat(employeeStore.employee(java.util.UUID.randomUUID().toString(), existing)).isEmpty();
-    }
-
-    @Test
-    void dhbConflictsUnmappedDepartmentsAndDeletedEmployeesAreNeverDuplicated() {
-        String tenant = java.util.UUID.randomUUID().toString();
-        jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
-        var sales = organizations.saveDepartment(tenant, null,
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "销售部", 0, "ACTIVE", 0, null, null, null), "admin");
-        var city = organizations.saveDepartment(tenant, null,
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(sales.id(), "北京市", 0, "ACTIVE", 0, null, null, null), "admin");
-        organizations.saveEmployee(tenant, null, employee("同名员工", city.id(), "ACTIVE", 0), "admin");
-        organizations.saveEmployee(tenant, null, employee("同名员工", city.id(), "ACTIVE", 0), "admin");
-        long deleted = organizations.saveEmployee(tenant, null, employee("已删员工", city.id(), "ACTIVE", 0), "admin");
-        jdbcTemplate.update("UPDATE hr_employee SET deleted=1 WHERE tenant_id=? AND id=?", tenant, deleted);
-        var result = employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(
-                salesperson("ambiguous", "同名员工", null, "北京市"),
-                salesperson("deleted", "已删员工", null, "北京市"),
-                salesperson("unmapped", "未建员工", "13800000003", "运营部")), "sync", new com.rigour.shared.core.code.BusinessCodeGenerator());
-        assertThat(result.failed()).isEqualTo(3);
-        assertThat(result.failureMessages()).anyMatch(m -> m.contains("订货宝登录账号 login-ambiguous")
-                && m.contains("同名员工") && m.contains("来源ID ambiguous"));
-        assertThat(result.created()).isZero();
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee_source_binding WHERE tenant_id=?", Integer.class, tenant)).isZero();
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee WHERE tenant_id=?", Integer.class, tenant)).isEqualTo(3);
-        assertThat(result.failureMessages()).anyMatch(m -> m.contains("unmapped") && m.contains("部门"));
-        jdbcTemplate.update("UPDATE hr_employee SET mobile='13800000999' WHERE tenant_id=? AND deleted=0", tenant);
-        var ambiguousPhone = employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(
-                salesperson("phone-conflict","来源测试名","13800000999","北京市")),"sync",new com.rigour.shared.core.code.BusinessCodeGenerator());
-        assertThat(ambiguousPhone.failed()).isEqualTo(1);
-        assertThat(reviews.pending(tenant)).isEmpty();
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee_source_binding WHERE tenant_id=?",Integer.class,tenant)).isZero();
-    }
-
-    @Test
-    void manualAndDhbCreationShareMobileIdentityAndConcurrentManualRequestsCannotDuplicate() throws Exception {
+    void manualCreationCannotDuplicateExistingOrConcurrentEmployees() throws Exception {
         String tenant = java.util.UUID.randomUUID().toString();
         jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
         var sales = organizations.saveDepartment(tenant, null, new com.rigour.hr.api.v1.model.HrDepartmentCommand(null,"销售部",0,"ACTIVE",0,null,null,null),"admin");
         var city = organizations.saveDepartment(tenant, null, new com.rigour.hr.api.v1.model.HrDepartmentCommand(sales.id(),"测试市",0,"ACTIVE",0,null,null,null),"admin");
         var manual = new com.rigour.hr.api.v1.model.HrEmployeeCommand("防重员工",city.id(),"SALES","ACTIVE","13800000777",null,null,null,null,0,null,null);
-        long id = organizations.saveEmployee(tenant,null,manual,"admin");
-        var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();
-        var synced = employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(salesperson("same-person","防重员工","13800000777","测试市")),"sync",codes);
-        assertThat(synced.created()).isZero(); assertThat(synced.failed()).isZero();
-        assertThat(employeeStore.resolveExternalEmployees(tenant,"DINGHUOBAO","test-source",java.util.List.of("same-person"),java.util.List.of())).singleElement().satisfies(e -> assertThat(e.employeeId()).isEqualTo(id));
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.saveEmployee(tenant,null,manual,"admin")).hasMessageContaining("不要重复新增");
-        var firstSync = employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(salesperson("source-first","先同步员工","13800000778","测试市")),"sync",codes);
-        assertThat(firstSync.created()).isEqualTo(1);
-        var secondManual = new com.rigour.hr.api.v1.model.HrEmployeeCommand("先同步员工",city.id(),"SALES","ACTIVE","13800000778",null,null,null,null,0,null,null);
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.saveEmployee(tenant,null,secondManual,"admin")).hasMessageContaining("不要重复新增");
-        var noPhone = employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(salesperson("no-phone","无手机号",null,"测试市")),"sync",codes);
-        assertThat(noPhone.failed()).isEqualTo(1); assertThat(noPhone.created()).isZero();
+        organizations.saveEmployee(tenant,null,manual,"admin");
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.saveEmployee(tenant,null,manual,"admin"))
+                .hasMessageContaining("不要重复新增");
         var concurrent = new com.rigour.hr.api.v1.model.HrEmployeeCommand("并发员工",city.id(),"SALES","ACTIVE","13800000779",null,null,null,null,0,null,null);
         try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
             var start = new java.util.concurrent.CountDownLatch(1);
@@ -242,10 +133,8 @@ class HrApplicationTests {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee WHERE tenant_id=? AND mobile='13800000779'",Integer.class,tenant)).isEqualTo(1);
     }
 
-    @Autowired private com.rigour.hr.application.port.out.HrDhbBindingReviewStore reviews;
-
     @Test
-    void uniquePhoneMismatchLinksWithReviewAndConfirmationSurvivesRepeatedSync() {
+    void historicalEmployeeBindingPendingReviewDoesNotResolve() {
         String tenant = java.util.UUID.randomUUID().toString();
         jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')",tenant);
         var dept = organizations.saveDepartment(tenant, null,
@@ -254,38 +143,14 @@ class HrApplicationTests {
         jdbcTemplate.update("UPDATE hr_employee SET mobile='13800000123' WHERE tenant_id=? AND id=?",tenant,id);
         var before = jdbcTemplate.queryForMap("SELECT * FROM hr_employee WHERE tenant_id=? AND id=?",tenant,id);
         var source = salesperson("risk-one","（测试）核对员工","13800000123","运营部");
-        var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();
-        var result = employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(source),"sync",codes);
-        assertThat(result.failed()).isZero();
-        assertThat(result.created()).isZero();
-        assertThat(employeeStore.employee(tenant,id).orElseThrow().dhbReviewCount()).isEqualTo(1);
-        var risk = reviews.pending(tenant).getFirst();
-        assertThat(risk.accountName()).isEqualTo("login-risk-one");
-        assertThat(reviews.pending(java.util.UUID.randomUUID().toString())).isEmpty();
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> reviews.confirm(tenant,risk.bindingId(),
-                new com.rigour.hr.api.v1.model.DhbBindingReviewCommand(risk.version()+1,id),"reviewer"))
-                .hasMessageContaining("刷新");
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> reviews.confirm(java.util.UUID.randomUUID().toString(),risk.bindingId(),
-                new com.rigour.hr.api.v1.model.DhbBindingReviewCommand(risk.version(),id),"reviewer")).hasMessageContaining("不存在");
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> reviews.confirm(tenant,risk.bindingId(),
-                new com.rigour.hr.api.v1.model.DhbBindingReviewCommand(risk.version(),Long.MAX_VALUE),"reviewer"))
-                .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
-        assertThat(reviews.pending(tenant)).hasSize(1);
-        reviews.confirm(tenant,risk.bindingId(),new com.rigour.hr.api.v1.model.DhbBindingReviewCommand(risk.version(),id),"reviewer");
-        assertThat(reviews.pending(tenant)).isEmpty();
-        employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(source),"sync",codes);
-        assertThat(reviews.pending(tenant)).isEmpty();
-        assertThat(jdbcTemplate.queryForMap("SELECT * FROM hr_employee WHERE tenant_id=? AND id=?",tenant,id)).isEqualTo(before);
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_dhb_binding_review_audit WHERE tenant_id=?",Integer.class,tenant)).isEqualTo(1);
-        employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(salesperson("risk-one","再次改名","13800000123","运营部")),"sync",codes);
-        assertThat(reviews.pending(tenant)).hasSize(1);
-        long other = organizations.saveEmployee(tenant,null,employee("另一个员工",dept.id(),"ACTIVE",0),"admin");
-        var changed = reviews.pending(tenant).getFirst();
-        reviews.confirm(tenant,changed.bindingId(),new com.rigour.hr.api.v1.model.DhbBindingReviewCommand(changed.version(),other),"reviewer");
-        assertThat(employeeStore.employee(tenant,id).orElseThrow().dhbStaffIds()).isEmpty();
-        assertThat(employeeStore.employee(tenant,other).orElseThrow().dhbStaffIds()).containsExactly("risk-one");
-        employeeStore.syncExternalEmployees(tenant,"DINGHUOBAO",java.util.List.of(salesperson("risk-one","再次改名","13800000123","运营部")),"sync",codes);
-        assertThat(reviews.pending(tenant)).isEmpty();
+        String code = employeeStore.employee(tenant, id).orElseThrow().employeeCode();
+        jdbcTemplate.update("""
+                INSERT INTO hr_employee_source_binding(tenant_id,employee_code,source_system,
+                    source_tenant_key,source_employee_id,source_employee_name,review_required,review_reason)
+                VALUES(?,?,'DINGHUOBAO','test-source','risk-one','来源姓名',1,'历史上报姓名不一致')
+                """, tenant, code);
+        assertThat(employeeStore.resolveExternalEmployees(tenant, "DINGHUOBAO", "test-source",
+                java.util.List.of("risk-one"), java.util.List.of())).isEmpty();
     }
 
     @Test
@@ -838,11 +703,12 @@ class HrApplicationTests {
         var dept = organizations.saveDepartment(tenant, null,
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "删除测试部", 0, "ACTIVE", 0, null, null, null), "admin");
         long id = organizations.saveEmployee(tenant, null, employee("删除测试员工", dept.id(), "ACTIVE", 0), "admin");
-        var codes = new com.rigour.shared.core.code.BusinessCodeGenerator();
-        jdbcTemplate.update("UPDATE hr_employee SET mobile='13800000888' WHERE tenant_id=? AND id=?", tenant, id);
-        var source = salesperson("delete-source", "删除测试员工", "13800000888", "删除测试部");
-        assertThat(employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(source), "sync", codes).failed()).isZero();
         var before = employeeStore.employee(tenant, id).orElseThrow();
+        jdbcTemplate.update("""
+                INSERT INTO hr_employee_source_binding(tenant_id,employee_code,source_system,
+                    source_tenant_key,source_employee_id,source_employee_name)
+                VALUES(?,?,'DINGHUOBAO','test-source','delete-source','删除测试员工')
+                """, tenant, before.employeeCode());
         long accessVersion = organizations.identity(tenant, before.employeeCode()).orElseThrow().accessVersion();
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.deleteEmployee(tenant, id, before.revision() + 1, "admin"))
                 .hasMessage("员工已修改，请刷新");
@@ -868,9 +734,8 @@ class HrApplicationTests {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee_assignment WHERE tenant_id=? AND employee_code=? AND effective_to IS NOT NULL", Integer.class, tenant, before.employeeCode())).isPositive();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee_assignment WHERE tenant_id=? AND employee_code=? AND effective_to IS NULL", Integer.class, tenant, before.employeeCode())).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_organization_change WHERE tenant_id=? AND object_ref=? AND event_type='EMPLOYEE_DELETE'", Integer.class, tenant, before.employeeCode())).isEqualTo(1);
-        var replay = employeeStore.syncExternalEmployees(tenant, "DINGHUOBAO", java.util.List.of(source), "sync", codes);
-        assertThat(replay.unchanged()).isEqualTo(1);
-        assertThat(replay.created()).isZero();
+        assertThat(employeeStore.resolveExternalEmployees(tenant, "DINGHUOBAO", "test-source",
+                java.util.List.of("delete-source"), java.util.List.of())).isEmpty();
         assertThat(employeeStore.employee(tenant, id)).isEmpty();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee_source_binding WHERE tenant_id=? AND employee_code=?", Integer.class, tenant, before.employeeCode())).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_employee WHERE tenant_id=?", Integer.class, tenant)).isEqualTo(2);
@@ -907,4 +772,88 @@ class HrApplicationTests {
                         "source_payload_json");
     }
 
+
+    @org.springframework.beans.factory.annotation.Autowired
+    com.rigour.hr.infrastructure.persistence.mapper.HrEmployeeMapper employeeMapper;
+
+    @Test
+    void fieldworkJoinsLegacyEmployeeKeysToCityHistory() throws Exception {
+        String tenant = java.util.UUID.randomUUID().toString();
+        String otherTenant = java.util.UUID.randomUUID().toString();
+        String code = "MIXED-COLLATION";
+        var at = java.time.Instant.parse("2026-10-01T01:00:00Z");
+        var time = java.time.LocalDateTime.ofInstant(at, java.time.ZoneOffset.UTC);
+        try (var connection = java.sql.DriverManager.getConnection(
+                MYSQL.getJdbcUrl(), "root", MYSQL.getPassword())) {
+            // Mirror legacy DEV columns in a separate schema in the disposable test container.
+            try (var statement = connection.createStatement()) {
+                statement.execute("CREATE DATABASE fieldwork_legacy_fixture");
+            }
+            connection.setCatalog("fieldwork_legacy_fixture");
+            var dataSource = new org.springframework.jdbc.datasource.SingleConnectionDataSource(connection, true);
+            var legacyJdbc = new JdbcTemplate(dataSource);
+            legacyJdbc.execute("""
+                    CREATE TABLE hr_employee (
+                      tenant_id VARCHAR(64), employee_code VARCHAR(50), employee_name VARCHAR(100),
+                      updated_time DATETIME(6), department_id BIGINT, department_name_snapshot VARCHAR(128)
+                    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
+                    """);
+            legacyJdbc.execute("""
+                    CREATE TABLE hr_employee_assignment (
+                      id BIGINT, tenant_id VARCHAR(64), employee_code VARCHAR(50), department_id BIGINT,
+                      department_name_snapshot VARCHAR(128), effective_from DATETIME(6), effective_to DATETIME(6)
+                    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci
+                    """);
+            legacyJdbc.execute("""
+                    CREATE TABLE hr_employee_city_history (
+                      tenant_id VARCHAR(64), employee_code VARCHAR(50), effective_at DATETIME(6),
+                      city_name VARCHAR(80), PRIMARY KEY (tenant_id,employee_code,effective_at)
+                    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci
+                    """);
+            legacyJdbc.update("INSERT INTO hr_employee (tenant_id,employee_code,employee_name) VALUES (?,?,?)",
+                    tenant, code, "测试员工");
+            legacyJdbc.update("INSERT INTO hr_employee_city_history VALUES (?,?,?,?),(?,?,?,?)",
+                    tenant, code, time, "杭州", otherTenant, code, time.plusSeconds(1), "宁波");
+            var query = new com.rigour.hr.infrastructure.persistence.repository.FieldworkOrganizationQuery(
+                    new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(legacyJdbc));
+
+            assertThat(query.find(tenant, at.plusSeconds(1), java.util.List.of(code))).singleElement()
+                    .satisfies(organization -> assertThat(organization.city()).isEqualTo("杭州"));
+            assertThat(query.find(otherTenant, at, java.util.List.of(code))).isEmpty();
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void fieldworkKeepsCityAsOfTheWorkDayAndSeparatesTenants() {
+        var query=new com.rigour.hr.infrastructure.persistence.repository.FieldworkOrganizationQuery(
+                new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbcTemplate));
+        String code="CITY-HISTORY",tenant=java.util.UUID.randomUUID().toString();
+        var first=java.time.Instant.parse("2026-10-01T01:00:00Z");
+        var second=first.plus(java.time.Duration.ofDays(15));
+        jdbcTemplate.update("INSERT INTO hr_employee(tenant_id,employee_code,employee_name,employment_status) VALUES(?,?,'测试员工','ACTIVE')",tenant,code);
+        employeeMapper.recordCity(tenant,code,java.time.LocalDateTime.ofInstant(first,java.time.ZoneOffset.UTC),"杭州");
+        employeeMapper.recordCity(tenant,code,java.time.LocalDateTime.ofInstant(second,java.time.ZoneOffset.UTC),"宁波");
+        org.assertj.core.api.Assertions.assertThat(query.find(tenant,first.minusSeconds(1),java.util.List.of(code)).getFirst().city()).isNull();
+        org.assertj.core.api.Assertions.assertThat(query.find(tenant,first,java.util.List.of(code)).getFirst().city()).isEqualTo("杭州");
+        org.assertj.core.api.Assertions.assertThat(query.find(tenant,second,java.util.List.of(code)).getFirst().city()).isEqualTo("宁波");
+        org.assertj.core.api.Assertions.assertThat(query.find("another-tenant",second,java.util.List.of(code))).isEmpty();
+        var firstUtc=java.time.LocalDateTime.ofInstant(first,java.time.ZoneOffset.UTC);
+        var secondUtc=java.time.LocalDateTime.ofInstant(second,java.time.ZoneOffset.UTC);
+        jdbcTemplate.update("INSERT INTO hr_department(tenant_id,department_code,department_name) VALUES(?,'X','一组')",tenant);
+        long department=jdbcTemplate.queryForObject("SELECT id FROM hr_department WHERE tenant_id=?",Long.class,tenant);
+        jdbcTemplate.update("UPDATE hr_employee SET department_id=?, department_name_snapshot='一组',updated_time=? WHERE tenant_id=?",department,firstUtc,tenant);
+        jdbcTemplate.update("INSERT INTO hr_department_parent_history VALUES(?,?,?,?,?),(?,?,?,?,?),(?,?,?,?,?),(?,?,?,?,?)",
+            tenant,department,firstUtc,9001L,"一组",tenant,9001L,firstUtc,null,"北区",tenant,9002L,firstUtc,null,"南区",tenant,department,secondUtc,9002L,"新一组");
+        org.assertj.core.api.Assertions.assertThat(query.find(tenant,first,java.util.List.of(code)).getFirst().departmentAncestors()).containsEntry(9001L,"北区").doesNotContainKey(9002L);
+        org.assertj.core.api.Assertions.assertThat(query.find(tenant,second,java.util.List.of(code)).getFirst().departmentAncestors()).containsEntry(9002L,"南区").doesNotContainKey(9001L);
+
+        // Recreate a mixed legacy schema in the isolated MySQL database.
+        jdbcTemplate.execute("ALTER TABLE hr_employee_city_history CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+        try {
+            assertThat(query.find(tenant,first,java.util.List.of(code)).getFirst().city()).isEqualTo("杭州");
+            assertThat(query.find(tenant,second,java.util.List.of(code)).getFirst().city()).isEqualTo("宁波");
+        } finally {
+            jdbcTemplate.execute("ALTER TABLE hr_employee_city_history CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci");
+        }
+    }
 }

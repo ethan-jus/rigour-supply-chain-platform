@@ -2,7 +2,7 @@
 """Freeze fresh-schema baselines without modifying applied Flyway V migrations.
 
 --create is a one-time repository operation, not a database operation.
---check also checks newly added V migrations for the collation policy.
+--check also checks new migrations for the collation policy and deprecated MySQL syntax.
 Once published, neither a baseline nor its historical sources may be regenerated.
 Already published post-baseline exceptions are pinned by checksum in the manifest.
 """
@@ -16,6 +16,20 @@ ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "scripts/database/general-ci-baselines.json"
 COLLATION = "utf8mb4_general_ci"
 COLLATIONS = re.compile(r"\butf8mb4_[a-z0-9_]+\b", re.I)
+SQL_COMMENTS = re.compile(r"^[ \t]*(?:--[ \t]|#)[^\n]*|/\*(?!!)[\s\S]*?\*/", re.M)
+DEPRECATED_BINARY = re.compile(
+    r"""\bBINARY(?:\s+|(?=\())(?!\s*(?:\(\s*\d+\s*\)|"""
+    r"""(?:NOT|NULL|DEFAULT|COMMENT|PRIMARY|UNIQUE|REFERENCES|CHECK|GENERATED)\b))"""
+    r"""(?=[\w`'"@(+\-])""", re.I)
+
+
+def check_binary_operator(path, sql):
+    # Keep quoted SQL visible because Flyway migrations can run it via PREPARE.
+    match = DEPRECATED_BINARY.search(SQL_COMMENTS.sub(
+        lambda comment: "\n" * comment[0].count("\n"), sql))
+    if match:
+        raise SystemExit(f"{path.relative_to(ROOT)}: deprecated MySQL BINARY operator; "
+                         "use CAST(... AS BINARY).")
 
 
 def version(path):
@@ -112,7 +126,11 @@ def main():
                 assert hashlib.sha256(path.read_bytes()).hexdigest() == legacy[name], \
                     "Historical migration changed: " + str(path)
             else:
-                assert all(c.lower() == COLLATION for c in COLLATIONS.findall(path.read_text())), path
+                sql = path.read_text()
+                assert all(c.lower() == COLLATION for c in COLLATIONS.findall(sql)), path
+                check_binary_operator(path, sql)
+        for path in sorted(set(directory.glob("*.sql")) - set(paths)):
+            check_binary_operator(path, path.read_text())
     print("Verified %d frozen baselines and %d unchanged historical migrations; new migrations use %s."
           % (len(entries), sum(entry["migration_count"] for entry in entries), COLLATION))
 

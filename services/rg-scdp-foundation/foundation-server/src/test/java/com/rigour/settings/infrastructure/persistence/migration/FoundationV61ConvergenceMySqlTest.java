@@ -56,7 +56,8 @@ class FoundationV61ConvergenceMySqlTest {
             var flyway = migration(ds, "latest");
             flyway.migrate();
             flyway.validate();
-            assertThat(flyway.info().current().getVersion().toString()).isEqualTo("62");
+            assertThat(flyway.info().current().getVersion().toString()).isEqualTo("63");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM data_dictionary_item WHERE tenant_key='GLOBAL' AND dictionary_code='VISIT_NEXT_ACTION' AND dictionary_item_code='RESTOCK' AND dictionary_item_name='补货承诺'",Integer.class)).isOne();
             assertThat(jdbc.queryForObject("SELECT id FROM migration_sentinel", Integer.class)).isEqualTo(42);
             if (!history.isEmpty()) assertThat(jdbc.queryForList("SELECT * FROM flyway_schema_history ORDER BY installed_rank").subList(0, history.size())).isEqualTo(history);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM data_dictionary_item WHERE tenant_key='GLOBAL' AND dictionary_code IN ('PRODUCT_SPECIFICATION_STATUS','PRODUCT_SPECIFICATION_VALUE_STATUS') AND dictionary_item_code IN ('ACTIVE','INACTIVE','ARCHIVED')", Integer.class)).isEqualTo(6);

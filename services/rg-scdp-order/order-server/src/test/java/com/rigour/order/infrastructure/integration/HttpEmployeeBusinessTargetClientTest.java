@@ -15,7 +15,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.atomic.*;
 
-class HttpEmployeePerformanceTargetClientTest {
+class HttpEmployeeBusinessTargetClientTest {
     @Test
     void signsTenantScopedReadAndDoesNotFallbackOnFailure() throws Exception {
         var trust = new ContextTrustProperties();
@@ -23,10 +23,11 @@ class HttpEmployeePerformanceTargetClientTest {
         var signer = new TrustedContextSigner(trust);
         var tenant = UUID.randomUUID();
         var fail = new AtomicBoolean();
+        var payload = new AtomicReference<>("{\"code\":\"OK\",\"data\":{\"salesTargetAmount\":123456789012.12,\"receiptTargetAmount\":20000}}");
         var valid = new AtomicBoolean();
         var server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext(
-                "/api/v1/hr/target-settings/performance-value",
+                "/api/v1/hr/target-settings/business-values",
                 exchange -> {
                     var request =
                             new MockHttpServletRequest(
@@ -45,11 +46,7 @@ class HttpEmployeePerformanceTargetClientTest {
                                                             RequestHeaders.PRINCIPAL_SCOPE))
                                     && "hr:targets:service-read"
                                             .equals(request.getHeader(RequestHeaders.PERMISSIONS)));
-                    byte[] body =
-                            """
-{"code":"OK","data":123456789012.12}
-"""
-                                    .getBytes(StandardCharsets.UTF_8);
+                    byte[] body = payload.get().getBytes(StandardCharsets.UTF_8);
                     exchange.getResponseHeaders().set("Content-Type", "application/json");
                     exchange.sendResponseHeaders(fail.get() ? 503 : 200, body.length);
                     exchange.getResponseBody().write(body);
@@ -58,15 +55,21 @@ class HttpEmployeePerformanceTargetClientTest {
         server.start();
         try {
             var client =
-                    new HttpEmployeePerformanceTargetClient(
+                    new HttpEmployeeBusinessTargetClient(
                             signer,
                             RestClient.builder(),
                             "http://127.0.0.1:" + server.getAddress().getPort());
-            assertThat(client.value(tenant.toString(), "E1", "2026-10", "2026-10"))
+            assertThat(client.values(tenant.toString(), "E1", "2026-10", "2026-10").salesTargetAmount())
                     .isEqualByComparingTo("123456789012.12");
             assertThat(valid).isTrue();
+            assertThat(client.values(tenant.toString(), "E1", "2026-10", "2026-10").receiptTargetAmount()).isEqualByComparingTo("20000");
+            for (String data : List.of("null", "{}", "{\"salesTargetAmount\":40000}", "{\"salesTargetAmount\":40000,\"receiptTargetAmount\":-1}", "7000")) {
+                payload.set("{\"code\":\"OK\",\"data\":" + data + "}");
+                assertThatThrownBy(() -> client.values(tenant.toString(), "E1", "2026-10", "2026-10"))
+                        .isInstanceOf(BusinessException.class);
+            }
             fail.set(true);
-            assertThatThrownBy(() -> client.value(tenant.toString(), "E1", "2026-10", "2026-10"))
+            assertThatThrownBy(() -> client.values(tenant.toString(), "E1", "2026-10", "2026-10"))
                     .isInstanceOf(BusinessException.class)
                     .hasMessageContaining("人事指标暂时无法读取");
         } finally {

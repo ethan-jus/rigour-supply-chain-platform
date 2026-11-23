@@ -61,7 +61,6 @@ public class DhbPageSyncJobService {
                         && command.scope() != DhbPageSyncCommand.Scope.SHIPMENT)
                 || !Set.of(
                                 DhbPageSyncCommand.Scope.CUSTOMER,
-                                DhbPageSyncCommand.Scope.SALESPERSON,
                                 DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE,
                                 DhbPageSyncCommand.Scope.VOUCHER_BACKFILL,
                                 DhbPageSyncCommand.Scope.SHIPMENT)

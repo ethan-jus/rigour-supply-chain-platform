@@ -22,11 +22,17 @@ public final class StoreModels {
     public record StoreMatch(String id,String name,String address,String areaCode,String provinceName,String cityName,
             String countyName,String recordStatus,String businessStatus,String poolType) {}
     public record Page(long total, List<Row> items, String nextCursor) {}
+    public record FollowupEvidence(String storeId, String name, String city, String ownerCode,
+            String ownerName, String reason, Instant lastVisitAt, Instant lastOrderAt, String orderId) {}
+    public record FollowupEvidencePage(List<FollowupEvidence> items, String nextCursor) {}
     public record LeadPage(long total, List<Lead> items, int page, int size) {}
     public record Query(String view, String keyword, String region, String province, String city,
             String county, String cooperation, String tier, String activity, String potential,
             String cursor, int size, String storeType, String pool, String recordStatus,
-            String phase, String protection, String businessStatus) {
+            String phase, String protection, String businessStatus, String followup) {
+        public Query(String view,String keyword,String region,String province,String city,String county,String cooperation,String tier,String activity,String potential,String cursor,int size,String storeType,String pool,String recordStatus,String phase,String protection,String businessStatus) {
+            this(view,keyword,region,province,city,county,cooperation,tier,activity,potential,cursor,size,storeType,pool,recordStatus,phase,protection,businessStatus,null);
+        }
         public Query(String view,String keyword,String region,String province,String city,String county,String cooperation,String tier,String activity,String potential,String cursor,int size,String storeType,String pool,String recordStatus,String phase,String protection) {
             this(view,keyword,region,province,city,county,cooperation,tier,activity,potential,cursor,size,storeType,pool,recordStatus,phase,protection,null);
         }

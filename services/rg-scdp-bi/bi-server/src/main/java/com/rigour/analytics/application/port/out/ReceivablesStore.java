@@ -7,7 +7,18 @@ import java.time.LocalDate;
 import java.util.List;
 
 public interface ReceivablesStore {
-    record Scope(String tenant, String region, String owner, String customer, boolean full) {}
+    record Scope(
+            String tenant,
+            String region,
+            String owner,
+            String customer,
+            boolean full,
+            Long departmentId,
+            boolean includeSubDepartments) {
+        public Scope(String tenant, String region, String owner, String customer, boolean full) {
+            this(tenant, region, owner, customer, full, null, false);
+        }
+    }
 
     Instant projectedAt(String tenant);
 

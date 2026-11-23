@@ -10,13 +10,16 @@ import static org.mockito.Mockito.*;
 
 class OrderWorkbenchServiceTest {
     OrderWorkbenchStore store = mock(OrderWorkbenchStore.class);
-    com.rigour.order.application.port.out.EmployeePerformanceTargetClient targets = mock(com.rigour.order.application.port.out.EmployeePerformanceTargetClient.class);
+    com.rigour.order.application.port.out.EmployeeBusinessTargetClient targets = mock(com.rigour.order.application.port.out.EmployeeBusinessTargetClient.class);
     OrderWorkbenchService service = new OrderWorkbenchService(store, targets);
     UUID tenant = UUID.randomUUID();
     LocalDate from = LocalDate.of(2026,11,1), to = LocalDate.of(2026,11,30);
     void caller(String... permissions) {
         var user = UUID.randomUUID();
         TestAuthorizationContext.set(new CallerIdentity("TENANT",user,tenant,user,null,UUID.randomUUID(),0,0,0,Set.of(),Set.of(permissions)));
+    }
+    private com.rigour.order.application.port.out.EmployeeBusinessTargetClient.Targets businessTargets(String sales, String receipts) {
+        return new com.rigour.order.application.port.out.EmployeeBusinessTargetClient.Targets(new java.math.BigDecimal(sales), new java.math.BigDecimal(receipts));
     }
     @AfterEach void clear() { TestAuthorizationContext.clear(); }
     @Test void receiptRequiresReceiptPermissionAndDateWindowIsChinaHalfOpen() {
@@ -38,25 +41,37 @@ class OrderWorkbenchServiceTest {
         caller("order:payment:read");
         var page = new OrderWorkbenchStore.Totals(2, new java.math.BigDecimal("300"));
         when(store.performanceTotals(anyString(), eq("self"), anyString(), any(), any())).thenReturn(page);
-        when(targets.value(tenant.toString(), "self", "2026-11", "2026-11")).thenReturn(new java.math.BigDecimal("1000"));
+        when(targets.values(tenant.toString(), "self", "2026-11", "2026-11")).thenReturn(businessTargets("40000", "20000"));
         var result = service.performance("self", from, to);
         assertThat(result.completedAmount()).isEqualByComparingTo("300");
-        assertThat(result.targetAmount()).isEqualByComparingTo("1000");
+        assertThat(result.targetAmount()).isEqualByComparingTo("20000");
         verify(store).requireSelf("self", "order:payment:read");
         verify(store, never()).details(anyString(), anyString(), anyString(), anyString(), any(), any(), anyInt(), anyInt());
-        when(targets.value(tenant.toString(), "self", "2026-11", "2026-11")).thenReturn(new java.math.BigDecimal("2000"));
-        assertThat(service.performance("self", from, to).targetAmount()).isEqualByComparingTo("2000");
+        when(targets.values(tenant.toString(), "self", "2026-11", "2026-11")).thenReturn(businessTargets("45000", "25000"));
+        assertThat(service.performance("self", from, to).targetAmount()).isEqualByComparingTo("25000");
         doThrow(new AuthorizationDeniedException("own")).when(store).requireSelf("other", "order:payment:read");
         assertThatThrownBy(() -> service.performance("other", from, to)).isInstanceOf(AuthorizationDeniedException.class);
-        verify(targets, never()).value(anyString(), eq("other"), anyString(), anyString());
+        verify(targets, never()).values(anyString(), eq("other"), anyString(), anyString());
         caller("order:read");
         assertThatThrownBy(() -> service.performance("self", from, to)).isInstanceOf(AuthorizationDeniedException.class);
     }
 
     @Test void summaryUsesDedicatedAggregateAndValidatesBeforeAccess() {
         caller("order:read");
-        service.summary(" self ", from, to);
-        verify(store).summary(tenant.toString(), "self", "order:read",
+        var aggregate = new com.rigour.order.api.v1.OrderWorkbenchApi.Summary(new java.math.BigDecimal("300"), 2, new java.math.BigDecimal("50"), 1, 0, null, null);
+        when(store.summary(anyString(), eq("self"), anyString(), any(), any())).thenReturn(aggregate);
+        when(targets.values(tenant.toString(), "self", "2026-11", "2026-11")).thenReturn(businessTargets("40000", "20000"));
+        var result = service.summary(" self ", from, to);
+        assertThat(result.tradeAmount()).isEqualByComparingTo("300");
+        assertThat(result.pendingAmount()).isEqualByComparingTo("50");
+        assertThat(result.salesTargetAmount()).isEqualByComparingTo("40000");
+        verify(store).requireSelf("self", "order:read");
+        when(targets.values(tenant.toString(), "self", "2026-11", "2026-11")).thenReturn(businessTargets("45000", "25000"));
+        assertThat(service.summary("self", from, to).salesTargetAmount()).isEqualByComparingTo("45000");
+        doThrow(new AuthorizationDeniedException("own")).when(store).requireSelf("other", "order:read");
+        assertThatThrownBy(() -> service.summary("other", from, to)).isInstanceOf(AuthorizationDeniedException.class);
+        verify(targets, never()).values(anyString(), eq("other"), anyString(), anyString());
+        verify(store, times(2)).summary(tenant.toString(), "self", "order:read",
                 Instant.parse("2026-10-31T16:00:00Z"), Instant.parse("2026-11-30T16:00:00Z"));
         verify(store, never()).details(anyString(), anyString(), anyString(), anyString(), any(), any(), anyInt(), anyInt());
         assertThatThrownBy(() -> service.summary("self", to, from)).isInstanceOf(com.rigour.shared.core.exception.BusinessException.class);

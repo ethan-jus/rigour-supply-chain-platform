@@ -1,5 +1,6 @@
 package com.rigour.sales.api.v1.model;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -58,13 +59,27 @@ public final class SalesWorkApiModels {
 
     public record CheckInCommand(
             String idempotencyKey, String clientInstanceId, Instant clientOccurredAt,
-            LocationEvidence location, String deviceIdHash, String networkType) {
+            LocationEvidence location, String deviceIdHash, String networkType,
+            @JsonInclude(JsonInclude.Include.NON_NULL) Boolean confirmedTrack) {
+        public CheckInCommand(String key, String client, Instant at, LocationEvidence location, String device, String network) {
+            this(key, client, at, location, device, network, null);
+        }
     }
 
     public record LocationPointCommand(
             String deviceEventId, BigDecimal longitude, BigDecimal latitude,
             BigDecimal accuracyMeters, Instant clientOccurredAt, String source,
-            BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem) {
+            BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem,
+            @JsonInclude(JsonInclude.Include.NON_EMPTY) List<String> routePath) {
+        public LocationPointCommand {
+            routePath = routePath == null ? List.of() : List.copyOf(routePath);
+        }
+        public LocationPointCommand(String deviceEventId, BigDecimal longitude, BigDecimal latitude,
+                BigDecimal accuracyMeters, Instant clientOccurredAt, String source, BigDecimal rawLongitude,
+                BigDecimal rawLatitude, String rawCoordinateSystem) {
+            this(deviceEventId, longitude, latitude, accuracyMeters, clientOccurredAt, source,
+                    rawLongitude, rawLatitude, rawCoordinateSystem, List.of());
+        }
         public LocationPointCommand(String deviceEventId, BigDecimal longitude, BigDecimal latitude,
                 BigDecimal accuracyMeters, Instant clientOccurredAt, String source) {
             this(deviceEventId, longitude, latitude, accuracyMeters, clientOccurredAt, source, null, null, null);
@@ -79,7 +94,12 @@ public final class SalesWorkApiModels {
 
     public record ResumeWorkCommand(String idempotencyKey, String clientInstanceId,
             Instant clientOccurredAt, LocationEvidence location, String deviceIdHash,
-            String networkType, String reason) {}
+            String networkType, String reason, @JsonInclude(JsonInclude.Include.NON_NULL) Boolean confirmedTrack) {
+        public ResumeWorkCommand(String key, String client, Instant at, LocationEvidence location, String device,
+                String network, String reason) {
+            this(key, client, at, location, device, network, reason, null);
+        }
+    }
 
     public record WorkPeriodView(Instant startedAt, Instant endedAt, String reason) {}
 
@@ -98,7 +118,8 @@ public final class SalesWorkApiModels {
             String timezoneId, UUID fieldPolicyVersionId, String status,
             Instant checkedInAt, Instant checkedOutAt, UUID locationSessionId,
             int locationPointCount, int interruptionCount, int verifiedWorkMinutes,
-            String evidenceQuality, String hrEmployeeId, List<WorkPeriodView> workPeriods, int totalWorkMinutes, boolean adjustmentAllowed, Instant adjustmentDeadline) {
+            String evidenceQuality, String hrEmployeeId, List<WorkPeriodView> workPeriods, int totalWorkMinutes, boolean adjustmentAllowed, Instant adjustmentDeadline,
+            boolean confirmedTrack) {
     }
 
     /** 月历中的单日事实；scheduleStatus=UNKNOWN时不得据此推断休息或旷工。 */
@@ -283,8 +304,9 @@ public final class SalesWorkApiModels {
             int durationMinutes, String distanceSource) {
     }
 
-    public record TrackLegView(int distanceMeters, List<TrackPointView> points) {
+    public record TrackLegView(int distanceMeters, List<TrackPointView> points, boolean confirmed) {
         public TrackLegView { points = List.copyOf(points); }
+        public TrackLegView(int distanceMeters, List<TrackPointView> points) { this(distanceMeters, points, false); }
     }
     public record TrackGapView(Instant from, Instant to, String reason) {}
 
@@ -294,12 +316,12 @@ public final class SalesWorkApiModels {
             List<TrackPointView> points, List<TrackPunchView> punches,
             List<TrackVisitView> visits, List<TrackTravelSegmentView> segments,
             boolean distanceAvailable, int rejectedPointCount,
-            List<TrackLegView> legs, List<TrackGapView> gaps) {
+            List<TrackLegView> legs, List<TrackGapView> gaps, boolean confirmedTrack) {
         public WorkDayTrackView(UUID workDayId, LocalDate businessDate, String status,
                 int totalDistanceMeters, int trackedDurationMinutes, List<TrackPointView> points,
                 List<TrackPunchView> punches, List<TrackVisitView> visits, List<TrackTravelSegmentView> segments) {
             this(workDayId, businessDate, status, totalDistanceMeters, trackedDurationMinutes,
-                    points, punches, visits, segments, false, 0, List.of(), List.of());
+                    points, punches, visits, segments, false, 0, List.of(), List.of(), false);
         }
         public WorkDayTrackView {
             points = points == null ? List.of() : List.copyOf(points);

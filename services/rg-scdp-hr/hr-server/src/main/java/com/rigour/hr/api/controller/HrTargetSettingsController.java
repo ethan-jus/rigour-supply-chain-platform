@@ -34,8 +34,12 @@ public class HrTargetSettingsController implements HrTargetSettingsApi {
         return ApiResponse.success(service.values(from, to));
     }
 
+    public ApiResponse<BusinessTargets> businessValues(String employeeCode, String from, String to) {
+        return ApiResponse.success(service.businessValues(employeeCode, from, to));
+    }
+
     public ApiResponse<java.math.BigDecimal> performanceValue(String employeeCode, String from, String to) {
-        return ApiResponse.success(service.performanceValue(employeeCode, from, to));
+        return ApiResponse.success(service.businessValues(employeeCode, from, to).receiptTargetAmount());
     }
 
     public ApiResponse<List<History>> history(String month, String dimensionType, String code) {

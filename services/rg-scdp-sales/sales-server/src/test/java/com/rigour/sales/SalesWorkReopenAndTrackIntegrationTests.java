@@ -84,9 +84,27 @@ class SalesWorkReopenAndTrackIntegrationTests {
     @Autowired private com.rigour.sales.application.port.out.SalesFieldworkRepository fieldwork;
     @Autowired private com.rigour.sales.application.service.SalesFieldworkMetricsWorker metricsWorker;
     @Autowired private com.rigour.sales.application.port.out.SalesFieldworkEvidenceRepository fieldEvidence;
+    @Autowired private com.rigour.sales.application.port.out.FieldworkFacts fieldworkFacts;
     @Autowired private com.rigour.sales.application.port.out.SalesFieldworkReviewRepository reviewCases;
     @Autowired private com.rigour.sales.application.port.out.SalesWorkAttendanceRepository workDays;
     @Autowired private org.springframework.transaction.PlatformTransactionManager transactions;
+
+    @Autowired com.rigour.sales.application.port.out.FieldworkFacts dailyFacts;
+
+    @Test
+    void dailyReportReadsRealPunchesAndEnforcesTenantAndScope() {
+        var location=new LocationEvidence(new BigDecimal("120.1"),new BigDecimal("30.2"),new BigDecimal("15"),"APP_NATIVE");
+        var day=attendanceService.checkIn(new CheckInCommand("v2-workday","client",Instant.now(),location,null,"ONLINE"));
+        var all=new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(true,Set.of());
+        var none=new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of());
+        assertThat(dailyFacts.roster(tenantId,day.businessDate(),all)).extracting(r->r.id()).containsExactly(profileId);
+        assertThat(dailyFacts.punches(tenantId,day.businessDate(),all)).hasSize(1);
+        assertThat(dailyFacts.visits(tenantId,day.businessDate(),day.businessDate(),all,null)).isEmpty();
+        assertThat(dailyFacts.plans(tenantId,day.businessDate(),all)).isEmpty();
+        assertThat(dailyFacts.issues(tenantId,day.businessDate(),all)).isEmpty();
+        assertThat(dailyFacts.roster(tenantId,day.businessDate(),none)).isEmpty();
+        assertThat(dailyFacts.punches(UUID.randomUUID(),day.businessDate(),all)).isEmpty();
+    }
 
     @Test
     void manualReviewIsIdempotentAndPreservesExistingAutomaticEvidence() {
@@ -169,13 +187,22 @@ class SalesWorkReopenAndTrackIntegrationTests {
         historyCapture(profileId,100,date,77L,"11:00:00",visitVersion);
         historyCapture(other,101,date,77L,"07:00:00",visitVersion);
         var capture=fieldEvidence.capture(tenantId,current).orElseThrow();
-        var own=fieldEvidence.history(tenantId,capture,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of("SELF")),1,2);
+        var own=fieldEvidence.history(tenantId,capture,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of("SELF")),1,2,false);
         assertThat(own.ownVisits7()).isEqualTo(2);assertThat(own.ownDays7()).isEqualTo(1);
         assertThat(own.ownVisits30()).isEqualTo(3);assertThat(own.ownDays30()).isEqualTo(2);
         assertThat(own.total()).isEqualTo(3);assertThat(own.items()).hasSize(2).allMatch(v->v.salesProfileId().equals(profileId));
-        var all=fieldEvidence.history(tenantId,capture,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(true,Set.of()),1,10);
+        var all=fieldEvidence.history(tenantId,capture,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(true,Set.of()),1,10,false);
         assertThat(all.visibleVisits30()).isEqualTo(4);assertThat(all.ownVisits30()).isEqualTo(3);
-        assertThat(fieldEvidence.history(tenantId,capture,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of()),1,10).total()).isZero();
+        assertThat(fieldEvidence.history(tenantId,capture,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of()),1,10,false).total()).isZero();
+        var allScope = new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(true, Set.of());
+        var throughVisit = fieldEvidence.history(tenantId, capture, allScope, 1, 10, true);
+        assertThat(throughVisit.ownPriorVisits()).isEqualTo(4);
+        assertThat(throughVisit.visiblePriorVisits()).isEqualTo(5);
+        assertThat(throughVisit.total()).isEqualTo(5);
+        assertThat(throughVisit.items()).anyMatch(v -> v.businessDate().equals(date.minusDays(30)));
+        var counts = fieldworkFacts.storeVisitCounts(tenantId, allScope, List.of(current)).get(current);
+        assertThat(counts.storeVisits()).isEqualTo(6);
+        assertThat(counts.salespersonVisits()).isEqualTo(5);
         assertThat(fieldEvidence.capture(UUID.randomUUID(),current)).isEmpty();
     }
 
@@ -466,6 +493,65 @@ class SalesWorkReopenAndTrackIntegrationTests {
         assertThat(track.legs()).hasSize(1);
         assertThat(track.totalDistanceMeters()).isGreaterThan(150);
         assertThat(track.points().getFirst().longitude()).isEqualByComparingTo(origin.add(offset));
+    }
+
+    @Test
+    void confirmedTrackBackfillsAcrossBatchesWithoutReprocessingAnOlderSession() {
+        jdbc.update("UPDATE sales_field_policy_version SET location_sample_interval_seconds=5 WHERE id=?", bin(policyVersionId));
+        var lng = new BigDecimal("120.100000");
+        var lat = new BigDecimal("30.200000");
+        var accuracy = new BigDecimal("4");
+        var location = new LocationEvidence(lng, lat, accuracy, "APP_NATIVE");
+        var now = Instant.now();
+        var old = attendanceService.checkIn(new CheckInCommand("old-in", "client", now, location, null, null));
+        assertThat(old.confirmedTrack()).isFalse();
+        attendanceService.uploadLocationPoints(old.id(), new LocationBatchCommand("old-batch", List.of(
+                new LocationPointCommand("old-1", lng, lat, accuracy, now.minusSeconds(55), "APP_GPS"),
+                new LocationPointCommand("old-2", lng, lat.add(new BigDecimal("0.0001")), accuracy, now.minusSeconds(50), "APP_GPS")),
+                old.locationSessionId()));
+        var oldTrack = attendanceService.track(old.businessDate());
+        assertThat(oldTrack.totalDistanceMeters()).isEqualTo(11);
+        attendanceService.checkOut(old.id(), new CheckOutCommand("old-out", now, location, null, null));
+
+        var day = attendanceService.resumeWork(old.id(), new ResumeWorkCommand("confirmed-in", "client", now, location, null, null, "补充拜访", true));
+        assertThat(day.confirmedTrack()).isTrue();
+        assertThat(day.locationSessionId()).isNotEqualTo(old.locationSessionId());
+        var p0 = lat;
+        var p1 = lat.add(new BigDecimal("0.00006"));
+        var p2 = lat.add(new BigDecimal("0.00012"));
+        var p3 = lat.add(new BigDecimal("0.00012"));
+        var east = lng.add(new BigDecimal("0.00005"));
+        var original = List.of(new GpsPoint(lng, p0),new GpsPoint(lng,p1),new GpsPoint(lng,p2),new GpsPoint(east,p3),
+                new GpsPoint(lng,p2),new GpsPoint(lng,p1),new GpsPoint(lng,p0),new GpsPoint(lng,p0));
+        when(maps.convertGpsBatch(org.mockito.ArgumentMatchers.anyList())).thenAnswer(invocation -> {
+            List<GpsPoint> fixes = invocation.getArgument(0);
+            return fixes.stream().map(fix -> new Coordinates(fix.longitude().add(new BigDecimal("0.004")), fix.latitude(), "GCJ02")).toList();
+        });
+        var proofs = List.of(List.<String>of(), List.<String>of(), List.of("new-0","new-1","new-2"), List.<String>of(),
+                List.of("new-2","new-3"), List.of("new-3","new-4"), List.of("new-4","new-5"), List.of("new-5","new-6"));
+        var points = java.util.stream.IntStream.range(0, original.size()).mapToObj(index ->
+                new LocationPointCommand("new-" + index, null, null, accuracy, now.minusSeconds(45 - index * 5L),
+                        index == 7 ? "APP_GPS_STILL" : "APP_GPS",
+                        original.get(index).longitude(), original.get(index).latitude(), "WGS84", proofs.get(index))).toList();
+        var first = new LocationBatchCommand("confirmed-first", points.subList(0,2), day.locationSessionId());
+        var second = new LocationBatchCommand("confirmed-second", points.subList(2,8), day.locationSessionId());
+        assertThat(attendanceService.uploadLocationPoints(day.id(), first).acceptedCount()).isEqualTo(2);
+        assertThat(attendanceService.track(day.businessDate()).legs()).isEqualTo(oldTrack.legs());
+        assertThat(attendanceService.uploadLocationPoints(day.id(), second).acceptedCount()).isEqualTo(6);
+        assertThat(attendanceService.uploadLocationPoints(day.id(), second).acceptedCount()).isEqualTo(6);
+        verify(maps).convertGpsBatch(original.subList(0,2));
+        verify(maps).convertGpsBatch(original.subList(2,8));
+        var track = attendanceService.track(day.businessDate());
+        assertThat(track.legs()).hasSize(2);
+        assertThat(track.legs().getFirst()).isEqualTo(oldTrack.legs().getFirst());
+        assertThat(track.legs().getLast().confirmed()).isTrue();
+        assertThat(track.legs().getLast().points()).hasSize(7);
+        assertThat(track.legs().getLast().distanceMeters()).isBetween(35,38);
+        assertThat(track.totalDistanceMeters()).isEqualTo(11+track.legs().getLast().distanceMeters());
+        assertThat(track.rejectedPointCount()).isZero();
+        assertThat(track.confirmedTrack()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM sales_location_point WHERE location_session_id=? AND route_path IS NOT NULL",
+                Integer.class, bin(old.locationSessionId()))).isZero();
     }
 
     @Test

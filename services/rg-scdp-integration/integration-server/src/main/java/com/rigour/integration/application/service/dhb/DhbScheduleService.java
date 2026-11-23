@@ -67,11 +67,11 @@ public class DhbScheduleService {
         var required =
                 write
                         ? Set.of(
-                                "integration:dhb:read", "integration:dhb:write", "hr:employee:sync")
+                                "integration:dhb:read", "integration:dhb:write")
                         : Set.of("integration:dhb:read");
         if (!actor.permissions().contains("*:*:*") && !actor.permissions().containsAll(required))
             throw new AuthorizationDeniedException(
-                    write ? "integration:dhb:write + hr:employee:sync" : "integration:dhb:read");
+                    write ? "integration:dhb:write" : "integration:dhb:read");
     }
 
     public void tick() {

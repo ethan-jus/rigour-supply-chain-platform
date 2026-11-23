@@ -13,7 +13,7 @@ public interface OrderWorkbenchApi {
                Instant occurredAt, BigDecimal amount, String status) {}
     record Page(long total, BigDecimal amount, List<Row> items) {}
     record Summary(BigDecimal tradeAmount, long orderCount, BigDecimal pendingAmount,
-                   long pendingCount, long outboundCount, Row pendingPreview) {}
+                   long pendingCount, long outboundCount, Row pendingPreview, BigDecimal salesTargetAmount) {}
 
     record Performance(BigDecimal completedAmount, BigDecimal targetAmount, long orderCount) {}
 

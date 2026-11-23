@@ -90,4 +90,45 @@ class JdbcStoreVisitFieldworkStoreTest {
         assertThatThrownBy(()->f.inTx(()->{facts.acceptEvidence(cancelled(2),now.plusSeconds(602));return null;})).hasMessageContaining("已提交拜访");
         assertThat(f.jdbc.queryForObject("SELECT capture_revision FROM crm_visit WHERE tenant_id=? AND id=?",Long.class,f.tenant,visit.id())).isEqualTo(1);
     }
+
+    @Test void followupEvidenceDistinguishesMissingHistoryFirstOrdersAndRepeatOrders() {
+        var today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
+        var from = today.withDayOfMonth(1);
+        var query = new com.rigour.merchant.api.v1.model.StoreModels.Query(
+                "MINE", null, null, null, null, null, null, null, null, null, null, 20);
+        var scope = f.hangzhou("crm:pool:private-read", "2");
+        assertThat(f.store.followupEvidence(scope, query, null, from, today).items()).isEmpty();
+
+        f.jdbc.update("""
+            UPDATE crm_visit SET status_code='EFFECTIVE',qualified_at=visited_at,submitted_at=visited_at
+            WHERE tenant_id=? AND id=?
+            """, f.tenant, visit.id());
+        assertThat(f.store.followupEvidence(scope, query, null, from, today).items())
+                .singleElement().satisfies(row -> {
+                    assertThat(row.storeId()).isEqualTo(store);
+                    assertThat(row.reason()).isEqualTo("VERIFICATION");
+                    assertThat(row.lastOrderAt()).isNull();
+                });
+        assertThat(f.store.followupEvidence(scope, query, "OUTSIDE", from, today).items()).isEmpty();
+        assertThat(f.store.followupEvidence(f.hangzhou("crm:pool:private-read","3"),query,null,from,today).items()).isEmpty();
+
+        f.jdbc.update("""
+            UPDATE crm_store_summary SET order_history_complete_from='2020-01-01',
+                order_history_complete_to=DATE_ADD(UTC_TIMESTAMP(6), INTERVAL 2 DAY)
+            WHERE tenant_id=? AND store_id=?
+            """, f.tenant, store);
+        assertThat(f.store.followupEvidence(scope, query, null, from, today).items())
+                .extracting("reason").containsExactly("VISITED_NO_ORDER");
+
+        f.jdbc.update("""
+            INSERT INTO crm_store_order_fact(tenant_id,order_id,store_id,ownership_id,salesperson_id,
+                source_sequence,effective_at,valid_order,pending_authorization,observed_at,snapshot_json)
+            VALUES(?,1234,?,?,2,1,DATE_SUB(UTC_TIMESTAMP(6),INTERVAL 180 DAY),1,0,UTC_TIMESTAMP(6),'{}')
+            """, f.tenant, store, visit.ownershipId());
+        assertThat(f.store.followupEvidence(scope, query, null, from, today).items())
+                .singleElement().satisfies(row -> {
+                    assertThat(row.reason()).isEqualTo("REORDER");
+                    assertThat(row.orderId()).isEqualTo("1234");
+                });
+    }
 }

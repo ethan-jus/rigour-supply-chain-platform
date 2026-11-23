@@ -26,6 +26,8 @@ public final class TargetSettingsModels {
             BigDecimal value,
             int revision) {}
 
+    public record BusinessTargets(BigDecimal salesTargetAmount, BigDecimal receiptTargetAmount) {}
+
     public record Settings(String month, List<Subject> subjects, List<Target> targets) {}
 
     public record Change(

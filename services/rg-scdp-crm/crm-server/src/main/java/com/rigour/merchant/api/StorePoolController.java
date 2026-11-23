@@ -39,6 +39,14 @@ public class StorePoolController {
     public ApiResponse<Context> context(@RequestParam(defaultValue="PUBLIC")String view){return ApiResponse.success(service.context(view));}
     @GetMapping
     public ApiResponse<Page> list(@ModelAttribute Query query){return ApiResponse.success(service.list(query));}
+    @GetMapping("/followup-evidence")
+    public ApiResponse<FollowupEvidencePage> followupEvidence(
+            @RequestParam String view, @RequestParam java.time.LocalDate from,
+            @RequestParam java.time.LocalDate through,
+            @RequestParam(required=false) String ownerCode, @RequestParam(required=false) String cursor,
+            @RequestParam(defaultValue="100") int size) {
+        return ApiResponse.success(service.followupEvidence(view, from, through, ownerCode, cursor, size));
+    }
     @GetMapping("/nearby/origin")
     public ApiResponse<NearbyModels.Origin> nearbyOrigin(@RequestParam String view,@ModelAttribute("near") NearbyModels.Query near){return ApiResponse.success(service.nearbyOrigin(view,near));}
     @GetMapping("/nearby")

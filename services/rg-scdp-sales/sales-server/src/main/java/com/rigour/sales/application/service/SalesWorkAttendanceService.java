@@ -165,7 +165,7 @@ public class SalesWorkAttendanceService {
                         caller.tenantId(),
                         workDayId,
                         receivedAt,
-                        policy.locationIntervalMinutes());
+                        policy.locationIntervalMinutes(), Boolean.TRUE.equals(command.confirmedTrack()));
             }
         } catch (DataIntegrityViolationException duplicate) {
             throw new BusinessException(ErrorCode.SALES_WORK_DAY_ALREADY_ACTIVE);
@@ -238,6 +238,8 @@ public class SalesWorkAttendanceService {
             if (point.clientOccurredAt() == null || point.clientOccurredAt().isBefore(capture.startedAt().minusSeconds(60))
                     || point.clientOccurredAt().isAfter(end.plusSeconds(60)) || !point.clientOccurredAt().isBefore(cutoff))
                 throw badRequest("定位点不在原作业时段内");
+            if (!capture.confirmedTrack() && !point.routePath().isEmpty())
+                throw badRequest("原定位会话未启用确认轨迹");
         }
 
         List<LocationPointCommand> uniquePoints = uniquePoints(command.points());
@@ -260,7 +262,7 @@ public class SalesWorkAttendanceService {
                 inserts.add(new NewLocationPoint(UUID.randomUUID(), point.deviceEventId(), position.longitude(),
                         position.latitude(), point.accuracyMeters(), point.clientOccurredAt(),
                         normalizeSource(point.source()), qualityStatus(point.accuracyMeters(), policy),
-                        point.rawLongitude(), point.rawLatitude(), point.rawCoordinateSystem()));
+                        point.rawLongitude(), point.rawLatitude(), point.rawCoordinateSystem(), point.routePath()));
             }
             repository.insertLocationPoints(caller.tenantId(), sessionId, workDay.id(), receivedAt, inserts);
             if (repository.incrementLocationPointCount(
@@ -688,7 +690,7 @@ public class SalesWorkAttendanceService {
                             reviewStatus(visit), target.storeAddress()));
         }
         List<TrackTravelSegmentView> segments =
-                travelSegments(visitRows, targets, pointRows, policy.locationSampleIntervalSeconds());
+                travelSegments(visitRows, targets, pointRows, metrics.confirmedEdges(), policy.locationSampleIntervalSeconds());
         return new WorkDayTrackView(
                 workDay.id(),
                 workDay.businessDate(),
@@ -698,13 +700,15 @@ public class SalesWorkAttendanceService {
                 points,
                 punches,
                 visits,
-                segments, metrics.available(), metrics.rejected(), metrics.legs(), metrics.gaps());
+                segments, metrics.available(), metrics.rejected(), metrics.legs(), metrics.gaps(),
+                pointRows.stream().anyMatch(SalesWorkAttendanceRepository.LocationPointRow::confirmedTrack));
     }
 
     private static List<TrackTravelSegmentView> travelSegments(
             List<VisitSnapshot> visits,
             Map<UUID, VisitTargetSnapshot> targets,
-            List<SalesWorkAttendanceRepository.LocationPointRow> points, int sampleIntervalSeconds) {
+            List<SalesWorkAttendanceRepository.LocationPointRow> points,
+            List<SalesTrackMetrics.ObservedEdge> confirmedEdges, int sampleIntervalSeconds) {
         List<TrackTravelSegmentView> segments = new ArrayList<>();
         for (int index = 1; index < visits.size(); index++) {
             VisitSnapshot fromVisit = visits.get(index - 1);
@@ -721,10 +725,13 @@ public class SalesWorkAttendanceService {
                     points.stream()
                             .filter(
                                     point ->
-                                            !pointTime(point).isBefore(from)
+                                            !point.confirmedTrack() && !pointTime(point).isBefore(from)
                                                     && !pointTime(point).isAfter(to))
                             .toList();
             var measured = SalesTrackMetrics.calculate(segmentPoints, sampleIntervalSeconds);
+            double confirmedMeters = confirmedEdges.stream()
+                    .filter(edge -> !edge.from().isBefore(from) && !edge.to().isAfter(to))
+                    .mapToDouble(SalesTrackMetrics.ObservedEdge::meters).sum();
             segments.add(
                     new TrackTravelSegmentView(
                             fromVisit.id(),
@@ -733,9 +740,9 @@ public class SalesWorkAttendanceService {
                             index + 1,
                             fromTarget.storeName(),
                             toTarget.storeName(),
-                            measured.distanceMeters(),
+                            measured.distanceMeters() + (int)Math.round(confirmedMeters),
                             (int) Math.max(0, Duration.between(from, to).toMinutes()),
-                            measured.available() ? "OBSERVED_ESTIMATE" : "UNAVAILABLE"));
+                            measured.available() || confirmedMeters > 0 ? "OBSERVED_ESTIMATE" : "UNAVAILABLE"));
         }
         return List.copyOf(segments);
     }
@@ -825,7 +832,7 @@ public class SalesWorkAttendanceService {
                     caller.tenantId(),
                     finished.id(),
                     receivedAt,
-                    pinned.locationIntervalMinutes());
+                    pinned.locationIntervalMinutes(), Boolean.TRUE.equals(command.confirmedTrack()));
         }
         appendOutbox(
                 caller,
@@ -965,7 +972,8 @@ public class SalesWorkAttendanceService {
     }
 
     private WorkDayView view(WorkDaySnapshot snapshot) {
-        var policy = contextService.resolvePolicyVersion(SalesWorkContextService.requireTenantCaller().tenantId(), snapshot.fieldPolicyVersionId());
+        var tenantId = SalesWorkContextService.requireTenantCaller().tenantId();
+        var policy = contextService.resolvePolicyVersion(tenantId, snapshot.fieldPolicyVersionId());
         Instant deadline = policy.adjustmentDeadlineHours() == null ? null : snapshot.businessDate().plusDays(1)
                 .atTime(policy.businessDayCutoff()).atZone(zone(policy)).toInstant().plusSeconds(policy.adjustmentDeadlineHours() * 3600L);
         return new WorkDayView(
@@ -984,9 +992,11 @@ public class SalesWorkAttendanceService {
                 snapshot.verifiedWorkMinutes(),
                 snapshot.evidenceQuality(),
                 snapshot.hrEmployeeId() == null ? null : snapshot.hrEmployeeId().toString(),
-                workPeriods(SalesWorkContextService.requireTenantCaller().tenantId(), snapshot),
-                totalWorkMinutes(SalesWorkContextService.requireTenantCaller().tenantId(), snapshot, clock.instant()),
-                policy.allowAdjustment() && deadline != null && !clock.instant().isAfter(deadline), deadline);
+                workPeriods(tenantId, snapshot),
+                totalWorkMinutes(tenantId, snapshot, clock.instant()),
+                policy.allowAdjustment() && deadline != null && !clock.instant().isAfter(deadline), deadline,
+                snapshot.locationSessionId() != null && repository.findLocationSession(tenantId, snapshot.id(), snapshot.locationSessionId())
+                        .map(SalesWorkAttendanceRepository.LocationSessionSnapshot::confirmedTrack).orElse(false));
     }
 
     private static LocalDate businessDate(Instant instant, FieldPolicy policy) {
@@ -1090,6 +1100,11 @@ public class SalesWorkAttendanceService {
         if (needsConversion && !"WGS84".equals(point.rawCoordinateSystem())) throw badRequest("缺少原始 GPS 坐标");
         if (!needsConversion) validateCoordinates(point.longitude(), point.latitude(), point.accuracyMeters());
         required(point.source(), "source", 24);
+        var path = point.routePath();
+        if (!path.isEmpty() && (path.size() < 2 || path.size() > 8
+                || path.stream().anyMatch(id -> !id.matches("[a-zA-Z0-9_-]{1,64}"))
+                || new HashSet<>(path).size() != path.size()))
+            throw badRequest("轨迹引用点无效");
         if (point.rawLongitude()!=null || point.rawLatitude()!=null || point.rawCoordinateSystem()!=null) {
             validateCoordinates(point.rawLongitude(),point.rawLatitude(),point.accuracyMeters());
             if (!Set.of("WGS84","GCJ02").contains(point.rawCoordinateSystem()==null?"":point.rawCoordinateSystem()))

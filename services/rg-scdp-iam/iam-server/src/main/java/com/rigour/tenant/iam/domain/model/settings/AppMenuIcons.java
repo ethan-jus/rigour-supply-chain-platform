@@ -37,7 +37,17 @@ public final class AppMenuIcons {
                     "Monitor",
                     "Bell",
                     "Search",
-                    "Operation");
+                    "Operation",
+                    "Route",
+                    "TrendLine",
+                    "Storefront",
+                    "ShieldAlert",
+                    "CalendarOutline",
+                    "FileText",
+                    "Inbox",
+                    "Sliders",
+                    "Target",
+                    "Receipt");
 
     public static String legacy(String key) {
         if (key == null || key.isBlank()) return null;

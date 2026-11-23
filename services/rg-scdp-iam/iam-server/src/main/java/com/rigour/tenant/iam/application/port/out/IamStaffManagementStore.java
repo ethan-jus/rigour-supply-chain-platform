@@ -13,7 +13,6 @@ public interface IamStaffManagementStore {
     List<StaffView> staff(Actor actor, String keyword, String status);
     StaffView createStaff(Actor actor, StaffCommand command);
     StaffView updateStaff(Actor actor, UUID id, StaffCommand command);
-    StaffSyncResultView syncDinghuobaoStaff(Actor actor, DhbStaffSyncRequest request);
     List<StaffDisplayView> resolveStaffDisplay(Actor actor, StaffDisplayRequest request);
     List<DhbStaffResolvedView> resolveDinghuobaoStaff(Actor actor, DhbStaffResolveRequest request);
 }

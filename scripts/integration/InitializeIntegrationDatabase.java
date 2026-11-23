@@ -15,7 +15,7 @@ import com.rigour.integration.infrastructure.persistence.migration.IntegrationV3
  * Usage: java --class-path 'extracted/BOOT-INF/classes:extracted/BOOT-INF/lib/*' InitializeIntegrationDatabase.java
  *        expected-mysql-hostname extracted/BOOT-INF/classes/db/migration
  * Stop Integration before running. Never reads Nacos or development defaults; refuses every nonempty
- * schema, including partial runs. Applies the B27 baseline and V28 through V35 to an empty schema.
+ * schema, including partial runs. Applies the B27 baseline and V28 through V36 to an empty schema.
  * Retains Flyway history and imports no business data.
  */
 public final class InitializeIntegrationDatabase {
@@ -31,8 +31,8 @@ public final class InitializeIntegrationDatabase {
         }
         Path migrations = Path.of(args[1]).toAbsolutePath().normalize();
         if (!Files.isRegularFile(migrations.resolve("V1__integration_dinghuobao.sql"))
-                || !Files.isRegularFile(migrations.resolve("V35__converge_carrier_progress_and_retired_import_configuration.sql"))) {
-            throw new IllegalArgumentException("Integration migrations through V35 required: " + migrations);
+                || !Files.isRegularFile(migrations.resolve("V36__retire_dhb_staff_sync_jobs.sql"))) {
+            throw new IllegalArgumentException("Integration migrations through V36 required: " + migrations);
         }
         Path bootstrap = migrations.resolveSibling("bootstrap");
         if (!Files.isRegularFile(bootstrap.resolve("B27__general_ci_bootstrap.sql"))) {
@@ -82,7 +82,7 @@ public final class InitializeIntegrationDatabase {
                 .schemas(SCHEMA)
                 .createSchemas(false)
                 .locations("filesystem:" + migrations, "filesystem:" + bootstrap)
-                .target("35")
+                .target("36")
                 .cleanDisabled(true)
                 .baselineOnMigrate(false)
                 .validateOnMigrate(true)
@@ -91,8 +91,8 @@ public final class InitializeIntegrationDatabase {
         Flyway flyway = configuration.load();
         var result = flyway.migrate();
         flyway.validate();
-        if (!"35".equals(result.targetSchemaVersion)) {
-            throw new IllegalStateException("Expected Integration schema V35, found " + result.targetSchemaVersion);
+        if (!"36".equals(result.targetSchemaVersion)) {
+            throw new IllegalStateException("Expected Integration schema V36, found " + result.targetSchemaVersion);
         }
         verifyCollations(user, password);
         verifyNoBusinessData(user, password);

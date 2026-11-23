@@ -44,7 +44,11 @@ public final class BiAuthorityFilter extends OncePerRequestFilter {
                                 && BiScopePredicates.unrestricted(
                                         SupplyAuthorizationContext.requireAction(
                                                 "analytics:dashboard:read"));
-                if (!allDataRead) {
+                // An explicit department query needs the recorded order attribution, even for ALL.
+                boolean byDepartment = request.getParameter("departmentId") != null
+                        && (path.startsWith("/api/v1/analytics/supply/dashboard/sales-overview")
+                            || path.equals("/api/v1/analytics/supply/dashboard/receivables"));
+                if (!allDataRead || byDepartment) {
                     projector.refresh(AuthorizationContext.requireCurrent().tenantId());
                     boolean visitRequest =
                             java.util.Set.of(

@@ -96,7 +96,7 @@ public class JdbcWecomStore implements WecomStore {
     }
     @Override @Transactional public void accept(Snapshot c,Instant now){
         String scope=hash(c.identityScope()),body=hash(json.writeValueAsString(c));
-        jdbc.update("INSERT IGNORE INTO crm_wecom_sync(tenant_id,scope_key,employee_id,sequence_no,observed_at,payload_hash) VALUES(?,?,?,0,?,?)",c.tenantId(),scope,c.employeeId(),Timestamp.from(c.observedAt()),body);
+        jdbc.update("INSERT IGNORE INTO crm_wecom_sync(tenant_id,scope_key,employee_id,sequence_no,observed_at,payload_hash,coverage_from) VALUES(?,?,?,0,?,?,?)",c.tenantId(),scope,c.employeeId(),Timestamp.from(c.observedAt()),body,Timestamp.from(c.observedAt()));
         var sync=jdbc.queryForObject("SELECT sequence_no,observed_at,payload_hash FROM crm_wecom_sync WHERE tenant_id=? AND scope_key=? AND employee_id=? FOR UPDATE",(r,n)->new Sync(r.getLong(1),r.getTimestamp(2).toInstant(),r.getString(3)),c.tenantId(),scope,c.employeeId());
         long sequence=sync.sequence();
         if(c.sequence()<sequence)return;

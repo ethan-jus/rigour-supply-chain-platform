@@ -81,14 +81,10 @@ class CrmApplicationTests {
     void importedAreaAtRevisionZeroCanMoveWithoutChangingCustomerReferences() {
         UUID tenant = UUID.randomUUID(), actor = UUID.randomUUID(), connector = UUID.randomUUID();
         queryStore.createCustomerArea(tenant, "HEBEI", new CrmCustomerAreaCommand("河北省", null, "ACTIVE", 0, 1), actor);
-        UUID run = start(tenant, connector, actor, CrmMasterDataObjectType.CUSTOMER_AREA);
-        var source = new SourceRecord("44099", null, "唐山", null, null, null,
-                Map.of("AreaID", "44099", "AreaName", "唐山"));
-        finish(tenant, connector, run, CrmMasterDataObjectType.CUSTOMER_AREA,
-                store.importRecord(tenant, connector, run, CrmMasterDataObjectType.CUSTOMER_AREA, source));
-        var city = queryStore.customerAreas(tenant, 0, 200, "唐山").items().getFirst();
-        assertThat(city.revision()).isZero();
-        assertThat(city.sourceLinked()).isTrue();
+        var city = seedHistoricalArea(tenant, connector, actor, "44099", "唐山");
+        jdbcTemplate.update("UPDATE crm_customer_area SET revision=0 WHERE id=UUID_TO_BIN(?)", city.id().toString());
+        var source = new SourceRecord("44099", null, "新名称", null, null, null,
+                Map.of("AreaID", "44099", "AreaName", "新名称"));
         var bindingBefore = jdbcTemplate.queryForMap("SELECT source_object_id,HEX(connector_id),HEX(target_id),binding_status FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND target_id=UUID_TO_BIN(?)", tenant.toString(), city.id().toString());
         jdbcTemplate.update("INSERT INTO crm_customer(tenant_id,customer_code,customer_name,region_code,status_code,revision,created_time,updated_time,deleted) VALUES(?, 'KEEP', '已有客户', ?, 'ACTIVE', 0, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6), 0)", tenant.toString(), city.code());
         var customerBefore = jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=? AND customer_code='KEEP'", tenant.toString());
@@ -110,8 +106,8 @@ class CrmApplicationTests {
             TestAuthorizationContext.clear();
         }
         UUID nextRun = start(tenant, connector, actor, CrmMasterDataObjectType.CUSTOMER_AREA);
-        finish(tenant, connector, nextRun, CrmMasterDataObjectType.CUSTOMER_AREA,
-                store.importRecord(tenant, connector, nextRun, CrmMasterDataObjectType.CUSTOMER_AREA, source));
+        assertThatThrownBy(() -> store.importRecord(tenant, connector, nextRun,
+                CrmMasterDataObjectType.CUSTOMER_AREA, source)).hasMessageContaining("已停用同步");
         var afterSync = queryStore.customerAreas(tenant, 0, 200, "唐山").items().getFirst();
         assertThat(afterSync.id()).isEqualTo(city.id());
         assertThat(afterSync.parentCode()).isEqualTo("HEBEI");
@@ -188,31 +184,7 @@ class CrmApplicationTests {
         assertThat(page.items().get(1).createdTime()).isNotNull();
         assertThatThrownBy(() -> queryStore.updateCustomerArea(tenant, root.id(), new com.rigour.merchant.api.v1.model.CrmCustomerAreaCommand("全国", "CITY", "ACTIVE", 1, 1), actor)).hasMessageContaining("循环");
         assertThatThrownBy(() -> queryStore.deleteCustomerArea(tenant, city.id(), 2, actor)).hasMessageContaining("引用");
-        // A getArea response omits hierarchy: a previously bound local area must retain its identity and parent.
-        UUID connector = UUID.randomUUID();
-        jdbcTemplate.update("INSERT INTO crm_source_binding(id,tenant_id,connector_id,source_system,source_object_type,source_object_id,target_type,target_id,binding_status,source_fields_json,source_payload_hash,synced_at,created_time,updated_time) VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'DINGHUOBAO','CUSTOMER_AREA','44077','CUSTOMER_AREA',UUID_TO_BIN(?),'RESOLVED',JSON_OBJECT(),REPEAT('0',64),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))", UUID.randomUUID().toString(), tenant.toString(), connector.toString(), city.id().toString());
-        UUID run = start(tenant, connector, actor, CrmMasterDataObjectType.CUSTOMER_AREA);
-        var imported = store.importRecord(tenant, connector, run, CrmMasterDataObjectType.CUSTOMER_AREA,
-                new SourceRecord("44077", null, "杭州市", null, null, null, Map.of("AreaID", "44077", "AreaName", "杭州市")));
-        finish(tenant, connector, run, CrmMasterDataObjectType.CUSTOMER_AREA, imported);
-        var unchanged = queryStore.customerAreas(tenant, 0, 200, null);
-        assertThat(unchanged.total()).isEqualTo(2);
-        var cityAfter = unchanged.items().stream().filter(r -> r.code().equals("CITY")).findFirst().orElseThrow();
-        assertThat(cityAfter.id()).isEqualTo(city.id());
-        assertThat(cityAfter.parentCode()).isEqualTo("ROOT");
-        assertThat(cityAfter.sortOrder()).isEqualTo(2);
-        assertThat(jdbcTemplate.queryForObject("SELECT region_code FROM crm_customer WHERE tenant_id=? AND customer_code='KEEP'", String.class, tenant.toString())).isEqualTo("CITY");
-        // 地区映射以内部编码发布给Integration：没有数字内部ID，订单同步按来源ID或名称解析。
-        var areaMappings =
-                store.externalObjectMappings(
-                        tenant, connector, run, CrmMasterDataObjectType.CUSTOMER_AREA);
-        assertThat(areaMappings).hasSize(1);
-        assertThat(areaMappings.getFirst().sourceObjectId()).isEqualTo("44077");
-        assertThat(areaMappings.getFirst().sourceObjectNo()).isEqualTo("杭州市");
-        assertThat(areaMappings.getFirst().internalDomain()).isEqualTo("CRM");
-        assertThat(areaMappings.getFirst().internalObjectType()).isEqualTo("CUSTOMER_AREA");
-        assertThat(areaMappings.getFirst().internalObjectId()).isNull();
-        assertThat(areaMappings.getFirst().internalObjectNo()).isEqualTo("CITY");
+
     }
 
     @Test
@@ -775,7 +747,7 @@ SELECT COUNT(*) FROM crm_address
     }
 
     @Test
-    void repairsInternalCustomerTypeAndRegionWhenSourcePayloadUnchanged() {
+    void repairsInternalCustomerTypeWithoutOverwritingManuallyAssignedRegion() {
         UUID tenantId = UUID.randomUUID();
         UUID connectorId = UUID.randomUUID();
         UUID actorId = UUID.randomUUID();
@@ -793,18 +765,9 @@ SELECT COUNT(*) FROM crm_address
                         type);
         finish(tenantId, connectorId, typeRun, CrmMasterDataObjectType.CUSTOMER_TYPE, typeResult);
 
-        SourceRecord area =
-                new SourceRecord(
-                        "AREA-1", "AREA-1", "华东", "T", null, null, mapOf("AreaName", "华东"));
-        UUID areaRun = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.CUSTOMER_AREA);
-        ImportResult areaResult =
-                store.importRecord(
-                        tenantId,
-                        connectorId,
-                        areaRun,
-                        CrmMasterDataObjectType.CUSTOMER_AREA,
-                        area);
-        finish(tenantId, connectorId, areaRun, CrmMasterDataObjectType.CUSTOMER_AREA, areaResult);
+        seedHistoricalArea(tenantId, connectorId, actorId, "AREA-1", "华东");
+        queryStore.createCustomerArea(tenantId, "LOCAL-HZ",
+                new CrmCustomerAreaCommand("杭州", null, "ACTIVE", 0, 1), actorId);
 
         SourceRecord customer = customerRecordWithTypeArea("TYPE-1", "AREA-1");
         UUID firstRun = start(tenantId, connectorId, actorId, CrmMasterDataObjectType.CUSTOMER);
@@ -820,12 +783,12 @@ SELECT COUNT(*) FROM crm_address
 
         Map<String, Object> createdRow = internalCustomerClassification(tenantId, partyId);
         assertThat(createdRow.get("customer_type_code")).isNotNull();
-        assertThat(createdRow.get("region_code")).isNotNull();
+        assertThat(createdRow.get("region_code")).isNull();
 
         jdbcTemplate.update(
                 """
                 UPDATE crm_customer
-                   SET customer_type_code=NULL, region_code=NULL
+                   SET customer_type_code=NULL, region_code='LOCAL-HZ'
                  WHERE tenant_id=? AND party_id=?
                 """,
                 tenantId.toString(),
@@ -844,7 +807,7 @@ SELECT COUNT(*) FROM crm_address
         assertThat(repaired.repaired()).isEqualTo(1);
         assertThat(internalCustomerClassification(tenantId, partyId))
                 .containsEntry("customer_type_code", createdRow.get("customer_type_code"))
-                .containsEntry("region_code", createdRow.get("region_code"));
+                .containsEntry("region_code", "LOCAL-HZ");
     }
 
     @Test
@@ -1395,7 +1358,7 @@ SELECT COUNT(*) FROM crm_contact c
     }
 
     @Test
-    void customerSyncRequiresLocalRegionAndEmployeeBeforeAnyProjectionOrDuplicateShortcut() {
+    void customerSyncStillRequiresEmployeeButDoesNotTakeRegionFromSource() {
         UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID(), actor = UUID.randomUUID();
         var type = CrmMasterDataObjectType.CUSTOMER;
         UUID run = start(tenant, connector, actor, type);
@@ -1407,6 +1370,13 @@ SELECT COUNT(*) FROM crm_contact c
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer WHERE tenant_id=?", Integer.class, tenant.toString())).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_party WHERE tenant_id=UUID_TO_BIN(?)", Integer.class, tenant.toString())).isZero();
         assertThat(store.importRecord(tenant, connector, run, type, good).created()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT region_code FROM crm_customer WHERE tenant_id=?",
+                String.class, tenant.toString())).isNull();
+        assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
+                .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("CONFLICT"));
+        queryStore.createCustomerArea(tenant, "LOCAL-NJ",
+                new CrmCustomerAreaCommand("南京", null, "ACTIVE", 0, 1), actor);
+        jdbcTemplate.update("UPDATE crm_customer SET region_code='LOCAL-NJ' WHERE tenant_id=?", tenant.toString());
         assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
                 .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("ACTIVE"));
         var before = jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString());
@@ -1425,18 +1395,15 @@ SELECT COUNT(*) FROM crm_contact c
         assertThat(store.pendingCustomerRecords(tenant, connector)).isEmpty();
         assertThat(jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString()).get("business_created_at"))
                 .isEqualTo(before.get("business_created_at"));
-        before = jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString());
         for (String areaId : List.of("UNKNOWN-AREA", "")) {
-            fields = new LinkedHashMap<>(good.sourceFields()); fields.put("clientArea", areaId);
-            fields.put("clientAreaName", "订货宝地区名称不能直接写入");
-            var badArea = new SourceRecord(good.sourceId(), good.sourceCode(), good.sourceName(), good.sourceStatus(), good.sourceCreatedAt(), good.sourceUpdatedAt(), fields);
-            assertThat(store.importRecord(tenant, connector, run, type, badArea).unmapped()).isEqualTo(1);
-            assertThat(jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString())).usingRecursiveComparison().isEqualTo(before);
-            assertThat(jdbcTemplate.queryForObject("SELECT resolution_error_code FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER'", String.class, tenant.toString())).isEqualTo("CUSTOMER_AREA_MAPPING_REQUIRED");
+            fields = new LinkedHashMap<>(good.sourceFields());
+            fields.put("clientArea", areaId);
+            var changedArea = new SourceRecord(good.sourceId(), good.sourceCode(), good.sourceName(),
+                    good.sourceStatus(), good.sourceCreatedAt(), good.sourceUpdatedAt(), fields);
+            assertThat(store.importRecord(tenant, connector, run, type, changedArea).unmapped()).isZero();
+            assertThat(jdbcTemplate.queryForObject("SELECT region_code FROM crm_customer WHERE tenant_id=?",
+                    String.class, tenant.toString())).isEqualTo("LOCAL-NJ");
         }
-        jdbcTemplate.update("UPDATE crm_customer_area SET deleted=1 WHERE tenant_id=UUID_TO_BIN(?)", tenant.toString());
-        assertThat(store.importRecord(tenant, connector, run, type, good).unmapped()).isEqualTo(1);
-        assertThat(jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString())).usingRecursiveComparison().isEqualTo(before);
         store.completeRun(tenant, connector, run, type, new RunStatistics(6,0,0,1,0,0,0,1), false);
     }
 
@@ -1447,6 +1414,7 @@ SELECT COUNT(*) FROM crm_contact c
         var run=start(tenant,connector,actor,type);
         var record=customerRecord("旧规则漏检客户");
         assertThat(store.importRecord(tenant,connector,run,type,record).created()).isEqualTo(1);
+        jdbcTemplate.update("UPDATE crm_customer SET region_code='DEFAULT-AREA' WHERE tenant_id=?", tenant.toString());
         jdbcTemplate.update("UPDATE crm_customer SET owner_employee_code=NULL,owner_employee_name_snapshot=NULL WHERE tenant_id=?",tenant.toString());
         assertThat(store.pendingCustomerRecords(tenant,connector)).hasSize(1);
         assertThat(store.externalObjectMappings(tenant,connector,run,type)).singleElement()
@@ -1700,6 +1668,7 @@ SELECT COUNT(*) FROM crm_contact c
         var type=CrmMasterDataObjectType.CUSTOMER;var run=start(tenant,connector,actor,type);
         var original=customerRecord("来源临时未分配销售的客户");
         assertThat(store.importRecord(tenant,connector,run,type,original).created()).isEqualTo(1);
+        jdbcTemplate.update("UPDATE crm_customer SET region_code='DEFAULT-AREA' WHERE tenant_id=?", tenant.toString());
         long id=jdbcTemplate.queryForObject("SELECT id FROM crm_customer WHERE tenant_id=?",Long.class,tenant.toString());
         var before=internalCustomerStore.customer(tenant.toString(),id).orElseThrow();
         var fields=new LinkedHashMap<String,Object>(original.sourceFields());
@@ -1751,13 +1720,13 @@ SELECT COUNT(*) FROM crm_contact c
                         new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit("ALL", List.of())));
         responsibilityStore.transfer(tenant.toString(), id,
                 new com.rigour.merchant.api.v1.CustomerResponsibilityApi.Change(
-                        "EMP-LOCAL", before.regionCode(), before.revision(), "用户授权临时归属"), actor.toString());
+                        "EMP-LOCAL", "DEFAULT-AREA", before.revision(), "用户授权临时归属"), actor.toString());
 
         for (int repeat = 0; repeat < 2; repeat++) {
             assertThat(store.importRecord(tenant, connector, run, type, source).unmapped()).isZero();
             var current = internalCustomerStore.customer(tenant.toString(), id).orElseThrow();
             assertThat(current.ownerEmployeeCode()).isEqualTo("EMP-LOCAL");
-            assertThat(current.regionCode()).isEqualTo(before.regionCode());
+            assertThat(current.regionCode()).isEqualTo("DEFAULT-AREA");
             assertThat(current.businessCreatedAt()).isEqualTo(before.businessCreatedAt());
             assertThat(store.externalObjectMappings(tenant, connector, run, type)).singleElement()
                     .satisfies(mapping -> assertThat(mapping.mappingStatus()).isEqualTo("ACTIVE"));
@@ -1785,7 +1754,7 @@ SELECT COUNT(*) FROM crm_contact c
             assertThat(store.importRecord(tenant, connector, run, type, completed).unmapped()).isZero();
             var current=internalCustomerStore.customer(tenant.toString(), id).orElseThrow();
             assertThat(current.ownerEmployeeCode()).isEqualTo("EMP-FORMAL");
-            assertThat(current.regionCode()).isEqualTo(before.regionCode());
+            assertThat(current.regionCode()).isEqualTo("DEFAULT-AREA");
         }
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer_responsibility_history"
                 + " WHERE tenant_id=? AND customer_id=? AND old_employee_code='EMP-LOCAL'"
@@ -1918,12 +1887,24 @@ SELECT COUNT(*) FROM crm_contact c
             UUID tenantId, UUID connectorId, UUID actorId, CrmMasterDataObjectType type) {
         if (type == CrmMasterDataObjectType.CUSTOMER && jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND connector_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER_AREA' AND source_object_id='DEFAULT-AREA'", Integer.class, tenantId.toString(), connectorId.toString()) == 0) {
-            UUID areaRun = store.startRun(tenantId, connectorId, actorId, CrmMasterDataObjectType.CUSTOMER_AREA, 100, "TEST");
-            var areaResult = store.importRecord(tenantId, connectorId, areaRun, CrmMasterDataObjectType.CUSTOMER_AREA,
-                    new SourceRecord("DEFAULT-AREA", "DEFAULT-AREA", "上海市", "T", null, null, Map.of("AreaName", "上海市")));
-            finish(tenantId, connectorId, areaRun, CrmMasterDataObjectType.CUSTOMER_AREA, areaResult);
+            seedHistoricalArea(tenantId, connectorId, actorId, "DEFAULT-AREA", "上海市");
         }
         return store.startRun(tenantId, connectorId, actorId, type, 100, "TEST");
+    }
+
+    private com.rigour.merchant.api.v1.model.DictionaryView seedHistoricalArea(
+            UUID tenant, UUID connector, UUID actor, String sourceId, String name) {
+        var area = queryStore.createCustomerArea(tenant, sourceId,
+                new CrmCustomerAreaCommand(name, null, "ACTIVE", 0, 0), actor);
+        jdbcTemplate.update("""
+                INSERT INTO crm_source_binding(id,tenant_id,connector_id,source_system,source_object_type,
+                    source_object_id,target_type,target_id,binding_status,source_fields_json,source_payload_hash,
+                    synced_at,created_time,updated_time)
+                VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'DINGHUOBAO','CUSTOMER_AREA',
+                    ?,'CUSTOMER_AREA',UUID_TO_BIN(?),'RESOLVED',JSON_OBJECT(),REPEAT('0',64),
+                    UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
+                """, UUID.randomUUID().toString(), tenant.toString(), connector.toString(), sourceId, area.id().toString());
+        return area;
     }
 
     private void finish(

@@ -50,18 +50,20 @@ public class SalesWorkVisitPlanService {
     private final SalesWorkContextService contextService;
     private final AuditSink auditSink;
     private final Clock clock;
+    private final SalesManagementScope scopes;
 
     public SalesWorkVisitPlanService(
             SalesWorkVisitPlanRepository repository,
             SalesWorkQueryRepository queryRepository,
             SalesWorkContextService contextService,
             AuditSink auditSink,
-            Clock clock) {
+            Clock clock, SalesManagementScope scopes) {
         this.repository = repository;
         this.queryRepository = queryRepository;
         this.contextService = contextService;
         this.auditSink = auditSink;
         this.clock = clock;
+        this.scopes=scopes;
     }
 
     public VisitPlanListView ownPlans(LocalDate date) {
@@ -97,17 +99,18 @@ public class SalesWorkVisitPlanService {
         validatePage(page, pageSize);
         String normalizedStatus = normalizeStatus(status);
         int offset = Math.multiplyExact(page - 1, pageSize);
+        var access=scopes.resolve(caller,"sales:visit-plan:read");
         List<ManagementVisitPlanView> items = repository.findManagementPlans(
-                        caller.tenantId(), from, to, normalizedStatus, pageSize, offset).stream()
+                        caller.tenantId(), from, to, normalizedStatus, pageSize, offset,access).stream()
                 .map(SalesWorkVisitPlanService::managementView)
                 .toList();
         return new ManagementVisitPlanPageView(from, to, normalizedStatus, items, page, pageSize,
-                repository.countManagementPlans(caller.tenantId(), from, to, normalizedStatus));
+                repository.countManagementPlans(caller.tenantId(), from, to, normalizedStatus,access));
     }
 
     public List<VisitPlanProfileOptionView> profileOptions() {
         CallerIdentity caller = requireCaller("sales:visit-plan:read");
-        return repository.findActiveProfiles(caller.tenantId()).stream()
+        return repository.findActiveProfiles(caller.tenantId(),scopes.resolve(caller,"sales:visit-plan:read")).stream()
                 .map(row -> new VisitPlanProfileOptionView(
                         row.salesProfileId(), row.employeeId(), row.salesNo(), row.cityOrgId()))
                 .toList();
@@ -116,6 +119,7 @@ public class SalesWorkVisitPlanService {
     public VisitTargetPageView targetOptions(UUID salesProfileId, String query, int page, int pageSize) {
         CallerIdentity caller = requireCaller("sales:visit-plan:read");
         validatePage(page, Math.min(pageSize, 20));
+        requireProfile(caller,salesProfileId,"sales:visit-plan:read");
         if (salesProfileId == null || repository.findActiveProfile(
                 caller.tenantId(), salesProfileId).isEmpty()) {
             throw invalid("销售画像不存在或已停用");
@@ -166,6 +170,8 @@ public class SalesWorkVisitPlanService {
         }
         VisitPlanRow current = repository.findManagementPlan(caller.tenantId(), planId, true)
                 .orElseThrow(() -> invalid("拜访计划不存在"));
+        requireProfile(caller,current.salesProfileId(),"sales:visit-plan:write");
+        if(current.actionCode()!=null&&!"VISIT".equals(current.actionCode()))throw invalid("该任务由原客户跟进流程处理");
         if (!"PLANNED".equals(current.status())) throw invalid("只有未开始计划可以修改");
         ValidatedPlan validated = validateCommand(caller, command, planId);
         try {
@@ -193,6 +199,8 @@ public class SalesWorkVisitPlanService {
         }
         VisitPlanRow current = repository.findManagementPlan(caller.tenantId(), planId, true)
                 .orElseThrow(() -> invalid("拜访计划不存在"));
+        requireProfile(caller,current.salesProfileId(),"sales:visit-plan:write");
+        if(current.actionCode()!=null&&!"VISIT".equals(current.actionCode()))throw invalid("该任务由原客户跟进流程处理");
         if (!"PLANNED".equals(current.status())) throw invalid("只有未开始计划可以取消");
         if (repository.cancelPlannedPlan(
                 caller.tenantId(), planId, command.version(), clock.instant()) != 1) {
@@ -201,6 +209,12 @@ public class SalesWorkVisitPlanService {
         appendAudit(caller, "SALES_VISIT_PLAN_CANCEL", planId, Map.of());
         return managementView(repository.findManagementPlan(caller.tenantId(), planId, false)
                 .orElseThrow(() -> new IllegalStateException("拜访计划取消后不可见")));
+    }
+
+    private void requireProfile(CallerIdentity caller, UUID profile,String action) {
+        if(profile==null || !repository.canManageProfile(caller.tenantId(),profile,scopes.resolve(caller,action))) {
+            throw new com.rigour.shared.context.AuthorizationDeniedException(action);
+        }
     }
 
     private ValidatedPlan validateCommand(
@@ -212,6 +226,7 @@ public class SalesWorkVisitPlanService {
         if (command.plannedDate().isBefore(LocalDate.now(clock.withZone(BUSINESS_ZONE)))) {
             throw invalid("不能安排过去日期的拜访计划");
         }
+        requireProfile(caller,command.salesProfileId(),"sales:visit-plan:write");
         if (repository.findActiveProfile(caller.tenantId(), command.salesProfileId()).isEmpty()) {
             throw invalid("销售画像不存在或已停用");
         }

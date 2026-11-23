@@ -11,6 +11,9 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import com.rigour.sales.application.port.out.SalesManagementDirectory.Access;
 import org.springframework.stereotype.Repository;
 
 /** sales_visit_plan 与 CRM 门店投影的 JDBC 实现。 */
@@ -38,9 +41,22 @@ public class JdbcSalesWorkVisitPlanRepository implements SalesWorkVisitPlanRepos
             """;
 
     private final JdbcTemplate jdbc;
+    private final NamedParameterJdbcTemplate named;
+    private static String allowed(Access scope) {
+        return scope.all() ? "" : scope.employeeCodes().isEmpty() ? " AND 1=0" : " AND profile.hr_employee_code IN (:codes)";
+    }
+    private static MapSqlParameterSource params(UUID tenant,Access scope) {
+        return new MapSqlParameterSource("tenant",bin(tenant)).addValue("codes",scope.employeeCodes());
+    }
+    @Override public boolean canManageProfile(UUID tenant,UUID id,Access scope) {
+        if(scope.all())return true;
+        return Boolean.TRUE.equals(named.queryForObject("SELECT EXISTS(SELECT 1 FROM sales_profile profile WHERE profile.tenant_id=:tenant AND profile.id=:id"+allowed(scope)+")",
+                params(tenant,scope).addValue("id",bin(id)),Boolean.class));
+    }
 
     public JdbcSalesWorkVisitPlanRepository(JdbcTemplate jdbc) {
         this.jdbc = jdbc;
+        this.named = new NamedParameterJdbcTemplate(jdbc);
     }
 
     @Override
@@ -64,26 +80,21 @@ public class JdbcSalesWorkVisitPlanRepository implements SalesWorkVisitPlanRepos
                 bin(tenantId), bin(salesProfileId), bin(planId)).stream().findFirst();
     }
 
-    @Override
-    public List<VisitPlanRow> findManagementPlans(
-            UUID tenantId, LocalDate from, LocalDate to, String status, int limit, int offset) {
-        return jdbc.query(PLAN_SELECT + """
-                 WHERE plan.tenant_id=? AND plan.planned_date BETWEEN ? AND ?
-                   AND (? IS NULL OR plan.status=?)
-                 ORDER BY plan.planned_date DESC, plan.created_at DESC, plan.id DESC
-                 LIMIT ? OFFSET ?
-                """, (rs, row) -> plan(rs), bin(tenantId), Date.valueOf(from), Date.valueOf(to),
-                status, status, limit, offset);
-    }
+    private static final String MANAGEMENT_FILTER="""
+            WHERE plan.tenant_id=:tenant AND plan.planned_date BETWEEN :from AND :to
+              AND (plan.action_code IS NULL OR plan.action_code='VISIT')
+              AND (:status IS NULL OR plan.status=:status)
+            """;
 
     @Override
-    public long countManagementPlans(UUID tenantId, LocalDate from, LocalDate to, String status) {
-        Long count = jdbc.queryForObject("""
-                SELECT COUNT(*) FROM sales_visit_plan plan
-                 WHERE plan.tenant_id=? AND plan.planned_date BETWEEN ? AND ?
-                   AND (? IS NULL OR plan.status=?)
-                """, Long.class, bin(tenantId), Date.valueOf(from), Date.valueOf(to), status, status);
-        return count == null ? 0L : count;
+    public List<VisitPlanRow> findManagementPlans(UUID tenant,LocalDate from,LocalDate to,String status,int limit,int offset,Access access) {
+        return named.query(PLAN_SELECT+MANAGEMENT_FILTER+allowed(access)+" ORDER BY plan.planned_date DESC,plan.created_at DESC,plan.id DESC LIMIT :limit OFFSET :offset",
+                params(tenant,access).addValue("from",from).addValue("to",to).addValue("status",status).addValue("limit",limit).addValue("offset",offset),(rs,n)->plan(rs));
+    }
+    @Override
+    public long countManagementPlans(UUID tenant,LocalDate from,LocalDate to,String status,Access access) {
+        return named.queryForObject("SELECT COUNT(*) FROM sales_visit_plan plan JOIN sales_profile profile ON profile.tenant_id=plan.tenant_id AND profile.id=plan.sales_profile_id "
+            +MANAGEMENT_FILTER+allowed(access), params(tenant,access).addValue("from",from).addValue("to",to).addValue("status",status),Long.class);
     }
 
     @Override
@@ -96,14 +107,9 @@ public class JdbcSalesWorkVisitPlanRepository implements SalesWorkVisitPlanRepos
     }
 
     @Override
-    public List<ProfileOptionRow> findActiveProfiles(UUID tenantId) {
-        return jdbc.query("""
-                SELECT id, employee_id, sales_no, city_org_id
-                  FROM sales_profile
-                 WHERE tenant_id=? AND status='ACTIVE'
-                 ORDER BY sales_no, id
-                """, (rs, row) -> new ProfileOptionRow(uuid(rs, "id"), uuid(rs, "employee_id"),
-                rs.getString("sales_no"), uuid(rs, "city_org_id")), bin(tenantId));
+    public List<ProfileOptionRow> findActiveProfiles(UUID tenant,Access access) {
+        return named.query("SELECT id,employee_id,sales_no,city_org_id FROM sales_profile profile WHERE tenant_id=:tenant AND status='ACTIVE'"+allowed(access)+" ORDER BY sales_no,id",
+                params(tenant,access),(r,n)->new ProfileOptionRow(uuid(r,"id"),uuid(r,"employee_id"),r.getString("sales_no"),uuid(r,"city_org_id")));
     }
 
     @Override

@@ -26,7 +26,7 @@ public class JdbcReceivablesStore implements ReceivablesStore {
         jdbc = new NamedParameterJdbcTemplate(source);
     }
 
-    private static final String ORDERS =
+    static final String ORDERS =
             """
             WITH visible_orders AS (
               SELECT o.* FROM bi_sales_order_fact o WHERE o.tenant_id=:tenant AND o.deleted=0
@@ -37,9 +37,15 @@ public class JdbcReceivablesStore implements ReceivablesStore {
             """
                     + JDBC_REGION_SCOPE
                     + """
-                    ))
+                    )
+               AND (:departmentId IS NULL OR EXISTS (
+                   SELECT 1 FROM bi_order_authority a
+                   WHERE a.tenant_id=o.tenant_id AND a.order_id=o.order_id
+                     AND (a.department_id=:departmentId
+                          OR (:includeSubDepartments AND JSON_CONTAINS(a.department_path,CAST(:departmentId AS JSON))))
+               )))
                     """;
-    private static final String VALID_APPLICATIONS =
+    static final String VALID_APPLICATIONS =
             """
 , applied AS (
   SELECT a.*,r.reference_no FROM bi_cash_application a
@@ -49,17 +55,19 @@ public class JdbcReceivablesStore implements ReceivablesStore {
 )
 """;
 
-    private static MapSqlParameterSource args(Scope s, LocalDate until) {
+    static MapSqlParameterSource args(Scope s, LocalDate until) {
         return new MapSqlParameterSource("tenant", s.tenant())
                 .addValue("region", s.region())
                 .addValue("owner", s.owner())
                 .addValue("customer", s.customer())
                 .addValue("full", s.full())
+                .addValue("departmentId", s.departmentId())
+                .addValue("includeSubDepartments", s.includeSubDepartments())
                 .addValue("until", boundary(until.plusDays(1)))
                 .addValue("asOf", java.sql.Date.valueOf(until));
     }
 
-    private static Timestamp boundary(LocalDate date) {
+    static Timestamp boundary(LocalDate date) {
         return Timestamp.from(date.atStartOfDay(BiBusinessTime.ZONE).toInstant());
     }
 

@@ -42,30 +42,51 @@ public class JdbcSalesFieldworkEvidenceRepository implements SalesFieldworkEvide
     @Override public Optional<Capture> capture(UUID tenant, UUID visit) {
         return jdbc.query(CAPTURE+FROM+" WHERE v.tenant_id=? AND v.id=?",(r,n)->capture(r),bin(tenant),bin(visit)).stream().findFirst();
     }
-    @Override public VisitHistory history(UUID tenant,Capture current,Access scope,int page,int size) {
+    @Override public VisitHistory history(UUID tenant,Capture current,Access scope,int page,int size,boolean throughVisit) {
         // Only the formal CRM store identity is comparable; legacy names/UUIDs are never guessed.
         if(current.crmStoreId()==null || current.checkedInAt()==null)
-            return new VisitHistory(false,current,0,0,0,0,0,0,List.of(),0,page,size);
-        var args=new ArrayList<Object>(List.of(bin(tenant),current.crmStoreId(),current.businessDate().minusDays(29),
-                current.businessDate(),Timestamp.from(current.checkedInAt())));
-        var where=new StringBuilder(" WHERE v.tenant_id=? AND v.crm_store_id=? AND d.business_date BETWEEN ? AND ? AND v.checked_in_at<?");
-        where.append(" AND v.status<>'CANCELLED'");
+            return new VisitHistory(false,current,0,0,0,0,0,0,List.of(),0,page,size,null,null);
+        var since = current.businessDate().minusDays(29);
+        var currentTime = Timestamp.from(current.checkedInAt());
+        var args = new ArrayList<Object>(List.of(bin(tenant), current.crmStoreId(), current.businessDate()));
+        var where = new StringBuilder(
+                " WHERE v.tenant_id=? AND v.crm_store_id=? AND d.business_date<=? AND v.status<>'CANCELLED'");
+        if (!throughVisit) {
+            where.append(" AND d.business_date>=? AND v.checked_in_at<?");
+            args.add(since);
+            args.add(currentTime);
+        } else {
+            where.append(" AND (v.checked_in_at<? OR (v.checked_in_at=? AND v.id<?))");
+            args.addAll(List.of(currentTime, currentTime, bin(current.visitId())));
+        }
         if(!scope.all()) {
             if(scope.employeeCodes().isEmpty()) where.append(" AND 1=0");
             else {where.append(" AND p.hr_employee_code IN (").append(String.join(",",Collections.nCopies(scope.employeeCodes().size(),"?"))).append(")");args.addAll(scope.employeeCodes());}
         }
-        var countArgs=new ArrayList<Object>(List.of(bin(current.salesProfileId()),current.businessDate().minusDays(6),
-                bin(current.salesProfileId()),current.businessDate().minusDays(6),bin(current.salesProfileId()),bin(current.salesProfileId())));
+        var profile = bin(current.salesProfileId());
+        var week = current.businessDate().minusDays(6);
+        var countArgs = new ArrayList<Object>(List.of(profile, week, profile, week, profile, since,
+                profile, since, since, since, profile));
         countArgs.addAll(args);
-        long[] counts=jdbc.queryForObject("""
+        long[] counts = jdbc.queryForObject("""
             SELECT COALESCE(SUM(v.sales_profile_id=? AND d.business_date>=?),0),
                 COUNT(DISTINCT IF(v.sales_profile_id=? AND d.business_date>=?,d.business_date,NULL)),
-                COALESCE(SUM(v.sales_profile_id=?),0),COUNT(DISTINCT IF(v.sales_profile_id=?,d.business_date,NULL)),
-                COUNT(*),COUNT(DISTINCT d.business_date)
-            """+FROM+where,(r,n)->new long[]{r.getLong(1),r.getLong(2),r.getLong(3),r.getLong(4),r.getLong(5),r.getLong(6)},countArgs.toArray());
-        args.add(size);args.add((page-1)*size);
-        var rows=jdbc.query(CAPTURE+FROM+where+" ORDER BY v.checked_in_at DESC,v.id LIMIT ? OFFSET ?",(r,n)->capture(r),args.toArray());
-        return new VisitHistory(true,current,counts[0],counts[1],counts[2],counts[3],counts[4],counts[5],rows,counts[4],page,size);
+                COALESCE(SUM(v.sales_profile_id=? AND d.business_date>=?),0),
+                COUNT(DISTINCT IF(v.sales_profile_id=? AND d.business_date>=?,d.business_date,NULL)),
+                COALESCE(SUM(d.business_date>=?),0),
+                COUNT(DISTINCT IF(d.business_date>=?,d.business_date,NULL)),
+                COALESCE(SUM(v.sales_profile_id=?),0), COUNT(*)
+            """ + FROM + where,
+                (r,n) -> new long[]{r.getLong(1),r.getLong(2),r.getLong(3),r.getLong(4),
+                        r.getLong(5),r.getLong(6),r.getLong(7),r.getLong(8)},
+                countArgs.toArray());
+        args.add(size);
+        args.add((page-1)*size);
+        String tieOrder = throughVisit ? " DESC" : "";
+        var rows = jdbc.query(CAPTURE + FROM + where + " ORDER BY v.checked_in_at DESC,v.id" + tieOrder + " LIMIT ? OFFSET ?",
+                (r,n) -> capture(r),args.toArray());
+        return new VisitHistory(true,current,counts[0],counts[1],counts[2],counts[3],counts[4],counts[5],
+                rows,counts[7],page,size,throughVisit ? counts[6] : null,throughVisit ? counts[7] : null);
     }
     private static Capture capture(ResultSet r) throws SQLException {
         return new Capture(uuid(r.getBytes(1)),uuid(r.getBytes(2)),uuid(r.getBytes(3)),r.getObject(4,LocalDate.class),

@@ -34,28 +34,6 @@ public final class StaffManagementModels {
                                UUID userId, String remark, long version) {
     }
 
-    public record DhbStaffSyncRequest(List<DhbStaffRowCommand> rows) {
-        public DhbStaffSyncRequest {
-            rows = rows == null ? List.of() : List.copyOf(rows);
-        }
-    }
-
-    public record DhbStaffRowCommand(UUID connectorId, String sourceTenantKey, String sourceStaffId,
-                                     String staffType, String accountsName,
-                                     String staffName, String title, String branchName,
-                                     String accountsMobile, String about, String role,
-                                     String inviteCode, String mobile, String email, String qq,
-                                     String status, Instant createDate, Instant updateDate,
-                                     String sourcePayloadHash, String sourcePayloadJson) {
-    }
-
-    public record StaffSyncResultView(int received, int created, int updated, int unchanged,
-                                      int failed, List<String> failureMessages) {
-        public StaffSyncResultView {
-            failureMessages = failureMessages == null ? List.of() : List.copyOf(failureMessages);
-        }
-    }
-
     public record DhbStaffResolveRequest(String sourceTenantKey, List<String> sourceStaffIds,
                                          List<String> sourceStaffNames) {
         public DhbStaffResolveRequest {

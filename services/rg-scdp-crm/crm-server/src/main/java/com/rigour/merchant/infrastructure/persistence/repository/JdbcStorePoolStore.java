@@ -58,6 +58,9 @@ public class JdbcStorePoolStore implements StorePoolStore {
         condition(sql,args,"q.business_status",query.businessStatus());
         if("COVERAGE".equals(query.view()))sql.append(" AND q.business_status<>'CLOSED'");
         condition(sql,args,"q.pool_type",query.pool());condition(sql,args,"q.phase",query.phase());
+        if("VISITED_NO_ORDER".equals(query.followup())) {
+            sql.append(" AND q.pool_type='PRIVATE' AND q.last_visit_at IS NOT NULL AND q.cooperation_status='NEVER' AND q.first_cooperated_at IS NULL AND q.last_order_at IS NULL AND q.order_history_complete_to>=q.last_visit_at AND q.order_synced_at IS NOT NULL");
+        }
         if(query.protection()!=null&&!query.protection().isBlank()) {
             sql.append(" AND q.pool_type='PRIVATE'");
             switch(query.protection()) {
@@ -112,6 +115,79 @@ public class JdbcStorePoolStore implements StorePoolStore {
         var rows=jdbc.query(select(scope)+" WHERE "+f.sql()+" ORDER BY q.store_id DESC LIMIT ?",(rs,n)->row(scope,rs),args.toArray());
         boolean more=rows.size()>query.size();var items=more?rows.subList(0,query.size()):rows;
         return new Page(total,List.copyOf(items),more?items.getLast().id():null);
+    }
+    @Override
+    @Transactional(readOnly = true)
+    public FollowupEvidencePage followupEvidence(StoreScope scope, Query query, String ownerCode,
+            java.time.LocalDate from, java.time.LocalDate through) {
+        var zone = java.time.ZoneId.of("Asia/Shanghai");
+        var bounds = new ArrayList<Object>();
+        bounds.add(Timestamp.from(from.atStartOfDay(zone).toInstant()));
+        bounds.add(Timestamp.from(through.plusDays(1).atStartOfDay(zone).toInstant()));
+        var visible = filter(scope, query, true);
+        bounds.addAll(visible.args());
+        String ownerFilter = "";
+        if (ownerCode != null) {
+            ownerFilter = " AND q.owner_employee_code=?";
+            bounds.add(ownerCode);
+        }
+        bounds.add(query.size() + 1);
+        var rows = jdbc.query("""
+                WITH period AS (
+                    SELECT CAST(? AS DATETIME(6)) start_at, CAST(? AS DATETIME(6)) end_at
+                ), visible AS (
+                    SELECT q.tenant_id,q.store_id,s.name,s.created_at,q.city_code,q.province_code,
+                        q.owner_employee_code,q.owner_employee_id,s.historical_cooperation_confirmed,
+                        q.first_cooperated_at,q.last_order_at,q.order_history_complete_from,q.order_history_complete_to
+                """ + FROM + " WHERE " + visible.sql() + ownerFilter + """
+                    AND q.pool_type='PRIVATE' AND q.business_status<>'CLOSED'
+                ), evidence AS (
+                    SELECT b.*,p.end_at,
+                        (SELECT MAX(v.visited_at) FROM crm_visit v WHERE v.tenant_id=b.tenant_id
+                            AND v.store_id=b.store_id AND v.status_code='EFFECTIVE'
+                            AND v.visited_at>=p.start_at AND v.visited_at<p.end_at) visit_at,
+                        (SELECT f.order_id FROM crm_store_order_fact f WHERE f.tenant_id=b.tenant_id
+                            AND f.store_id=b.store_id AND f.valid_order=1 AND f.effective_at<p.end_at
+                            ORDER BY f.effective_at DESC,f.order_id DESC LIMIT 1) order_id,
+                        (SELECT policy.activity_days FROM crm_pool_policy policy WHERE policy.tenant_id=b.tenant_id
+                            AND policy.status_code='PUBLISHED' AND policy.effective_from<p.end_at
+                            ORDER BY policy.effective_from DESC,policy.id DESC LIMIT 1) activity_days
+                    FROM visible b CROSS JOIN period p WHERE b.created_at<p.end_at
+                ), dated AS (
+                    SELECT e.*,COALESCE(f.effective_at,IF(e.last_order_at<e.end_at,e.last_order_at,NULL)) order_at
+                    FROM evidence e LEFT JOIN crm_store_order_fact f
+                      ON f.tenant_id=e.tenant_id AND f.order_id=e.order_id
+                ), classified AS (
+                    SELECT d.*,CASE
+                        WHEN d.order_at IS NOT NULL
+                             AND d.order_at<=DATE_SUB(d.end_at, INTERVAL d.activity_days DAY)
+                             AND (d.last_order_at IS NULL OR d.last_order_at<d.end_at
+                                  OR d.order_history_complete_to>=d.end_at)
+                            THEN 'REORDER'
+                        WHEN d.visit_at IS NOT NULL AND d.order_at IS NULL
+                             AND NOT d.historical_cooperation_confirmed
+                             AND (d.first_cooperated_at IS NULL OR d.first_cooperated_at>=d.end_at)
+                             AND d.order_history_complete_from<=d.created_at AND d.order_history_complete_to>=d.end_at
+                            THEN 'VISITED_NO_ORDER'
+                        WHEN d.visit_at IS NOT NULL AND d.order_at IS NULL
+                            THEN 'VERIFICATION'
+                    END reason FROM dated d
+                )
+                SELECT * FROM classified WHERE reason IS NOT NULL ORDER BY store_id DESC LIMIT ?
+                """, (r,n) -> {
+            var nodes = scope.nodes();
+            var city = nodes.get(r.getString("city_code"));
+            if (city == null) city = nodes.get(r.getString("province_code"));
+            String code = r.getString("owner_employee_code");
+            String owner = Objects.equals(scope.access().employeeId(), r.getString("owner_employee_id"))
+                    ? scope.access().employeeName() : null;
+            return new FollowupEvidence(r.getString("store_id"), r.getString("name"),
+                    city == null ? null : city.name(), code, owner, r.getString("reason"),
+                    instant(r,"visit_at"), instant(r,"order_at"), r.getString("order_id"));
+        }, bounds.toArray());
+        boolean more = rows.size() > query.size();
+        var items = more ? rows.subList(0, query.size()) : rows;
+        return new FollowupEvidencePage(List.copyOf(items), more ? items.getLast().storeId() : null);
     }
     @Override
     @Transactional(readOnly=true)

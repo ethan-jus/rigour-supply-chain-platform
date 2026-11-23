@@ -51,16 +51,17 @@ public interface SalesWorkAttendanceRepository {
     void setResumeReason(UUID tenantId, UUID workDayId, String deviceEventId, String reason);
 
     void insertLocationSession(
-            UUID id, UUID tenantId, UUID workDayId, Instant startedAt, int expectedIntervalMinutes);
+            UUID id, UUID tenantId, UUID workDayId, Instant startedAt, int expectedIntervalMinutes, boolean confirmedTrack);
 
-    record LocationSessionSnapshot(UUID id, Instant startedAt, Instant endedAt, String status) {}
+    record LocationSessionSnapshot(UUID id, Instant startedAt, Instant endedAt, String status, boolean confirmedTrack) {}
     Optional<LocationSessionSnapshot> findLocationSession(UUID tenantId, UUID workDayId, UUID sessionId);
 
     List<String> findExistingLocationEventIds(UUID tenantId, List<String> deviceEventIds);
 
     record NewLocationPoint(UUID id, String deviceEventId, BigDecimal longitude, BigDecimal latitude,
                             BigDecimal accuracyMeters, Instant clientOccurredAt, String source, String qualityStatus,
-                            BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem) {}
+                            BigDecimal rawLongitude, BigDecimal rawLatitude, String rawCoordinateSystem,
+                            List<String> routePath) {}
 
     void insertLocationPoints(UUID tenantId, UUID locationSessionId, UUID workDayId, Instant receivedAt,
                               List<NewLocationPoint> points);
@@ -142,7 +143,13 @@ public interface SalesWorkAttendanceRepository {
             Instant clientOccurredAt,
             Instant serverReceivedAt,
             String source,
-            String qualityStatus, UUID sessionId) {
+            String qualityStatus, UUID sessionId, boolean confirmedTrack, String deviceEventId, List<String> routePath,
+            BigDecimal rawLongitude, BigDecimal rawLatitude) {
+        public LocationPointRow(BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
+                Instant clientOccurredAt, Instant serverReceivedAt, String source, String qualityStatus, UUID sessionId) {
+            this(longitude, latitude, accuracyMeters, clientOccurredAt, serverReceivedAt, source, qualityStatus,
+                    sessionId, false, null, List.of(), null, null);
+        }
         public LocationPointRow(BigDecimal longitude, BigDecimal latitude, BigDecimal accuracyMeters,
                 Instant clientOccurredAt, Instant serverReceivedAt, String source, String qualityStatus) {
             this(longitude, latitude, accuracyMeters, clientOccurredAt, serverReceivedAt, source, qualityStatus, null);

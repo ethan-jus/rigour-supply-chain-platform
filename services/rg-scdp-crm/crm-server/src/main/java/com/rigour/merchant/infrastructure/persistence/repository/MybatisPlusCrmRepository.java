@@ -630,7 +630,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             return importMergedCustomerAlias(tenantId, connectorId, runId, binding, snapshot, json, hash, now);
         }
         Target ownershipProblem = type == CrmMasterDataObjectType.CUSTOMER
-                ? customerOwnershipProblem(tenantId, connectorId, binding, snapshot) : null;
+                ? customerOwnershipProblem(tenantId, binding, snapshot) : null;
         String identityConflict = type == CrmMasterDataObjectType.CUSTOMER && binding != null
                 && "RESOLVED".equals(binding.bindingStatus)
                 ? customerIdentityConflict(tenantId,connectorId,binding,snapshot) : null;
@@ -665,8 +665,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         Target target = ownershipProblem != null ? ownershipProblem : identityConflict != null ? identityConflictTarget(binding,identityConflict) :
                 switch (type) {
                     case CUSTOMER_TYPE -> customerType(tenantId, binding, snapshot, now);
-                    case CUSTOMER_AREA ->
-                            customerArea(tenantId, connectorId, binding, snapshot, now);
+                    case CUSTOMER_AREA -> throw new IllegalArgumentException("订货宝归属地区已停用同步");
                     case CUSTOMER ->
                             customer(tenantId, connectorId, binding, snapshot, now, sourceChanged, matches);
                     case ADDRESS ->
@@ -808,74 +807,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         return Target.resolved("CUSTOMER_TYPE", id);
     }
 
-    private Target customerArea(
-            UUID tenantId,
-            UUID connectorId,
-            SourceBindingEntity binding,
-            SourceRecord record,
-            LocalDateTime now) {
-        UUID id = targetId(binding);
-        CustomerAreaEntity entity =
-                customerAreaMapper.selectOne(
-                        Wrappers.<CustomerAreaEntity>query()
-                                .eq("tenant_id", bytes(tenantId))
-                                .eq("id", bytes(id)));
-        String name =
-                value(record.sourceFields(), "AreaName", record.sourceName(), record.sourceId());
-        String parentSourceId = areaParentCode(record.sourceFields());
-        String parentAreaCode =
-                customerAreaCode(
-                        tenantId,
-                        sourceTarget(
-                                tenantId,
-                                connectorId,
-                                CrmMasterDataObjectType.CUSTOMER_AREA,
-                                parentSourceId));
-        boolean parentFieldPresent = hasAreaParentField(record.sourceFields());
-        if (entity == null) {
-            entity = new CustomerAreaEntity();
-            entity.id = bytes(id);
-            entity.tenantId = bytes(tenantId);
-            entity.areaCode = uniqueCustomerAreaCode(tenantId, record.sourceCreatedAt());
-            entity.areaName = name;
-            entity.parentAreaCode = parentAreaCode;
-            entity.status = "ACTIVE";
-            entity.ownershipState = "EXTERNAL_PRIMARY";
-            entity.recordOrigin = "IMPORTED";
-            entity.revision = 0L;
-            entity.createdBy = SYSTEM_ACTOR;
-            entity.createdTime = now;
-            entity.updatedBy = SYSTEM_ACTOR;
-            entity.updatedTime = now;
-            entity.deleted = 0;
-            customerAreaMapper.insert(entity);
-        } else if ((record.sourceFields().containsKey("AreaName")
-                        || record.sourceFields().keySet().stream()
-                                .anyMatch(
-                                        key ->
-                                                "parentID".equalsIgnoreCase(key)
-                                                        || "parent_id".equalsIgnoreCase(key)))
-                && name != null
-                && !"INTERNAL_PRIMARY".equals(entity.ownershipState)) {
-            var update =
-                    Wrappers.<CustomerAreaEntity>update()
-                            .eq("tenant_id", bytes(tenantId))
-                            .eq("id", bytes(id))
-                            .set("area_name", name)
-                            .set("status", "ACTIVE")
-                            .set("updated_by", SYSTEM_ACTOR)
-                            .set("updated_time", now)
-                            .setSql("revision=revision+1");
-            // getArea 文档未保证返回 parentID；缺失时保留已知父级，避免一次不完整响应破坏层级。
-            if ((parentFieldPresent && parentAreaCode != null)
-                    || isInvalidAreaParent(entity.parentAreaCode)) {
-                update.set("parent_area_code", parentAreaCode);
-            }
-            customerAreaMapper.update(null, update);
-        }
-        return Target.resolved("CUSTOMER_AREA", id);
-    }
-
     private String customerIdentityConflict(UUID tenantId, UUID connectorId, SourceBindingEntity binding, SourceRecord record) {
         return customerIdentityConflict(tenantId, connectorId, binding, record, null);
     }
@@ -891,7 +822,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         // Use the same city facts that the master projection retains; the source address can be a district path.
         String identityConflict = identities.conflict(tenantId.toString(), identityCustomer == null ? null : identityCustomer.getId(),
                 first(value(f,"clientCompanyName"),record.sourceName()), value(f,"clientAccount"), identityCity,
-                identityCustomer != null && "LOCAL".equals(identityCustomer.getRegionManagementMode()) ? identityCustomer.getRegionCode() : identityRegion,
+                identityCustomer != null ? identityCustomer.getRegionCode() : identityRegion,
                 binding != null && Boolean.TRUE.equals(binding.independentConfirmed));
         return identityConflict;
     }
@@ -901,7 +832,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 binding == null ? null : uuid(binding.targetId), "UNRESOLVED", "CUSTOMER_IDENTITY_DUPLICATE", message);
     }
 
-    private Target customerOwnershipProblem(UUID tenantId, UUID connectorId,
+    private Target customerOwnershipProblem(UUID tenantId,
             SourceBindingEntity binding, SourceRecord record) {
         Map<String, Object> fields = record.sourceFields();
         StaffRef primary = staffRefs(fields).primary();
@@ -912,10 +843,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 || clean(resolved.employeeName()) == null)) {
             code = "CUSTOMER_EMPLOYEE_MAPPING_REQUIRED";
             message = "所属业务员未对应本系统员工，客户未更新；请先维护员工对应关系后重试";
-        } else if (customerAreaCode(tenantId, sourceTarget(tenantId, connectorId,
-                CrmMasterDataObjectType.CUSTOMER_AREA, value(fields, "clientArea"))) == null) {
-            code = "CUSTOMER_AREA_MAPPING_REQUIRED";
-            message = "归属地区未对应本系统地区，客户未更新；请先维护地区对应关系后重试";
         }
         return code == null ? null : new Target(binding == null ? null : binding.targetType,
                 binding == null || binding.targetId == null ? null : uuid(binding.targetId),
@@ -924,16 +851,23 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
 
     /** 同租户、同城市、完整名称唯一时复用原客户；保留原 ID 和历史创建事实。 */
     private List<InternalCustomerEntity> sameCityCustomers(UUID tenantId, UUID connectorId, SourceRecord record) {
-        String region = customerAreaCode(tenantId, sourceTarget(tenantId, connectorId,
-                CrmMasterDataObjectType.CUSTOMER_AREA, value(record.sourceFields(), "clientArea")));
-        String city = identities.cityKey(tenantId.toString(), null, region);
+        String city = sourceCity(tenantId, connectorId, record);
         String name = first(value(record.sourceFields(), "clientCompanyName"), record.sourceName());
-        if (city == null || clean(name) == null) return List.of();
+        if (clean(name) == null) return List.of();
         return internalCustomerMapper.selectList(Wrappers.<InternalCustomerEntity>query()
                 .eq("tenant_id", tenantId.toString()).eq("deleted", 0).eq("customer_name", name)
                 .last("FOR UPDATE")).stream()
-                .filter(c -> city.equals(identities.cityKey(tenantId.toString(), c.getCityName(), c.getRegionCode())))
+                .filter(c -> {
+                    String existingCity = identities.cityKey(tenantId.toString(), c.getCityName(), c.getRegionCode());
+                    return city == null || existingCity == null || city.equals(existingCity);
+                })
                 .toList();
+    }
+
+    private String sourceCity(UUID tenantId, UUID connectorId, SourceRecord record) {
+        String region = customerAreaCode(tenantId, sourceTarget(tenantId, connectorId,
+                CrmMasterDataObjectType.CUSTOMER_AREA, value(record.sourceFields(), "clientArea")));
+        return identities.cityKey(tenantId.toString(), value(record.sourceFields(), "clientCity"), region);
     }
 
     private Target customer(
@@ -947,6 +881,12 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         if (matches.size() > 1)
             return Target.unresolved("CUSTOMER_IDENTITY_REVIEW_REQUIRED", "同城市同名客户存在多条，需确认具体门店");
         InternalCustomerEntity matched = matches.isEmpty() ? null : matches.getFirst();
+        if (matched != null) {
+            String city = sourceCity(tenantId, connectorId, record);
+            String existingCity = identities.cityKey(tenantId.toString(), matched.getCityName(), matched.getRegionCode());
+            if (city == null || existingCity == null)
+                return Target.unresolved("CUSTOMER_IDENTITY_REVIEW_REQUIRED", "存在同名客户，地区尚未核实，请确认是否为同一门店");
+        }
         UUID partyId = matched != null && matched.getPartyId() != null ? uuid(matched.getPartyId()) : targetId(binding);
         if (matched != null && matched.getPartyId() != null && bindingMapper.selectCount(
                 Wrappers.<SourceBindingEntity>query().eq("tenant_id", bytes(tenantId))
@@ -1025,18 +965,12 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                         connectorId,
                         CrmMasterDataObjectType.CUSTOMER_TYPE,
                         value(f, "clientType"));
-        UUID areaId =
-                sourceTarget(
-                        tenantId,
-                        connectorId,
-                        CrmMasterDataObjectType.CUSTOMER_AREA,
-                        value(f, "clientArea"));
-        upsertProfile(tenantId, partyId, typeId, areaId, f, now, sourceChanged);
+        upsertProfile(tenantId, partyId, typeId, f, now, sourceChanged);
         upsertPolicy(tenantId, partyId, f, now, sourceChanged);
         upsertPrimaryContact(tenantId, partyId, f, now, sourceChanged);
         upsertContactAddress(tenantId, partyId, f, now, sourceChanged);
         upsertAssignments(tenantId, connectorId, partyId, f, now, sourceChanged);
-        upsertInternalCustomer(tenantId, partyId, record, f, typeId, areaId, now, sourceChanged, matched);
+        upsertInternalCustomer(tenantId, partyId, record, f, typeId, now, sourceChanged, matched);
         return Target.resolved("PARTY", partyId);
     }
 
@@ -1046,14 +980,12 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             SourceRecord record,
             Map<String, Object> f,
             UUID typeId,
-            UUID areaId,
             LocalDateTime now,
             boolean sourceChanged, InternalCustomerEntity matched) {
         String tenant = tenantId.toString();
         String legacyCode = legacyInternalCustomerCode(record);
         InternalCustomerEntity existing = matched == null ? internalCustomerByPartyId(tenantId, partyId) : matched;
         String resolvedCustomerTypeCode = customerTypeCode(tenantId, typeId);
-        String resolvedRegionCode = customerAreaCode(tenantId, areaId);
         if (existing == null) {
             existing = internalCustomerByCode(tenantId, legacyCode);
         }
@@ -1061,14 +993,13 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 first(
                         resolvedCustomerTypeCode,
                         existing == null ? null : existing.getCustomerTypeCode());
-        String regionCode =
-                first(resolvedRegionCode, existing == null ? null : existing.getRegionCode());
         if (existing == null) {
             InternalCustomerEntity entity = new InternalCustomerEntity();
             entity.setTenantId(tenant);
             entity.setCustomerCode(uniqueInternalCustomerCode(tenantId, record.sourceCreatedAt()));
             entity.setPartyId(bytes(partyId));
-            applyInternalCustomer(entity, record, f, customerTypeCode, regionCode);
+            applyInternalCustomer(entity, record, f, customerTypeCode);
+            entity.setRegionManagementMode("LOCAL");
             entity.setSourceSystemCode(SOURCE_SYSTEM);
             entity.setSourceCustomerId(record.sourceId());
             entity.setSourceDocumentNo(record.sourceCode());
@@ -1103,7 +1034,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         }
         if (matched != null) {
             existing.setOwnerManagementMode("EXTERNAL");
-            existing.setRegionManagementMode("EXTERNAL");
         }
         boolean syncOwned = matched != null ||
                 sourceWritable(existing.getCreatedBy()) || sourceWritable(existing.getUpdatedBy());
@@ -1112,26 +1042,10 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         boolean repairParty =
                 existing.getPartyId() == null
                         || !Arrays.equals(existing.getPartyId(), bytes(partyId));
-        boolean repairClassification =
-                syncOwned
-                        && ((resolvedCustomerTypeCode != null
-                                        && !Objects.equals(
-                                                existing.getCustomerTypeCode(),
-                                                resolvedCustomerTypeCode))
-                                || (resolvedRegionCode != null
-                                        && !Objects.equals(
-                                                existing.getRegionCode(), resolvedRegionCode)));
+        boolean repairClassification = syncOwned && resolvedCustomerTypeCode != null
+                && !Objects.equals(existing.getCustomerTypeCode(), resolvedCustomerTypeCode);
         StaffRef primary = staffRefs(f).primary();
         EmployeeRef proposed = employee(f, primary.sourceId(), primary.name());
-        if ("LOCAL".equals(existing.getRegionManagementMode())
-                        && !Objects.equals(existing.getRegionCode(), regionCode))
-            responsibilities.sourceConflict(
-                    tenant,
-                    existing.getId(),
-                    SOURCE_SYSTEM,
-                    proposed.employeeCode(),
-                    regionCode,
-                    String.valueOf(record.sourceUpdatedAt()));
         boolean repairOwner = !internalCustomerOwnerComplete(existing, record);
         if (!sourceChanged && !repairCode && !repairParty && !repairClassification && !repairOwner) return;
         if (!syncOwned && !repairParty) {
@@ -1141,7 +1055,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         String oldOwner = existing.getOwnerEmployeeCode(),
                 oldName = existing.getOwnerEmployeeNameSnapshot(),
                 oldRegion = existing.getRegionCode();
-        applyInternalCustomer(existing, record, f, customerTypeCode, regionCode);
+        applyInternalCustomer(existing, record, f, customerTypeCode);
         var update =
                 Wrappers.<InternalCustomerEntity>lambdaUpdate()
                         .set(InternalCustomerEntity::getCustomerName, existing.getCustomerName())
@@ -1151,7 +1065,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                         .set(
                                 InternalCustomerEntity::getCustomerTypeCode,
                                 existing.getCustomerTypeCode())
-                        .set(InternalCustomerEntity::getRegionCode, existing.getRegionCode())
                         .set(
                                 InternalCustomerEntity::getOwnerSalesUserId,
                                 existing.getOwnerSalesUserId())
@@ -1179,8 +1092,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         if (clean(proposed.employeeCode()) != null)
             update.set(InternalCustomerEntity::getOwnerManagementMode, "EXTERNAL");
         if (matched != null) {
-            update.set(InternalCustomerEntity::getOwnerManagementMode, "EXTERNAL")
-                    .set(InternalCustomerEntity::getRegionManagementMode, "EXTERNAL");
+            update.set(InternalCustomerEntity::getOwnerManagementMode, "EXTERNAL");
         }
         if (repairCode) {
             update.set(
@@ -1229,14 +1141,12 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             InternalCustomerEntity entity,
             SourceRecord record,
             Map<String, Object> f,
-            String customerTypeCode,
-            String regionCode) {
+            String customerTypeCode) {
         String code = first(entity.getCustomerCode(), legacyInternalCustomerCode(record));
         entity.setCustomerName(first(value(f, "clientCompanyName"), record.sourceName(), code));
         entity.setContactName(value(f, "clientTrueName"));
         entity.setContactPhone(value(f, "clientPhone"));
         entity.setCustomerTypeCode(customerTypeCode);
-        if (!"LOCAL".equals(entity.getRegionManagementMode())) entity.setRegionCode(regionCode);
         StaffRef primary = staffRefs(f).primary();
         EmployeeRef employee = employee(f, primary.sourceId(), primary.name());
         String ownerEmployeeName = employee.employeeName();
@@ -1295,26 +1205,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         return result;
     }
 
-    private Map<UUID, String> customerAreaCodes(UUID tenantId, Collection<UUID> areaIds) {
-        if (areaIds == null || areaIds.isEmpty()) return Map.of();
-        List<byte[]> ids =
-                areaIds.stream()
-                        .filter(Objects::nonNull)
-                        .distinct()
-                        .map(MybatisPlusCrmRepository::bytes)
-                        .toList();
-        if (ids.isEmpty()) return Map.of();
-        Map<UUID, String> result = new LinkedHashMap<>();
-        customerAreaMapper
-                .selectList(
-                        Wrappers.<CustomerAreaEntity>query()
-                                .eq("tenant_id", bytes(tenantId))
-                                .in("id", ids)
-                                .eq("deleted", 0))
-                .forEach(entity -> result.put(uuid(entity.id), entity.areaCode));
-        return result;
-    }
-
     private static boolean internalCustomerOwnerComplete(InternalCustomerEntity customer, SourceRecord record) {
         StaffRef primary = staffRefs(record.sourceFields()).primary();
         EmployeeRef expected = employee(record.sourceFields(), primary.sourceId(), primary.name());
@@ -1325,21 +1215,9 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
     }
 
     private static boolean internalCustomerClassificationComplete(
-            InternalCustomerEntity entity,
-            String expectedCustomerTypeCode,
-            String expectedRegionCode,
-            boolean customerTypeExpected,
-            boolean regionExpected) {
-        if (entity == null) return false;
-        if (customerTypeExpected
-                && (expectedCustomerTypeCode == null
-                        || !Objects.equals(
-                                entity.getCustomerTypeCode(), expectedCustomerTypeCode))) {
-            return false;
-        }
-        return !regionExpected
-                || (expectedRegionCode != null
-                        && Objects.equals(entity.getRegionCode(), expectedRegionCode));
+            InternalCustomerEntity entity, String expectedCustomerTypeCode, boolean customerTypeExpected) {
+        return entity != null && (!customerTypeExpected
+                || (expectedCustomerTypeCode != null && Objects.equals(entity.getCustomerTypeCode(), expectedCustomerTypeCode)));
     }
 
     private InternalCustomerEntity internalCustomerByPartyId(UUID tenantId, UUID partyId) {
@@ -1601,7 +1479,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             UUID tenantId,
             UUID partyId,
             UUID typeId,
-            UUID areaId,
             Map<String, Object> f,
             LocalDateTime now,
             boolean sourceChanged) {
@@ -1615,11 +1492,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             entity.partyId = bytes(partyId);
             entity.tenantId = bytes(tenantId);
             entity.customerTypeId = bytes(typeId);
-            entity.customerAreaId = bytes(areaId);
             entity.loginAccount = value(f, "clientAccount");
             entity.customerTypeNameSnapshot = value(f, "clientTypeName");
-            entity.customerAreaNameSnapshot = value(f, "clientAreaName");
-            entity.cityText = value(f, "clientCity");
             entity.inviterName = value(f, "Inviter");
             entity.remark = value(f, "clientAbout");
             entity.revision = 0L;
@@ -1641,22 +1515,12 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                             ? bytes(typeId)
                                             : existing.customerTypeId)
                             .set(
-                                    "customer_area_id",
-                                    f.containsKey("clientArea")
-                                            ? bytes(areaId)
-                                            : existing.customerAreaId)
-                            .set(
                                     "login_account",
                                     incoming(f, "clientAccount", existing.loginAccount))
                             .set(
                                     "customer_type_name_snapshot",
                                     incoming(
                                             f, "clientTypeName", existing.customerTypeNameSnapshot))
-                            .set(
-                                    "customer_area_name_snapshot",
-                                    incoming(
-                                            f, "clientAreaName", existing.customerAreaNameSnapshot))
-                            .set("city_text", incoming(f, "clientCity", existing.cityText))
                             .set("inviter_name", incoming(f, "Inviter", existing.inviterName))
                             .set("remark", incoming(f, "clientAbout", existing.remark))
                             .set("updated_by", SYSTEM_ACTOR)
@@ -1670,10 +1534,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             boolean required = false;
             if (typeId != null && !Arrays.equals(existing.customerTypeId, bytes(typeId))) {
                 repair.set("customer_type_id", bytes(typeId));
-                required = true;
-            }
-            if (areaId != null && !Arrays.equals(existing.customerAreaId, bytes(areaId))) {
-                repair.set("customer_area_id", bytes(areaId));
                 required = true;
             }
             if (required)
@@ -2542,8 +2402,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 .and(q -> q.ne("binding_status", "RESOLVED").or().isNull("target_id")
                         .or().apply("""
                             target_id IN (SELECT c.party_id FROM crm_customer c WHERE c.tenant_id={0} AND c.deleted=0
-                              AND (NULLIF(TRIM(c.region_code),'') IS NULL
-                                OR NULLIF(TRIM(c.owner_employee_code),'') IS NULL
+                              AND (NULLIF(TRIM(c.owner_employee_code),'') IS NULL
                                 OR NULLIF(TRIM(c.owner_employee_name_snapshot),'') IS NULL))
                             """, tenantId.toString())))
                 .stream().map(b -> new SourceRecord(b.sourceObjectId, b.sourceCode, b.sourceName,
@@ -2666,9 +2525,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
     @Override
     public List<ExternalObjectMappingCommand> externalObjectMappings(
             UUID tenantId, UUID connectorId, UUID runId, CrmMasterDataObjectType objectType) {
-        if (objectType == CrmMasterDataObjectType.CUSTOMER_AREA) {
-            return customerAreaMappings(tenantId, connectorId, runId);
-        }
         if (objectType != CrmMasterDataObjectType.CUSTOMER) return List.of();
         List<ExternalObjectMappingCommand> result = new ArrayList<>();
         List<SourceBindingEntity> bindings =
@@ -2727,56 +2583,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                             ignored ? binding.resolutionErrorCode : problem,
                             ignored ? binding.resolutionErrorMessage
                                     : resolved ? "CRM订货宝客户同步映射" : "客户关联待处理，相关订单暂缓；修复后自动恢复"));
-        }
-        return result;
-    }
-
-    /**
-     * 归属地区以内部编码对外，没有数字主键：映射只登记内部编码，供订单同步按来源地区 ID 或名称解析。
-     */
-    private List<ExternalObjectMappingCommand> customerAreaMappings(
-            UUID tenantId, UUID connectorId, UUID runId) {
-        List<SourceBindingEntity> bindings =
-                bindingMapper.selectList(
-                        Wrappers.<SourceBindingEntity>query()
-                                .eq("tenant_id", bytes(tenantId))
-                                .eq("connector_id", bytes(connectorId))
-                                .eq("source_system", SOURCE_SYSTEM)
-                                .eq(
-                                        "source_object_type",
-                                        CrmMasterDataObjectType.CUSTOMER_AREA.name())
-                                .eq("binding_status", "RESOLVED")
-                                .eq("source_presence", "PRESENT"));
-        if (bindings.isEmpty()) return List.of();
-        Map<UUID, CustomerAreaEntity> areasById =
-                customerAreasById(
-                        tenantId,
-                        bindings.stream()
-                                .map(binding -> binding.targetId == null ? null : uuid(binding.targetId))
-                                .toList());
-        List<ExternalObjectMappingCommand> result = new ArrayList<>();
-        for (SourceBindingEntity binding : bindings) {
-            CustomerAreaEntity area =
-                    binding.targetId == null ? null : areasById.get(uuid(binding.targetId));
-            if (area == null || area.areaCode == null || area.areaCode.isBlank()) continue;
-            result.add(
-                    new ExternalObjectMappingCommand(
-                            connectorId,
-                            INTEGRATION_SOURCE_SYSTEM,
-                            CrmMasterDataObjectType.CUSTOMER_AREA.name(),
-                            binding.sourceObjectId,
-                            first(binding.sourceName, area.areaName, binding.sourceObjectId),
-                            "CRM",
-                            CrmMasterDataObjectType.CUSTOMER_AREA.name(),
-                            null,
-                            area.areaCode,
-                            "ACTIVE",
-                            runId,
-                            instant(binding.syncedAt),
-                            null,
-                            binding.sourcePayloadHash,
-                            null,
-                            "CRM订货宝归属地区同步映射"));
         }
         return result;
     }
@@ -3874,7 +3680,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 || records.isEmpty()) return null;
         Set<UUID> partyIds = new LinkedHashSet<>();
         Set<String> typeSourceIds = new LinkedHashSet<>();
-        Set<String> areaSourceIds = new LinkedHashSet<>();
         for (SourceRecord record : records) {
             SourceBindingEntity binding = existingBindings.get(record.sourceId());
             if (binding == null
@@ -3885,7 +3690,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             String typeId = value(snapshot.sourceFields(), "clientType");
             String areaId = value(snapshot.sourceFields(), "clientArea");
             if (typeId != null) typeSourceIds.add(typeId);
-            if (areaId != null) areaSourceIds.add(areaId);
         }
         if (partyIds.isEmpty()) return null;
         List<byte[]> ids = partyIds.stream().map(MybatisPlusCrmRepository::bytes).toList();
@@ -3962,12 +3766,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                         connectorId,
                         CrmMasterDataObjectType.CUSTOMER_TYPE,
                         typeSourceIds);
-        Map<String, UUID> areaTargets =
-                sourceTargets(
-                        tenantId,
-                        connectorId,
-                        CrmMasterDataObjectType.CUSTOMER_AREA,
-                        areaSourceIds);
 
         return new CustomerProjectionBatch(
                 parties,
@@ -3978,9 +3776,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 assignments,
                 internalCustomers,
                 typeTargets,
-                areaTargets,
                 customerTypeCodes(tenantId, typeTargets.values()),
-                customerAreaCodes(tenantId, areaTargets.values()),
                 employeeTargets(records));
     }
 
@@ -4014,26 +3810,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                             .eq("tenant_id", tenant)
                                             .eq("id", id))
                             > 0;
-            case CUSTOMER_AREA -> {
-                CustomerAreaEntity area =
-                        customerAreaMapper.selectOne(
-                                Wrappers.<CustomerAreaEntity>query()
-                                        .eq("tenant_id", tenant)
-                                        .eq("id", id));
-                String expectedName =
-                        value(
-                                record.sourceFields(),
-                                "AreaName",
-                                record.sourceName(),
-                                record.sourceId());
-                String expectedParent = areaParentCode(record.sourceFields());
-                boolean parentFieldPresent = hasAreaParentField(record.sourceFields());
-                yield area != null
-                        && Objects.equals(area.areaName, expectedName)
-                        && !isInvalidAreaParent(area.parentAreaCode)
-                        && (!parentFieldPresent
-                                || Objects.equals(area.parentAreaCode, expectedParent));
-            }
+            case CUSTOMER_AREA -> false;
             case ADDRESS -> {
                 if (addressProjectionBatch != null) {
                     yield addressProjectionBatch.complete(targetId, record.sourceFields());
@@ -4083,15 +3860,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                         connectorId,
                         CrmMasterDataObjectType.CUSTOMER_TYPE,
                         value(record.sourceFields(), "clientType"));
-        UUID expectedArea =
-                sourceTarget(
-                        tenantId,
-                        connectorId,
-                        CrmMasterDataObjectType.CUSTOMER_AREA,
-                        value(record.sourceFields(), "clientArea"));
         if (expectedType != null && !Arrays.equals(profile.customerTypeId, bytes(expectedType)))
-            return false;
-        if (expectedArea != null && !Arrays.equals(profile.customerAreaId, bytes(expectedArea)))
             return false;
         if (customerPolicyMapper.selectCount(
                         Wrappers.<CustomerPolicyEntity>query()
@@ -4123,9 +3892,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         if (!internalCustomerClassificationComplete(
                 internalCustomer,
                 expectedType == null ? null : customerTypeCode(tenantId, expectedType),
-                expectedArea == null ? null : customerAreaCode(tenantId, expectedArea),
-                expectedType != null,
-                expectedArea != null)) {
+
+                expectedType != null)) {
             return false;
         }
         StaffRefs refs = staffRefs(record.sourceFields());
@@ -4228,9 +3996,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         private final Map<UUID, List<SalesAssignmentEntity>> assignments;
         private final Map<UUID, InternalCustomerEntity> internalCustomers;
         private final Map<String, UUID> typeTargets;
-        private final Map<String, UUID> areaTargets;
         private final Map<UUID, String> typeCodes;
-        private final Map<UUID, String> areaCodes;
         private final Map<String, String> employeeTargets;
 
         private CustomerProjectionBatch(
@@ -4242,9 +4008,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 Map<UUID, List<SalesAssignmentEntity>> assignments,
                 Map<UUID, InternalCustomerEntity> internalCustomers,
                 Map<String, UUID> typeTargets,
-                Map<String, UUID> areaTargets,
                 Map<UUID, String> typeCodes,
-                Map<UUID, String> areaCodes,
                 Map<String, String> employeeTargets) {
             this.parties = parties == null ? Set.of() : Set.copyOf(parties);
             this.profiles = profiles == null ? Map.of() : Map.copyOf(profiles);
@@ -4256,9 +4020,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             this.internalCustomers =
                     internalCustomers == null ? Map.of() : Map.copyOf(internalCustomers);
             this.typeTargets = typeTargets == null ? Map.of() : Map.copyOf(typeTargets);
-            this.areaTargets = areaTargets == null ? Map.of() : Map.copyOf(areaTargets);
             this.typeCodes = typeCodes == null ? Map.of() : Map.copyOf(typeCodes);
-            this.areaCodes = areaCodes == null ? Map.of() : Map.copyOf(areaCodes);
             this.employeeTargets = employeeTargets == null ? Map.of() : Map.copyOf(employeeTargets);
         }
 
@@ -4276,17 +4038,13 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
             }
             Map<String, Object> fields = record.sourceFields();
             UUID expectedType = target(typeTargets, value(fields, "clientType"));
-            UUID expectedArea = target(areaTargets, value(fields, "clientArea"));
             if (expectedType != null && !Arrays.equals(profile.customerTypeId, bytes(expectedType)))
-                return false;
-            if (expectedArea != null && !Arrays.equals(profile.customerAreaId, bytes(expectedArea)))
                 return false;
             if (!internalCustomerClassificationComplete(
                     internalCustomer,
                     expectedType == null ? null : typeCodes.get(expectedType),
-                    expectedArea == null ? null : areaCodes.get(expectedArea),
-                    expectedType != null,
-                    expectedArea != null)) {
+
+                    expectedType != null)) {
                 return false;
             }
 
@@ -4463,31 +4221,6 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         return sha256(value == null ? "" : value)
                 .substring(0, 12)
                 .toUpperCase(java.util.Locale.ROOT);
-    }
-
-    private static String areaParentCode(Map<String, Object> fields) {
-        String value = value(fields, "parentID", "parentId", "ParentID", "parent_id");
-        if (value == null) return null;
-        String normalized = value.strip();
-        return Set.of("parentid", "parent_id", "parent-id", "null", "undefined")
-                        .contains(normalized.toLowerCase(java.util.Locale.ROOT))
-                ? null
-                : normalized;
-    }
-
-    private static boolean hasAreaParentField(Map<String, Object> fields) {
-        return fields.keySet().stream()
-                .anyMatch(
-                        key ->
-                                key != null
-                                        && ("parentid".equalsIgnoreCase(key)
-                                                || "parent_id".equalsIgnoreCase(key)));
-    }
-
-    private static boolean isInvalidAreaParent(String value) {
-        return value != null
-                && Set.of("parentid", "parent_id", "parent-id", "null", "undefined")
-                        .contains(value.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     private static String active(String value) {

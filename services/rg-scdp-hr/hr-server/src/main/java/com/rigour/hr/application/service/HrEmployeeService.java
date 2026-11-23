@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -101,6 +102,7 @@ public final class HrEmployeeService {
         CallerIdentity caller = actor(SYNC_PERMISSION);
         if (command == null) throw badRequest("外部员工同步参数不能为空");
         String sourceSystem = sourceSystem(command.sourceSystem(), true);
+        if (Set.of("DINGHUOBAO", "DHB").contains(sourceSystem)) throw badRequest("订货宝员工和部门已停用同步，请在员工档案和部门管理中维护");
         List<ExternalEmployeeRowCommand> rows = normalizeRows(command.rows());
         String tenantId = caller.tenantId().toString();
         String actorId = syncAuditActor(caller);

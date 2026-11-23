@@ -23,6 +23,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -102,6 +103,7 @@ public final class CrmCustomerQueryService {
         CallerIdentity actor = serviceActor(SYNC_PERMISSION);
         if (command == null) throw badRequest("地区同步参数不能为空");
         String sourceSystem = sourceSystem(command.sourceSystem());
+        if (Set.of("DINGHUOBAO", "DHB").contains(sourceSystem)) throw badRequest("订货宝归属地区已停用同步，请在归属地区中维护");
         List<ExternalCrmAreaRowCommand> rows = externalAreaRows(command.rows());
         ExternalCrmAreaSyncResult result =
                 store.syncExternalCustomerAreas(

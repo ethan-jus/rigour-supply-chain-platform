@@ -54,6 +54,20 @@ class HrEmployeeServiceTest {
         });
     }
 
+    @Test
+    void retiredDhbEmployeeSyncCannotWriteEmployeesOrDepartments() {
+        FakeStore store = new FakeStore();
+        HrEmployeeService service = new HrEmployeeService(store, fixedGenerator());
+        TestAuthorizationContext.set(serviceCaller("hr:employee:sync"));
+
+        for (String source : List.of(" dinghuobao ", "DHB")) {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                    service.syncExternalEmployees(new ExternalEmployeeSyncCommand(source, List.of())))
+                    .hasMessageContaining("订货宝员工和部门已停用同步");
+        }
+        assertThat(store.syncTenantId).isNull();
+    }
+
     private static BusinessCodeGenerator fixedGenerator() {
         return new BusinessCodeGenerator(
                 Clock.fixed(Instant.parse("2026-09-01T00:00:00Z"), ZoneId.of("Asia/Shanghai")),

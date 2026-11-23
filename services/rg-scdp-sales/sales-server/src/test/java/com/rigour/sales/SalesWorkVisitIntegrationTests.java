@@ -720,6 +720,10 @@ class SalesWorkVisitIntegrationTests {
         var managementRecordings = managementService.reviewRecordings(visit.id());
         assertThat(managementRecordings.clipCount()).isEqualTo(2);
         assertThat(managementRecordings.uploadedTotalDurationMs()).isEqualTo(65_000L);
+        assertThat(managementRecordings.clips()).allSatisfy(item -> {
+            assertThat(item.verifyStatus()).isEqualTo("VERIFIED");
+            assertThat(item.verifiedDurationMs()).isPositive();
+        });
         var recordingContent = managementService.reviewRecordingClip(visit.id(), clip.clipId());
         assertThat(recordingContent.mediaType()).isEqualTo("audio/m4a");
         assertThat(recordingContent.bytes()).isEqualTo(firstBytes);
@@ -1000,6 +1004,21 @@ class SalesWorkVisitIntegrationTests {
         assertThat(payload.submittedAt()).isNotNull();
         assertThat(payload.recordingEvidenceStatus()).isEqualTo("TECHNICALLY_VERIFIED");
         assertThat(payload.verifiedRecordingDurationMs()).isEqualTo(35000);
+        var facts = new com.rigour.sales.infrastructure.persistence.JdbcFieldworkFacts(
+                new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc));
+        var all = new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(true,Set.of());
+        var businessDay=jdbc.queryForObject("SELECT business_date FROM sales_work_day WHERE id=?",LocalDate.class,bin(day.id()));
+        var visits=facts.visits(tenantId,businessDay,businessDay,all,profileId);
+        assertThat(visits).singleElement().satisfies(row->{
+            assertThat(row.visit().id()).isEqualTo(capture);
+            assertThat(row.visit().sequence()).isOne();
+            assertThat(row.visit().files()).isOne();
+            assertThat(row.visit().verifiedFiles()).isOne();
+            assertThat(row.visit().verifiedMillis()).isEqualTo(35000);
+            assertThat(row.visit().departed()).isNotNull();
+            assertThat(row.visit().receivedAt()).isNotNull();
+        });
+        assertThat(facts.visits(tenantId,businessDay,businessDay,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of()),profileId)).isEmpty();
     }
 
     @Autowired private com.rigour.sales.application.port.out.CrmVisitEvidenceOutbox crmEvidenceOutbox;
@@ -1084,6 +1103,29 @@ class SalesWorkVisitIntegrationTests {
         assertThat(visitPlanService.completeOwnAction(plan.planId()).status()).isEqualTo("COMPLETED");
         assertThat(visitPlanService.completeOwnAction(plan.planId()).version()).isEqualTo(1);
         assertThatThrownBy(()->visitService.cancelVisit(capture,new com.rigour.sales.api.v1.model.SalesWorkApiModels.CancelVisitCommand("取消"))).hasMessageContaining("尚未提交");
+    }
+
+    @Test void restockCommitmentReadsAndCompletesTheOriginalMobileTask() {
+        var capture=createLifecycleCapture("restock-day");
+        var result=preparedFieldwork(capture,"100","200","RESTOCK");
+        visitService.completeVisit(capture,new com.rigour.sales.api.v1.model.SalesWorkApiModels.CompleteVisitCommand(result,
+                new CheckOutVisitCommand("restock-out",Instant.now(),location("120.1","30.2"),"restock-out")));
+        var facts=new com.rigour.sales.infrastructure.persistence.JdbcFieldworkFacts(new org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate(jdbc));
+        var all=new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(true,Set.of());
+        var original=visitPlanService.ownPlans(result.fieldwork().nextContactDate()).items().getFirst();
+        assertThat(facts.commitments(tenantId,all,"PLANNED",10,0)).singleElement().satisfies(task->{
+            assertThat(task.id()).isEqualTo(original.planId());
+            assertThat(task.visitId()).isEqualTo(capture);
+            assertThat(task.storeId()).isEqualTo("100");
+            assertThat(facts.commitments(tenantId,all,"PLANNED",task.visitDate(),task.visitDate(),task.employee(),10,0))
+                    .extracting("id").containsExactly(task.id());
+            assertThat(facts.commitments(tenantId,all,"PLANNED",task.visitDate().plusDays(1),task.visitDate().plusDays(1),
+                    task.employee(),10,0)).isEmpty();
+        });
+        assertThat(facts.commitments(tenantId,new com.rigour.sales.application.port.out.SalesManagementDirectory.Access(false,Set.of("OUTSIDE")),"PLANNED",10,0)).isEmpty();
+        visitPlanService.completeOwnAction(original.planId());
+        assertThat(facts.commitments(tenantId,all,"PLANNED",10,0)).isEmpty();
+        assertThat(facts.commitments(tenantId,all,"COMPLETED",10,0)).extracting("id").containsExactly(original.planId());
     }
 
     @Test void physicalFollowupReturnsToPlannedOnCancellationAndCompletesWithItsOwnVisit() {

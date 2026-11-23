@@ -299,18 +299,15 @@ public final class IntegrationInfrastructureConfiguration {
             DhbIntegrationStore store,
             ErpDhbDomainSyncClient erpClient,
             CrmDhbDomainSyncClient crmClient,
-            HrDhbStaffSyncClient hrEmployeeClient,
-            DhbClient dhbClient,
             DhbOrderSyncService orderSyncService,
             DhbObjectCheckpointStore dhbObjectCheckpointStore,
             BusinessDictionaryBatchClient businessDictionaryBatchClient,
             DhbOrchestrationLease dhbOrchestrationLease,
             DhbSyncOrchestrationProperties properties,
-            Clock clock,
-            tools.jackson.databind.ObjectMapper objectMapper) {
-        return new DhbSyncOrchestrationService(store, erpClient, crmClient, hrEmployeeClient, dhbClient,
+            Clock clock) {
+        return new DhbSyncOrchestrationService(store, erpClient, crmClient,
                 orderSyncService, dhbObjectCheckpointStore, businessDictionaryBatchClient,
-                dhbOrchestrationLease, properties, clock, objectMapper);
+                dhbOrchestrationLease, properties, clock);
     }
 
     @Bean

@@ -187,26 +187,26 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMES
             UUID tenantId,
             UUID workDayId,
             Instant startedAt,
-            int expectedIntervalMinutes) {
+            int expectedIntervalMinutes, boolean confirmedTrack) {
         jdbc.update(
                 """
                 INSERT INTO sales_location_session
-                    (id, tenant_id, work_day_id, status, started_at, expected_interval_minutes,
+                    (id, tenant_id, work_day_id, status, started_at, expected_interval_minutes, confirmed_track,
                      created_at, updated_at)
-                VALUES (?, ?, ?, 'ACTIVE', ?, ?, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
+                VALUES (?, ?, ?, 'ACTIVE', ?, ?, ?, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6))
                 """,
                 bin(id),
                 bin(tenantId),
                 bin(workDayId),
                 timestamp(startedAt),
-                expectedIntervalMinutes);
+                expectedIntervalMinutes, confirmedTrack);
     }
 
     @Override
     public Optional<LocationSessionSnapshot> findLocationSession(UUID tenantId, UUID workDayId, UUID sessionId) {
-        return jdbc.query("SELECT id, started_at, ended_at, status FROM sales_location_session WHERE tenant_id=? AND work_day_id=? AND id=?",
+        return jdbc.query("SELECT id, started_at, ended_at, status, confirmed_track FROM sales_location_session WHERE tenant_id=? AND work_day_id=? AND id=?",
                 (rs, row) -> new LocationSessionSnapshot(uuid(rs, "id"), instant(rs.getTimestamp("started_at")),
-                        instant(rs.getTimestamp("ended_at")), rs.getString("status")),
+                        instant(rs.getTimestamp("ended_at")), rs.getString("status"), rs.getBoolean("confirmed_track")),
                 bin(tenantId), bin(workDayId), bin(sessionId)).stream().findFirst();
     }
 
@@ -232,20 +232,21 @@ VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?, 'PENDING', UTC_TIMESTAMP(6), UTC_TIMES
     public void insertLocationPoints(UUID tenantId, UUID locationSessionId, UUID workDayId, Instant receivedAt,
                                      List<NewLocationPoint> points) {
         if (points.isEmpty()) return;
-        var args = new ArrayList<Object>(points.size() * 15);
+        var args = new ArrayList<Object>(points.size() * 16);
         for (var point : points) {
             java.util.Collections.addAll(args, bin(point.id()), bin(tenantId), bin(locationSessionId), bin(workDayId),
                     point.deviceEventId(), point.longitude(), point.latitude(), point.accuracyMeters(),
                     timestamp(point.clientOccurredAt()), timestamp(receivedAt), point.source(), point.qualityStatus(),
-                    point.rawLongitude(), point.rawLatitude(), point.rawCoordinateSystem());
+                    point.rawLongitude(), point.rawLatitude(), point.rawCoordinateSystem(),
+                    point.routePath().isEmpty() ? null : String.join(",", point.routePath()));
         }
         String values = String.join(",", java.util.Collections.nCopies(points.size(),
-                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))"));
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP(6))"));
         jdbc.update("""
                 INSERT INTO sales_location_point
                     (id, tenant_id, location_session_id, work_day_id, device_event_id,
                      longitude, latitude, accuracy_meters, client_occurred_at, server_received_at,
-                     source, quality_status, raw_longitude, raw_latitude, raw_coordinate_system, created_at)
+                     source, quality_status, raw_longitude, raw_latitude, raw_coordinate_system, route_path, created_at)
                 VALUES
                 """ + values, args.toArray());
     }
@@ -403,21 +404,30 @@ VALUES (?, ?, ?, ?, 'PENDING_REVIEW', ?, ?, ?, ?, ?, 0, 0, 0, ?, JSON_ARRAY(), ?
     public List<LocationPointRow> findLocationPoints(UUID tenantId, UUID workDayId) {
         return jdbc.query(
                 """
-SELECT longitude, latitude, accuracy_meters, client_occurred_at, server_received_at,
-       source, quality_status, location_session_id
-  FROM sales_location_point
- WHERE tenant_id=? AND work_day_id=?
- ORDER BY COALESCE(client_occurred_at, server_received_at) ASC, created_at ASC
+SELECT p.longitude, p.latitude, p.accuracy_meters, p.client_occurred_at, p.server_received_at,
+       p.source, p.quality_status, p.location_session_id, p.device_event_id, p.route_path, s.confirmed_track,
+       p.raw_longitude, p.raw_latitude, p.raw_coordinate_system
+  FROM sales_location_point p
+  JOIN sales_location_session s ON s.tenant_id=p.tenant_id AND s.work_day_id=p.work_day_id AND s.id=p.location_session_id
+ WHERE p.tenant_id=? AND p.work_day_id=?
+ ORDER BY COALESCE(p.client_occurred_at, p.server_received_at) ASC, p.created_at ASC
 """,
-                (rs, row) ->
-                        new LocationPointRow(
+                (rs, row) -> {
+                    String path = rs.getString("route_path");
+                    boolean wgs84 = "WGS84".equals(rs.getString("raw_coordinate_system"));
+                    return new LocationPointRow(
                                 rs.getBigDecimal("longitude"),
                                 rs.getBigDecimal("latitude"),
                                 rs.getBigDecimal("accuracy_meters"),
                                 instant(rs.getTimestamp("client_occurred_at")),
                                 instant(rs.getTimestamp("server_received_at")),
                                 rs.getString("source"),
-                                rs.getString("quality_status"), uuid(rs, "location_session_id")),
+                                rs.getString("quality_status"), uuid(rs, "location_session_id"),
+                                rs.getBoolean("confirmed_track"), rs.getString("device_event_id"),
+                                path == null ? List.of() : List.of(path.split(",")),
+                                wgs84 ? rs.getBigDecimal("raw_longitude") : null,
+                                wgs84 ? rs.getBigDecimal("raw_latitude") : null);
+                },
                 bin(tenantId),
                 bin(workDayId));
     }

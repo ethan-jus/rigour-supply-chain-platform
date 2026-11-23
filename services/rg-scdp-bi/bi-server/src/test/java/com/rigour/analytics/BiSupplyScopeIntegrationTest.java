@@ -3,6 +3,18 @@ package com.rigour.analytics;
 import static org.assertj.core.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+import com.rigour.analytics.api.controller.SalesOverviewController;
+import com.rigour.analytics.application.model.SalesOverview.DetailKind;
+import com.rigour.analytics.application.port.out.HrTargetClient;
+import com.rigour.analytics.application.service.SalesOverviewService;
+import com.rigour.analytics.application.service.SalesOverviewService.Query;
+import com.rigour.hr.api.v1.model.TargetSettingsModels.Target;
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
 import com.rigour.shared.context.*;
 import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView;
@@ -117,6 +129,156 @@ class BiSupplyScopeIntegrationTest {
         dashboardProducts.retireMissingFacts(tenant);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_sales_payment_fact WHERE tenant_id=? AND deleted=0",Integer.class,tenant)).isZero();
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM bi_sales_order_fact WHERE tenant_id=? AND deleted=0",Integer.class,tenant)).isZero();
+    }
+
+    @Autowired SalesOverviewService salesOverview;
+    @MockitoBean HrTargetClient salesTargets;
+
+    @Test
+    void overviewReusesPostedAllocationsAndBalancesAcrossDepartmentAndYearFilters() throws Exception {
+        fact(11, "A", "HZ", 10, 11, 6000);
+        fact(12, "B", "NB", 20, 11, 1200);
+        fact(13, "C", "HZ", 10, 11, 900);
+        jdbc.update("""
+            UPDATE bi_sales_order_fact SET order_status_code=IF(order_id=13,'DRAFT','CONFIRMED'),
+                order_date='2026-09-05',order_no=CONCAT('S',order_id),
+                customer_id=order_id,owner_staff_name=CONCAT('员工 ',owner_staff_code)
+            WHERE tenant_id=?
+            """,tenant);
+        jdbc.update("UPDATE bi_order_authority SET department_path=JSON_ARRAY(1,department_id) WHERE tenant_id=?",tenant);
+        jdbc.update("""
+            INSERT INTO bi_source_hr_hr_department(tenant_id,id,department_code,department_name,parent_id,status_code,department_path)
+            VALUES (?,1,'SALES','销售部',NULL,'ACTIVE','[1]'),(?,10,'HZ','杭州组',1,'ACTIVE','[1,10]'),
+                   (?,20,'NB','宁波组',1,'ACTIVE','[1,20]')
+            """,tenant,tenant,tenant);
+        jdbc.update("""
+            INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name,department_id,department_path)
+            VALUES (?,'HZ','杭州',10,JSON_ARRAY(1,10)),(?,'NB','宁波',20,JSON_ARRAY(1,20))
+            """,tenant,tenant);
+        jdbc.update("""
+            INSERT INTO bi_employee_dim(tenant_id,employee_code,employee_name,employment_status,city_name,region_code,department_id,department_path,synced_time)
+            VALUES (?,'A','员工 A','ACTIVE','杭州','HZ',10,JSON_ARRAY(1,10),UTC_TIMESTAMP(6)),
+                   (?,'Z','员工 Z','ACTIVE','杭州','HZ',10,JSON_ARRAY(1,10),UTC_TIMESTAMP(6)),
+                   (?,'B','员工 B','ACTIVE','宁波','NB',20,JSON_ARRAY(1,20),UTC_TIMESTAMP(6))
+            """,tenant,tenant,tenant);
+        jdbc.update("""
+            INSERT INTO bi_sales_order_line_fact(tenant_id,order_line_id,order_id,order_date,product_name,line_amount,synced_time)
+            VALUES (?,11,11,'2026-09-05','球台',6000,UTC_TIMESTAMP(6)),
+                   (?,12,12,'2026-09-05','配件',1200,UTC_TIMESTAMP(6))
+            """,tenant,tenant);
+        jdbc.update("""
+            INSERT INTO bi_receivable_installment(id,tenant_id,order_id,plan_version,installment_no,effective_at,due_date,amount)
+            VALUES(11,?,11,1,1,'2026-09-05','2026-09-25',6000)
+            """,tenant);
+        for (String dataset : List.of("ORDER_CASH_RECEIPT", "ORDER_CASH_APPLICATION",
+                "ORDER_RECEIVABLE_PLAN", "ORDER_RECEIVABLE_ADJUSTMENT", "ORDER_RECEIVABLE_OPENING")) {
+            jdbc.update("""
+                INSERT INTO bi_source_snapshot_checkpoint(tenant_id,dataset,source_version,projected_at)
+                VALUES(?,?,'fixture',UTC_TIMESTAMP(6))
+                """,tenant,dataset);
+        }
+        jdbc.update("""
+            INSERT INTO bi_cash_receipt(tenant_id,id,reference_no,customer_id,cash_at,amount,kind,verified,owner_code)
+            VALUES(?,UNHEX(MD5('PRE')),'PRE',11,'2026-08-22',2000,'RECEIPT',1,'B'),
+                  (?,UNHEX(MD5('FINAL')),'FINAL',11,'2026-10-02',4000,'RECEIPT',1,'B'),
+                  (?,UNHEX(MD5('PENDING')),'PENDING',11,'2026-09-21',99,'RECEIPT',0,'A')
+            """,tenant,tenant,tenant);
+        jdbc.update("""
+            INSERT INTO bi_cash_application(tenant_id,id,cash_key,order_id,effective_at,amount,verified)
+            VALUES(?,11,MD5('PRE'),11,'2026-09-15',2000,1),(?,12,MD5('FINAL'),11,'2026-10-02',4000,1),
+                  (?,13,MD5('PENDING'),11,'2026-09-22',99,1)
+            """,tenant,tenant,tenant);
+        jdbc.update("""
+            INSERT INTO bi_source_order_order_payment_record
+              (tenant_id,id,order_id,payment_owner_code,payment_owner_department_id,deleted)
+            VALUES (?,11,11,'A',10,0),(?,12,11,'B',20,0),(?,13,11,'B',20,1)
+            """,tenant,tenant,tenant);
+        jdbc.update("""
+            INSERT INTO bi_sales_payment_fact
+              (tenant_id,payment_id,order_id,owner_staff_code,region_code,payment_time,paid_amount,synced_time,deleted)
+            VALUES (?,11,11,'A','HZ','2026-08-22',2000,UTC_TIMESTAMP(6),0),
+                   (?,12,11,'B','NB','2026-10-02',4000,UTC_TIMESTAMP(6),0),
+                   (?,13,11,'B','NB','2026-10-03',99,UTC_TIMESTAMP(6),1)
+            """,tenant,tenant,tenant);
+        when(salesTargets.values(eq(tenant),anyString(),anyString())).thenAnswer(call -> {
+            var from = java.time.YearMonth.parse(call.getArgument(1));
+            var to = java.time.YearMonth.parse(call.getArgument(2));
+            var values = new ArrayList<Target>();
+            for (var m=from; !m.isAfter(to); m=m.plusMonths(1)) {
+                values.add(new Target(m.toString(),"SALES_OWNER","A","员工 A","SALES_AMOUNT",
+                        new BigDecimal("8000"),1));
+                values.add(new Target(m.toString(),"SALES_OWNER","A","员工 A","RECEIPT_AMOUNT",
+                        new BigDecimal("6000"),1));
+                values.add(new Target(m.toString(),"SALES_OWNER","Z","员工 Z","RECEIPT_AMOUNT",
+                        BigDecimal.ZERO,1));
+            }
+            return values;
+        });
+        var full = policy(List.of(clause("ALL",all(),all(),all())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(full);
+        var sep = LocalDate.of(2026,9,1);
+        var oct = sep.plusMonths(1);
+        var hz = new Query(sep,oct.minusDays(1),null,10L,false);
+        try (var context = SupplyAuthorizationContext.open(iam,actor,full)) {
+            assertThat(salesOverview.overview(hz).received()).isNull();
+            jdbc.update("""
+                INSERT INTO bi_etl_checkpoint(tenant_id,source_code,last_success_time)
+                VALUES (?,'ORDER_PAYMENT_RECORD',UTC_TIMESTAMP(6))
+                """,tenant);
+            var result = salesOverview.overview(hz);
+            assertThat(result.booked()).isEqualByComparingTo("6000");
+            assertThat(result.received()).isZero();
+            assertThat(result.applied()).isEqualByComparingTo("2000");
+            assertThat(result.outstanding()).isEqualByComparingTo("4000");
+            assertThat(result.overdue()).isEqualByComparingTo("4000");
+            assertThat(result.overdueOrders()).isEqualTo(1);
+            assertThat(result.employees()).extracting(o -> o.code()).containsExactly("A","Z");
+            assertThat(result.people().getFirst().target()).isEqualByComparingTo("8000");
+            assertThat(result.people().getFirst().receiptTarget()).isEqualByComparingTo("6000");
+            assertThat(result.people().getLast().receiptTarget()).isZero();
+            assertThat(result.people().getFirst().outstanding()).isEqualByComparingTo("4000");
+            assertThat(result.departments()).extracting(d -> d.id()).containsExactlyInAnyOrder(1L,10L,20L);
+            assertThat(salesOverview.overview(new Query(sep,oct.minusDays(1),null,1L,false)).booked()).isZero();
+            assertThat(salesOverview.overview(new Query(sep,oct.minusDays(1),null,1L,true)).booked()).isEqualByComparingTo("7200");
+            var year = salesOverview.overview(new Query(sep.withDayOfYear(1),oct.plusMonths(1).minusDays(1),"A",10L,false));
+            assertThat(year.received()).isEqualByComparingTo("2000");
+            assertThat(year.applied()).isEqualByComparingTo("6000");
+            assertThat(year.outstanding()).isZero();
+            assertThat(year.people().getFirst().target()).isEqualByComparingTo("80000");
+            assertThat(year.people().getFirst().receiptTarget()).isEqualByComparingTo("60000");
+            var octoberNingbo = salesOverview.overview(new Query(oct,oct.plusMonths(1).minusDays(1),"B",20L,false));
+            assertThat(octoberNingbo.received()).isEqualByComparingTo("4000");
+            assertThat(octoberNingbo.applied()).isZero();
+            assertThat(octoberNingbo.people().getFirst().missingReceiptTargetMonths()).isEqualTo(1);
+            var allocations = salesOverview.details(hz,DetailKind.APPLICATIONS,1,20);
+            assertThat(allocations.items()).extracting(d -> d.name()).containsExactly("PRE");
+            assertThat(allocations.items().getFirst().amount()).isEqualByComparingTo("2000");
+            assertThat(salesOverview.details(hz,DetailKind.PRODUCTS,1,20).items())
+                    .extracting(d -> d.name()).containsExactly("球台");
+            assertThat(salesOverview.details(new Query(oct,oct.plusMonths(1).minusDays(1),"A",10L,false),DetailKind.ORDERS,1,20)
+                    .items().getFirst().applied()).isEqualByComparingTo("4000");
+            assertThat(receivables.loadFiltered(sep,oct.minusDays(1),null,null,null,"OVERDUE",1,20,null,null,10L,false)
+                    .balances()).extracting(b -> b.orderNo()).containsExactly("S11");
+            var mvc = MockMvcBuilders.standaloneSetup(new SalesOverviewController(salesOverview)).build();
+            mvc.perform(get("/api/v1/analytics/supply/dashboard/sales-overview")
+                    .param("from","2026-09-01").param("asOf","2026-09-30")
+                    .param("departmentId","10").param("ownerStaffCode","A"))
+                    .andExpect(status().isOk()).andExpect(jsonPath("$.data.booked").value(6000))
+                    .andExpect(jsonPath("$.data.people[0].code").value("A"))
+                    .andExpect(jsonPath("$.data.people[0].receiptTarget").value(6000));
+        }
+        var self=policy(List.of(clause("SELF",none(),all(),none())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(self);
+        try(var context=SupplyAuthorizationContext.open(iam,actor,self)) {
+            var outside = new Query(sep,oct.minusDays(1),"B",20L,true);
+            var denied = salesOverview.overview(outside);
+            assertThat(denied.people()).isEmpty();
+            assertThat(denied.booked()).isZero();
+            assertThat(denied.received()).isZero();
+            assertThat(denied.outstanding()).isZero();
+            assertThat(denied.canSeeCompanyCash()).isFalse();
+            assertThat(salesOverview.details(outside,DetailKind.PRODUCTS,1,20).total()).isZero();
+        }
     }
 
     @Autowired com.rigour.analytics.application.service.ReceivablesService receivables;

@@ -72,26 +72,46 @@ public class ReceivablesService {
                 disputed);
     }
 
+    @Transactional(readOnly = true, isolation = org.springframework.transaction.annotation.Isolation.REPEATABLE_READ)
+    public ReceivablesView loadFiltered(
+            LocalDate from, LocalDate asOf, String region, String owner, String customer,
+            String aging, int page, int size, String collector, Boolean disputed,
+            Long departmentId, boolean includeSubDepartments) {
+        validatePage(aging, page, size);
+        return page(calculate(from, asOf, region, owner, customer, departmentId, includeSubDepartments),
+                aging, page, size, collector, disputed);
+    }
+
     ReceivablesView calculate(
             LocalDate from, LocalDate asOf, String region, String owner, String customer) {
+        return calculate(from, asOf, region, owner, customer, null, false);
+    }
+
+    private ReceivablesView calculate(
+            LocalDate from, LocalDate asOf, String region, String owner, String customer,
+            Long departmentId, boolean includeSubDepartments) {
         if (from == null
                 || asOf == null
                 || from.isAfter(asOf)
                 || asOf.isAfter(LocalDate.now(clock.withZone(BiBusinessTime.ZONE)))
+                || (departmentId != null && departmentId <= 0)
                 || (customer != null && !customer.matches("[0-9]{1,20}")))
             throw new BusinessException(ErrorCode.BAD_REQUEST, "请核对统计起止日期、筛选和分页条件", List.of());
         var current = scopes.resolve(region, owner);
         boolean full =
                 current.fullTenant()
                         && current.regionCode() == null
-                        && current.ownerStaffCode() == null;
+                        && current.ownerStaffCode() == null
+                        && departmentId == null;
         var scope =
                 new ReceivablesStore.Scope(
                         current.tenantId(),
                         current.regionCode(),
                         current.ownerStaffCode(),
                         customer,
-                        full);
+                        full,
+                        departmentId,
+                        includeSubDepartments);
         var updated = store.projectedAt(current.tenantId());
         if (updated == null)
             throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "资金数据尚未完成同步", List.of());
@@ -221,8 +241,17 @@ public class ReceivablesService {
         if (page < 1
                 || size < 1
                 || size > 200
-                || (aging != null && !BANDS.contains(aging) && !"ACTIONABLE".equals(aging)))
+                || (aging != null && !BANDS.contains(aging) && !Set.of("ACTIONABLE", "OVERDUE").contains(aging)))
             throw new BusinessException(ErrorCode.BAD_REQUEST, "分页或账龄分组无效", List.of());
+    }
+
+    private static boolean matchesAging(Balance balance, String aging, LocalDate asOf) {
+        if (aging == null) return true;
+        return switch (aging) {
+            case "ACTIONABLE" -> balance.dueDate() == null || balance.dueDate().isBefore(asOf.plusDays(7));
+            case "OVERDUE" -> balance.overdueDays() != null && balance.overdueDays() > 0;
+            default -> aging.equals(balance.aging());
+        };
     }
 
     static ReceivablesView page(
@@ -243,15 +272,7 @@ public class ReceivablesService {
                         .filter(b -> disputed == null || disputed.equals(b.disputed()))
                         .filter(
                                 b ->
-                                        aging == null
-                                                || ("ACTIONABLE".equals(aging)
-                                                        ? b.dueDate() == null
-                                                                || b.dueDate()
-                                                                        .isBefore(
-                                                                                v.asOf()
-                                                                                        .plusDays(
-                                                                                                7))
-                                                        : aging.equals(b.aging())))
+                                        matchesAging(b, aging, v.asOf()))
                         .toList();
         return new ReceivablesView(
                 v.from(),

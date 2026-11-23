@@ -21,6 +21,8 @@ public interface StorePoolStore {
     List<Event> events(StoreScope scope, String id);
     default Page list(StoreScope scope, Query query) {return list(scope, query, Set.of());}
     Page list(StoreScope scope, Query query, Set<String> typeCodes);
+    FollowupEvidencePage followupEvidence(
+            StoreScope scope, Query query, String ownerCode, java.time.LocalDate from, java.time.LocalDate through);
     NearbyModels.Page<Row> nearby(StoreScope scope, Query query, Set<String> typeCodes, NearbyModels.Origin origin, String cursor);
     long count(StoreScope scope, Query query, Set<String> typeCodes);
     MapResult map(StoreScope scope, Query query, Set<String> typeCodes, MapWindow window);

@@ -2,6 +2,7 @@ package com.rigour.hr.application.service;
 
 import com.rigour.hr.api.v1.model.*;
 import com.rigour.hr.api.v1.model.SalesPayrollBoardView.*;
+import com.rigour.hr.application.port.out.HrAttendanceStore;
 import com.rigour.hr.application.port.out.HrPayrollSource;
 import com.rigour.hr.application.port.out.HrPayrollStore;
 import com.rigour.order.api.v1.model.OrderPayrollLineView;
@@ -17,6 +18,7 @@ import java.util.*;
 
 @Service
 public class SalesPayrollBoardService {
+    private final HrAttendanceStore attendance;
     private final HrPayrollStore store;
     private final HrPayrollSource source;
     private final SupplyAuthorizationClient authorizations;
@@ -31,7 +33,9 @@ public class SalesPayrollBoardService {
             HrPayrollSource source,
             SupplyAuthorizationClient authorizations,
             com.rigour.hr.infrastructure.persistence.repository.SalesStatementPublications
-                    publications) {
+                    publications,
+            HrAttendanceStore attendance) {
+        this.attendance = attendance;
         this.publications = publications;
         this.store = store;
         this.source = source;
@@ -119,6 +123,9 @@ public class SalesPayrollBoardService {
         String action = "analytics:dashboard:read";
         var actor = HrPayrollService.actor(action);
         var period = period(month);
+        var employees = new HashMap<String, PayrollEmployeeView>();
+        for (var employee : store.employees(actor.tenantId().toString(), action))
+            employees.put(employee.employeeCode(), employee);
         var result = new ArrayList<SalesPerformanceRow>();
         for (var row : store.monthRecords(actor.tenantId().toString(), month, action)) {
             var c = row.calculation();
@@ -134,27 +141,51 @@ public class SalesPayrollBoardService {
                             ? orders.basis()
                             : perf == null ? null : perf.collections();
             var days = perf == null ? null : perf.days();
+            AttendanceRow confirmation = null;
+            if (perf != null) {
+                try {
+                    confirmation =
+                            attendance
+                                    .employee(
+                                            actor.tenantId().toString(),
+                                            period,
+                                            row.employeeCode(),
+                                            action)
+                                    .confirmation();
+                } catch (AuthorizationDeniedException unavailable) {
+                    // An archived employee can have a payroll snapshot but no accessible current
+                    // attendance roster.
+                }
+            }
+            var process =
+                    PayrollPerformanceReportFacts.processSummary(
+                            row, confirmation, new LinkedHashSet<>());
+            var employee = employees.get(row.employeeCode());
+            var scheme = c.scheme() == null ? null : c.scheme().scheme();
+            boolean exempt =
+                    PayrollPerformanceReportFacts.collectionExempt(
+                            period,
+                            employee == null ? null : employee.entryDate(),
+                            scheme == null ? null : scheme.definition());
             result.add(
                     new SalesPerformanceRow(
                             row.employeeCode(),
                             row.statusCode(),
                             basis,
-                            perf == null ? null : perf.collectionTarget(),
-                            days == null
-                                    ? null
-                                    : days.stream()
-                                            .mapToInt(PayrollPerformanceDayView::checkins)
-                                            .sum(),
-                            days == null
-                                    ? null
-                                    : days.stream()
-                                            .mapToInt(PayrollPerformanceDayView::effectiveVisits)
-                                            .sum(),
+                            exempt
+                                    ? BigDecimal.ZERO
+                                    : perf == null ? null : perf.collectionTarget(),
+                            process.actualCheckins(),
+                            process.actualVisits(),
                             days == null
                                     ? null
                                     : days.stream()
                                             .mapToInt(PayrollPerformanceDayView::missingVisits)
-                                            .sum()));
+                                            .sum(),
+                            process.expectedVisits(),
+                            row.employeeName(),
+                            row.cityName(),
+                            exempt));
         }
         return result;
     }

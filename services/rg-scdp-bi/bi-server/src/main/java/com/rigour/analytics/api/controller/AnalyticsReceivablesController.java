@@ -24,6 +24,8 @@ public class AnalyticsReceivablesController implements AnalyticsReceivablesApi {
             String regionCode,
             String ownerStaffCode,
             String customerId,
+            Long departmentId,
+            boolean includeSubDepartments,
             String aging,
             String collector,
             Boolean disputed,
@@ -40,6 +42,8 @@ public class AnalyticsReceivablesController implements AnalyticsReceivablesApi {
                         page,
                         size,
                         collector,
-                        disputed));
+                        disputed,
+                        departmentId,
+                        includeSubDepartments));
     }
 }

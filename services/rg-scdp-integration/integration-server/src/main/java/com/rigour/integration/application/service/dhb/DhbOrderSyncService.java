@@ -1488,8 +1488,8 @@ public final class DhbOrderSyncService {
                         caller.tenantId(),
                         task.taskId(),
                         runId,
-                        "WARN",
-                        "订货宝订单缺少来源地区，已按客户当前归属回填 orderNo="
+                        "INFO",
+                        "订单按系统客户归属地区入账 orderNo="
                                 + sourceOrderNo
                                 + " regionCode="
                                 + projection.command().regionCode(),
@@ -4090,8 +4090,7 @@ public final class DhbOrderSyncService {
             // 取消状态仍需接收；客户尚未对应时仅保存来源明确提供的名称和人员。
         }
         OrderPeople people = orderPeople(tenantId, connectorId, content, list, employeeCache);
-        String region = customerAreaCode(tenantId, connectorId, content, list);
-        if (region == null) region = customerRegionCode(tenantId, customer, customerRegionCache);
+        String region = customerRegionCode(tenantId, customer, customerRegionCache);
         return new com.rigour.order.api.v1.model.HistorySyncModels.CancelledOrderAttribution(
                 customer == null ? null : customer.internalObjectId(),
                 customer == null ? null : customer.internalObjectNo(),
@@ -4227,15 +4226,9 @@ public final class DhbOrderSyncService {
                         sourceModifierIds,
                         sourceModifierNames,
                         employeeCache);
-        String regionCode = customerAreaCode(tenantId, connectorId, content, list);
-        boolean regionFromCustomer = false;
-        if (regionCode == null && allowRegionFallback) {
-            String fallback = customerRegionCode(tenantId, customer, customerRegionCache);
-            if (fallback != null) {
-                regionCode = fallback;
-                regionFromCustomer = true;
-            }
-        }
+        String regionCode = allowRegionFallback
+                ? customerRegionCode(tenantId, customer, customerRegionCache) : null;
+        boolean regionFromCustomer = regionCode != null;
         Instant orderDate =
                 sourceBusinessTime(
                         "DHB_ORDER_BUSINESS_TIME_MISSING",
@@ -4370,57 +4363,6 @@ public final class DhbOrderSyncService {
                             }
                         });
         return cached.orElse(null);
-    }
-
-    private String customerAreaCode(
-            UUID tenantId,
-            UUID connectorId,
-            Map<String, Object> content,
-            Map<String, Object> list) {
-        List<String> sourceIds =
-                candidates(
-                        content,
-                        list,
-                        "ClientArea",
-                        "clientArea",
-                        "client_area",
-                        "ClientAreaID",
-                        "ClientAreaId",
-                        "clientAreaID",
-                        "clientAreaId",
-                        "client_area_id",
-                        "ClientAreaGuid",
-                        "ClientAreaGUID",
-                        "clientAreaGuid",
-                        "client_area_guid",
-                        "AreaID",
-                        "AreaId",
-                        "areaID",
-                        "areaId",
-                        "area_id",
-                        "AreaCode",
-                        "areaCode",
-                        "area_code",
-                        "RegionCode",
-                        "regionCode",
-                        "region_code",
-                        "ClientAreaName",
-                        "clientAreaName",
-                        "client_area_name",
-                        "AreaName",
-                        "areaName",
-                        "area_name",
-                        "RegionName",
-                        "regionName",
-                        "region_name",
-                        "Region",
-                        "region");
-        ExternalObjectMapping area =
-                optionalMappingAny(tenantId, connectorId, List.of("CUSTOMER_AREA"), sourceIds);
-        return area == null
-                ? null
-                : firstNonBlank(
-                        area.internalObjectNo(), area.sourceObjectNo(), area.sourceObjectId());
     }
 
     private PreparedSalesPayment prepareSalesPayment(

@@ -46,7 +46,7 @@ public class JdbcOrderWorkbenchStore implements OrderWorkbenchStore {
                   COALESCE(SUM(CASE WHEN o.unpaid_amount>0 THEN 1 ELSE 0 END),0) unpaid,
                   COALESCE(SUM(CASE WHEN o.outbound_status_code IN ('PENDING','PARTIAL_OUT') THEN 1 ELSE 0 END),0) outbound
                 """ + where, (rs, n) -> new Summary(rs.getBigDecimal("trade"), rs.getLong("orders"),
-                rs.getBigDecimal("pending"), rs.getLong("unpaid"), rs.getLong("outbound"), null), args.toArray());
+                rs.getBigDecimal("pending"), rs.getLong("unpaid"), rs.getLong("outbound"), null, null), args.toArray());
         // Keep the existing preview contract; do not fetch discarded order/outbound detail pages.
         if (total.pendingCount() == 0) return total;
         var preview = jdbc.query("SELECT o.*" + where + " AND o.unpaid_amount>0 ORDER BY o.order_date DESC,o.id DESC LIMIT 1",
@@ -54,7 +54,7 @@ public class JdbcOrderWorkbenchStore implements OrderWorkbenchStore {
                         rs.getString("customer_name_snapshot"), rs.getTimestamp("order_date") == null ? null : rs.getTimestamp("order_date").toInstant(),
                         rs.getBigDecimal("unpaid_amount"), rs.getString("payment_status_code")), scopeArgs.toArray());
         return new Summary(total.tradeAmount(), total.orderCount(), total.pendingAmount(), total.pendingCount(),
-                total.outboundCount(), preview.isEmpty() ? null : preview.getFirst());
+                total.outboundCount(), preview.isEmpty() ? null : preview.getFirst(), null);
     }
     @Override @Transactional(readOnly = true)
     public Totals performanceTotals(String tenant, String employee, String action, Instant from, Instant until) {

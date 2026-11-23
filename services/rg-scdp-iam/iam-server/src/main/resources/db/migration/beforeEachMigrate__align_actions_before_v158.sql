@@ -20,9 +20,9 @@ SET @action_parents = JSON_ARRAY(
 SET @parent_rules = 'JOIN iam_application app ON app.id=r.application_id AND app.app_code=''SUPPLY_CHAIN''
 JOIN JSON_TABLE(@action_parents, ''$[*]'' COLUMNS (
     action_code VARCHAR(128) PATH ''$[0]'', old_code VARCHAR(128) PATH ''$[1]'', new_code VARCHAR(128) PATH ''$[2]''
-)) m ON BINARY r.resource_code=BINARY CONCAT(''SUPPLY_CHAIN.'',m.action_code)
-JOIN iam_resource old_parent ON old_parent.application_id=r.application_id AND BINARY old_parent.resource_code=BINARY CONCAT(''SUPPLY_CHAIN.'',m.old_code)
-JOIN iam_resource new_parent ON new_parent.application_id=r.application_id AND BINARY new_parent.resource_code=BINARY CONCAT(''SUPPLY_CHAIN.'',m.new_code) ';
+)) m ON CAST(r.resource_code AS BINARY)=CAST(CONCAT(''SUPPLY_CHAIN.'',m.action_code) AS BINARY)
+JOIN iam_resource old_parent ON old_parent.application_id=r.application_id AND CAST(old_parent.resource_code AS BINARY)=CAST(CONCAT(''SUPPLY_CHAIN.'',m.old_code) AS BINARY)
+JOIN iam_resource new_parent ON new_parent.application_id=r.application_id AND CAST(new_parent.resource_code AS BINARY)=CAST(CONCAT(''SUPPLY_CHAIN.'',m.new_code) AS BINARY) ';
 
 SET @fix_native = IF(@before_scm_v158, CONCAT('UPDATE iam_app_menu_node n
 JOIN iam_resource r ON r.id=n.resource_id AND r.application_id=n.application_id ', @parent_rules,

@@ -187,6 +187,8 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             List<ExternalEmployeeRowCommand> rows,
             String actorId,
             BusinessCodeGenerator codeGenerator) {
+        if (Set.of("DINGHUOBAO", "DHB").contains(sourceSystem))
+            throw new IllegalArgumentException("订货宝员工和部门已停用同步");
         Objects.requireNonNull(codeGenerator, "codeGenerator");
         List<ExternalEmployeeSyncRowResult> rowResults = new ArrayList<>();
         List<String> failureMessages = new ArrayList<>();
@@ -227,10 +229,6 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             } catch (RuntimeException exception) {
                 failed++;
                 String sourceLabel = row == null ? "-" : row.sourceEmployeeId();
-                if (row != null && "DINGHUOBAO".equals(sourceSystem)) {
-                    sourceLabel = "订货宝登录账号 " + Objects.toString(clean(row.accountName(), 128), "未提供")
-                            + "（" + row.employeeName() + "，来源ID " + row.sourceEmployeeId() + "）";
-                }
                 String message = "来源员工 " + sourceLabel
                         + " 同步失败: " + clean(exception.getMessage(), 240);
                 failureMessages.add(message);
@@ -242,7 +240,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                                 message));
             }
         }
-        if (!rowResults.isEmpty() && !"DINGHUOBAO".equals(sourceSystem)) {
+        if (!rowResults.isEmpty()) {
             transaction.executeWithoutResult(
                     status -> backfillLeaderCodes(tenantId, sourceSystem, actorId));
         }
@@ -363,9 +361,6 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             // 删除的员工保留来源映射和历史引用，定时同步不能重新创建同一员工。
             return new SyncOutcome(row.sourceEmployeeId(), binding.employeeCode, "UNCHANGED", "已删除员工不再回写主档");
         }
-        if ("DINGHUOBAO".equals(sourceSystem)) {
-            return syncDhbSalesperson(tenantId, sourceTenantKey, row, actorId, now, binding, employee);
-        }
         // 新来源只能创建待补任职的员工，不能按同名/手机号覆盖已关联账号的真实员工。
         HrPositionEntity position = resolvePosition(tenantId,
                 row.positionName() == null || row.positionName().isBlank() ? row.jobCategory() : row.positionName());
@@ -387,6 +382,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             employee.updatedTime = now;
             employee.deleted = 0;
             getBaseMapper().insert(employee);
+            getBaseMapper().recordCity(tenantId, employee.employeeCode, now, employee.cityName);
             organization.sourceEmployeeChanged(
                     tenantId, employee.employeeCode, null, employee.employmentStatus, actorId);
             upsertBinding(
@@ -421,6 +417,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         }
         String previousStatus = employee.employmentStatus;
         boolean wasActive = "ACTIVE".equals(previousStatus);
+        String previousCity = employee.cityName;
         copyEmployeeFields(employee, sourceSystem, row, primaryPosition);
         boolean accessRevoked = wasActive && !"ACTIVE".equals(employee.employmentStatus);
         employee.updatedBy = actorId;
@@ -469,6 +466,9 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         if (updated != 1) {
             throw new IllegalStateException("HR员工已被其他流程修改，请重试");
         }
+        if (!java.util.Objects.equals(previousCity, employee.cityName)) {
+            getBaseMapper().recordCity(tenantId, employee.employeeCode, now, employee.cityName);
+        }
         organization.sourceEmployeeChanged(
                 tenantId,
                 employee.employeeCode,
@@ -516,96 +516,6 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         employee.sourcePayloadHash = clean(row.sourcePayloadHash(), 64);
         employee.sourcePayloadJson = emptyToNull(row.sourcePayloadJson());
         employee.remark = remark(row);
-    }
-
-    /** 订货宝只补来源关系，HR 已维护的任职、离职、手机号等资料永不被来源覆盖。 */
-    private SyncOutcome syncDhbSalesperson(String tenant, String sourceTenant,
-            ExternalEmployeeRowCommand row, String actor, LocalDateTime now,
-            HrEmployeeSourceBindingEntity binding, HrEmployeeEntity employee) {
-        if (binding != null && (Integer.valueOf(1).equals(binding.deleted) || employee == null)) {
-            throw new IllegalArgumentException("原关联已删除或失效，请人工核对，不自动改绑");
-        }
-        if (employee == null) {
-            String mobile = clean(row.mobile(), 32);
-            if (mobile == null || !mobile.matches("1[3-9][0-9]{9}")) {
-                throw new IllegalArgumentException("订货宝员工缺少有效手机号，请先补齐，不自动新增");
-            }
-            List<HrEmployeeEntity> candidates = getBaseMapper().selectList(
-                    new QueryWrapper<HrEmployeeEntity>().eq("tenant_id", tenant).eq("mobile", mobile));
-            if (!candidates.isEmpty()) {
-                List<HrEmployeeEntity> matches = candidates.stream()
-                        .filter(e -> !Integer.valueOf(1).equals(e.deleted))
-                        .filter(e -> row.employeeName().equals(e.employeeName)).toList();
-                boolean conflict = candidates.stream().anyMatch(e -> !Integer.valueOf(1).equals(e.deleted)
-                        && !row.employeeName().equals(e.employeeName));
-                if (conflict && candidates.size() == 1 && !Integer.valueOf(1).equals(candidates.getFirst().deleted)) {
-                    // 沿用来源关联待核对流程；只登记冲突，不新增员工、不覆盖HR资料。
-                    employee = candidates.getFirst();
-                } else {
-                    if (matches.size() != 1 || conflict) {
-                        throw new IllegalArgumentException("手机号对应多个员工或员工已删除，请人工确认关联");
-                    }
-                    employee = matches.getFirst();
-                }
-            }
-        }
-        boolean created = employee == null;
-        if (created) {
-            if (!"salesman".equalsIgnoreCase(row.jobCategory())) {
-                throw new IllegalArgumentException("非订货宝业务员，不自动新增员工");
-            }
-            List<HrDepartmentView> departments = organization.departments(tenant);
-            List<HrDepartmentView> roots = departments.stream()
-                    .filter(d -> "销售部".equals(d.departmentName()) && "ACTIVE".equals(d.statusCode())).toList();
-            if (roots.size() != 1) throw new IllegalArgumentException("销售部未唯一配置");
-            Set<Long> salesDepartments = new LinkedHashSet<>();
-            salesDepartments.add(roots.getFirst().id());
-            boolean added;
-            do {
-                added = false;
-                for (var department : departments) {
-                    if ("ACTIVE".equals(department.statusCode()) && salesDepartments.contains(department.parentId()))
-                        added |= salesDepartments.add(department.id());
-                }
-            } while (added);
-            List<HrDepartmentView> matches = departments.stream()
-                    .filter(d -> salesDepartments.contains(d.id()) && !roots.getFirst().id().equals(d.id()))
-                    .filter(d -> departmentKey(d.departmentName()).equals(departmentKey(row.departmentName())))
-                    .toList();
-            if (matches.size() != 1) throw new IllegalArgumentException("来源部门未唯一匹配销售部下级部门: " + row.departmentName());
-            var positions = positionMapper.selectList(new QueryWrapper<HrPositionEntity>()
-                    .eq("tenant_id", tenant).eq("position_name", "业务员")
-                    .eq("status_code", "ACTIVE").eq("deleted", 0));
-            if (positions.size() != 1) throw new IllegalArgumentException("业务员岗位未唯一配置");
-            long id = organization.saveEmployee(tenant, null, new com.rigour.hr.api.v1.model.HrEmployeeCommand(
-                    row.employeeName(), matches.getFirst().id(), positions.getFirst().positionCode,
-                    employmentStatus(row.employmentStatus()), clean(row.mobile(), 32), null,
-                    null, null, null, 0, null, null), actor);
-            employee = getBaseMapper().selectOne(new QueryWrapper<HrEmployeeEntity>()
-                    .eq("tenant_id", tenant).eq("id", id).eq("deleted", 0));
-            // 新档案仍使用 HR 正常建档/任职审计，只标明来源，不伪造入职日期。
-            jdbc.update("UPDATE hr_employee SET source_system='DINGHUOBAO',source_document_no=?,"
-                    + "local_profile_authoritative=1 WHERE tenant_id=? AND id=?", row.sourceEmployeeId(), tenant, id);
-        }
-        boolean evidenceChanged = binding == null || !Objects.equals(binding.sourceEmployeeName, row.employeeName())
-                || !Objects.equals(binding.sourceMobile, clean(row.mobile(), 32));
-        boolean mismatch = !Objects.equals(employee.employeeName, row.employeeName())
-                || (clean(row.mobile(), 32) != null && clean(employee.mobile, 32) != null
-                    && !Objects.equals(clean(row.mobile(), 32), clean(employee.mobile, 32)));
-        boolean needsReview = (binding != null && Boolean.TRUE.equals(binding.reviewRequired))
-                || (evidenceChanged && mismatch);
-        upsertBinding(tenant, "DINGHUOBAO", sourceTenant, row, employee.employeeCode, actor, now, binding);
-        jdbc.update("UPDATE hr_employee_source_binding SET review_required=?,review_reason=? "
-                        + "WHERE tenant_id=? AND source_system='DINGHUOBAO' AND source_tenant_key=? AND source_employee_id=?",
-                needsReview, needsReview ? "来源姓名或手机号与系统档案不一致" : null, tenant, sourceTenant, row.sourceEmployeeId());
-        return new SyncOutcome(row.sourceEmployeeId(), employee.employeeCode,
-                created ? "CREATED" : binding == null ? "UPDATED" : "UNCHANGED",
-                created ? "已新增业务员基础档案" : "仅关联订货宝员工编号，保留全部HR资料");
-    }
-
-    private static String departmentKey(String value) {
-        String name = value == null ? "" : value.strip();
-        return name.endsWith("市") ? name.substring(0, name.length() - 1) : name;
     }
 
     private Map<String, List<HrEmployeeSourceBindingEntity>> dhbBindings(String tenant, List<HrEmployeeEntity> employees) {
