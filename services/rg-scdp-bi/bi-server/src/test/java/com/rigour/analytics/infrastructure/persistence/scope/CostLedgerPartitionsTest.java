@@ -222,4 +222,76 @@ class CostLedgerPartitionsTest {
                                 .amount())
                 .isEqualByComparingTo("20");
     }
+
+    @Test
+    void missingPayerDoesNotDropSharedCompanyCostOrMultiplyMergedShipmentOrders() {
+        var r = row("30.00", """
+                {"ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY",
+                  "costMonth":"2026-11","feeItems":[
+                    {"feeKey":"freight","feeTypeCode":"FREIGHT","bearerCode":"SHARED",
+                     "feeAmount":100,"ourAmount":30},
+                    {"feeKey":"customer-fee","feeTypeCode":"OTHER","bearerCode":"CUSTOMER",
+                     "feeAmount":20,"ourAmount":0}]}}
+                """);
+        r.put("source_system", "HUOLALA");
+        r.put("sources_json", """
+                [{"orderTypeCode":"SALES_ORDER","orderCode":"SO1","linkRoleCode":"COST",
+                  "employeeCode":"E1","departmentId":10,"allocations":[
+                    {"feeKey":"freight","cityCode":"C1","amount":10}]},
+                 {"orderTypeCode":"SALES_ORDER","orderCode":"SO2","linkRoleCode":"COST",
+                  "employeeCode":"E2","departmentId":20,"allocations":[
+                    {"feeKey":"freight","cityCode":"C2","amount":20}]},
+                 {"orderTypeCode":"SALES_ORDER","orderCode":"SO-TRACE",
+                  "linkRoleCode":"TRACE","allocations":[]}]
+                """);
+        var rows = CostLedgerPartitions.expand("ORDER", r, json);
+        var normalizer = new CostSourceNormalizer(json);
+        var facts = rows.stream()
+                .map(part -> normalizer.normalize("ORDER", part, List.of(), Map.of()))
+                .toList();
+        assertThat(facts).hasSize(2).doesNotContainNull();
+        assertThat(facts).allSatisfy(fact -> assertThat(fact.confirmed()).isTrue());
+        assertThat(CostAnalysis.amount(facts)).isEqualByComparingTo("30.00");
+        assertThat(CostAnalysis.count(facts)).isEqualTo(1);
+        assertThat(facts).extracting(fact -> fact.dimension("department").key())
+                .containsExactly("department:10", "department:20");
+        assertThat(CostLedgerPartitions.expand("ORDER", r, json)).isEqualTo(rows);
+    }
+
+    @Test
+    void zeroSelfDeliveryIsOneDocumentAndMissingFreightStaysPendingWithoutPayer() {
+        var zero = row("0.00", """
+                {"ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY",
+                  "deliveryModeCode":"SELF","costMonth":"2026-11","feeItems":[
+                    {"feeKey":"freight","feeTypeCode":"FREIGHT","bearerCode":"COMPANY",
+                     "feeAmount":0,"ourAmount":0,"zeroCostReason":"立即送无快递单号"}]}}
+                """);
+        zero.put("source_system", "DHB");
+        zero.put("sources_json", """
+                [{"linkRoleCode":"COST","allocations":[
+                  {"feeKey":"freight","cityCode":"C1","amount":0}]}]
+                """);
+        var normalizer = new CostSourceNormalizer(json);
+        var facts = new ArrayList<com.rigour.analytics.domain.cost.CostFact>();
+        for (var part : CostLedgerPartitions.expand("ORDER", zero, json))
+            facts.add(normalizer.normalize("ORDER", part, List.of(), Map.of()));
+        assertThat(facts).doesNotContainNull();
+        assertThat(CostAnalysis.count(facts)).isEqualTo(1);
+        assertThat(CostAnalysis.amount(facts)).isZero();
+
+        var pending = row(null, """
+                {"_transportMissing":"AMOUNT","ledger":{"schemaVersion":2,"feeItems":[
+                  {"bearerCode":"COMPANY","feeAmount":null,"ourAmount":null}]}}
+                """);
+        pending.put("source_system", "DHB");
+        pending.put("status_code", "DRAFT");
+        var pendingFact = normalizer.normalize("ORDER",
+                CostLedgerPartitions.expand("ORDER", pending, json).getFirst(), List.of(), Map.of());
+        assertThat(pendingFact).isNotNull();
+        assertThat(pendingFact.amount()).isNull();
+        assertThat(pendingFact.confirmed()).isFalse();
+        facts.add(pendingFact);
+        assertThat(CostAnalysis.count(facts)).isEqualTo(1);
+        assertThat(CostAnalysis.amount(facts)).isZero();
+    }
 }

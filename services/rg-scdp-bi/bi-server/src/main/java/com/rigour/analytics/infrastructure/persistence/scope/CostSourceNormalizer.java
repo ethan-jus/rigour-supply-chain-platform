@@ -108,13 +108,19 @@ public final class CostSourceNormalizer {
         if (!Set.of("DRAFT", "CONFIRMED", "VOID").contains(r.get("status_code"))
                 && !("ORDER".equals(source) && "ACTIVE".equals(r.get("status_code"))))
             throw new IllegalStateException("成本源状态无效");
-        if ("ORDER".equals(source) && !"COMPANY".equals(r.get("payer_code"))) {
-            // 订货宝在运费补齐前没有承担方。保留缺项，已完善金额仍只统计公司承担的记录。
-            boolean pendingShipment =
-                    "DHB".equals(r.get("source_system"))
-                            && "DRAFT".equals(r.get("status_code"))
-                            && blank(r.get("payer_code")) == null;
-            if (!pendingShipment) return null;
+        JsonNode data = json.readTree(r.get("data_json"));
+        if (!data.isObject()) throw new IllegalStateException("成本源业务快照无效");
+        if ("ORDER".equals(source)) {
+            // 新版费用明细是承担方依据；同步漏写或遗留的 payer_code 不得覆盖已保存的明细。
+            // 我方金额及归属仍由既有分摊校验处理，不从费用总额推算。
+            Boolean ledgerCompanyCost = companyCostFromLedger(data);
+            boolean companyCost = ledgerCompanyCost == null
+                    ? "COMPANY".equals(r.get("payer_code")) : ledgerCompanyCost;
+            boolean pendingShipment = ledgerCompanyCost == null
+                    && "DHB".equals(r.get("source_system"))
+                    && "DRAFT".equals(r.get("status_code"))
+                    && blank(r.get("payer_code")) == null;
+            if (!companyCost && !pendingShipment) return null;
         }
         String category =
                 switch (source) {
@@ -135,8 +141,6 @@ public final class CostSourceNormalizer {
                             };
                     default -> throw new IllegalStateException("未知成本来源");
                 };
-        JsonNode data = json.readTree(r.get("data_json"));
-        if (!data.isObject()) throw new IllegalStateException("成本源业务快照无效");
         boolean historicalPurchaseFreight =
                 "ORDER".equals(source)
                         && "PURCHASE"
@@ -506,6 +510,24 @@ public final class CostSourceNormalizer {
                 Map.copyOf(dims),
                 List.copyOf(originals),
                 components(r));
+    }
+
+    /** 缺少明确承担方的历史明细返回 null，继续使用旧版兼容规则。 */
+    private static Boolean companyCostFromLedger(JsonNode data) {
+        var ledger = data.path("ledger");
+        var fees = ledger.path("feeItems");
+        if (ledger.path("schemaVersion").asInt(0) != 2 || !fees.isArray() || fees.isEmpty())
+            return null;
+        boolean company = false;
+        for (var fee : fees) {
+            String bearer = Objects.toString(text(fee, "bearerCode"), "");
+            switch (bearer) {
+                case "COMPANY", "SHARED" -> company = true;
+                case "CUSTOMER", "SUPPLIER" -> { }
+                default -> { return null; }
+            }
+        }
+        return company;
     }
 
     private Map<String, BigDecimal> components(Map<String, String> row) {

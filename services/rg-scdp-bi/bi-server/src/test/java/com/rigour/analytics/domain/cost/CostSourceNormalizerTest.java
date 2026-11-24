@@ -392,6 +392,110 @@ class CostSourceNormalizerTest {
     }
 
     @Test
+    void explicitCompanyLedgerOverridesMissingAndStaleLegacyPayerForBothSyncSources() {
+        var row = row();
+        row.put("category_code", "LOGISTICS");
+        row.put("amount", "14.21");
+        row.put("data_json", """
+                {"ledger":{"schemaVersion":2,"costMonth":"2026-10","feeItems":[
+                  {"bearerCode":"COMPANY","feeAmount":14.21,"ourAmount":14.21}]}}
+                """);
+        for (String source : List.of("DHB", "HUOLALA")) {
+            row.put("source_system", source);
+            for (String payer : Arrays.asList(null, "", "CUSTOMER", "SUPPLIER")) {
+                row.put("payer_code", payer);
+                var fact = normalizer.normalize("ORDER", row, cities, Map.of());
+                assertThat(fact).as("source=%s payer=%s", source, payer).isNotNull();
+                assertThat(fact.confirmed()).isTrue();
+                assertThat(fact.amount()).isEqualByComparingTo("14.21");
+                assertThat(row.get("payer_code")).isEqualTo(payer);
+            }
+        }
+    }
+
+    @Test
+    void sharedLedgerUsesCompanyShareAndExternalLedgersDoNotBecomeCompanyCost() {
+        var row = row();
+        row.put("amount", "30.00");
+        row.put("payer_code", "CUSTOMER");
+        row.put("data_json", """
+                {"ledger":{"schemaVersion":2,"feeItems":[
+                  {"bearerCode":"SHARED","feeAmount":100,"ourAmount":30}]}}
+                """);
+        var shared = normalizer.normalize("ORDER", row, cities, Map.of());
+        assertThat(shared).isNotNull();
+        assertThat(shared.amount()).isEqualByComparingTo("30.00");
+        assertThat(shared.confirmed()).isTrue();
+
+        row.put("source_system", "DHB");
+        row.put("amount", "0.00");
+        for (String bearer : List.of("CUSTOMER", "SUPPLIER")) {
+            row.put("data_json", """
+                    {"ledger":{"schemaVersion":2,"feeItems":[
+                      {"bearerCode":"%s","feeAmount":100,"ourAmount":0}]}}
+                    """.formatted(bearer));
+            for (String status : List.of("CONFIRMED", "DRAFT")) {
+                row.put("status_code", status);
+                for (String payer : Arrays.asList(null, "COMPANY")) {
+                    row.put("payer_code", payer);
+                    assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+                }
+            }
+        }
+    }
+
+    @Test
+    void zeroSelfDeliveryCountsWhileUnknownUnfinishedAndVoidedAmountsRemainExcluded() {
+        var row = row();
+        row.put("source_system", "DHB");
+        row.remove("payer_code");
+        row.put("data_json", """
+                {"ledger":{"schemaVersion":2,"deliveryModeCode":"SELF","feeItems":[
+                  {"bearerCode":"COMPANY","feeAmount":0,"ourAmount":0,
+                   "zeroCostReason":"立即送无快递单号"}]}}
+                """);
+        var zero = normalizer.normalize("ORDER", row, cities, Map.of());
+        assertThat(zero).isNotNull();
+        assertThat(zero.confirmed()).isTrue();
+        assertThat(zero.amount()).isZero();
+
+        for (String status : List.of("DRAFT", "VOID", "ACTIVE")) {
+            row.put("status_code", status);
+            assertThat(normalizer.normalize("ORDER", row, cities, Map.of()).confirmed()).isFalse();
+        }
+        row.put("status_code", "DRAFT");
+        row.remove("amount");
+        row.put("data_json", """
+                {"_transportMissing":"AMOUNT","ledger":{"schemaVersion":2,"feeItems":[
+                  {"bearerCode":"COMPANY","feeAmount":null,"ourAmount":null}]}}
+                """);
+        for (String source : List.of("DHB", "HUOLALA")) {
+            row.put("source_system", source);
+            var pending = normalizer.normalize("ORDER", row, cities, Map.of());
+            assertThat(pending).isNotNull();
+            assertThat(pending.amount()).isNull();
+            assertThat(pending.confirmed()).isFalse();
+            assertThat(pending.dimension("transportMissing").key()).isEqualTo("AMOUNT");
+        }
+    }
+
+    @Test
+    void ledgerWithoutExplicitBearersKeepsLegacyPayerCompatibility() {
+        var row = row();
+        row.put("amount", "30.00");
+        row.put("data_json", """
+                {"ledger":{"schemaVersion":2,"feeItems":[{"ourAmount":30}]}}
+                """);
+        row.remove("payer_code");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+        row.put("payer_code", "COMPANY");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of()).amount())
+                .isEqualByComparingTo("30.00");
+        row.put("payer_code", "CUSTOMER");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+    }
+
+    @Test
     void sourceLinksNeverMultiplyCostRowsOrExposeOtherDocumentNumbers() {
         var row = row();
         row.put("category_code", "PURCHASE");

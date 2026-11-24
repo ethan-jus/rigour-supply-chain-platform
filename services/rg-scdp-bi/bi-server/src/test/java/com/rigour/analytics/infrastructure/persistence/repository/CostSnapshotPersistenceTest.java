@@ -6,6 +6,7 @@ import static org.mockito.Mockito.*;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.rigour.analytics.application.port.out.BiSourceSnapshotClient;
+import com.rigour.analytics.domain.cost.CostAnalysis;
 import com.rigour.analytics.infrastructure.persistence.mapper.*;
 import com.rigour.analytics.infrastructure.persistence.scope.*;
 
@@ -234,6 +235,67 @@ class CostSnapshotPersistenceTest {
                         });
         verify(client, times(2)).page(tenant, "HR", "HR_EXPENSE", "");
         verify(client, never()).version(tenant, "BI", "BI_COST_NORMALIZATION");
+    }
+
+    @Test
+    void previousNormalizationRebuildsOmittedTransportWithoutChangingSourcesOrDuplicatingCost() {
+        Map<String, String> transport = new HashMap<>();
+        CostSourceDatasets.ALL.stream()
+                .filter(dataset -> "ORDER_LOGISTICS_COST".equals(dataset.code()))
+                .findFirst().orElseThrow().columns().forEach(column -> transport.put(column, null));
+        transport.put("id", id(2000));
+        transport.put("tenant_id", tenant.toString());
+        transport.put("category_code", "LOGISTICS");
+        transport.put("source_system", "HUOLALA");
+        transport.put("amount", "14.21");
+        transport.put("status_code", "CONFIRMED");
+        transport.put("cost_date", "2026-10-16");
+        transport.put("revision", "1");
+        transport.put("data_json", """
+                {"ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY",
+                  "costMonth":"2026-10","feeItems":[
+                    {"feeKey":"freight","feeTypeCode":"FREIGHT","bearerCode":"COMPANY",
+                     "feeAmount":14.21,"ourAmount":14.21}]}}
+                """);
+        transport.put("sources_json", """
+                [{"orderTypeCode":"SALES_ORDER","orderCode":"SO1","linkRoleCode":"COST",
+                  "employeeCode":"E1","departmentId":10,"allocations":[
+                    {"feeKey":"freight","cityCode":"C1","amount":14.21}]}]
+                """);
+        when(client.page(tenant, "ORDER", "ORDER_LOGISTICS_COST", ""))
+                .thenReturn(new BiSourceSnapshotClient.Page("1", List.of(transport)));
+        projector.refresh(tenant.toString());
+        String old = store.state(tenant.toString()).snapshotId();
+        var json = JsonMapper.builder().build();
+        var versions = (tools.jackson.databind.node.ObjectNode) json.readTree(
+                jdbc.queryForObject("SELECT versions_json FROM bi_cost_snapshot WHERE id=?",
+                        String.class, old));
+        // 构造旧 14 版已漏掉这笔运输的完整快照；来源版本、业务数据和时间均不改变。
+        versions.put("BI_COST_NORMALIZATION", "14");
+        jdbc.update("DELETE FROM bi_source_cost_record WHERE snapshot_id=? AND source_service='ORDER'", old);
+        jdbc.update("UPDATE bi_cost_snapshot SET versions_json=?,row_count=1001 WHERE id=?",
+                json.writeValueAsString(versions), old);
+        assertThat(store.snapshot(tenant.toString(), old).records())
+                .noneMatch(fact -> "ORDER".equals(fact.source()));
+
+        projector.refresh(tenant.toString());
+        String fresh = store.state(tenant.toString()).snapshotId();
+        assertThat(fresh).isNotEqualTo(old);
+        var snapshot = store.snapshot(tenant.toString(), fresh);
+        var transports = snapshot.records().stream()
+                .filter(fact -> "ORDER".equals(fact.source())).toList();
+        assertThat(transports).singleElement().satisfies(fact -> {
+            assertThat(fact.confirmed()).isTrue();
+            assertThat(fact.amount()).isEqualByComparingTo("14.21");
+            assertThat(fact.rootSourceId()).isEqualTo(transport.get("id"));
+        });
+        assertThat(CostAnalysis.count(transports)).isEqualTo(1);
+        assertThat(snapshot.versions())
+                .containsEntry("BI_COST_NORMALIZATION", CostAnalysis.NORMALIZATION_VERSION);
+        assertThat(transport.get("payer_code")).isNull();
+        projector.refresh(tenant.toString());
+        assertThat(store.state(tenant.toString()).snapshotId()).isEqualTo(fresh);
+        verify(client, times(2)).page(tenant, "ORDER", "ORDER_LOGISTICS_COST", "");
     }
 
     @Test
