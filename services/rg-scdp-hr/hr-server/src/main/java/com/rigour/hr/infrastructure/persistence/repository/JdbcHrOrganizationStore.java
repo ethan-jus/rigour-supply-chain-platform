@@ -9,6 +9,7 @@ import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -281,7 +282,6 @@ UPDATE hr_employee SET department_name_snapshot=?,revision=revision+1,updated_ti
 
     @Override
     public void deleteDepartment(String tenant, long id, int revision, String actor) {
-        String actorName = actorNames.resolve(tenant, actor);
         tx.executeWithoutResult(
                 status -> {
                     lock(tenant);
@@ -292,38 +292,29 @@ UPDATE hr_employee SET department_name_snapshot=?,revision=revision+1,updated_ti
                                     .orElseThrow(() -> new IllegalArgumentException("部门不存在"));
                     if (department.revision() != revision)
                         throw new BusinessException(ErrorCode.CONFLICT, "部门已修改，请刷新", List.of());
-                    if (!"INACTIVE".equals(department.statusCode()))
-                        throw new IllegalArgumentException("请先停用部门");
-                    if (count(
-                                            "SELECT COUNT(*) FROM hr_department WHERE tenant_id=?"
-                                                + " AND parent_id=? AND deleted=0",
-                                            tenant,
-                                            id)
-                                    > 0
-                            || count(
-                                            "SELECT COUNT(*) FROM hr_employee WHERE tenant_id=? AND"
-                                                + " department_id=?",
-                                            tenant,
-                                            id)
-                                    > 0
-                            || count(
-                                            "SELECT COUNT(*) FROM hr_employee_assignment WHERE"
-                                                + " tenant_id=? AND department_id=?",
-                                            tenant,
-                                            id)
-                                    > 0) throw new IllegalArgumentException("部门仍有下级或任职引用，请保留停用状态");
-                    jdbc.update(
-                            "DELETE FROM hr_department_closure WHERE tenant_id=? AND (ancestor_id=?"
-                                + " OR descendant_id=?)",
-                            tenant,
-                            id,
-                            id);
-                    jdbc.update(
-                            "UPDATE hr_department SET"
-                                + " deleted=1,revision=revision+1,updated_time=UTC_TIMESTAMP(6),updated_by=?,updated_by_name=?"
-                                + " WHERE tenant_id=? AND id=?",
-                            actor, actorName, tenant,
-                            id);
+                    if (count("SELECT COUNT(*) FROM hr_department WHERE tenant_id=? AND parent_id=?", tenant, id) > 0)
+                        throw new IllegalArgumentException("此部门存在下级或历史下级记录，无法永久删除");
+                    if (count("SELECT COUNT(*) FROM hr_employee WHERE tenant_id=? AND department_id=?", tenant, id) > 0
+                            || count("SELECT COUNT(*) FROM hr_employee_assignment WHERE tenant_id=? AND department_id=?", tenant, id) > 0)
+                        throw new IllegalArgumentException("员工或任职历史引用了此部门。如需停止使用，请编辑并停用部门");
+                    var refs = new NamedParameterJdbcTemplate(jdbc);
+                    boolean referenced = Boolean.TRUE.equals(refs.queryForObject("""
+                            SELECT EXISTS(SELECT 1 FROM hr_payroll WHERE tenant_id=:tenant AND department_id=:id)
+                                OR EXISTS(SELECT 1 FROM hr_expense WHERE tenant_id=:tenant AND department_id=:id)
+                                OR EXISTS(SELECT 1 FROM hr_payroll_input WHERE tenant_id=:tenant AND department_override_id=:id)
+                                OR EXISTS(SELECT 1 FROM hr_payroll_rule_department WHERE tenant_id=:tenant AND department_id=:id)
+                                OR EXISTS(SELECT 1 FROM hr_attendance_rule WHERE tenant_id=:tenant AND department_id=:id)
+                                OR EXISTS(SELECT 1 FROM hr_attendance_audit WHERE tenant_id=:tenant AND department_id=:id)
+                                OR EXISTS(SELECT 1 FROM hr_attendance_note WHERE tenant_id=:tenant AND
+                                    (confirmed_department_id=:id OR confirmed_rule_department_id=:id))
+                                OR EXISTS(SELECT 1 FROM hr_business_target WHERE tenant_id=:tenant AND dimension_type='CITY' AND dimension_code=:code)
+                                OR EXISTS(SELECT 1 FROM hr_target_completion WHERE tenant_id=:tenant AND dimension_type='CITY' AND dimension_code=:code)
+                            """, Map.of("tenant", tenant, "id", id, "code", department.departmentCode()), Boolean.class));
+                    if (referenced)
+                        throw new IllegalArgumentException("薪酬、报销、考勤或经营目标引用了此部门。如需停止使用，请编辑并停用部门");
+                    jdbc.update("DELETE FROM hr_department_closure WHERE tenant_id=? AND (ancestor_id=? OR descendant_id=?)",
+                            tenant, id, id);
+                    jdbc.update("DELETE FROM hr_department WHERE tenant_id=? AND id=? AND revision=?", tenant, id, revision);
                     change(tenant, "DEPARTMENT_DELETE", String.valueOf(id), actor);
                 });
     }
