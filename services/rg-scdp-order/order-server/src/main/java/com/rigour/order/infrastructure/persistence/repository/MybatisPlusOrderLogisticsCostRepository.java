@@ -728,13 +728,14 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
 
     static String transportTimeSql() {
         String placed =
-                "JSON_UNQUOTE(JSON_EXTRACT(COALESCE(i.latest_source_json,i.source_json),'$.raw.\"下单时间\"'))";
+                "TRIM(JSON_UNQUOTE(JSON_EXTRACT(COALESCE(i.latest_source_json,i.source_json),'$.raw.\"下单时间\"')))";
         String shipped = "JSON_UNQUOTE(JSON_EXTRACT(s.latest_json,'$.shipTime'))";
         // 先明确判断长度再转换；真实 MySQL 对照中，CAST 内嵌套 NULLIF 会误将有效时间变为 NULL。
+        // 归并时来源 ID 与费用 ID 不同；按费用关联读取 API 来源，与列表展示口径一致。
         return "COALESCE((SELECT "
                 + sqlDateTime(placed)
-                + " FROM order_logistics_import_order i WHERE i.id=order_logistics_cost.id AND"
-                + " i.cost_id=order_logistics_cost.id AND"
+                + " FROM order_logistics_import_order i WHERE i.cost_id=order_logistics_cost.id AND"
+                + " i.source_channel='API' AND"
                 + " i.tenant_id=order_logistics_cost.tenant_id LIMIT 1),(SELECT"
                 + " MIN(TIMESTAMPADD(HOUR,8,"
                 + sqlDateTime(shipped)

@@ -62,7 +62,7 @@ public class LogisticsCostFilterTest {
         jdbc.execute(
                 "CREATE TABLE order_logistics_import_order(id VARCHAR(50) PRIMARY KEY, tenant_id"
                         + " VARCHAR(50),cost_id VARCHAR(50),source_json LONGTEXT,latest_source_json"
-                        + " LONGTEXT) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+                        + " LONGTEXT,source_channel VARCHAR(16) DEFAULT 'API') DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
         jdbc.execute(
                 "CREATE TABLE order_transport_shipment_source(tenant_id VARCHAR(50),cost_id"
                         + " VARCHAR(50),latest_json LONGTEXT) DEFAULT CHARSET=utf8mb4"
@@ -105,15 +105,18 @@ public class LogisticsCostFilterTest {
                 "UPDATE order_logistics_cost SET created_time='2026-11-12 13:00:00' WHERE"
                         + " id='early'");
         jdbc.update(
-                "INSERT INTO order_logistics_import_order VALUES('early','T1','early',?,NULL)",
+                "INSERT INTO order_logistics_import_order(id,tenant_id,cost_id,source_json,latest_source_json)"
+                        + " VALUES('different-early-source','T1','early',?,NULL)",
                 "{\"raw\":{\"下单时间\":\"2026-10-01 10:00:00\"},\"useTime\":\"2026-11-20 10:00:00\"}");
         jdbc.update(
-                "INSERT INTO order_logistics_import_order VALUES('late','T1','late',?,?)",
+                "INSERT INTO order_logistics_import_order(id,tenant_id,cost_id,source_json,latest_source_json)"
+                        + " VALUES('different-late-source','T1','late',?,?)",
                 "{\"raw\":{\"下单时间\":\"2026-10-01 09:00:00\"}}",
                 "{\"raw\":{\"下单时间\":\"2026-10-02 17:00:00\"},\"useTime\":\"2026-09-01 17:00:00\"}");
         // 相同费用 ID 的其他租户来源不得影响本租户排序。
         jdbc.update(
-                "INSERT INTO order_logistics_import_order VALUES('manual','T2','manual',?,NULL)",
+                "INSERT INTO order_logistics_import_order(id,tenant_id,cost_id,source_json,latest_source_json)"
+                        + " VALUES('manual','T2','manual',?,NULL)",
                 "{\"raw\":{\"下单时间\":\"2026-10-01 23:00:00\"}}");
         var first = JSON.readValue("{\"begin\":0,\"step\":1}", LogisticsCostQuery.class);
         var second = JSON.readValue("{\"begin\":1,\"step\":1}", LogisticsCostQuery.class);
