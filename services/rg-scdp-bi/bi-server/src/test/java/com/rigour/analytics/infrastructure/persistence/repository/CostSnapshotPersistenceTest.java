@@ -262,21 +262,30 @@ class CostSnapshotPersistenceTest {
                   "employeeCode":"E1","departmentId":10,"allocations":[
                     {"feeKey":"freight","cityCode":"C1","amount":14.21}]}]
                 """);
+        var legacy = new HashMap<>(transport);
+        legacy.put("id", id(2001));
+        legacy.put("amount", "35.00");
+        legacy.put("data_json", """
+                {"amount":35,"logistics":{"legCode":"DELIVERY","carrierName":"货拉拉"}}
+                """);
         when(client.page(tenant, "ORDER", "ORDER_LOGISTICS_COST", ""))
-                .thenReturn(new BiSourceSnapshotClient.Page("1", List.of(transport)));
+                .thenReturn(new BiSourceSnapshotClient.Page("1", List.of(transport, legacy)));
         projector.refresh(tenant.toString());
         String old = store.state(tenant.toString()).snapshotId();
         var json = JsonMapper.builder().build();
         var versions = (tools.jackson.databind.node.ObjectNode) json.readTree(
                 jdbc.queryForObject("SELECT versions_json FROM bi_cost_snapshot WHERE id=?",
                         String.class, old));
-        // 构造旧 14 版已漏掉这笔运输的完整快照；来源版本、业务数据和时间均不改变。
-        versions.put("BI_COST_NORMALIZATION", "14");
-        jdbc.update("DELETE FROM bi_source_cost_record WHERE snapshot_id=? AND source_service='ORDER'", old);
-        jdbc.update("UPDATE bi_cost_snapshot SET versions_json=?,row_count=1001 WHERE id=?",
+        // 旧 15 版已纳入新版明细，但仍漏掉两处承担方都缺失的旧货拉拉；来源和时间均不改变。
+        versions.put("BI_COST_NORMALIZATION", "15");
+        jdbc.update("DELETE FROM bi_source_cost_record WHERE snapshot_id=? AND source_service='ORDER' AND source_id=?",
+                old, legacy.get("id"));
+        jdbc.update("UPDATE bi_cost_snapshot SET versions_json=?,row_count=1002 WHERE id=?",
                 json.writeValueAsString(versions), old);
-        assertThat(store.snapshot(tenant.toString(), old).records())
-                .noneMatch(fact -> "ORDER".equals(fact.source()));
+        assertThat(store.snapshot(tenant.toString(), old).records().stream()
+                .filter(fact -> "ORDER".equals(fact.source())).toList())
+                .singleElement().satisfies(fact ->
+                        assertThat(fact.rootSourceId()).isEqualTo(transport.get("id")));
 
         projector.refresh(tenant.toString());
         String fresh = store.state(tenant.toString()).snapshotId();
@@ -284,15 +293,16 @@ class CostSnapshotPersistenceTest {
         var snapshot = store.snapshot(tenant.toString(), fresh);
         var transports = snapshot.records().stream()
                 .filter(fact -> "ORDER".equals(fact.source())).toList();
-        assertThat(transports).singleElement().satisfies(fact -> {
-            assertThat(fact.confirmed()).isTrue();
-            assertThat(fact.amount()).isEqualByComparingTo("14.21");
-            assertThat(fact.rootSourceId()).isEqualTo(transport.get("id"));
-        });
-        assertThat(CostAnalysis.count(transports)).isEqualTo(1);
+        assertThat(transports).hasSize(2)
+                .allSatisfy(fact -> assertThat(fact.confirmed()).isTrue());
+        assertThat(transports).extracting(fact -> fact.rootSourceId())
+                .containsExactlyInAnyOrder(transport.get("id"), legacy.get("id"));
+        assertThat(CostAnalysis.amount(transports)).isEqualByComparingTo("49.21");
+        assertThat(CostAnalysis.count(transports)).isEqualTo(2);
         assertThat(snapshot.versions())
                 .containsEntry("BI_COST_NORMALIZATION", CostAnalysis.NORMALIZATION_VERSION);
         assertThat(transport.get("payer_code")).isNull();
+        assertThat(legacy.get("payer_code")).isNull();
         projector.refresh(tenant.toString());
         assertThat(store.state(tenant.toString()).snapshotId()).isEqualTo(fresh);
         verify(client, times(2)).page(tenant, "ORDER", "ORDER_LOGISTICS_COST", "");

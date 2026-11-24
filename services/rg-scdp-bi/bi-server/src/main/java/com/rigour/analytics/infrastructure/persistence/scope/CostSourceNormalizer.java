@@ -114,12 +114,18 @@ public final class CostSourceNormalizer {
             // 新版费用明细是承担方依据；同步漏写或遗留的 payer_code 不得覆盖已保存的明细。
             // 我方金额及归属仍由既有分摊校验处理，不从费用总额推算。
             Boolean ledgerCompanyCost = companyCostFromLedger(data);
+            String legacyPayer = blank(first(r.get("payer_code"), text(data, "logistics", "payerCode")));
+            // 旧货拉拉同步按我方承担初始化；缺失两处承担方时，只接纳已完善且金额已知的旧结构。
+            boolean legacyHuolalaCost = legacyPayer == null
+                    && !data.hasNonNull("ledger")
+                    && "HUOLALA".equals(r.get("source_system"))
+                    && "CONFIRMED".equals(r.get("status_code")) && amount != null;
             boolean companyCost = ledgerCompanyCost == null
-                    ? "COMPANY".equals(r.get("payer_code")) : ledgerCompanyCost;
+                    ? "COMPANY".equals(legacyPayer) || legacyHuolalaCost : ledgerCompanyCost;
             boolean pendingShipment = ledgerCompanyCost == null
                     && "DHB".equals(r.get("source_system"))
                     && "DRAFT".equals(r.get("status_code"))
-                    && blank(r.get("payer_code")) == null;
+                    && legacyPayer == null;
             if (!companyCost && !pendingShipment) return null;
         }
         String category =

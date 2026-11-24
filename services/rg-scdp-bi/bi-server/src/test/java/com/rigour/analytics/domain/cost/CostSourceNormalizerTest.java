@@ -496,6 +496,95 @@ class CostSourceNormalizerTest {
     }
 
     @Test
+    void legacySnapshotCompanyPayerRescuesMissingColumnWithoutRewritingSavedAmounts() {
+        var row = row();
+        row.put("amount", "35.00");
+        row.put("data_json", """
+                {"amount":35,"logistics":{"legCode":"DELIVERY","payerCode":"COMPANY"}}
+                """);
+        for (String source : List.of("HUOLALA", "DHB", "MANUAL_ENTRY")) {
+            row.put("source_system", source);
+            for (String payer : Arrays.asList(null, "", " ")) {
+                row.put("payer_code", payer);
+                var fact = normalizer.normalize("ORDER", row, cities, Map.of());
+                assertThat(fact).as("source=%s payer=%s", source, payer).isNotNull();
+                assertThat(fact.confirmed()).isTrue();
+                assertThat(fact.amount()).isEqualByComparingTo("35.00");
+                assertThat(row.get("payer_code")).isEqualTo(payer);
+            }
+        }
+        row.put("payer_code", "CUSTOMER");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+    }
+
+    @Test
+    void completeLegacyHuolalaUsesExistingSyncDefaultWhenBothPayersAreMissing() {
+        var row = row();
+        row.put("source_system", "HUOLALA");
+        row.put("amount", "35.00");
+        row.put("data_json", """
+                {"amount":35,"ledger":null,"logistics":{"legCode":"DELIVERY","carrierName":"货拉拉"}}
+                """);
+        for (String payer : Arrays.asList(null, "", " ")) {
+            row.put("payer_code", payer);
+            var fact = normalizer.normalize("ORDER", row, cities, Map.of());
+            assertThat(fact).isNotNull();
+            assertThat(fact.confirmed()).isTrue();
+            assertThat(fact.amount()).isEqualByComparingTo("35.00");
+            assertThat(row.get("payer_code")).isEqualTo(payer);
+        }
+        row.put("amount", "0.00");
+        row.put("data_json", "{\"amount\":0,\"logistics\":{\"legCode\":\"DELIVERY\"}}");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of()).amount()).isZero();
+    }
+
+    @Test
+    void legacyHuolalaDefaultCannotOverrideExplicitExternalPayersOrOtherSourceDefaults() {
+        var row = row();
+        row.put("source_system", "HUOLALA");
+        row.put("amount", "35.00");
+        for (String payer : List.of("CUSTOMER", "SUPPLIER", "OTHER", "SHARED")) {
+            row.put("payer_code", payer);
+            row.put("data_json", "{}");
+            assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+            row.remove("payer_code");
+            row.put("data_json", "{\"logistics\":{\"payerCode\":\"" + payer + "\"}}");
+            assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+        }
+        row.put("data_json", "{}");
+        for (String source : List.of("DHB", "MANUAL_ENTRY", "NONE")) {
+            row.put("source_system", source);
+            assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+        }
+    }
+
+    @Test
+    void legacyHuolalaDefaultNeverPromotesUnknownUnconfirmedOrIncompleteModernRecords() {
+        var row = row();
+        row.put("source_system", "HUOLALA");
+        row.put("amount", "35.00");
+        for (String status : List.of("DRAFT", "ACTIVE", "VOID")) {
+            row.put("status_code", status);
+            var fact = normalizer.normalize("ORDER", row, cities, Map.of());
+            assertThat(fact == null || !fact.confirmed()).isTrue();
+        }
+        row.put("status_code", "CONFIRMED");
+        row.remove("amount");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+        row.put("amount", "35.00");
+        row.put("data_json", """
+                {"ledger":{"schemaVersion":2,"feeItems":[{"ourAmount":35}]}}
+                """);
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+        row.put("data_json", """
+                {"ledger":{"schemaVersion":2,"feeItems":[
+                  {"bearerCode":"CUSTOMER","feeAmount":100,"ourAmount":0}]}}
+                """);
+        row.put("amount", "0.00");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of())).isNull();
+    }
+
+    @Test
     void sourceLinksNeverMultiplyCostRowsOrExposeOtherDocumentNumbers() {
         var row = row();
         row.put("category_code", "PURCHASE");
