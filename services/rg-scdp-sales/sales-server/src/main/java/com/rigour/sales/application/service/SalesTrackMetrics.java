@@ -118,15 +118,24 @@ final class SalesTrackMetrics {
         long observedMs = 0;
         int pairs = 0, rejected = 0;
         boolean interrupted = false;
+        boolean skippedCoarse = false;
         double total = 0, legDistance = 0;
         LocationPointRow previous = null, vertex = null;
         for (var witness : rows) {
             if (!valid(witness) || witness.accuracyMeters().doubleValue() > 25) {
                 if (!"APP_NETWORK".equals(witness.source())) rejected++;
+                boolean coarseVertex = ("APP_GPS".equals(witness.source()) || "APP_IOS_LOCATION".equals(witness.source()))
+                        && witness.accuracyMeters() != null && (valid(witness) && witness.accuracyMeters().doubleValue() > 25
+                        || "LOW_ACCURACY".equals(witness.qualityStatus()));
+                if (vertex != null && coarseVertex && !skippedCoarse && !interrupted) {
+                    skippedCoarse = true;
+                    continue;
+                }
                 interrupted = true;
                 eligible.clear();
                 continue;
             }
+            skippedCoarse = false;
             if (previous != null) {
                 long elapsed = Duration.between(time(previous), time(witness)).toMillis();
                 long limit = resting(previous) || resting(witness) ? restingGapMs : movingGapMs;

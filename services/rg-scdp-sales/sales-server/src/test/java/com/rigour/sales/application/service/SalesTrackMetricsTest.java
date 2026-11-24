@@ -16,6 +16,30 @@ class SalesTrackMetricsTest {
     LocationPointRow point(int seconds, double latitude, UUID session, String quality) {
         return new LocationPointRow(BigDecimal.valueOf(116),BigDecimal.valueOf(latitude),BigDecimal.valueOf(10),BASE.plusSeconds(seconds),BASE.plusSeconds(3600),"APP_NATIVE",quality,session);
     }
+    @Test void anIsolatedCoarseFixIsNeverAVertexButDoesNotSplitACorroboratedRoute() {
+        for (String source : List.of("APP_IOS_LOCATION", "APP_GPS")) {
+            var rows = new java.util.ArrayList<LocationPointRow>();
+            for (int i = 0; i <= 7; i++) {
+                var lat = BigDecimal.valueOf(40 + i * .0004);
+                var lng = BigDecimal.valueOf(116);
+                var at = BASE.plusSeconds(i == 7 ? 390 : i * 5L);
+                List<String> proof = switch (i) {
+                    case 2 -> List.of("0", "1", "2");
+                    case 5 -> List.of("2", "4");
+                    case 6 -> List.of("4", "5");
+                    case 7 -> List.of("5", "7");
+                    default -> List.of();
+                };
+                rows.add(new LocationPointRow(lng, lat, BigDecimal.valueOf(i == 3 ? 25.7 : 5),
+                        at, at, source, "ACCEPTED", SESSION, true, Integer.toString(i), proof, lng, lat));
+            }
+            var result = SalesTrackMetrics.calculate(rows, 5);
+            assertThat(result.legs()).hasSize(1);
+            assertThat(result.legs().getFirst().points()).hasSize(5);
+            assertThat(result.distanceMeters()).isBetween(221, 223);
+            assertThat(result.gaps()).hasSize(1);
+        }
+    }
     @Test void missingIsNotZeroButStationaryIsMeasuredZero() {
         assertThat(SalesTrackMetrics.calculate(List.of(),60).available()).isFalse();
         var result=SalesTrackMetrics.calculate(List.of(point(0,40,SESSION,"ACCEPTED"),point(60,40.00003,SESSION,"ACCEPTED")),60);
