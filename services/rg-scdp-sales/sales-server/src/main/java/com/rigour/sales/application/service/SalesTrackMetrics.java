@@ -143,7 +143,9 @@ final class SalesTrackMetrics {
             }
             previous = witness;
             interrupted = false;
-            if ("APP_GPS".equals(witness.source())) eligible.put(witness.deviceEventId(), witness);
+            if ("APP_GPS".equals(witness.source()) || "APP_IOS_LOCATION".equals(witness.source())) {
+                eligible.put(witness.deviceEventId(), witness);
+            }
             if (witness.routePath().isEmpty()) continue;
             var proposed = witness.routePath().stream().map(eligible::get).toList();
             if (!validPath(proposed, vertex, movingGapMs)) { rejected++; continue; }
