@@ -7,12 +7,18 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 import com.rigour.analytics.api.controller.SalesOverviewController;
+import com.rigour.analytics.api.controller.AnalyticsSupplyDashboardController;
+import com.rigour.analytics.api.v1.AnalyticsSupplyDashboardApi.OverviewProjection;
+import com.rigour.analytics.api.v1.AnalyticsSupplyDashboardApi.OverviewRankingKind;
+import com.rigour.analytics.api.v1.model.SupplyDashboardMetricCardView;
 import com.rigour.analytics.application.model.SalesOverview.DetailKind;
 import com.rigour.analytics.application.port.out.HrTargetClient;
 import com.rigour.analytics.application.service.SalesOverviewService;
 import com.rigour.analytics.application.service.SalesOverviewService.Query;
+import com.rigour.analytics.infrastructure.cache.JdbcCacheVersions;
 import com.rigour.hr.api.v1.model.TargetSettingsModels.Target;
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -29,6 +35,8 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.*;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.junit.jupiter.*;
 import org.testcontainers.mysql.MySQLContainer;
 
@@ -132,7 +140,136 @@ class BiSupplyScopeIntegrationTest {
     }
 
     @Autowired SalesOverviewService salesOverview;
+    @Autowired AnalyticsSupplyDashboardController supplyDashboard;
+    @Autowired PlatformTransactionManager transactionManager;
     @MockitoBean HrTargetClient salesTargets;
+
+    @Test
+    void operatingOverviewReconcilesReceiptsByDayAndCityAndKeepsTheOrderCohort() throws Exception {
+        fact(1, "A", "HZ", 10, 11, 100);
+        fact(2, "A", "HZ", 10, 11, 900);
+        fact(3, "B", "NB", 20, 11, 200);
+        fact(4, "B", "NB", 20, 11, 1000);
+        jdbc.update("""
+                UPDATE bi_sales_order_fact SET order_status_code=IF(order_id=4,'CANCELLED','COMPLETED'),
+                    order_date=IF(order_id=2,'2026-09-05','2026-10-01'),customer_id=order_id,
+                    paid_amount=IF(order_id=1,40,0),unpaid_amount=IF(order_id=1,60,payable_amount)
+                WHERE tenant_id=?
+                """, tenant);
+        jdbc.update("""
+                INSERT INTO bi_sales_payment_fact(tenant_id,payment_id,order_id,region_code,payment_time,paid_amount,synced_time,deleted)
+                VALUES (?,1,2,'HZ','2026-09-30 16:00:00',50,UTC_TIMESTAMP(6),0),
+                       (?,2,1,'HZ','2026-10-01 12:00:00',40,UTC_TIMESTAMP(6),0),
+                       (?,3,3,'NB','2026-10-01 16:00:00',60,UTC_TIMESTAMP(6),0),
+                       (?,4,4,'NB','2026-10-01 16:00:00',500,UTC_TIMESTAMP(6),1),
+                       (?,5,2,'HZ','2026-09-30 15:59:59.999999',900,UTC_TIMESTAMP(6),0)
+                """, tenant, tenant, tenant, tenant, tenant);
+        var from = Instant.parse("2026-09-30T16:00:00Z");
+        var to = Instant.parse("2026-10-31T15:59:59.999999Z");
+        var unrestricted = policy(List.of(clause("ALL", all(), all(), all())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(unrestricted);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, unrestricted)) {
+            var response = supplyDashboard.overview(from, to, null, null, null, null, null,
+                    OverviewProjection.OPERATING).data();
+            var metrics = response.metrics().stream().collect(java.util.stream.Collectors.toMap(
+                    SupplyDashboardMetricCardView::metricCode, SupplyDashboardMetricCardView::value));
+            assertThat(metrics.get("sales_amount")).isEqualByComparingTo("300");
+            assertThat(metrics.get("unpaid_amount")).isEqualByComparingTo("260");
+            assertThat(metrics.get("receipt_amount")).isEqualByComparingTo("150");
+            assertThat(response.collectionTrend()).satisfiesExactly(
+                    day -> {
+                        assertThat(day.period()).isEqualTo("2026-10-01");
+                        assertThat(day.value()).isEqualByComparingTo("90");
+                    },
+                    day -> assertThat(day.value()).isEqualByComparingTo("60"));
+            assertThat(response.operatingDetails().cityReceipts()).satisfiesExactly(
+                    city -> {
+                        assertThat(city.regionCode()).isEqualTo("HZ");
+                        assertThat(city.receiptAmount()).isEqualByComparingTo("90");
+                    },
+                    city -> assertThat(city.receiptAmount()).isEqualByComparingTo("60"));
+            assertThat(response.operatingDetails().customerRetention()).isNotNull();
+            assertThat(response.productSalesRanking()).isEmpty();
+            assertThat(response.categorySalesRanking()).isEmpty();
+            var repeated = supplyDashboard.overview(from, to, null, null, null, null, null,
+                    OverviewProjection.OPERATING).data();
+            assertThat(repeated.operatingDetails()).isEqualTo(response.operatingDetails());
+
+            var mvc = MockMvcBuilders.standaloneSetup(supplyDashboard).build();
+            mvc.perform(get("/api/v1/analytics/supply/dashboard/overview")
+                            .param("from", from.toString()).param("to", to.toString())
+                            .param("projection", "OPERATING_COMPARISON"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.operatingDetails.cityReceipts.length()").value(2))
+                    .andExpect(jsonPath("$.data.operatingDetails.customerRetention").doesNotExist());
+
+            new TransactionTemplate(transactionManager).executeWithoutResult(status -> {
+                jdbc.update("UPDATE bi_sales_payment_fact SET paid_amount=65 WHERE tenant_id=? AND payment_id=3", tenant);
+                new JdbcCacheVersions(jdbc).changed(tenant);
+            });
+            var updated = supplyDashboard.overview(from, to, null, null, null, null, null,
+                    OverviewProjection.OPERATING).data();
+            assertThat(updated.metrics().stream().filter(metric -> "receipt_amount".equals(metric.metricCode())))
+                    .singleElement().satisfies(metric -> assertThat(metric.value()).isEqualByComparingTo("155"));
+        }
+        var region = policy(List.of(clause("REGION", none(), specified("HZ"), none())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(region);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, region)) {
+            var restricted = supplyDashboard.overview(from, to, null, null, null, null, null,
+                    OverviewProjection.OPERATING_COMPARISON).data();
+            assertThat(restricted.operatingDetails().cityReceipts()).singleElement()
+                    .satisfies(row -> assertThat(row.receiptAmount()).isEqualByComparingTo("90"));
+        }
+    }
+
+    @Test
+    void operatingRankingsUseTheSameOrderFactsAndAuthorization() throws Exception {
+        fact(1, "A", "HZ", 10, 11, 100);
+        fact(2, "B", "NB", 20, 11, 200);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_date='2026-10-01',order_status_code='COMPLETED' WHERE tenant_id=?", tenant);
+        jdbc.update("""
+                INSERT INTO bi_product_category_dim(tenant_id,category_id,category_name,synced_time)
+                VALUES (?,1,'用品',UTC_TIMESTAMP(6))
+                """, tenant);
+        jdbc.update("""
+                INSERT INTO bi_product_dim(tenant_id,product_id,product_name,product_category_id,synced_time)
+                VALUES (?,1,'台呢',1,UTC_TIMESTAMP(6))
+                """, tenant);
+        jdbc.update("""
+                INSERT INTO bi_sales_order_line_fact(tenant_id,order_id,order_line_id,order_date,order_status_code,
+                    product_id,product_category_id,line_amount,synced_time)
+                SELECT tenant_id,order_id,order_id,order_date,order_status_code,1,1,payable_amount,UTC_TIMESTAMP(6)
+                FROM bi_sales_order_fact WHERE tenant_id=?
+                """, tenant);
+        var from = Instant.parse("2026-09-30T16:00:00Z");
+        var to = Instant.parse("2026-10-31T15:59:59.999999Z");
+        var unrestricted = policy(List.of(clause("ALL", all(), all(), all())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(unrestricted);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, unrestricted)) {
+            var mvc = MockMvcBuilders.standaloneSetup(supplyDashboard).build();
+            mvc.perform(get("/api/v1/analytics/supply/dashboard/overview/ranking")
+                            .param("kind", "PRODUCT").param("from", from.toString()).param("to", to.toString()))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data[0].dimensionName").value("台呢"))
+                    .andExpect(jsonPath("$.data[0].salesAmount").value(300));
+            var category = supplyDashboard.operatingOverviewRanking(OverviewRankingKind.CATEGORY,
+                    from, to, null, null, null, null, null).data();
+            assertThat(category).singleElement().satisfies(row -> {
+                assertThat(row.dimensionName()).isEqualTo("用品");
+                assertThat(row.salesAmount()).isEqualByComparingTo("300");
+            });
+            assertThat(supplyDashboard.operatingOverviewRanking(OverviewRankingKind.CATEGORY,
+                    from, to, null, null, null, null, null).data()).isEqualTo(category);
+        }
+        var region = policy(List.of(clause("REGION", none(), specified("HZ"), none())), all(), all());
+        when(iam.authorization(any(), any())).thenReturn(region);
+        try (var context = SupplyAuthorizationContext.open(iam, actor, region)) {
+            for (var kind : OverviewRankingKind.values())
+                assertThat(supplyDashboard.operatingOverviewRanking(kind, from, to,
+                        null, null, null, null, null).data()).singleElement()
+                        .satisfies(row -> assertThat(row.salesAmount()).isEqualByComparingTo("100"));
+        }
+    }
 
     @Test
     void overviewReusesPostedAllocationsAndBalancesAcrossDepartmentAndYearFilters() throws Exception {
@@ -622,8 +759,11 @@ class BiSupplyScopeIntegrationTest {
         fact(3, "BJ-OWNER", "CITY-BJ", 10, 11, 300);
         fact(4, "HZ-OWNER", "CITY-HZ", 20, 11, 400);
         fact(5, "UNKNOWN", "UNKNOWN", 30, 11, 500);
+        fact(6, "BJ-OWNER", "CITY-BJ", 10, 11, 900);
         jdbc.update("UPDATE bi_sales_order_fact SET order_date='2026-09-25',paid_amount=10 WHERE tenant_id=?", tenant);
-        jdbc.update("UPDATE bi_order_authority SET attribution_state='REVIEW',department_id=NULL,department_path=JSON_ARRAY() WHERE tenant_id=? AND order_id>=3", tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET payment_status_code='PAID',paid_amount=900 WHERE tenant_id=? AND order_id=6", tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET payment_status_code='PARTIAL_PAID' WHERE tenant_id=? AND order_id=1", tenant);
+        jdbc.update("UPDATE bi_order_authority SET attribution_state='REVIEW',department_id=NULL,department_path=JSON_ARRAY() WHERE tenant_id=? AND order_id BETWEEN 3 AND 5", tenant);
         jdbc.update("INSERT INTO bi_product_category_dim(tenant_id,category_id,category_name,synced_time) VALUES(?,1,'台呢',UTC_TIMESTAMP(6))", tenant);
         jdbc.update("""
                 INSERT INTO bi_sales_order_line_fact
@@ -642,13 +782,28 @@ class BiSupplyScopeIntegrationTest {
         when(iam.authorization(any(), any())).thenReturn(p);
         var service = new com.rigour.analytics.application.service.PaymentRiskService(
                 new com.rigour.analytics.infrastructure.persistence.repository.JdbcPaymentRiskStore(jdbc.getDataSource()),
+                new com.rigour.analytics.infrastructure.persistence.repository.JdbcReceivablesStore(jdbc.getDataSource()),
                 scopeService, java.time.Clock.fixed(java.time.Instant.parse("2026-10-20T00:00:00Z"), java.time.ZoneOffset.UTC));
         var endpoint = new com.rigour.analytics.api.controller.AnalyticsPaymentRiskController(service);
         var from = java.time.Instant.parse("2026-09-01T00:00:00Z");
         var to = java.time.Instant.parse("2026-10-20T00:00:00Z");
         try (var context = SupplyAuthorizationContext.open(iam, actor, p)) {
+            assertThatThrownBy(() -> endpoint.paymentRisk(from, to, null, null, null, null))
+                    .isInstanceOf(com.rigour.shared.core.exception.BusinessException.class)
+                    .hasMessageContaining("资金数据尚未完成同步");
+            for (String dataset : List.of("ORDER_CASH_RECEIPT", "ORDER_CASH_APPLICATION",
+                    "ORDER_RECEIVABLE_PLAN", "ORDER_RECEIVABLE_ADJUSTMENT", "ORDER_RECEIVABLE_OPENING")) {
+                jdbc.update("""
+                        INSERT INTO bi_source_snapshot_checkpoint(tenant_id,dataset,source_version,projected_at)
+                        VALUES(?,?,'test',UTC_TIMESTAMP(6))
+                        """, tenant, dataset);
+            }
             var orders = endpoint.paymentRisk(from, to, null, null, null, null).data().orders();
             assertThat(orders).hasSize(full ? 5 : 2);
+            assertThat(orders).extracting(o -> o.orderId()).doesNotContain("6");
+            if (full || "10".equals(departmentId)) {
+                assertThat(orders).extracting(o -> o.orderId()).contains("1");
+            }
             assertThat(orders.stream().map(o -> o.orderAmount()).reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add))
                     .isEqualByComparingTo(String.valueOf(expectedAmount));
             assertThat(orders).allSatisfy(order -> {
@@ -764,6 +919,87 @@ class BiSupplyScopeIntegrationTest {
     void department(long id,Long parent,String code,String name) {
         String path = parent==null ? "["+id+"]" : jdbc.queryForObject("SELECT department_path FROM bi_source_hr_hr_department WHERE tenant_id=? AND id=?",String.class,tenant,parent).replace("]",","+id+"]");
         jdbc.update("INSERT INTO bi_source_hr_hr_department(id,tenant_id,department_code,department_name,parent_id,status_code,deleted,department_path) VALUES(?,?,?,?,?,'ACTIVE',0,?)",id,tenant,code,name,parent,path);
+    }
+
+    @Autowired com.rigour.analytics.api.controller.SalesDashboardController salesDashboard;
+    @Autowired com.rigour.analytics.api.controller.AnalyticsPaymentRiskController paymentRisk;
+
+    @Test
+    void crossCitySalesUseIndependentDepartmentAndCustomerRegion() throws Exception {
+        department(1,null,"SALES","销售部");
+        department(5,1L,"GROUP","苏无部");
+        department(10,5L,"SZ-DEPT","苏州市部");
+        department(20,5L,"WX-DEPT","无锡市部");
+        department(21,20L,"WX-TEAM","无锡一组");
+        jdbc.update("UPDATE bi_source_hr_hr_department SET leader_employee_code='A' WHERE tenant_id=? AND id=5", tenant);
+        productionMapper.refreshCityDimension(tenant);
+        fact(1,"张三","SZ",20,11,10000);
+        fact(2,"A","WX",10,11,20000);
+        jdbc.update("UPDATE bi_order_authority SET department_path=JSON_ARRAY(1,5,department_id) WHERE tenant_id=?", tenant);
+        productionMapper.alignOperatingOrderCities(tenant);
+        jdbc.update("UPDATE bi_sales_order_fact SET order_date='2026-11-15',order_status_code='COMPLETED' WHERE tenant_id=?",tenant);
+        for (String dataset : List.of("ORDER_CASH_RECEIPT", "ORDER_CASH_APPLICATION", "ORDER_RECEIVABLE_PLAN",
+                "ORDER_RECEIVABLE_ADJUSTMENT", "ORDER_RECEIVABLE_OPENING")) {
+            jdbc.update("INSERT INTO bi_source_snapshot_checkpoint(tenant_id,dataset,source_version,projected_at) "
+                    + "VALUES(?,?,'test',UTC_TIMESTAMP(6))", tenant, dataset);
+        }
+        var policy = policy(List.of(clause("ALL",all(),all(),all())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(policy);
+        try (var context=SupplyAuthorizationContext.open(iam,actor,policy)) {
+            var mvc=MockMvcBuilders.standaloneSetup(supplyDashboard, salesDashboard, paymentRisk).build();
+            mvc.perform(get("/api/v1/analytics/supply/dashboard/department-filters"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.defaultDepartmentCode").value("GROUP"))
+                .andExpect(jsonPath("$.data.departments[?(@.code == 'WX-TEAM')].parentCode").value("WX-DEPT"));
+            for (String department : List.of("GROUP", "WX-DEPT", "SZ-DEPT")) {
+                boolean includesZhang = !department.equals("SZ-DEPT");
+                var sales = org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .post("/api/v1/analytics/supply/dashboard/sales-analysis/summary")
+                        .contentType("application/json").content("{\"ownerStaffCodes\":[\"张三\",\"A\"]}");
+                var risk = get("/api/v1/analytics/supply/dashboard/payment-risk");
+                for (var request : List.of(sales, risk)) {
+                    request.param("regionCode", department).param("customerRegionCode", "SZ")
+                            .param("from", "2026-11-01T00:00:00Z").param("to", "2026-11-24T00:00:00Z");
+                }
+                mvc.perform(sales).andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.sales").value(includesZhang ? 10000 : 0));
+                var result = mvc.perform(risk).andExpect(status().isOk())
+                        .andExpect(jsonPath("$.data.orders.length()").value(includesZhang ? 1 : 0));
+                if (includesZhang) result.andExpect(jsonPath("$.data.orders[0].ownerStaffCode").value("张三"));
+            }
+            for (var sample : List.of(
+                    List.of("", "", 30000), List.of("GROUP", "", 30000),
+                    List.of("WX-DEPT", "", 10000), List.of("", "SZ", 10000),
+                    List.of("WX-DEPT", "SZ", 10000), List.of("SZ-DEPT", "SZ", 0),
+                    List.of("SZ-DEPT", "WX", 20000), List.of("WX-TEAM", "", 0))) {
+                var req=get("/api/v1/analytics/supply/dashboard/overview").param("projection","OPERATING")
+                        .param("from","2026-11-01T00:00:00Z").param("to","2026-11-30T23:59:59Z");
+                if (!sample.get(0).equals("")) req.param("regionCode",sample.get(0).toString());
+                if (!sample.get(1).equals("")) req.param("customerRegionCode",sample.get(1).toString());
+                mvc.perform(req).andExpect(status().isOk()).andExpect(jsonPath(
+                        "$.data.metrics[?(@.metricCode == 'sales_amount')].value").value(
+                                org.hamcrest.Matchers.contains(((Number) sample.get(2)).doubleValue())));
+            }
+            mvc.perform(get("/api/v1/analytics/supply/dashboard/overview").param("projection","OPERATING")
+                    .param("from","2026-11-01T00:00:00Z").param("to","2026-11-30T23:59:59Z"))
+                .andExpect(jsonPath("$.data.citySalesRanking.length()").value(1))
+                .andExpect(jsonPath("$.data.citySalesRanking[0].dimensionCode").value("GROUP"))
+                .andExpect(jsonPath("$.data.citySalesRanking[0].salesAmount").value(30000));
+            mvc.perform(get("/api/v1/analytics/supply/dashboard/overview").param("projection","OPERATING")
+                    .param("regionCode","GROUP").param("from","2026-11-01T00:00:00Z").param("to","2026-11-30T23:59:59Z"))
+                .andExpect(jsonPath("$.data.citySalesRanking.length()").value(2))
+                .andExpect(jsonPath("$.data.citySalesRanking[0].dimensionCode").value("SZ-DEPT"))
+                .andExpect(jsonPath("$.data.citySalesRanking[1].dimensionCode").value("WX-DEPT"));
+        }
+        var restricted = policy(List.of(clause("DEPARTMENT",specified("20"),all(),none())),all(),all());
+        when(iam.authorization(any(),any())).thenReturn(restricted);
+        try (var context=SupplyAuthorizationContext.open(iam,actor,restricted)) {
+            var mvc=MockMvcBuilders.standaloneSetup(supplyDashboard).build();
+            mvc.perform(get("/api/v1/analytics/supply/dashboard/department-filters"))
+                .andExpect(jsonPath("$.data.departments[?(@.code == 'SZ-DEPT')]").isEmpty());
+            mvc.perform(get("/api/v1/analytics/supply/dashboard/overview").param("projection","OPERATING")
+                    .param("customerRegionCode","WX").param("from","2026-11-01T00:00:00Z").param("to","2026-11-30T23:59:59Z"))
+                .andExpect(jsonPath("$.data.metrics[?(@.metricCode == 'sales_amount')].value").value(org.hamcrest.Matchers.contains(0.0)));
+        }
     }
 
     @Test

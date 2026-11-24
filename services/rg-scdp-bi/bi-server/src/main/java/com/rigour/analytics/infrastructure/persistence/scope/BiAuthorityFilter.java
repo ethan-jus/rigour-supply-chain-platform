@@ -48,7 +48,8 @@ public final class BiAuthorityFilter extends OncePerRequestFilter {
                 boolean byDepartment = request.getParameter("departmentId") != null
                         && (path.startsWith("/api/v1/analytics/supply/dashboard/sales-overview")
                             || path.equals("/api/v1/analytics/supply/dashboard/receivables"));
-                if (!allDataRead || byDepartment) {
+                if (!allDataRead || byDepartment || com.rigour.analytics.application.model.CustomerRegionSelection.from(request) != null
+                        || path.endsWith("/department-filters")) {
                     projector.refresh(AuthorizationContext.requireCurrent().tenantId());
                     boolean visitRequest =
                             java.util.Set.of(

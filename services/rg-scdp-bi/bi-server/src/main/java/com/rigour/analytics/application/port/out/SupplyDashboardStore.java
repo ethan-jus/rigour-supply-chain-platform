@@ -1,5 +1,6 @@
 package com.rigour.analytics.application.port.out;
 
+import com.rigour.analytics.api.v1.AnalyticsSupplyDashboardApi.OverviewRankingKind;
 import com.rigour.analytics.api.v1.model.SupplyDashboardReceiptDetailsView;
 import com.rigour.analytics.application.model.SupplyDashboardFilter;
 
@@ -16,6 +17,16 @@ public interface SupplyDashboardStore {
     }
 
     SupplyDashboardData overview(String tenantId, SupplyDashboardFilter filter);
+
+    default OperatingOverviewData operatingOverview(
+            String tenantId, SupplyDashboardFilter filter, boolean comparison, boolean includeReceipts) {
+        throw new UnsupportedOperationException("operatingOverview");
+    }
+
+    default List<ProductSalesItem> operatingOverviewRanking(
+            String tenantId, SupplyDashboardFilter filter, OverviewRankingKind kind) {
+        throw new UnsupportedOperationException("operatingOverviewRanking");
+    }
 
     OperatingAnalysisData operatingAnalysis(
             String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter);
@@ -106,6 +117,18 @@ public interface SupplyDashboardStore {
             String tenantId, FeishuArchiveWrite command, Instant registeredAt);
 
     List<FeishuArchiveRow> feishuArchives(String tenantId);
+
+    record OperatingOverviewData(
+            SalesSummary sales,
+            List<TrendPoint> salesTrend,
+            List<RankingItem> citySalesRanking,
+            List<CityReceiptDay> receiptDays,
+            CustomerRetention customerRetention,
+            List<CityMonthlyGoal> cityMonthlyGoals,
+            List<TargetCompletionItem> cityTargetCompletions,
+            List<DataFreshness> freshness) {}
+
+    record CityReceiptDay(String day, String regionCode, String regionName, BigDecimal receiptAmount) {}
 
     /** 仅来自 BI 本地事实的经营分析聚合。 */
     record OperatingAnalysisData(

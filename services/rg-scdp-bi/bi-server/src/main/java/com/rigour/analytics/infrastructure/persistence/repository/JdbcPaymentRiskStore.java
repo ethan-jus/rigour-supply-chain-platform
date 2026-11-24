@@ -49,7 +49,7 @@ public class JdbcPaymentRiskStore implements PaymentRiskStore {
         var args = new MapSqlParameterSource("tenant", tenant)
                 .addValue("from", Timestamp.from(from)).addValue("to", Timestamp.from(to))
                 .addValue("region", region).addValue("owner", owner).addValue("limit", limit);
-        // 先按同一截止时点计算整单余额，再按订单权限关联商品。
+        // 商品账龄跟踪当前未结清订单，剩余应收按所选截止时点计算。
         return BiScopedQueries.query(jdbc, """
                 SELECT o.order_id,o.order_no,o.customer_name,o.region_code,o.region_name,
                        o.owner_staff_code,o.owner_staff_name,o.order_date,
@@ -65,6 +65,7 @@ public class JdbcPaymentRiskStore implements PaymentRiskStore {
                     ON l.tenant_id=o.tenant_id AND l.order_id=o.order_id AND l.deleted=0
                   LEFT JOIN bi_product_dim p ON p.tenant_id=l.tenant_id AND p.product_id=l.product_id
                  WHERE o.tenant_id=:tenant AND o.deleted=0 AND COALESCE(o.order_status_code,'') NOT IN ('DRAFT','CANCELLED','DELETED')
+                   AND COALESCE(o.payment_status_code,'') <> 'PAID'
                    AND o.payable_amount>0 AND o.payable_amount+COALESCE(b.adjustment,0)>COALESCE(b.paid,0)
                    AND o.order_date BETWEEN :from AND :to
                    AND (:region IS NULL OR o.region_code""" + JDBC_REGION_SCOPE + """

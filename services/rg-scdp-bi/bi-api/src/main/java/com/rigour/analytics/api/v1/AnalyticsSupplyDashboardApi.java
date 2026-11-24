@@ -5,10 +5,12 @@ import com.rigour.analytics.api.v1.model.SupplyDashboardDataTrustView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOperatingAnalysisView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardProductSalesItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshRunView;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
+import java.util.List;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -22,10 +24,29 @@ public interface AnalyticsSupplyDashboardApi {
     String TRUST_PATH = "/api/v1/analytics/supply/dashboard/trust";
     String FILTER_OPTIONS_PATH = "/api/v1/analytics/supply/dashboard/filter-options";
 
+    @GetMapping("/api/v1/analytics/supply/dashboard/department-filters")
+    ApiResponse<com.rigour.analytics.api.v1.model.DepartmentDashboardFilters> departmentFilters();
+
+    enum OverviewProjection { FULL, OPERATING, OPERATING_COMPARISON }
+
+    enum OverviewRankingKind { PRODUCT, CATEGORY }
+
     @GetMapping(OVERVIEW_PATH)
     ApiResponse<SupplyDashboardOverviewView> overview(
             @RequestParam(required = false) Instant from,
             @RequestParam(required = false) Instant to,
+            @RequestParam(required = false) String regionCode,
+            @RequestParam(required = false) String ownerStaffCode,
+            @RequestParam(required = false) String customerTypeCode,
+            @RequestParam(required = false) Long productCategoryId,
+            @RequestParam(required = false) String sourceSystemCode,
+            @RequestParam(defaultValue = "FULL") OverviewProjection projection);
+
+    @GetMapping(OVERVIEW_PATH + "/ranking")
+    ApiResponse<List<SupplyDashboardProductSalesItemView>> operatingOverviewRanking(
+            @RequestParam OverviewRankingKind kind,
+            @RequestParam Instant from,
+            @RequestParam Instant to,
             @RequestParam(required = false) String regionCode,
             @RequestParam(required = false) String ownerStaffCode,
             @RequestParam(required = false) String customerTypeCode,

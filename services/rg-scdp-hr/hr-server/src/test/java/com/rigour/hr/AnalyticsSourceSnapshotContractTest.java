@@ -47,7 +47,7 @@ class AnalyticsSourceSnapshotContractTest {
                     + " VARCHAR(50),position_name VARCHAR(120),deleted INT)");
         jdbc.execute(
                 "CREATE TABLE hr_department(tenant_id VARCHAR(64),id BIGINT,department_name"
-                    + " VARCHAR(128),deleted INT,department_code VARCHAR(50),parent_id BIGINT,status_code VARCHAR(16))");
+                    + " VARCHAR(128),deleted INT,department_code VARCHAR(50),parent_id BIGINT,status_code VARCHAR(16),leader_employee_code VARCHAR(64))");
         jdbc.execute(
                 "CREATE TABLE hr_department_closure(tenant_id VARCHAR(64),ancestor_id"
                     + " BIGINT,descendant_id BIGINT)");
@@ -109,9 +109,13 @@ class AnalyticsSourceSnapshotContractTest {
                             assertThat(row.get("department_path")).contains("10");
                             assertThat(row).doesNotContainKeys("phone", "id_card_no");
                         });
+        var beforeLeader = store.version(tenant,"HR_DEPARTMENT");
+        jdbc.update("UPDATE hr_department SET leader_employee_code='A' WHERE tenant_id=?", tenant);
         var departments = controller.page("HR_DEPARTMENT", "");
+        assertThat(departments.version()).isNotEqualTo(beforeLeader);
         assertThat(departments.items()).singleElement().satisfies(row -> {
             assertThat(row.get("department_code")).isEqualTo("HZ");
+            assertThat(row.get("leader_employee_code")).isEqualTo("A");
             assertThat(row.get("parent_id")).isEqualTo("1");
             assertThat(row.get("department_path")).contains("10");
         });

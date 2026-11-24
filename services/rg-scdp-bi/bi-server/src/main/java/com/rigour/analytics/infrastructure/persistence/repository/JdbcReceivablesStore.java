@@ -119,7 +119,7 @@ WHERE tenant_id=:tenant AND source_version IS NOT NULL AND source_version<>''
    LEFT JOIN follow_history fol ON fol.order_id=o.order_id AND fol.rn=1
    LEFT JOIN current_plan v ON v.order_id=o.order_id
    LEFT JOIN bi_receivable_installment i ON i.tenant_id COLLATE utf8mb4_general_ci=o.tenant_id AND i.order_id=o.order_id AND i.plan_version=v.version
-   LEFT JOIN bi_source_crm_crm_customer c ON c.tenant_id COLLATE utf8mb4_general_ci=o.tenant_id AND c.id=o.customer_id
+   LEFT JOIN bi_source_crm_crm_customer c ON c.tenant_id=:tenant AND c.id=o.customer_id
    LEFT JOIN bi_source_crm_crm_customer_policy policy ON policy.tenant_id=UUID_TO_BIN(o.tenant_id)
        AND policy.party_id=c.party_id AND policy.deleted=0 AND policy.status='ACTIVE'
        AND policy.updated_time<=o.order_date

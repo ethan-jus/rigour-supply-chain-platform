@@ -33,7 +33,7 @@ public final class BiSourceDatasets {
                             List.of(new Column("id", false), new Column("tenant_id", false),
                                     new Column("payment_status_code", false))),
                     new Dataset("HR", "HR_DEPARTMENT", "bi_source_hr_hr_department", false, false,
-                        List.of(new Column("id",false),new Column("tenant_id",false),new Column("department_code",false),new Column("department_name",false),new Column("parent_id",false),new Column("status_code",false),new Column("deleted",false),new Column("department_path",false))),
+                        List.of(new Column("id",false),new Column("tenant_id",false),new Column("department_code",false),new Column("department_name",false),new Column("leader_employee_code",false),new Column("parent_id",false),new Column("status_code",false),new Column("deleted",false),new Column("department_path",false))),
                     new Dataset(
                             "SALES",
                             "SALES_SUBMITTED_VISIT",

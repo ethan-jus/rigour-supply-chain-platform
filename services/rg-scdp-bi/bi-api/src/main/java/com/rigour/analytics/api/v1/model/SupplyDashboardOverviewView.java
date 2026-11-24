@@ -1,5 +1,6 @@
 package com.rigour.analytics.api.v1.model;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 
@@ -35,7 +36,15 @@ public record SupplyDashboardOverviewView(
         List<SupplyDashboardRiskItemView> risks,
         List<SupplyDashboardDataFreshnessView> freshness,
         List<SupplyDashboardRolePerspectiveView> rolePerspectives,
-        List<SupplyDashboardMetricDefinitionView> definitions) {
+        List<SupplyDashboardMetricDefinitionView> definitions,
+        OperatingDetails operatingDetails) {
+    public record OperatingDetails(
+            List<CityReceipt> cityReceipts,
+            SupplyDashboardOperatingAnalysisView.CustomerRetention customerRetention,
+            List<SupplyDashboardOperatingAnalysisView.CityMonthlyGoal> cityMonthlyGoals) {}
+
+    public record CityReceipt(String regionCode, String regionName, BigDecimal receiptAmount) {}
+
     public SupplyDashboardOverviewView {
         metrics = List.copyOf(metrics == null ? List.of() : metrics);
         salesTrend = List.copyOf(salesTrend == null ? List.of() : salesTrend);

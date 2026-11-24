@@ -47,6 +47,11 @@ public final class BiDataScopeService {
         throw deniedException("bi-supply-context");
     }
 
+    public com.rigour.analytics.api.v1.model.DepartmentDashboardFilters departmentFilters() {
+        var policy = appPolicy();
+        return store.departmentFilters(actor().tenantId().toString(), policy.employeeCode());
+    }
+
     public ScopedSelection resolve(String regionCode, String ownerStaffCode) {
         var actor = actor();
         var current = appPolicy();

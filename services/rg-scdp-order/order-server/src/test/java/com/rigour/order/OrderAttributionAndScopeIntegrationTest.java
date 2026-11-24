@@ -71,6 +71,57 @@ class OrderAttributionAndScopeIntegrationTest {
     @Autowired com.rigour.order.infrastructure.persistence.mapper.OrderCostSourceMapper payrollSource;
 
     @Test
+    void receivableOpeningSubtractsOnlyVerifiedApplicationsThroughBaseline() {
+        jdbc.update("""
+            INSERT INTO order_sales_order(tenant_id,order_no,order_status_code,order_date,payable_amount)
+            VALUES (?,'OPENING','CONFIRMED','2026-09-01',200),
+                   (?,'NO-PAYMENT','CONFIRMED','2026-09-01',100),
+                   (?,'OVERPAID','CONFIRMED','2026-09-01',100)
+            """, tenant, tenant, tenant);
+        jdbc.update("""
+            INSERT INTO order_history_member(tenant_id,order_id,group_id,baseline_at,opening_paid)
+            SELECT tenant_id,id,'test','2026-10-01',100 FROM order_sales_order WHERE tenant_id=?
+            """, tenant);
+        long order = jdbc.queryForObject(
+                "SELECT id FROM order_sales_order WHERE tenant_id=? AND order_no='OPENING'",
+                Long.class, tenant);
+        jdbc.update("""
+            INSERT INTO order_payment_record(tenant_id,payment_no,order_id,payment_time,paid_amount,payment_status_code)
+            VALUES (?,'BEFORE',?,'2026-09-30',20,'CHECKED'),
+                   (?,'ON-BASELINE',?,'2026-10-01',40,'CHECKED'),
+                   (?,'AFTER',?,'2026-10-02',80,'CHECKED'),
+                   (?,'UNVERIFIED',?,'2026-09-29',10,'RECEIVED')
+            """, tenant, order, tenant, order, tenant, order, tenant, order);
+        jdbc.update("""
+            INSERT INTO order_payment_record(tenant_id,payment_no,order_id,payment_time,paid_amount,payment_status_code)
+            SELECT tenant_id,'OVER',id,'2026-09-28',150,'CHECKED'
+            FROM order_sales_order WHERE tenant_id=? AND order_no='OVERPAID'
+            """, tenant);
+
+        String otherTenant = UUID.randomUUID().toString();
+        jdbc.update("""
+            INSERT INTO order_history_member(tenant_id,order_id,group_id,baseline_at,opening_paid)
+            VALUES (?,?,'test','2026-10-01',70)
+            """, otherTenant, order);
+        var amounts = jdbc.query("""
+            SELECT o.order_no,v.opening_paid FROM order_receivable_opening_v v
+            JOIN order_sales_order o ON o.tenant_id=v.tenant_id AND o.id=v.id
+            WHERE v.tenant_id=?
+            """, rs -> {
+                var result = new HashMap<String, java.math.BigDecimal>();
+                while (rs.next()) result.put(rs.getString(1), rs.getBigDecimal(2));
+                return result;
+            }, tenant);
+        assertThat(amounts).hasSize(3);
+        assertThat(amounts.get("OPENING")).isEqualByComparingTo("40");
+        assertThat(amounts.get("NO-PAYMENT")).isEqualByComparingTo("100");
+        assertThat(amounts.get("NO-PAYMENT").scale()).isEqualTo(6);
+        assertThat(amounts.get("OVERPAID")).isZero();
+        assertThat(jdbc.queryForObject("SELECT opening_paid FROM order_receivable_opening_v WHERE tenant_id=?",
+                java.math.BigDecimal.class, otherTenant)).isEqualByComparingTo("70");
+    }
+
+    @Test
     void contractRevisionsKeepOldTermsAndAcceptExactRetries() {
         var user=UUID.randomUUID();
         TestAuthorizationContext.set(new CallerIdentity("TENANT",user,UUID.fromString(tenant),user,null,UUID.randomUUID(),1,1,1,Set.of(),Set.of("order:read","order:receivable-plan:write")));

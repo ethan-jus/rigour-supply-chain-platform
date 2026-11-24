@@ -1,5 +1,6 @@
 package com.rigour.analytics.application.service;
 
+import com.rigour.analytics.application.model.CustomerRegionSelection;
 import static java.math.BigDecimal.ZERO;
 
 import com.rigour.analytics.api.v1.model.ReceivablesView;
@@ -22,6 +23,8 @@ public class ReceivablesService {
     private final BiDataScopeService scopes;
     private final ReceivablesStore store;
     private final Clock clock;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
     static final List<String> BANDS =
             List.of("CURRENT", "D1_30", "D31_60", "D61_90", "OVER90", "UNKNOWN");
 
@@ -100,6 +103,7 @@ public class ReceivablesService {
         var current = scopes.resolve(region, owner);
         boolean full =
                 current.fullTenant()
+                        && CustomerRegionSelection.current() == null
                         && current.regionCode() == null
                         && current.ownerStaffCode() == null
                         && departmentId == null;
@@ -329,8 +333,18 @@ public class ReceivablesService {
             BiDataScopeService.ScopedSelection current) {
         if (filter.productCategoryId() != null
                 || filter.customerTypeCode() != null
-                || filter.sourceSystemCode() != null
-                || store.projectedAt(current.tenantId()) == null)
+                || filter.sourceSystemCode() != null)
+            return new Overview(null, null, null, List.of());
+        return queryCache.read(
+                current.tenantId(), "overviewReceivables", List.of(filter, current), 60,
+                new tools.jackson.core.type.TypeReference<>() {},
+                () -> loadOverview(filter, current));
+    }
+
+    private Overview loadOverview(
+            com.rigour.analytics.application.model.SupplyDashboardFilter filter,
+            BiDataScopeService.ScopedSelection current) {
+        if (store.projectedAt(current.tenantId()) == null)
             return new Overview(null, null, null, List.of());
         var start = filter.from().atZone(BiBusinessTime.ZONE).toLocalDate();
         var end = filter.to().atZone(BiBusinessTime.ZONE).toLocalDate();
@@ -341,7 +355,8 @@ public class ReceivablesService {
                         current.ownerStaffCode(),
                         null,
                         current.fullTenant()
-                                && current.regionCode() == null
+                                && CustomerRegionSelection.current() == null
+                        && current.regionCode() == null
                                 && current.ownerStaffCode() == null);
         var balances = store.balances(scope, end);
         var cash =

@@ -1,5 +1,6 @@
 package com.rigour.analytics.infrastructure.persistence.scope;
 
+import com.rigour.analytics.application.model.CustomerRegionSelection;
 import com.rigour.shared.context.*;
 import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView;
 import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.*;
@@ -247,8 +248,17 @@ public final class BiScopePredicates {
                 args);
     }
 
+    private static Sql customerRegion(Sql authorized, String code) {
+        if (code == null) return authorized;
+        var args = new ArrayList<>(authorized.args());
+        args.add(code);
+        args.add(code);
+        return new Sql("(" + authorized.text() + ") AND (a.region_code=? OR JSON_CONTAINS(a.region_path,JSON_QUOTE(?)))", args);
+    }
+
     /** 显式 CTE 覆盖所有业务事实，嵌套查询、排行、分页和汇总都只能读取过滤后的行。 */
     public static Sql ctes(SupplyAuthorizationView p) {
+        var customerRegion = CustomerRegionSelection.current();
         List<String> ctes = new ArrayList<>();
         List<Object> args = new ArrayList<>();
         String tenant = p.tenantId().toString();
@@ -259,7 +269,7 @@ public final class BiScopePredicates {
                 "bi_sales_order_fact",
                 "LEFT JOIN bi_order_authority a ON a.tenant_id=f.tenant_id AND"
                         + " a.order_id=f.order_id",
-                predicate(p, "ORDER"));
+                customerRegion(predicate(p, "ORDER"), customerRegion));
         add(
                 ctes,
                 args,
@@ -287,7 +297,7 @@ public final class BiScopePredicates {
                 "bi_customer_dim",
                 "LEFT JOIN bi_customer_authority a ON a.tenant_id=f.tenant_id AND"
                         + " a.customer_id=f.customer_id",
-                predicate(p, "CUSTOMER"));
+                customerRegion(predicate(p, "CUSTOMER"), customerRegion));
         var employee = predicate(p, "EMPLOYEE");
         add(
                 ctes,
