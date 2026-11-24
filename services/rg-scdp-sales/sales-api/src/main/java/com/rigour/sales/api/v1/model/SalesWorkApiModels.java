@@ -297,7 +297,7 @@ public final class SalesWorkApiModels {
             String visitType, String reviewStatus, String storeAddress) {
     }
 
-    /** 相邻两次拜访之间的行程；仅累计连续可靠采样，不补门店之间的直线距离。 */
+    /** 到站行程；管理端首段从工作日签到开始（fromSequence 为 0，fromVisitId 为空）。仅累计连续可靠采样，不补门店之间的直线距离。 */
     public record TrackTravelSegmentView(
             UUID fromVisitId, UUID toVisitId, int fromSequence, int toSequence,
             String fromStoreName, String toStoreName, int distanceMeters,

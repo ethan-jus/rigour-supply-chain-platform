@@ -60,6 +60,11 @@ public class FieldworkReportController {
         return ApiResponse.success(service.commitments(status, from, through, ownerCode, page, size));
     }
 
+    @GetMapping("/visits/{visitId}/content")
+    public ApiResponse<FieldworkReport.VisitContent> content(@PathVariable UUID visitId) {
+        return ApiResponse.success(service.visitContent(visitId));
+    }
+
     @GetMapping("/visits/records")
     public ApiResponse<FieldworkReport.Ledger> visits(
             @RequestParam(required = false) LocalDate from,
@@ -74,7 +79,9 @@ public class FieldworkReportController {
             @RequestParam(required = false) UUID visitId,
             @RequestParam(required = false) String employeeCode,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "25") int size) {
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(defaultValue = "date") String sort,
+            @RequestParam(required = false) Boolean ascending) {
         return ApiResponse.success(
                 service.ledger(
                         from,
@@ -89,6 +96,6 @@ public class FieldworkReportController {
                         visitId,
                         employeeCode,
                         page,
-                        size));
+                        size, sort, ascending));
     }
 }

@@ -48,7 +48,17 @@ public record FieldworkReport(
             String city,
             String departmentName,
             Instant receivedAt,
-            boolean hasStorefrontPhoto) {}
+            boolean hasStorefrontPhoto,
+            Long playbackMillis,
+            String communicationResult) {}
+
+    public record VisitContent(boolean submitted, VisitForm form) {}
+    public record VisitContact(String name, String role) {}
+    public record VisitBusiness(String business, String intention, String progress) {}
+    public record VisitForm(String businessType, String businessStatus, String statusReason,
+            String outcome, boolean contacted, List<VisitContact> contacts, boolean noIntention,
+            List<VisitBusiness> businesses, String noContactReason, String noContactDetail,
+            String nextAction, LocalDate nextDate) {}
 
     public record Issue(UUID id, UUID visitId, String kind, String title, String status) {}
 
@@ -101,7 +111,9 @@ public record FieldworkReport(
             int withDistance,
             int contacts,
             int withContacts,
-            int pendingPeople) {}
+            int pendingPeople,
+            int signedInPeople,
+            int visitingPeople) {}
 
     public record Commitment(
             UUID id,
@@ -129,5 +141,6 @@ public record FieldworkReport(
             List<Option> departments,
             List<Option> people,
             Map<String, Integer> assessmentCounts,
-            Map<UUID, StoreVisitCounts> storeVisitCounts) {}
+            Map<UUID, StoreVisitCounts> storeVisitCounts,
+            Map<UUID, String> storeRegions) {}
 }

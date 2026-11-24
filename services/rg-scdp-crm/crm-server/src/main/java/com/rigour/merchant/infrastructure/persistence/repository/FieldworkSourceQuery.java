@@ -1,6 +1,7 @@
 package com.rigour.merchant.infrastructure.persistence.repository;
 
 import com.rigour.merchant.api.v1.model.FieldworkSources.*;
+import com.rigour.settings.api.v1.model.AdminDivisionCatalog;
 
 import org.springframework.jdbc.core.namedparam.*;
 import org.springframework.stereotype.Repository;
@@ -111,5 +112,23 @@ GROUP BY r.employee_id,person ORDER BY added
                             });
         }
         return new Result(contacts, visits);
+    }
+
+    public Map<Long, String> storeRegions(String tenant, List<Long> stores, AdminDivisionCatalog catalog) {
+        var names = new HashMap<String, String>();
+        for (var node : catalog.nodes()) names.put(node.code(), node.name());
+        var args = new MapSqlParameterSource("tenant", tenant)
+                .addValue("stores", stores).addValue("version", catalog.version());
+        var regions = new HashMap<Long, String>();
+        jdbc.query("""
+                SELECT store_id, province_code, city_code FROM crm_store_summary
+                WHERE tenant_id=:tenant AND store_id IN (:stores) AND admin_area_version=:version
+                """, args, (org.springframework.jdbc.core.RowCallbackHandler) rs -> {
+                    String province = names.getOrDefault(rs.getString("province_code"), "");
+                    String city = names.getOrDefault(rs.getString("city_code"), "");
+                    String region = province.equals(city) ? province : province + city;
+                    if (!region.isBlank()) regions.put(rs.getLong("store_id"), region);
+                });
+        return regions;
     }
 }

@@ -18,7 +18,9 @@ public interface FieldworkFacts {
             Integer gaps,
             boolean pending) {}
 
-    record VisitFact(Visit visit, String storeKey, Long crmVisitId) {}
+    record VisitFact(Visit visit, String localStoreKey, Long crmVisitId, Long crmStoreId) {
+        public String storeKey() { return crmStoreId == null ? localStoreKey : "C" + crmStoreId; }
+    }
 
     record StaffPunch(UUID profile, Punch punch) {}
 
@@ -51,6 +53,8 @@ public interface FieldworkFacts {
 
     Map<UUID, StoreVisitCounts> storeVisitCounts(
             UUID tenant, SalesManagementDirectory.Access scope, List<UUID> visitIds);
+
+    Optional<VisitContent> visitContent(UUID tenant, SalesManagementDirectory.Access scope, UUID visitId);
 
     List<VisitFact> visits(
             UUID tenant,

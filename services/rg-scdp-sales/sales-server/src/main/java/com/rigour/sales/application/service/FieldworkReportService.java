@@ -197,7 +197,8 @@ public class FieldworkReportService {
                 org.city(),
                 org.deptName(),
                 v.receivedAt(),
-                v.hasStorefrontPhoto());
+                v.hasStorefrontPhoto(),
+                v.playbackMillis(), v.communicationResult());
     }
 
     public FieldworkReport report(LocalDate date, Filters f) {
@@ -399,6 +400,8 @@ public class FieldworkReportService {
 
     private static Summary summarize(List<Entry> entries) {
         int punched = 0,
+                signedInPeople = 0,
+                visitingPeople = 0,
                 punches = 0,
                 visits = 0,
                 plans = 0,
@@ -418,6 +421,8 @@ public class FieldworkReportService {
             stores.addAll(e.stores());
             contacts.addAll(e.contacts());
             if (r.punchCount() > 0) punched++;
+            if (r.punches().stream().anyMatch(p -> "CHECK_IN".equals(p.type()))) signedInPeople++;
+            if (r.visits().stream().anyMatch(v -> v.arrived() != null && v.departed() == null)) visitingPeople++;
             punches += r.punchCount();
             visits += r.visitCount();
             plans += r.planned();
@@ -453,7 +458,9 @@ public class FieldworkReportService {
                 withDistance,
                 contacts.size(),
                 withContacts,
-                risk);
+                risk,
+                signedInPeople,
+                visitingPeople);
     }
 
     public List<Commitment> commitments(
@@ -497,6 +504,12 @@ public class FieldworkReportService {
                 .toList();
     }
 
+    public VisitContent visitContent(UUID visitId) {
+        var caller = SalesWorkContextService.requireTenantCaller();
+        return facts.visitContent(caller.tenantId(), access(caller), visitId)
+                .orElseThrow(() -> new AuthorizationDeniedException(READ));
+    }
+
     public Ledger ledger(
             LocalDate from,
             LocalDate to,
@@ -511,8 +524,18 @@ public class FieldworkReportService {
             String employeeCode,
             int page,
             int size) {
+        return ledger(from, to, person, city, department, descendants, keyword, assessment, origin,
+                visitId, employeeCode, page, size, "date", false);
+    }
+
+    public Ledger ledger(LocalDate from, LocalDate to, UUID person, String city, String department,
+            boolean descendants, String keyword, String assessment, String origin, UUID visitId,
+            String employeeCode, int page, int size, String sort, Boolean ascending) {
+        boolean byStore = "store".equals(sort);
+        var order = byStore ? ledgerOrder("date", false) : ledgerOrder(sort, ascending);
+        var storeGroups = new TreeMap<String, List<Visit>>();
         if ((from == null) != (to == null) || from != null && from.isAfter(to)
-                || page < 1 || page > 100000 || size < 1 || size > 100)
+                || page < 1 || page > 100000 || size < 1 || size > 200)
             throw new RequestValidationException("拜访日期或分页范围无效");
         if (keyword != null && keyword.length() > 80)
             throw new RequestValidationException("搜索条件过长");
@@ -560,7 +583,13 @@ public class FieldworkReportService {
                     continue;
                 assessmentCounts.merge(v.assessment(), 1, Integer::sum);
                 if (!blank(assessment) && !assessment.equals(v.assessment())) continue;
-                result.add(v);
+                if (byStore) {
+                    // Unlinked visits only have the displayed name available for grouping.
+                    String key = fact.storeKey() != null ? fact.storeKey() : "name:" + Objects.toString(storeName, "");
+                    storeGroups.computeIfAbsent(key, ignored -> new ArrayList<>()).add(v);
+                } else {
+                    result.add(v);
+                }
                 if (v.departed() != null) {
                     done++;
                     if (fact.storeKey() != null) stores.add(fact.storeKey());
@@ -568,11 +597,18 @@ public class FieldworkReportService {
                 if ("PENDING".equals(v.assessment())) pending++;
             }
         }
-        result.sort(
-                Comparator.comparing(Visit::arrived).reversed()
-                        .thenComparing(Visit::profileId)
-                        .thenComparingInt(Visit::sequence)
-                        .thenComparing(Visit::id));
+        if (byStore) {
+            storeGroups.values().forEach(visits -> visits.sort(order));
+            var collator = java.text.Collator.getInstance(Locale.SIMPLIFIED_CHINESE);
+            Comparator<String> names = collator::compare;
+            if (Boolean.FALSE.equals(ascending)) names = names.reversed();
+            // Use the latest named snapshot so a rename does not split the store's history.
+            storeGroups.values().stream()
+                    .sorted(Comparator.comparing(FieldworkReportService::latestStoreName, Comparator.nullsLast(names)))
+                    .forEachOrdered(result::addAll);
+        } else {
+            result.sort(order);
+        }
         var items = page(result, page, size);
         return new Ledger(
                 items,
@@ -594,6 +630,59 @@ public class FieldworkReportService {
                                         .thenComparing(Option::id))
                         .toList(),
                 Map.copyOf(assessmentCounts),
-                facts.storeVisitCounts(tenant, scope, items.stream().map(Visit::id).toList()));
+                facts.storeVisitCounts(tenant, scope, items.stream().map(Visit::id).toList()),
+                storeRegions(tenant, rows, items));
     }
+
+    private Map<UUID, String> storeRegions(UUID tenant, List<VisitFact> rows, List<Visit> items) {
+        var pageIds = items.stream().map(Visit::id).collect(Collectors.toSet());
+        var stores = new HashMap<UUID, Long>();
+        for (var row : rows) {
+            if (pageIds.contains(row.visit().id()) && row.crmStoreId() != null)
+                stores.put(row.visit().id(), row.crmStoreId());
+        }
+        if (stores.isEmpty()) return Map.of();
+        try {
+            var names = directory.storeRegions(tenant, stores.values().stream().distinct().toList());
+            var regions = new HashMap<UUID, String>();
+            stores.forEach((visit, store) -> {
+                var region = names.get(store);
+                if (region != null) regions.put(visit, region);
+            });
+            return regions;
+        } catch (org.springframework.web.client.RestClientException | IllegalStateException unavailable) {
+            org.slf4j.LoggerFactory.getLogger(FieldworkReportService.class)
+                    .warn("CRM 门店地区暂不可用", unavailable);
+            return Map.of();
+        }
+    }
+    private static String latestStoreName(List<Visit> visits) {
+        for (Visit visit : visits) {
+            if (!blank(visit.store())) return visit.store();
+            if (!blank(visit.customer())) return visit.customer();
+        }
+        return null;
+    }
+
+    static Comparator<Visit> ledgerOrder(String sort, Boolean ascending) {
+        boolean ascendingOrder = ascending != null ? ascending : Set.of("person", "department").contains(sort);
+        Comparator<Instant> times = ascendingOrder ? Comparator.naturalOrder() : Comparator.reverseOrder();
+        var newest = Comparator.comparing(Visit::date, Comparator.reverseOrder())
+                .thenComparing(Visit::arrived, Comparator.reverseOrder());
+        Comparator<Visit> primary = switch (sort) {
+            case "date" -> ascendingOrder ? Comparator.comparing(Visit::date) : newest;
+            case "arrived" -> Comparator.comparing(Visit::arrived, times);
+            case "departed" -> Comparator.comparing(Visit::departed, Comparator.nullsLast(times));
+            case "person", "department" -> {
+                var collator = java.text.Collator.getInstance(Locale.SIMPLIFIED_CHINESE);
+                Comparator<String> names = ascendingOrder ? collator::compare : (a, b) -> collator.compare(b, a);
+                yield Comparator.comparing("person".equals(sort) ? Visit::name : Visit::departmentName,
+                        Comparator.nullsLast(names));
+            }
+            default -> throw new RequestValidationException("不支持的拜访排序字段");
+        };
+        return primary.thenComparing(newest).thenComparing(Visit::profileId)
+                .thenComparingInt(Visit::sequence).thenComparing(Visit::id);
+    }
+
 }
