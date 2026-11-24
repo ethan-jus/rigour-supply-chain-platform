@@ -21,11 +21,19 @@ import java.util.Map;
 public class MybatisBiDataScopeStore implements BiDataScopeStore {
     private final BiDataScopeMapper mapper;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.rigour.shared.cache.QueryCache queryCache = com.rigour.shared.cache.QueryCache.disabled();
+
     @org.springframework.beans.factory.annotation.Autowired
     private org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Override
     public DepartmentDashboardFilters departmentFilters(String tenant, String employee) {
+        return queryCache.read(tenant, "departmentDashboardFilters", java.util.Arrays.asList(employee), 60,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadDepartmentFilters(tenant, employee));
+    }
+
+    private DepartmentDashboardFilters loadDepartmentFilters(String tenant, String employee) {
         var named = new NamedParameterJdbcTemplate(jdbc);
         var params = new MapSqlParameterSource("tenant", tenant).addValue("employee", employee);
         record Department(Node node, boolean managed) {}
@@ -41,12 +49,16 @@ public class MybatisBiDataScopeStore implements BiDataScopeStore {
                 WHERE c.tenant_id=:tenant ORDER BY JSON_LENGTH(c.department_path),c.city_name,c.region_code
                 """, params, (r,i) -> new Department(new Node(r.getString(1),r.getString(2),r.getString(3)),r.getBoolean(4)));
         var regions = BiScopedQueries.query(named, """
+                WITH visible_paths AS (
+                    SELECT DISTINCT a.region_code,CAST(a.region_path AS CHAR) region_path
+                      FROM bi_sales_order_fact o JOIN bi_order_authority a
+                        ON a.tenant_id=o.tenant_id AND a.order_id=o.order_id
+                     WHERE o.tenant_id=:tenant AND o.deleted=0
+                )
                 SELECT d.area_code,d.area_name,d.parent_area_code FROM bi_source_crm_crm_customer_area d
                 WHERE d.tenant_id=UUID_TO_BIN(:tenant) AND d.deleted=0
-                  AND EXISTS (SELECT 1 FROM bi_sales_order_fact o JOIN bi_order_authority a
-                    ON a.tenant_id=o.tenant_id AND a.order_id=o.order_id
-                    WHERE o.tenant_id=:tenant AND o.deleted=0
-                      AND (a.region_code=d.area_code OR JSON_CONTAINS(a.region_path,JSON_QUOTE(d.area_code))))
+                  AND EXISTS (SELECT 1 FROM visible_paths a
+                    WHERE a.region_code=d.area_code OR JSON_CONTAINS(a.region_path,JSON_QUOTE(d.area_code)))
                 ORDER BY d.area_name,d.area_code
                 """,params,(r,i)->new Node(r.getString(1),r.getString(2),r.getString(3)));
         return new DepartmentDashboardFilters(rows.stream().map(Department::node).toList(), regions,

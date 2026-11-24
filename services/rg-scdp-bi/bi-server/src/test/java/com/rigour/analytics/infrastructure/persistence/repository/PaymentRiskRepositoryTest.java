@@ -53,8 +53,28 @@ class PaymentRiskRepositoryTest {
                 ('T',1,3,13,'删除行',3,'配件',1,2000),('OTHER',1,1,11,'其他租户',9,'私有分类',0,3000)
                 """);
         jdbc.update("INSERT INTO bi_product_dim VALUES('T',12,2,'球杆'),('OTHER',11,9,'其他租户')");
-        jdbc.execute("CREATE TABLE bi_order_balance_event(tenant_id VARCHAR,order_id BIGINT,effective_at TIMESTAMP,paid DECIMAL(24,6),adjustment DECIMAL(24,6))");
-        jdbc.update("INSERT INTO bi_order_balance_event VALUES('T',1,'2026-10-01',6000,-400),('T',2,'2026-10-01',10000,0),('T',1,'2026-11-01',3600,0)");
+        jdbc.execute("""
+                CREATE ALIAS UNHEX AS $$
+                    byte[] unhex(String value) { return java.util.HexFormat.of().parseHex(value); }
+                $$
+                """);
+        jdbc.execute("CREATE TABLE bi_cash_receipt(tenant_id VARCHAR,id VARBINARY,cash_at TIMESTAMP,verified INT)");
+        jdbc.execute("""
+                CREATE TABLE bi_cash_application(tenant_id VARCHAR,order_id BIGINT,cash_key VARCHAR,
+                    effective_at TIMESTAMP,amount DECIMAL(24,6),verified INT)
+                """);
+        jdbc.execute("CREATE TABLE bi_receivable_opening(tenant_id VARCHAR,id BIGINT,baseline_at TIMESTAMP,opening_paid DECIMAL(24,6))");
+        jdbc.execute("""
+                CREATE TABLE bi_receivable_adjustment(tenant_id VARCHAR,order_id BIGINT,effective_at TIMESTAMP,
+                    receivable_delta DECIMAL(24,6),received_delta DECIMAL(24,6),deleted INT,event_type VARCHAR)
+                """);
+        jdbc.update("INSERT INTO bi_receivable_opening VALUES('T',1,'2026-10-01',1000),('T',2,'2026-10-01',10000)");
+        jdbc.update("INSERT INTO bi_cash_receipt VALUES('T',X'01','2026-10-01',1),('T',X'02','2026-11-01',1)");
+        jdbc.update("""
+                INSERT INTO bi_cash_application VALUES
+                ('T',1,'01','2026-10-01',5000,1),('T',1,'02','2026-10-01',3600,1)
+                """);
+        jdbc.update("INSERT INTO bi_receivable_adjustment VALUES('T',1,'2026-10-01',-400,0,0,'CREDIT_NOTE')");
         OperatingCityTestSchema.install(jdbc);
     }
 

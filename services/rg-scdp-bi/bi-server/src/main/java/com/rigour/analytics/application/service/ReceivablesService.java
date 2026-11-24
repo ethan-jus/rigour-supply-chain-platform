@@ -336,7 +336,7 @@ public class ReceivablesService {
                 || filter.sourceSystemCode() != null)
             return new Overview(null, null, null, List.of());
         return queryCache.read(
-                current.tenantId(), "overviewReceivables", List.of(filter, current), 60,
+                current.tenantId(), "overviewReceivablesTotals", List.of(filter, current), 60,
                 new tools.jackson.core.type.TypeReference<>() {},
                 () -> loadOverview(filter, current));
     }
@@ -358,33 +358,21 @@ public class ReceivablesService {
                                 && CustomerRegionSelection.current() == null
                         && current.regionCode() == null
                                 && current.ownerStaffCode() == null);
-        var balances = store.balances(scope, end);
-        var cash =
-                store.receipts(scope, end).stream()
-                        .filter(
-                                r ->
-                                        r.verified()
-                                                && "RECEIPT".equals(r.kind())
-                                                && !r.date().isBefore(start))
-                        .toList();
-        var days = new java.util.TreeMap<LocalDate, BigDecimal>();
-        cash.forEach(r -> days.merge(r.date(), r.amount(), BigDecimal::add));
+        var rows = store.overview(scope, start, end);
+        var summary = rows.getFirst();
+        var cash = rows.subList(1, rows.size());
         return new Overview(
-                sum(cash, Receipt::amount),
-                sum(balances, Balance::remaining),
-                sum(
-                        balances.stream()
-                                .filter(b -> b.overdueDays() != null && b.overdueDays() > 0)
-                                .toList(),
-                        Balance::remaining),
-                days.entrySet().stream()
+                sum(cash, ReceivablesStore.OverviewRow::received),
+                summary.outstanding(),
+                summary.overdue(),
+                cash.stream()
                         .map(
-                                e ->
+                                day ->
                                         new com.rigour.analytics.api.v1.model
                                                 .SupplyDashboardTrendPointView(
                                                 "receipt_amount",
-                                                e.getKey().toString(),
-                                                e.getValue(),
+                                                day.date().toString(),
+                                                day.received(),
                                                 null))
                         .toList());
     }

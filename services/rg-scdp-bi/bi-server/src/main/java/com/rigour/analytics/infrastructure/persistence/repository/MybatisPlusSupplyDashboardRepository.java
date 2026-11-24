@@ -186,6 +186,45 @@ public class MybatisPlusSupplyDashboardRepository
                         .map(MybatisPlusSupplyDashboardRepository::freshness).toList());
     }
 
+    @Override
+    public BoardOverviewData boardOverview(String tenantId, SupplyDashboardFilter filter, boolean city, boolean comparison) {
+        return queryCache.read(tenantId, "boardOverview", List.of(filter, city, comparison), 60,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadBoardOverview(tenantId, filter, city, comparison));
+    }
+
+    private BoardOverviewData loadBoardOverview(String tenantId, SupplyDashboardFilter filter, boolean city, boolean comparison) {
+        var mapper = getBaseMapper();
+        var from = local(filter.from());
+        var to = local(filter.to());
+        var region = filter.regionCode();
+        var owner = filter.ownerStaffCode();
+        var customer = filter.customerTypeCode();
+        var source = filter.sourceSystemCode();
+        boolean includeRetention = !city && !comparison;
+        var rows = mapper.boardOrderMetrics(tenantId, from, to, region, owner, customer, source, includeRetention);
+        var total = rows.stream().filter(row -> text(row, "period") == null).findFirst().orElse(Map.of());
+        var trend = rows.stream().filter(row -> text(row, "period") != null)
+                .map(row -> new TrendPoint("sales_amount", text(row, "period"),
+                        decimal(row, "salesAmount"), decimal(row, "paidAmount")))
+                .toList();
+        var cities = city ? mapper.citySalesRanking(tenantId, from, to, region, owner, customer, source)
+                .stream().map(MybatisPlusSupplyDashboardRepository::ranking).toList() : List.<RankingItem>of();
+        var people = city ? mapper.salesRanking(tenantId, from, to, region, owner, customer, source)
+                .stream().map(MybatisPlusSupplyDashboardRepository::ranking).toList() : List.<RankingItem>of();
+        var goals = !comparison && (city || owner != null)
+                && customer == null && source == null && filter.productCategoryId() == null
+                ? targets.values(tenantId, YearMonth.from(from.plusHours(8)).toString(),
+                        YearMonth.from(to.plusHours(8)).toString())
+                : List.<com.rigour.hr.api.v1.model.TargetSettingsModels.Target>of();
+        return new BoardOverviewData(
+                sales(total), trend, cities, people,
+                city && owner == null && !goals.isEmpty() ? targets.completions(tenantId, filter, "CITY", goals) : List.of(),
+                goals.isEmpty() ? List.of() : targets.completions(tenantId, filter, "SALES_OWNER", goals),
+                includeRetention ? retention(total) : null,
+                mapper.operatingOverviewFreshness(tenantId).stream()
+                        .map(MybatisPlusSupplyDashboardRepository::freshness).toList());
+    }
+
     private SupplyDashboardData loadOverview(String tenantId, SupplyDashboardFilter filter) {
         LocalDateTime from = local(filter.from());
         LocalDateTime to = local(filter.to());
@@ -498,17 +537,23 @@ public class MybatisPlusSupplyDashboardRepository
     @Transactional(readOnly = true)
     public OperatingAnalysisData operatingAnalysis(
             String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter) {
-        return queryCache.read(tenantId, "operatingAnalysis", java.util.Arrays.asList(filter, previousFilter), 60,
-                new tools.jackson.core.type.TypeReference<>() {}, () -> loadOperatingAnalysis(tenantId, filter, previousFilter));
+        return operatingAnalysis(tenantId, filter, previousFilter, false);
+    }
+
+    @Override
+    public OperatingAnalysisData operatingAnalysis(
+            String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter, boolean cityBoard) {
+        return queryCache.read(tenantId, "operatingAnalysis", List.of(filter, previousFilter, cityBoard), 60,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadOperatingAnalysis(tenantId, filter, previousFilter, cityBoard));
     }
 
     private OperatingAnalysisData loadOperatingAnalysis(
-            String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter) {
+            String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter, boolean cityBoard) {
         SupplyDashboardQueryMapper mapper = getBaseMapper();
         LocalDateTime from = local(filter.from());
         LocalDateTime to = local(filter.to());
         return new OperatingAnalysisData(
-                mapper
+                cityBoard ? List.of() : mapper
                         .salesRanking(
                                 tenantId,
                                 local(previousFilter.from()),
@@ -520,7 +565,7 @@ public class MybatisPlusSupplyDashboardRepository
                         .stream()
                         .map(MybatisPlusSupplyDashboardRepository::ranking)
                         .toList(),
-                mapper
+                cityBoard ? List.of() : mapper
                         .cityProducts(
                                 tenantId,
                                 from,
@@ -541,7 +586,7 @@ public class MybatisPlusSupplyDashboardRepository
                                                 number(row, "orderCount"),
                                                 number(row, "customerCount")))
                         .toList(),
-                mapper
+                cityBoard ? List.of() : mapper
                         .cityCustomers(
                                 tenantId,
                                 from,

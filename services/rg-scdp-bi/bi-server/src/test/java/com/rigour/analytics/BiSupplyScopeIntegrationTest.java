@@ -481,6 +481,15 @@ class BiSupplyScopeIntegrationTest {
             assertThat(october.totals().applied()).isEqualByComparingTo("5500");
             assertThat(october.totals().outstanding()).isEqualByComparingTo("600");
             assertThat(october.totals().overdue()).isZero();
+            var repository = new com.rigour.analytics.infrastructure.persistence.repository.JdbcReceivablesStore(jdbc.getDataSource());
+            var rows = repository.overview(new com.rigour.analytics.application.port.out.ReceivablesStore.Scope(
+                    tenant, null, null, null, true), oct, oct.plusMonths(1).minusDays(1));
+            assertThat(rows.getFirst().outstanding()).isEqualByComparingTo(october.totals().outstanding());
+            assertThat(rows.getFirst().overdue()).isEqualByComparingTo(october.totals().overdue());
+            assertThat(rows.subList(1, rows.size()).stream()
+                    .map(com.rigour.analytics.application.port.out.ReceivablesStore.OverviewRow::received)
+                    .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add))
+                    .isEqualByComparingTo(october.totals().receipts());
             assertThat(october.totals().opening().add(october.totals().newReceivables()).add(october.totals().adjustments()).subtract(october.totals().applied())).isEqualByComparingTo(october.totals().outstanding());
         }
         var self=policy(List.of(clause("SELF",none(),all(),none())),all(),all());
@@ -492,6 +501,11 @@ class BiSupplyScopeIntegrationTest {
             assertThat(restricted.totals().unapplied()).isNull();
             assertThat(restricted.totals().receipts()).isEqualByComparingTo("2000");
             assertThat(restricted.totals().outstanding()).isEqualByComparingTo("4000");
+            var repository = new com.rigour.analytics.infrastructure.persistence.repository.JdbcReceivablesStore(jdbc.getDataSource());
+            var rows = repository.overview(new com.rigour.analytics.application.port.out.ReceivablesStore.Scope(
+                    tenant, null, null, null, false), sep, oct.minusDays(1));
+            assertThat(rows.getFirst().outstanding()).isEqualByComparingTo("4000");
+            assertThat(rows.getLast().received()).isEqualByComparingTo("2000");
         }
     }
 
@@ -971,13 +985,16 @@ class BiSupplyScopeIntegrationTest {
                     List.of("WX-DEPT", "", 10000), List.of("", "SZ", 10000),
                     List.of("WX-DEPT", "SZ", 10000), List.of("SZ-DEPT", "SZ", 0),
                     List.of("SZ-DEPT", "WX", 20000), List.of("WX-TEAM", "", 0))) {
-                var req=get("/api/v1/analytics/supply/dashboard/overview").param("projection","OPERATING")
-                        .param("from","2026-11-01T00:00:00Z").param("to","2026-11-30T23:59:59Z");
-                if (!sample.get(0).equals("")) req.param("regionCode",sample.get(0).toString());
-                if (!sample.get(1).equals("")) req.param("customerRegionCode",sample.get(1).toString());
-                mvc.perform(req).andExpect(status().isOk()).andExpect(jsonPath(
-                        "$.data.metrics[?(@.metricCode == 'sales_amount')].value").value(
-                                org.hamcrest.Matchers.contains(((Number) sample.get(2)).doubleValue())));
+                for (String projection : List.of("OPERATING", "SALES", "CITY")) {
+                    var req=get("/api/v1/analytics/supply/dashboard/overview").param("projection",projection)
+                            .param("from","2026-11-01T00:00:00Z").param("to","2026-11-30T23:59:59Z");
+                    if (!sample.get(0).equals("")) req.param("regionCode",sample.get(0).toString());
+                    if (!sample.get(1).equals("")) req.param("customerRegionCode",sample.get(1).toString());
+                    mvc.perform(req).andExpect(status().isOk())
+                            .andExpect(jsonPath("$.data.metrics[0].metricCode").value("sales_amount"))
+                            .andExpect(jsonPath("$.data.metrics[0].value").value(
+                                    org.hamcrest.Matchers.equalTo(((Number) sample.get(2)).doubleValue()), Double.class));
+                }
             }
             mvc.perform(get("/api/v1/analytics/supply/dashboard/overview").param("projection","OPERATING")
                     .param("from","2026-11-01T00:00:00Z").param("to","2026-11-30T23:59:59Z"))

@@ -31,6 +31,16 @@ public interface SupplyDashboardStore {
     OperatingAnalysisData operatingAnalysis(
             String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter);
 
+    default OperatingAnalysisData operatingAnalysis(
+            String tenantId, SupplyDashboardFilter filter, SupplyDashboardFilter previousFilter, boolean cityBoard) {
+        return operatingAnalysis(tenantId, filter, previousFilter);
+    }
+
+    default BoardOverviewData boardOverview(
+            String tenantId, SupplyDashboardFilter filter, boolean city, boolean comparison) {
+        throw new UnsupportedOperationException("boardOverview");
+    }
+
     default Optional<Instant> latestSalesOrderDate(String tenantId) {
         return Optional.empty();
     }
@@ -129,6 +139,16 @@ public interface SupplyDashboardStore {
             List<DataFreshness> freshness) {}
 
     record CityReceiptDay(String day, String regionCode, String regionName, BigDecimal receiptAmount) {}
+
+    record BoardOverviewData(
+            SalesSummary sales,
+            List<TrendPoint> salesTrend,
+            List<RankingItem> citySalesRanking,
+            List<RankingItem> salesRanking,
+            List<TargetCompletionItem> cityTargets,
+            List<TargetCompletionItem> salesTargets,
+            CustomerRetention customerRetention,
+            List<DataFreshness> freshness) {}
 
     /** 仅来自 BI 本地事实的经营分析聚合。 */
     record OperatingAnalysisData(

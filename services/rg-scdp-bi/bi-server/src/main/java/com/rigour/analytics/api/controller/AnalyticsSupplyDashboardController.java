@@ -62,9 +62,9 @@ public final class AnalyticsSupplyDashboardController implements AnalyticsSupply
     @Override
     public ApiResponse<SupplyDashboardOperatingAnalysisView> operatingAnalysis(
             Instant from, Instant to, String regionCode, String ownerStaffCode,
-            String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
+            String customerTypeCode, Long productCategoryId, String sourceSystemCode, boolean cityBoard) {
         return ApiResponse.success(queryService.operatingAnalysis(
-                from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode));
+                from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode, cityBoard));
     }
 
     @Override

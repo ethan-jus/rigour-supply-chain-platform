@@ -410,6 +410,43 @@ SELECT COUNT(*) AS orderCount,
             @Param("customerTypeCode") String customerTypeCode,
             @Param("sourceSystemCode") String sourceSystemCode);
 
+    @Select("""
+            <script>
+            SELECT 'sales_amount' AS metricCode,
+                   DATE(TIMESTAMPADD(HOUR,8,o.order_date)) AS period,
+                   COUNT(*) AS orderCount,COUNT(DISTINCT o.customer_id) AS orderingCustomerCount,
+                   COALESCE(SUM(o.payable_amount),0) AS salesAmount,
+                   COALESCE(SUM(o.paid_amount),0) AS paidAmount,
+                   COALESCE(SUM(o.unpaid_amount),0) AS unpaidAmount,
+                   MAX(o.source_updated_time) AS latestUpdatedTime
+            <if test="retention">
+                 , COUNT(DISTINCT CASE WHEN h.first_order_date &lt; #{from} THEN o.customer_id END) AS returningCustomerCount
+                 , COUNT(DISTINCT CASE WHEN h.first_order_date BETWEEN #{from} AND #{to} THEN o.customer_id END) AS newCustomerCount
+                 , COUNT(DISTINCT CASE WHEN EXTRACT(YEAR_MONTH FROM TIMESTAMPADD(HOUR,8,h.first_order_date))
+                       &lt; EXTRACT(YEAR_MONTH FROM TIMESTAMPADD(HOUR,8,o.order_date))
+                       THEN o.customer_id END) AS annualReturningCustomerCount
+            </if>
+              FROM bi_sales_order_fact o
+            <if test="retention">
+              LEFT JOIN bi_dashboard_customer_history h ON h.tenant_id=o.tenant_id AND h.customer_id=o.customer_id
+            </if>
+             WHERE o.tenant_id=#{tenantId} AND o.deleted=0 AND o.order_status_code NOT IN ('CANCELLED','DELETED')
+               AND o.order_date BETWEEN #{from} AND #{to}
+            <if test="regionCode != null"> AND o.region_code""" + REGION_SCOPE + """
+            </if>
+            <if test="ownerStaffCode != null"> AND o.owner_staff_code=#{ownerStaffCode} </if>
+            <if test="customerTypeCode != null"> AND o.customer_type_code=#{customerTypeCode} </if>
+            <if test="sourceSystemCode != null"> AND o.source_system_code=#{sourceSystemCode} </if>
+             GROUP BY DATE(TIMESTAMPADD(HOUR,8,o.order_date)) WITH ROLLUP
+            </script>
+            """)
+    List<Map<String, Object>> boardOrderMetrics(
+            @Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode, @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode, @Param("sourceSystemCode") String sourceSystemCode,
+            @Param("retention") boolean retention);
+
     @Select(
             """
             <script>

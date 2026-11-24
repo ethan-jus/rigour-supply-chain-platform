@@ -27,7 +27,7 @@ public interface AnalyticsSupplyDashboardApi {
     @GetMapping("/api/v1/analytics/supply/dashboard/department-filters")
     ApiResponse<com.rigour.analytics.api.v1.model.DepartmentDashboardFilters> departmentFilters();
 
-    enum OverviewProjection { FULL, OPERATING, OPERATING_COMPARISON }
+    enum OverviewProjection { FULL, OPERATING, OPERATING_COMPARISON, SALES, SALES_COMPARISON, CITY, CITY_COMPARISON }
 
     enum OverviewRankingKind { PRODUCT, CATEGORY }
 
@@ -62,7 +62,8 @@ public interface AnalyticsSupplyDashboardApi {
             @RequestParam(required = false) String ownerStaffCode,
             @RequestParam(required = false) String customerTypeCode,
             @RequestParam(required = false) Long productCategoryId,
-            @RequestParam(required = false) String sourceSystemCode);
+            @RequestParam(required = false) String sourceSystemCode,
+            @RequestParam(defaultValue = "false") boolean cityBoard);
 
     @GetMapping("/api/v1/analytics/supply/dashboard/receipt-details")
     ApiResponse<SupplyDashboardReceiptDetailsView> receiptDetails(
