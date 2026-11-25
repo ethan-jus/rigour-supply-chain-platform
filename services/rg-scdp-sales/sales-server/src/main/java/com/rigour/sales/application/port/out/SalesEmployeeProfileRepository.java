@@ -7,8 +7,10 @@ import java.util.UUID;
 
 public interface SalesEmployeeProfileRepository {
     Optional<Profile> findByUser(UUID tenantId, UUID userId);
-    Profile register(UUID tenantId, UUID userId, Employee employee, Instant now);
+    Registration register(UUID tenantId, UUID userId, Employee employee, Instant now);
     boolean hasLegacyBinding(UUID tenantId, UUID userId);
+
+    record Registration(Profile profile, UUID previousUserId) {}
 
     record Profile(UUID id, long employeeId, String employeeCode, String salesNo, UUID cityOrgId,
                    String status, Instant effectiveFrom, Instant effectiveTo) {

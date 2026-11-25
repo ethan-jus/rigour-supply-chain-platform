@@ -8,6 +8,7 @@ import com.rigour.sales.application.port.out.SalesEmployeeIdentitySource;
 import com.rigour.sales.application.port.out.SalesEmployeeIdentitySource.Employee;
 import com.rigour.sales.application.port.out.SalesEmployeeProfileRepository;
 import com.rigour.sales.application.port.out.SalesEmployeeProfileRepository.Profile;
+import com.rigour.sales.application.port.out.SalesEmployeeProfileRepository.Registration;
 import com.rigour.shared.audit.AuditSink;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
@@ -55,8 +56,8 @@ class SalesEmployeeProfileServiceTest {
     void registrationUsesDatabasePrecisionAndValidatesAfterConcurrentWait() {
         var id = UUID.randomUUID();
         when(repository.register(eq(tenant), eq(user), eq(employee), any()))
-                .thenReturn(new Profile(id, employee.id(), employee.code(), employee.code(), null,
-                        "ACTIVE", Instant.parse("2026-10-26T08:00:00.123457Z"), null));
+                .thenReturn(new Registration(new Profile(id, employee.id(), employee.code(), employee.code(), null,
+                        "ACTIVE", Instant.parse("2026-10-26T08:00:00.123457Z"), null), null));
 
         assertThat(service.register().salesProfileId()).isEqualTo(id);
 
@@ -69,8 +70,8 @@ class SalesEmployeeProfileServiceTest {
     @Test
     void futureEffectiveProfileRemainsRejectedAfterRegistration() {
         when(repository.register(eq(tenant), eq(user), eq(employee), any()))
-                .thenReturn(new Profile(UUID.randomUUID(), employee.id(), employee.code(), employee.code(),
-                        null, "ACTIVE", completed.plusSeconds(60), null));
+                .thenReturn(new Registration(new Profile(UUID.randomUUID(), employee.id(), employee.code(), employee.code(),
+                        null, "ACTIVE", completed.plusSeconds(60), null), null));
 
         assertThatThrownBy(service::register).isInstanceOfSatisfying(BusinessException.class,
                 error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SALES_PROFILE_INACTIVE));

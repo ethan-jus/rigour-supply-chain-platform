@@ -85,11 +85,46 @@ class SalesEmployeeProfileIntegrationTests {
         assertThat(count("sales_profile")).isEqualTo(1);
     }
 
-    @Test void sameEmployeeCannotBeClaimedByAnotherAccount() throws Exception {
+    @Test void replacementAccountContinuesTheExistingEmployeeWorkDay() throws Exception {
+        var original = profiles.register();
+        caller(user, Set.of("sales:policy:write", "sales:policy:publish"));
+        admin.upsertFieldPolicy(new FieldPolicyCommand("DEFAULT", "外勤", "Asia/Shanghai", LocalTime.MIDNIGHT,
+                480, 240, false, false, false, null, false, 1200, 60, new java.math.BigDecimal("100"), 120, "ALL", null, true, null));
+        caller(user, permissions);
+        var originalDay = attendance.checkIn(new CheckInCommand("original-check-in", "test-device", Instant.now(),
+                new com.rigour.sales.api.v1.model.SalesWorkApiModels.LocationEvidence(java.math.BigDecimal.TEN, java.math.BigDecimal.ONE, java.math.BigDecimal.ONE, "APP_NATIVE"), null, null));
+        UUID replacement = UUID.randomUUID();
+        when(source.current(any())).thenAnswer(inv -> {
+            if (((CallerIdentity) inv.getArgument(0)).userId().equals(replacement)) return employee;
+            throw new BusinessException(ErrorCode.SALES_IDENTITY_UNBOUND);
+        });
+        caller(replacement, permissions);
+        assertThat(profiles.profile().status()).isEqualTo("UNREGISTERED");
+        assertThat(profiles.register().salesProfileId()).isEqualTo(original.salesProfileId());
+        assertThat(profiles.register().salesProfileId()).isEqualTo(original.salesProfileId());
+        assertThat(count("sales_profile")).isEqualTo(1);
+        assertThat(count("sales_work_day")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("SELECT sales_profile_id FROM sales_work_day WHERE tenant_id=?", byte[].class, bin(tenant)))
+                .isEqualTo(bin(original.salesProfileId()));
+        assertThat(context.context().salesProfileId()).isEqualTo(original.salesProfileId());
+        assertThat(attendance.attendanceContext().workDay().id()).isEqualTo(originalDay.id());
+        assertThat(jdbc.queryForObject("""
+                SELECT COUNT(*) FROM sales_audit_log WHERE tenant_id=? AND actor_id=? AND target_id=?
+                AND action_code='SALES_EMPLOYEE_PROFILE_REBIND' AND detail_json->>'$.previousUserId'=?
+                """, Integer.class, bin(tenant), bin(replacement), bin(original.salesProfileId()), user.toString())).isOne();
+        caller(user, permissions);
+        fails(attendance::attendanceContext, ErrorCode.SALES_IDENTITY_UNBOUND);
+        fails(profiles::register, ErrorCode.SALES_IDENTITY_UNBOUND);
+        fails(context::context, ErrorCode.SALES_IDENTITY_UNBOUND);
+    }
+
+    @Test void bindingRevokedWhileRegistrationIsInFlightCannotTakeTheProfile() throws Exception {
         profiles.register();
         caller(UUID.randomUUID(), permissions);
-        fails(profiles::register, ErrorCode.SALES_EMPLOYEE_BINDING_CONFLICT);
-        assertThat(count("sales_profile")).isEqualTo(1);
+        when(source.current(any())).thenReturn(employee).thenThrow(new BusinessException(ErrorCode.SALES_IDENTITY_UNBOUND));
+        fails(profiles::register, ErrorCode.SALES_IDENTITY_UNBOUND);
+        assertThat(jdbc.queryForObject("SELECT platform_user_id FROM sales_profile WHERE tenant_id=?", byte[].class, bin(tenant)))
+                .isEqualTo(bin(user));
         assertThat(count("sales_audit_log")).isEqualTo(1);
     }
 

@@ -16,6 +16,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import org.springframework.stereotype.Service;
@@ -51,15 +52,20 @@ public class SalesEmployeeProfileService {
         var employee = source.current(caller);
         rejectLegacyBinding(caller);
         Instant now = clock.instant().truncatedTo(java.time.temporal.ChronoUnit.MICROS);
-        var profile = repository.register(caller.tenantId(), caller.userId(), employee, now);
-        // 登记可能等待另一个并发事务；校验不能使用等待前取得的时间。
+        var registration = repository.register(caller.tenantId(), caller.userId(), employee, now);
+        var profile = registration.profile();
+        var previous = registration.previousUserId();
+        // 取得员工档案锁后再向 IAM/HR 核对换号，防止早到的旧绑定请求事后改回。
+        if (previous != null) employee = source.current(caller);
         validate(profile, employee, clock.instant());
-        audit.append(new AuditEvent(caller.tenantId().toString(), RequestContext.getRequestId(),
-                caller.userId().toString(), "SALES_EMPLOYEE_PROFILE_REGISTER", "SALES_PROFILE",
-                profile.id().toString(), Map.of("hrEmployeeId", Long.toString(employee.id()),
+        var facts = new HashMap<String, String>(Map.of("hrEmployeeId", Long.toString(employee.id()),
                 "employeeCode", employee.code(), "employeeRevision", Long.toString(employee.revision()),
                 "organizationVersion", Long.toString(employee.organizationVersion()),
-                "accessVersion", Long.toString(employee.accessVersion())),
+                "accessVersion", Long.toString(employee.accessVersion())));
+        if (previous != null) facts.put("previousUserId", previous.toString());
+        audit.append(new AuditEvent(caller.tenantId().toString(), RequestContext.getRequestId(),
+                caller.userId().toString(), previous == null ? "SALES_EMPLOYEE_PROFILE_REGISTER" : "SALES_EMPLOYEE_PROFILE_REBIND",
+                "SALES_PROFILE", profile.id().toString(), Map.copyOf(facts),
                 OffsetDateTime.ofInstant(now, ZoneOffset.UTC)));
         return view(employee, profile);
     }

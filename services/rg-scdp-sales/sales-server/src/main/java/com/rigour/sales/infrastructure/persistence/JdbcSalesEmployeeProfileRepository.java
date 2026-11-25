@@ -37,8 +37,8 @@ public class JdbcSalesEmployeeProfileRepository implements SalesEmployeeProfileR
     }
 
     @Override
-    public Profile register(UUID tenantId, UUID userId, Employee employee, Instant now) {
-        // 唯一键串行化并发开通；已有档案的归属、状态和生效区间绝不被重新激活覆盖。
+    public Registration register(UUID tenantId, UUID userId, Employee employee, Instant now) {
+        // 即使碰到员工唯一键也先取得行锁，换号和重复开通共用同一份档案。
         jdbc.update("""
                 INSERT INTO sales_profile
                     (id, tenant_id, employee_id, platform_user_id, hr_employee_id, hr_employee_code,
@@ -47,8 +47,22 @@ public class JdbcSalesEmployeeProfileRepository implements SalesEmployeeProfileR
                 ON DUPLICATE KEY UPDATE id=id
                 """, bin(UUID.randomUUID()), bin(tenantId), bin(userId), employee.id(), employee.code(),
                 employee.code(), Timestamp.from(now), employee.revision(), Timestamp.from(now), Timestamp.from(now));
-        return find(tenantId, userId, true)
+        var own = find(tenantId, userId, true);
+        if (own.isPresent()) return new Registration(own.get(), null);
+
+        UUID previous = jdbc.query("""
+                SELECT platform_user_id FROM sales_profile
+                 WHERE tenant_id=? AND hr_employee_id=? AND hr_employee_code=?
+                   AND employee_id IS NULL AND platform_user_id IS NOT NULL FOR UPDATE
+                """, (rs, row) -> SalesUuidCodec.decode(rs.getBytes(1)),
+                bin(tenantId), employee.id(), employee.code()).stream().findFirst()
                 .orElseThrow(() -> new BusinessException(ErrorCode.SALES_EMPLOYEE_BINDING_CONFLICT));
+        if (hasLegacyBinding(tenantId, previous)) throw new BusinessException(ErrorCode.SALES_EMPLOYEE_BINDING_CONFLICT);
+        jdbc.update("""
+                UPDATE sales_profile SET platform_user_id=?, version=version+1, updated_at=?
+                 WHERE tenant_id=? AND platform_user_id=? AND hr_employee_id=? AND hr_employee_code=?
+                """, bin(userId), Timestamp.from(now), bin(tenantId), bin(previous), employee.id(), employee.code());
+        return new Registration(find(tenantId, userId, true).orElseThrow(), previous);
     }
 
     @Override
