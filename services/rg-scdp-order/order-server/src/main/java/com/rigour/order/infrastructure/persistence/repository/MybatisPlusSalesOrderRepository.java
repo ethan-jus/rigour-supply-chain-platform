@@ -65,6 +65,7 @@ public class MybatisPlusSalesOrderRepository
     private final InternalSalesOrderLineMapper lineMapper;
     private final InternalSalesShipmentMapper shipmentMapper;
     private final Clock clock;
+    private final OrderRegisterDepartmentWriter registerDepartments;
     private final OrderAttributionWriter attribution;
     private final OrderDataScope scopes;
     private final JdbcStoreOrderOutbox crmOutbox;
@@ -75,7 +76,7 @@ public class MybatisPlusSalesOrderRepository
             InternalSalesShipmentMapper shipmentMapper,
             Clock orderClock,
             OrderAttributionWriter attribution,
-            OrderDataScope scopes, JdbcStoreOrderOutbox crmOutbox) {
+            OrderDataScope scopes, JdbcStoreOrderOutbox crmOutbox, OrderRegisterDepartmentWriter registerDepartments) {
         this.baseMapper = mapper;
         this.lineMapper = lineMapper;
         this.shipmentMapper = shipmentMapper;
@@ -83,6 +84,7 @@ public class MybatisPlusSalesOrderRepository
         this.attribution = attribution;
         this.scopes = scopes;
         this.crmOutbox = crmOutbox;
+        this.registerDepartments = registerDepartments;
     }
 
     @Override
@@ -195,6 +197,7 @@ public class MybatisPlusSalesOrderRepository
         } catch (DataIntegrityViolationException exception) {
             throw conflict("销售订单号已存在或销售订单引用数据无效");
         }
+        registerDepartments.capture(tenantId, entity.getId());
         return rawDetail(tenantId, entity.getId());
     }
 
@@ -332,6 +335,7 @@ public class MybatisPlusSalesOrderRepository
         scopes.requireOrder(tenantId, id, "order:update");
         if ("SUBMITTED".equals(command.orderStatusCode()))
             scopes.requireOrder(tenantId, id, "order:submit");
+        registerDepartments.capture(tenantId, id);
         return rawDetail(tenantId, id);
     }
 
@@ -506,6 +510,7 @@ public class MybatisPlusSalesOrderRepository
             logicDeleteLines(tenantId, id, actorId, now);
             insertLines(tenantId, id, command.lines(), actorId, now);
         }
+        registerDepartments.capture(tenantId, id);
         return rawDetail(tenantId, id);
     }
 
@@ -640,6 +645,7 @@ public class MybatisPlusSalesOrderRepository
                                         .eq(InternalSalesOrderEntity::getDeleted, 0));
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
         crmOutbox.enqueue(tenantId,id);
+        registerDepartments.capture(tenantId, id);
         return rawDetail(tenantId, id);
     }
 
@@ -860,6 +866,13 @@ public class MybatisPlusSalesOrderRepository
         if (updated != 1) throw conflict("销售订单已被其他人修改，请刷新后重试");
         crmOutbox.enqueue(tenantId,id);
         logicDeleteLines(tenantId, id, actorId, now);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public SalesOrderDetailView registerDetail(String tenant,long id,com.rigour.order.application.service.sales.RegisterPage page) {
+        scopes.requireRegisterOrder(tenant,id,page);
+        return rawDetail(tenant,id);
     }
 
     private SalesOrderDetailView rawDetail(String tenantId, long id) {

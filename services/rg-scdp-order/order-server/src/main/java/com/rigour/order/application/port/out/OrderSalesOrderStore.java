@@ -16,6 +16,7 @@ public interface OrderSalesOrderStore {
 
     SalesOrderTotalsView salesOrderTotals(String tenantId, SalesOrderSearchCriteria criteria);
 
+    SalesOrderDetailView registerDetail(String tenant, long id, com.rigour.order.application.service.sales.RegisterPage page);
     Optional<SalesOrderDetailView> salesOrder(String tenantId, Long id);
 
     Optional<LogisticsOrder> logisticsOrder(String tenantId, Long id);

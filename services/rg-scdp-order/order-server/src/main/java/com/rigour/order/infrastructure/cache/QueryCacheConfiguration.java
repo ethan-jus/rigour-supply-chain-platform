@@ -93,7 +93,20 @@ public class QueryCacheConfiguration {
         return new QueryCache(store, new JdbcCacheVersions(jdbc), () -> {
             var caller = AuthorizationContext.current().orElse(null);
             if (caller == null || !"TENANT".equals(caller.principalScope())) return null;
-            var policy = SupplyAuthorizationContext.requireAction("order:read");
+            String action = "order:read";
+            if (RequestContextHolder.getRequestAttributes() instanceof ServletRequestAttributes request) {
+                String path = request.getRequest().getRequestURI();
+                if (path.contains("/register/")) {
+                    String resource = path.substring(path.indexOf("/register/")+10).split("/",2)[0];
+                    action = switch (resource) {
+                        case "orders","monthly-performance","creators" -> "order:register-orders:read";
+                        case "lines" -> "order:register-lines:read";
+                        case "payments" -> "order:register-payments:read";
+                        default -> action;
+                    };
+                }
+            }
+            var policy = SupplyAuthorizationContext.requireAction(action);
             return Arrays.asList(caller, policy);
         }, () -> {
             var attributes = RequestContextHolder.getRequestAttributes();

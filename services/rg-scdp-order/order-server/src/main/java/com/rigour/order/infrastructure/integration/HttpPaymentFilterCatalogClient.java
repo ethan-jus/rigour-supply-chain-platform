@@ -24,20 +24,27 @@ public class HttpPaymentFilterCatalogClient implements PaymentFilterCatalogClien
             @Value("${rigour.erp.base-url:http://rigour-erp-core-service}") String base) {
         this.client = builder.requestFactory(factory).build(); this.signer = signer; this.base = base;
     }
-    @Override public Catalog catalog(CallerIdentity caller) {
-        var categories = rows(caller, "/api/v1/erp/product-categories", false).stream()
+    @Override public Catalog catalog(CallerIdentity caller, List<String> ids) {
+        var categories = rows(caller, "/api/v1/erp/product-categories", List.of()).stream()
                 .map(r -> new Category(text(r, "id"), text(r, "parentId"), text(r, "categoryName"))).toList();
-        var products = rows(caller, "/api/v1/erp/product-management/products", true).stream()
+        var products = new ArrayList<Product>();
+        for (int start=0;start<ids.size();start+=100) {
+            var batch=ids.subList(start,Math.min(start+100,ids.size()));
+            products.addAll(rows(caller, "/api/v1/erp/product-management/products", batch).stream()
+                .filter(r -> batch.contains(text(r,"id")))
                 .map(r -> new Product(text(r, "id"), text(r, "productCode"), text(r, "productName"),
-                        text(r, "categoryId"), variants(r.get("variants")))).toList();
+                        text(r, "categoryId"), variants(r.get("variants")),text(r,"mainImageUrl"),text(r,"unitCode"),
+                        text(r,"middleUnitCode"),number(r,"baseToMiddleRate"),text(r,"bigUnitCode"),number(r,"baseToBigRate"),
+                        text(r,"statisticsUnitLevel"))).toList());
+        }
         return new Catalog(categories, products);
     }
-    private List<Map<String, Object>> rows(CallerIdentity caller, String path, boolean variants) {
+    private List<Map<String, Object>> rows(CallerIdentity caller, String path, List<String> ids) {
         var result = new ArrayList<Map<String, Object>>();
         for (int begin = 0; begin < 10000; begin += 200) {
             var uri = UriComponentsBuilder.fromUriString(base).path(path)
                     .queryParam("begin", begin).queryParam("step", 200);
-            if (variants) uri.queryParam("withVariants", true);
+            if (!ids.isEmpty()) uri.queryParam("productIds", ids).queryParam("withVariants", true);
             URI target = uri.build().toUri();
             var response = client.get().uri(target).headers(h -> headers(caller, target).forEach(h::set))
                     .retrieve().body(new ParameterizedTypeReference<ApiResponse<Page>>() {});
@@ -67,6 +74,10 @@ public class HttpPaymentFilterCatalogClient implements PaymentFilterCatalogClien
         return h;
     }
     private record Page(long total, List<Map<String, Object>> items) {}
+    private static Double number(Map<?,?> row,String key) {
+        Object value=row.get(key);
+        return value==null ? null : Double.valueOf(value.toString());
+    }
     private static String text(Map<?, ?> row, String key) {
         Object value = row.get(key); return value == null ? null : value.toString();
     }

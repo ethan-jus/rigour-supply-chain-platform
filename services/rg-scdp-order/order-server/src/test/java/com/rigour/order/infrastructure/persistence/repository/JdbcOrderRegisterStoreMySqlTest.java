@@ -70,6 +70,54 @@ class JdbcOrderRegisterStoreMySqlTest {
         fixture();
     }
 
+    @Test
+    void crossCitySaleAndCollectionFollowThePageRoleForRowsTotalsDetailsAndOptions() {
+        String tenant=UUID.randomUUID().toString();
+        long sale=order(tenant,"ZS-SUZHOU",1L,"C","苏州客户","SUZHOU","ZS","张三","2026-10-01T00:00:00Z",100,0);
+        long other=order(tenant,"LS-WUXI",2L,"C2","无锡客户","WUXI","LS","李四","2026-10-01T00:00:00Z",300,0);
+        allocationLine(tenant,sale,1,71,"100");
+        allocationLine(tenant,other,1,72,"300");
+        jdbc.update("UPDATE order_sales_order SET register_assignment_id=1,register_employee_code=owner_employee_code,"
+                + "register_order_date=order_date,register_department_id=CASE WHEN id=? THEN 20 ELSE 10 END WHERE tenant_id=?",sale,tenant);
+        insertPayment(tenant,"LS-COLLECT",sale,"2026-10-03T00:00:00Z",50,"CHECKED",null);
+        insertPayment(tenant,"ZS-COLLECT",other,"2026-10-03T00:00:00Z",60,"CHECKED",null);
+        jdbc.update("UPDATE order_payment_record SET payment_owner_code=CASE WHEN order_id=? THEN 'LS' ELSE 'ZS' END,"
+                + "payment_owner_department_id=CASE WHEN order_id=? THEN 10 ELSE 20 END WHERE tenant_id=?",sale,sale,tenant);
+        var user=UUID.randomUUID();
+        var caller=new com.rigour.shared.context.CallerIdentity("TENANT",user,UUID.fromString(tenant),user,null,
+                UUID.randomUUID(),0,0,0,java.util.Set.of(),java.util.Set.of("order:register-lines:read","order:register-payments:read","order:register-orders:read"));
+        var all=new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit("ALL",List.of());
+        var dept=new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Limit("SPECIFIED",List.of("20"));
+        var iam=org.mockito.Mockito.mock(com.rigour.tenant.iam.client.SupplyAuthorizationClient.class);
+        java.util.function.Function<String,com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView> policy=action -> {
+            String mode=action.contains("lines")?"SELF":action.contains("payments")?"DEPARTMENT":"ALL";
+            return new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView("ACTIVE",caller.tenantId(),user,"ZS",1,1,1,1,
+                    caller.permissions(),action,true,List.of(new com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView.Clause(
+                    user,"ORDER",mode,mode.equals("DEPARTMENT")?dept:all,all,all,false)),all,all);
+        };
+        org.mockito.Mockito.when(iam.authorization(org.mockito.ArgumentMatchers.any(),org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(inv -> policy.apply(inv.getArgument(1)));
+        TestAuthorizationContext.set(caller);
+        var scopes=new OrderDataScope(iam,jdbc);
+        var register=new JdbcOrderRegisterStore(jdbc,scopes);
+        try(var ctx=com.rigour.tenant.iam.client.SupplyAuthorizationContext.open(iam,caller,policy.apply("supply:application:access"))) {
+            var lines=register.lines(tenant,0,20,linesWithReceiptRange(null,null));
+            assertThat(lines.total()).isEqualTo(1);
+            assertThat(lines.items().getFirst().orderNo()).isEqualTo("ZS-SUZHOU");
+            assertThat(lines.totals().get("payableAmount")).isEqualByComparingTo("100");
+            assertThat(register.payments(tenant,0,20,allocationCriteria(null,null)).items())
+                    .extracting(row -> row.paymentNo()).containsExactly("ZS-COLLECT");
+            var opts=new JdbcPaymentFilterStore(jdbc,scopes);
+            var page=com.rigour.order.application.service.sales.RegisterPage.LINES;
+            assertThat(opts.visible(tenant,page).products()).extracting(p -> p.id()).containsExactly("71");
+            assertThat(opts.visible(tenant,page).areas()).containsExactly("SUZHOU");
+            assertThat(opts.visible(tenant,com.rigour.order.application.service.sales.RegisterPage.ORDERS).departments()).containsKeys(10L,20L);
+            scopes.requireRegisterOrder(tenant,sale,page);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> scopes.requireRegisterOrder(tenant,other,page))
+                    .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        } finally { TestAuthorizationContext.clear(); }
+    }
+
     private static PaymentCriteria cancelledCriteria(String orderNo,String customerName) {
         return new PaymentCriteria(orderNo,null,customerName,null,null,null,null,null,null,null,null,null,
                 "CANCELLED",null,null,null,null,null,null,null,null,null,Map.of());
@@ -98,6 +146,8 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(store.payments(UUID.randomUUID().toString(),0,20,cancelledCriteria(null,null)).total()).isZero();
         var restricted=org.mockito.Mockito.mock(OrderDataScope.class);
         org.mockito.Mockito.when(restricted.predicate(org.mockito.ArgumentMatchers.anyString(),org.mockito.ArgumentMatchers.eq("o."),org.mockito.ArgumentMatchers.isNull()))
+                .thenReturn(new OrderDataScope.Predicate("o.owner_employee_code=?",List.of("E1")));
+        org.mockito.Mockito.when(restricted.registerPredicate(org.mockito.ArgumentMatchers.any()))
                 .thenReturn(new OrderDataScope.Predicate("o.owner_employee_code=?",List.of("E1")));
         assertThat(new JdbcOrderRegisterStore(jdbc,restricted).payments(tenant,0,20,cancelledCriteria(null,null)).total()).isEqualTo(1);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE tenant_id=?",Integer.class,tenant)).isEqualTo(1);
@@ -290,7 +340,7 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
-    void sourceCityOverridesEmployeeDepartmentInAllThreeListsAndTotals() {
+    void historicalDepartmentEvidenceControlsOrderAndLineTotals() {
         String tenant = UUID.randomUUID().toString();
         long a = order(tenant,"CITY-SJZ",1L,"C1","石家庄客户","SJZ","E1","同一业务员","2026-10-01T00:00:00Z",100,0);
         long b = order(tenant,"CITY-TS",2L,"C2","唐山客户","TS","E1","同一业务员","2026-10-01T00:00:00Z",80,0);
@@ -298,6 +348,8 @@ class JdbcOrderRegisterStoreMySqlTest {
         insertPayment(tenant,"CITY-P1",a,"2026-10-02T00:00:00Z",100,"CHECKED",null);
         insertPayment(tenant,"CITY-P2",b,"2026-10-02T00:00:00Z",80,"CHECKED",null);
         jdbc.update("UPDATE order_payment_record SET payment_owner_code='E1',payment_owner_evidence='归属已核实',payment_owner_department_id=CASE WHEN order_id=? THEN 11 ELSE 28 END WHERE tenant_id=?",a,tenant);
+        jdbc.update("UPDATE order_sales_order SET register_department_id=CASE WHEN id=? THEN 11 ELSE 28 END,"
+                + " register_assignment_id=1,register_employee_code=owner_employee_code,register_order_date=order_date WHERE tenant_id=?",a,tenant);
         var regions = Map.of("SJZ",11L,"TS",28L);
         for (var departments : List.of(java.util.Set.of(27L,11L,28L),java.util.Set.of(11L),java.util.Set.of(28L))) {
             var employees = departments.contains(11L) ? java.util.Set.of("E1") : java.util.Set.<String>of();
@@ -986,7 +1038,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(lines.totals().get("orderAmount")).isEqualByComparingTo("100");
         assertThat(payments.totals().get("receivedAmount")).isZero();
         var restricted = org.mockito.Mockito.mock(OrderDataScope.class);
-        org.mockito.Mockito.when(restricted.predicate("order:read","o.",null)).thenReturn(new OrderDataScope.Predicate("o.owner_employee_code=?",List.of("E2")));
+        org.mockito.Mockito.when(restricted.registerPredicate(org.mockito.ArgumentMatchers.any())).thenReturn(new OrderDataScope.Predicate("o.owner_employee_code=?",List.of("E2")));
         var scoped = new JdbcOrderRegisterStore(jdbc,restricted);
         assertThat(scoped.orders(tenant,0,20,oc).total()).isZero();
         assertThat(scoped.lines(tenant,0,20,lc).total()).isZero();
@@ -1073,7 +1125,7 @@ class JdbcOrderRegisterStoreMySqlTest {
         assertThat(rows.stream().map(v -> v.transactionAmount()).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("165");
         assertThat(store.monthlyPerformance(UUID.randomUUID().toString(),from,to)).isEmpty();
         var scope=org.mockito.Mockito.mock(OrderDataScope.class);
-        org.mockito.Mockito.when(scope.predicate("order:read","o.",null)).thenReturn(new OrderDataScope.Predicate("o.id=?",List.of(april)));
+        org.mockito.Mockito.when(scope.registerPredicate(org.mockito.ArgumentMatchers.any())).thenReturn(new OrderDataScope.Predicate("o.id=?",List.of(april)));
         assertThat(new JdbcOrderRegisterStore(jdbc,scope).monthlyPerformance(tenant,from,to).stream().map(v->v.receivedAmount()).reduce(BigDecimal.ZERO,BigDecimal::add)).isEqualByComparingTo("100");
     }
 

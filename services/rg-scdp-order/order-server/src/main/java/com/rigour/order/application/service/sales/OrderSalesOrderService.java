@@ -443,6 +443,11 @@ public final class OrderSalesOrderService {
                 text(specificationSnapshot, 500, "specificationSnapshot"));
     }
 
+    public SalesOrderDetailView registerDetail(Long id,RegisterPage page) {
+        var actor=actor(page.permission());
+        return withDetailEnrichment(actor,store.registerDetail(actor.tenantId().toString(),requireId(id,"销售订单ID无效"),page));
+    }
+
     public SalesOrderDetailView salesOrder(Long id) {
         CallerIdentity actor = actor(READ_PERMISSION);
         String tenantId = actor.tenantId().toString();

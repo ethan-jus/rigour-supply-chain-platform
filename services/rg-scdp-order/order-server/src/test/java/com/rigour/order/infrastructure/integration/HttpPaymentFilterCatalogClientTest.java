@@ -35,7 +35,7 @@ class HttpPaymentFilterCatalogClientTest {
             var client = new HttpPaymentFilterCatalogClient(RestClient.builder(),new TrustedContextSigner(properties),
                     new SimpleClientHttpRequestFactory(),"http://127.0.0.1:"+server.getAddress().getPort());
             var actor = new CallerIdentity("SERVICE",UUID.randomUUID(),tenant,null,null,UUID.randomUUID(),0,0,0,Set.of(),Set.of("erp:product:read"));
-            var catalog = client.catalog(actor);
+            var catalog = client.catalog(actor, java.util.List.of("10"));
             assertThat(catalog.products().getFirst().variants().getFirst().id()).isEqualTo("20");
             assertThat(catalog.products().getFirst().categoryId()).isEqualTo("1");
             assertThat(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(catalog))

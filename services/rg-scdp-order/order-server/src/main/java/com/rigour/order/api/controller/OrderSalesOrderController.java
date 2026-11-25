@@ -126,6 +126,14 @@ public final class OrderSalesOrderController implements OrderSalesOrderApi {
                         specificationSnapshot));
     }
 
+    @org.springframework.web.bind.annotation.GetMapping("/api/v1/orders/register/{page:orders|lines}/detail/{id}")
+    public ApiResponse<SalesOrderDetailView> registerDetail(@org.springframework.web.bind.annotation.PathVariable("page") String page,
+            @org.springframework.web.bind.annotation.PathVariable("id") Long id) {
+        return ApiResponse.success(service.registerDetail(id,"lines".equals(page)
+                ? com.rigour.order.application.service.sales.RegisterPage.LINES
+                : com.rigour.order.application.service.sales.RegisterPage.ORDERS));
+    }
+
     @Override
     public ApiResponse<SalesOrderDetailView> salesOrder(Long id) {
         return ApiResponse.success(service.salesOrder(id));

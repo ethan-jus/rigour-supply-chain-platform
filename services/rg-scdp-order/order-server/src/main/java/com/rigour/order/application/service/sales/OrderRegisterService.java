@@ -93,7 +93,7 @@ public class OrderRegisterService {
             Boolean dhbLinked,
             String dhbOrderNo,
             Boolean hasDiscount, String sortBy, String sortDirection, String createdBy, Instant paymentTimeFrom, Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
-        CallerIdentity actor = actor(READ_PERMISSION);
+        CallerIdentity actor = actor(RegisterPage.ORDERS.permission());
         requireRange(paymentTimeFrom, paymentTimeTo, "paymentTimeFrom不能晚于paymentTimeTo");
         var criteria =
                 new OrderCriteria(
@@ -110,11 +110,11 @@ public class OrderRegisterService {
                         text(paymentStatusCode, 64, "paymentStatusCode"),
                         hasUnpaid,
                         invoiceStatusCode(invoiceStatusCode),
-                        dhbLinked, text(dhbOrderNo, 80, "dhbOrderNo"), hasDiscount, sortBy, sortDirection, text(createdBy, 200, "createdBy"), paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId), text(paymentOwnerEmployeeCode, 50, "paymentOwnerEmployeeCode"));
+                        dhbLinked, text(dhbOrderNo, 80, "dhbOrderNo"), hasDiscount, sortBy, sortDirection, text(createdBy, 200, "createdBy"), paymentTimeFrom, paymentTimeTo, Set.of(), Map.of(), text(paymentOwnerEmployeeCode, 50, "paymentOwnerEmployeeCode"));
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         var result = store.orders(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
         return withInvoiceStatuses(
-                actor, withDepartmentNames(actor, withRegionNames(actor, result)));
+                actor, withRegionNames(actor, result));
     }
 
     /** 同字段多值取并集，商品和规格必须命中同一明细；兼容旧版单规格参数。 */
@@ -200,7 +200,7 @@ public class OrderRegisterService {
             List<Long> productVariantIds,
             Instant paymentTimeFrom,
             Instant paymentTimeTo, String paymentOwnerEmployeeCode) {
-        CallerIdentity actor = actor(READ_PERMISSION);
+        CallerIdentity actor = actor(RegisterPage.LINES.permission());
         productVariantIds = filterVariantIds(productIds, productVariantId, productVariantIds);
         requireRange(orderDateFrom, orderDateTo, "orderDateFrom不能晚于orderDateTo");
         requireRange(paymentTimeFrom, paymentTimeTo, "paymentTimeFrom不能晚于paymentTimeTo");
@@ -219,9 +219,9 @@ public class OrderRegisterService {
                         text(productKeyword, 200, "productKeyword"),
                         text(productCode, 128, "productCode"),
                         filterProductIds(productIds),
-                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, null, productVariantIds, paymentTimeFrom, paymentTimeTo, departmentEmployeeCodes(actor, departmentId, includeSubDepartments), departmentRegions(actor, departmentId), text(paymentOwnerEmployeeCode, 50, "paymentOwnerEmployeeCode"));
+                        text(paymentStatusCode, 64, "paymentStatusCode"), hasDiscount, sortBy, sortDirection, null, productVariantIds, paymentTimeFrom, paymentTimeTo, Set.of(), Map.of(), text(paymentOwnerEmployeeCode, 50, "paymentOwnerEmployeeCode"));
         var result = store.lines(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
-        return withDepartmentNames(actor, withRegionNames(actor, result));
+        return withRegionNames(actor, result);
     }
 
     public OrderRegisterPage<OrderRegisterPaymentView> payments(
@@ -248,7 +248,7 @@ public class OrderRegisterService {
             List<Long> productIds,
             Long productVariantId,
             List<Long> productVariantIds) {
-        CallerIdentity actor = actor(PaymentReadPermission.current());
+        CallerIdentity actor = actor(RegisterPage.PAYMENTS.permission());
         productVariantIds = filterVariantIds(productIds, productVariantId, productVariantIds);
         if (productIds != null && (productIds.size() > 10000 || productIds.stream().anyMatch(id -> id == null || id < 0))) {
             throw badRequest("productIds无效或超过10000个");
@@ -275,7 +275,7 @@ public class OrderRegisterService {
                         text(sortBy, 32, "sortBy"),
                         text(sortDirection, 8, "sortDirection"), text(createdBy, 200, "createdBy"), productIds, null, productVariantIds, Set.of(), Map.of());
         var result = store.payments(actor.tenantId().toString(), pageBegin(begin), pageStep(step), criteria);
-        var page = withDepartmentNames(actor, withAttachmentViews(actor, withRegionNames(actor, result)));
+        var page = withAttachmentViews(actor, withRegionNames(actor, result));
         var numbers = store.voucherTransactionNos(actor.tenantId().toString(), page.items().stream().map(OrderRegisterPaymentView::id).filter(java.util.Objects::nonNull).toList());
         return new OrderRegisterPage<>(page.total(), page.begin(), page.step(),
                 page.items().stream().map(item -> item.withVoucherTransactionNos(item.id()==null?List.of():numbers.getOrDefault(item.id(), List.of()))).toList(),
@@ -284,7 +284,7 @@ public class OrderRegisterService {
 
     public com.rigour.order.api.v1.model.OrderRegisterModels.MonthlyPerformanceReport monthlyPerformance(
             String monthFrom, String monthTo) {
-        CallerIdentity actor = actor(READ_PERMISSION);
+        CallerIdentity actor = actor(RegisterPage.ORDERS.permission());
         java.time.YearMonth from;
         java.time.YearMonth to;
         var zone = java.time.ZoneId.of("Asia/Shanghai");
@@ -317,7 +317,7 @@ public class OrderRegisterService {
 
     /** 创建人下拉数据源；返回订单真实创建人（来源创建人优先），去空、去重、稳定排序。 */
     public List<String> creators() {
-        CallerIdentity actor = actor(READ_PERMISSION);
+        CallerIdentity actor = actor(RegisterPage.ORDERS.permission());
         return store.creators(actor.tenantId().toString());
     }
 
@@ -439,102 +439,6 @@ public class OrderRegisterService {
         return item;
     }
 
-    private Map<String, Long> departmentRegions(CallerIdentity actor, Long departmentId) {
-        if (departmentId == null) return Map.of();
-        try {
-            return OrderDepartmentRegions.ids(hrEmployeeDisplayClient.departments(hrServiceCaller(actor.tenantId())),
-                    crmAreaDisplayClient.all(crmServiceCaller(actor.tenantId())));
-        } catch (RuntimeException exception) {
-            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "订单地区部门暂时无法解析，请稍后重试", List.of());
-        }
-    }
-
-    /** 用业务员当前 HR 员工档案补齐部门名；归属快照缺失时列表仍可展示部门。 */
-    private <T> OrderRegisterPage<T> withDepartmentNames(
-            CallerIdentity actor, OrderRegisterPage<T> page) {
-        if (page == null || page.items().isEmpty()) return page;
-        Map<String, HrEmployeeDisplayClient.DepartmentDisplay> cities = OrderDepartmentRegions.byName(
-                hrEmployeeDisplayClient.departments(hrServiceCaller(actor.tenantId())));
-        Set<String> employeeCodes = new LinkedHashSet<>();
-        for (T item : page.items()) {
-            String code = employeeCodeOf(item);
-            if (code != null && !code.isBlank() && departmentNameOf(item) == null) {
-                employeeCodes.add(code.strip());
-            }
-        }
-        if (employeeCodes.isEmpty() && cities.isEmpty()) return page;
-        Map<String, String> departments = new LinkedHashMap<>();
-        try {
-            for (HrEmployeeDisplayClient.EmployeeDisplay display :
-                    hrEmployeeDisplayClient.resolve(hrServiceCaller(actor.tenantId()), employeeCodes)) {
-                if (display == null || display.employeeCode() == null) continue;
-                if (display.departmentName() == null || display.departmentName().isBlank()) continue;
-                departments.put(display.employeeCode().strip(), display.departmentName().strip());
-            }
-        } catch (RuntimeException ignored) {
-            // 部门展示名补齐失败不阻断登记列表；业务员和地区仍可正常展示。
-        }
-        if (departments.isEmpty() && cities.isEmpty()) return page;
-        List<T> items = page.items().stream().map(item -> withDepartmentName(item, departments, cities)).toList();
-        return new OrderRegisterPage<>(
-                page.total(), page.begin(), page.step(), items, page.totals(), page.coverage());
-    }
-
-    @SuppressWarnings("unchecked")
-    private static <T> T withDepartmentName(T item, Map<String, String> departments, Map<String, HrEmployeeDisplayClient.DepartmentDisplay> cities) {
-        if (departmentNameOf(item) != null) return item;
-        String code = employeeCodeOf(item);
-        String region = item instanceof OrderRegisterOrderView v ? v.regionName()
-                : item instanceof OrderRegisterLineView v ? v.regionName()
-                : item instanceof OrderRegisterPaymentView v ? v.regionName() : null;
-        var city = cities.get(OrderDepartmentRegions.normalize(region));
-        String department = city != null ? city.name() : code == null ? null : departments.get(code.strip());
-        if (department == null || department.isBlank()) return item;
-        if (item instanceof OrderRegisterOrderView v) {
-            return (T)
-                    new OrderRegisterOrderView(
-                            v.id(), v.orderNo(), v.legacyOrderNo(), v.sourceSystemCode(),
-                            v.sourceOrderNo(), v.dhbOrderNo(), v.orderNumberState(), v.customerId(), v.customerCode(),
-                            v.customerName(), v.regionCode(), v.regionName(), v.ownerEmployeeCode(),
-                            v.ownerEmployeeName(), city != null ? city.id() : v.departmentId(), department, v.orderStatusCode(),
-                            v.paymentStatusCode(), v.dataQualityStatusCode(), v.invoiceStatusCode(),
-                            v.invoiceStatusName(),
-                            v.originalAmount(), v.payableAmount(), v.paidAmount(),
-                            v.unpaidAmount(), v.checkedAmount(), v.orderDate(), v.shipmentTime(),
-                            v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
-                            v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime(), v.paymentOwnerNames());
-        }
-        if (item instanceof OrderRegisterLineView v) {
-            return (T)
-                    new OrderRegisterLineView(
-                            v.id(), v.orderId(), v.lineNo(), v.sourceLineId(), v.productId(),
-                            v.productVariantId(), v.productCode(), v.skuCode(), v.productName(),
-                            v.specification(), v.unitCode(), v.quantity(), v.unitPrice(),
-                            v.lineAmount(), v.orderAmount(), v.discountAmount(), v.discountRate(), v.receivedAmount(), v.orderNo(), v.sourceOrderNo(),
-                            v.dhbOrderNo(), v.customerId(),
-                            v.customerCode(), v.customerName(), v.regionCode(), v.regionName(),
-                            v.ownerEmployeeCode(),
-                            v.ownerEmployeeName(), city != null ? city.id() : v.departmentId(), department, v.orderStatusCode(),
-                            v.paymentStatusCode(), v.orderDate(), v.revision(),
-                            v.createdBy(), v.createdTime(), v.updatedBy(), v.updatedTime(),
-                            v.syncedBy(), v.syncedAt(), v.paymentTime(), v.paymentOwnerNames());
-        }
-        if (item instanceof OrderRegisterPaymentView v) {
-            return (T)
-                    new OrderRegisterPaymentView(
-                            v.id(), v.paymentNo(), v.sourceRecordId(), v.orderId(), v.orderNo(), v.dhbOrderNo(),
-                            v.customerId(), v.customerCode(), v.customerName(), v.regionCode(),
-                            v.regionName(), v.ownerEmployeeCode(), v.ownerEmployeeName(),
-                            city != null ? city.id() : v.departmentId(), department, v.orderDate(), v.orderAmount(),
-                            v.paidAmount(), v.paymentStatusCode(), v.paymentTime(), v.transactionNo(),
-                            v.attachments(), v.attachmentViews(), v.createdBy(), v.createdTime(),
-                            v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.checkedBy(),
-                            v.checkedAt(), v.revision(), v.allocatedPaymentAmount(), v.productAllocations()).withPaymentOwner(v.paymentOwner());
-        }
-        return item;
-    }
-
-    /** 批量回填开票状态；未申请/已撤回没有发票行，列表按未申请展示。 */
     private <T> OrderRegisterPage<T> withInvoiceStatuses(CallerIdentity actor, OrderRegisterPage<T> page) {
         if (page == null || page.items().isEmpty()) return page;
         Set<Long> orderIds = new LinkedHashSet<>();
@@ -576,21 +480,6 @@ public class OrderRegisterService {
                         v.updatedBy(), v.updatedTime(), v.syncedBy(), v.syncedAt(), v.revision(), v.paymentTime(), v.paymentOwnerNames());
     }
 
-    private static String employeeCodeOf(Object item) {
-        if (item instanceof OrderRegisterOrderView v) return v.ownerEmployeeCode();
-        if (item instanceof OrderRegisterLineView v) return v.ownerEmployeeCode();
-        if (item instanceof OrderRegisterPaymentView v) return v.ownerEmployeeCode();
-        return null;
-    }
-
-    private static String departmentNameOf(Object item) {
-        if (item instanceof OrderRegisterOrderView v) return v.departmentName();
-        if (item instanceof OrderRegisterLineView v) return v.departmentName();
-        if (item instanceof OrderRegisterPaymentView v) return v.departmentName();
-        return null;
-    }
-
-    /** 以服务身份读取 HR 员工档案，避免依赖当前用户的 HR 权限。 */
     private static CallerIdentity hrServiceCaller(UUID tenantId) {
         return new CallerIdentity(
                 "SERVICE",
@@ -636,16 +525,6 @@ public class OrderRegisterService {
     }
 
     /** 快照缺少部门时，沿用列表显示所用的业务员当前部门；HR 失败不能当成空数据。 */
-    private Set<String> departmentEmployeeCodes(CallerIdentity actor, Long departmentId, Boolean includeSubDepartments) {
-        if (departmentId == null) return null;
-        try {
-            return hrEmployeeDisplayClient.departmentEmployeeCodes(
-                    hrServiceCaller(actor.tenantId()), departmentId, includeSubDepartments);
-        } catch (RuntimeException exception) {
-            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "部门人员暂时无法解析，请稍后重试", List.of());
-        }
-    }
-
     private static String regionCodeOf(Object item) {
         if (item instanceof OrderRegisterOrderView v) return v.regionCode();
         if (item instanceof OrderRegisterLineView v) return v.regionCode();

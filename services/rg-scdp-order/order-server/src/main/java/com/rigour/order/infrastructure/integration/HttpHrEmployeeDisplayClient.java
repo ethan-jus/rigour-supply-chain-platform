@@ -148,6 +148,28 @@ public final class HttpHrEmployeeDisplayClient implements HrEmployeeDisplayClien
         }
     }
 
+    @Override
+    public Assignment assignmentAt(CallerIdentity caller, String employeeCode, java.time.Instant at) {
+        URI employee = UriComponentsBuilder.fromUri(baseUri).path("/api/v1/hr/employees")
+                .queryParam("begin",0).queryParam("step",2).queryParam("employeeCode",employeeCode)
+                .build().encode().toUri();
+        var rows=fetchEmployees(caller,employee).items().stream()
+                .filter(r -> employeeCode.equals(text(r.get("employeeCode")))).toList();
+        if (rows.size()!=1) return null;
+        Long id=longValue(rows.getFirst().get("id"));
+        if (id==null) return null;
+        URI uri=UriComponentsBuilder.fromUri(baseUri).path("/api/v1/hr/employees/{id}/assignments")
+                .buildAndExpand(id).toUri();
+        var matches=fetchDepartments(caller,uri).stream().filter(r -> {
+            var from=java.time.Instant.parse(text(r.get("effectiveFrom")));
+            var to=text(r.get("effectiveTo"));
+            return !at.isBefore(from) && (to==null || at.isBefore(java.time.Instant.parse(to)));
+        }).toList();
+        if (matches.size()!=1) return null;
+        var row=matches.getFirst();
+        return new Assignment(longValue(row.get("id")),longValue(row.get("departmentId")),text(row.get("departmentName")));
+    }
+
     private EmployeeDisplay resolveOne(CallerIdentity caller, String employeeCode) {
         URI uri = UriComponentsBuilder.fromUri(baseUri)
                 .path("/api/v1/hr/employees")

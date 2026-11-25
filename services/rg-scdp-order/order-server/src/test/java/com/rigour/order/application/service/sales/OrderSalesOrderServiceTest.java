@@ -1188,6 +1188,9 @@ class OrderSalesOrderServiceTest {
     }
 
     private static final class FakeStore implements OrderSalesOrderStore {
+        public SalesOrderDetailView registerDetail(String tenant,long id,RegisterPage page) {
+            return salesOrder(tenant,id).orElseThrow();
+        }
         private final Map<Long, SalesOrderDetailView> rows = new LinkedHashMap<>();
         private final Set<Long> deleted = new java.util.LinkedHashSet<>();
         private long nextId = 1;

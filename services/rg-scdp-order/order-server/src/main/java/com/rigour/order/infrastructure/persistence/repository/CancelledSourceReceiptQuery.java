@@ -3,7 +3,7 @@ package com.rigour.order.infrastructure.persistence.repository;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPaymentView;
 import com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria;
-import com.rigour.order.application.service.sales.PaymentReadPermission;
+import com.rigour.order.application.service.sales.RegisterPage;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.sql.Timestamp;
@@ -36,7 +36,7 @@ final class CancelledSourceReceiptQuery {
                 || present(c.transactionNo()) || present(c.createdBy()) || c.productIds()!=null
                 || c.productVariantId()!=null || c.productVariantIds()!=null) where.append(" AND 1=0");
         // 空订单仍经过相同授权谓词；仅拥有全域回款权限的用户可见未归属来源单。
-        var scope=scopes.predicate(PaymentReadPermission.current(),"o.",null);
+        var scope=scopes.predicate(RegisterPage.PAYMENTS.permission(),"o.",null);
         where.append(" AND (").append(scope.sql()).append(')');
         args.addAll(scope.args());
         String from=" FROM order_sync_receipt r"

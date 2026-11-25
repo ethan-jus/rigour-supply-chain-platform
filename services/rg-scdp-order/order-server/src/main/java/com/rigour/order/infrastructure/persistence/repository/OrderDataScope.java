@@ -1,5 +1,6 @@
 package com.rigour.order.infrastructure.persistence.repository;
 
+import com.rigour.order.application.service.sales.RegisterPage;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.rigour.shared.context.*;
 import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView;
@@ -68,13 +69,40 @@ public final class OrderDataScope {
             String candidateField,
             boolean draftCreator) {
         return predicate(
-                policy(action), action, alias, proposedWarehouse, candidateField, draftCreator, alias + "owner_employee_code");
+                policy(action), action, alias, proposedWarehouse, candidateField, draftCreator, alias + "owner_employee_code", null);
     }
 
     /** 回款读取的 SELF 指向已确认回款人；其余角色条件及范围上限仍由统一策略决定。 */
     public Predicate paymentPredicate(String action, String orderAlias, String paymentAlias) {
         if (!paymentAlias.matches("[a-z_]*[.]?")) throw new IllegalArgumentException("固定别名无效");
-        return predicate(policy(action), action, orderAlias, null, null, false, paymentAlias + "payment_owner_code");
+        return predicate(policy(action), action, orderAlias, null, null, false, paymentAlias + "payment_owner_code", null);
+    }
+
+    static String recordedDepartment(String alias, boolean name) {
+        return "CASE WHEN " + alias + "register_employee_code COLLATE utf8mb4_general_ci=" + alias + "owner_employee_code AND "
+                + alias + "register_order_date=" + alias + "order_date THEN " + alias
+                + (name ? "register_department_name" : "register_department_id") + " END";
+    }
+
+    /** 调用台账查询时同时使用已冻结快照和已验证的历史任职。 */
+    public Predicate registerPredicate(RegisterPage page) {
+        String action = page.permission();
+        if (page == RegisterPage.PAYMENTS)
+            return predicate(policy(action),action,"o.",null,null,false,"p.payment_owner_code","p.payment_owner_department_id");
+        return predicate(policy(action), action, "o.", null, null, true,
+                "COALESCE(snap.employee_code,o.owner_employee_code)",
+                "COALESCE(snap.department_id," + recordedDepartment("o.", false) + ")");
+    }
+
+    public void requireRegisterOrder(String tenant,long id,RegisterPage page) {
+        if (page==RegisterPage.PAYMENTS) throw new IllegalArgumentException();
+        var scope=registerPredicate(page);
+        var args=new ArrayList<Object>(List.of(tenant,id));
+        args.addAll(scope.args());
+        var count=jdbc.queryForObject("SELECT COUNT(*) FROM order_sales_order o LEFT JOIN order_attribution_snapshot snap"
+                + " ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'"
+                + " WHERE o.tenant_id=? AND o.id=? AND o.deleted=0 AND " + scope.sql(),Integer.class,args.toArray());
+        if (count==null || count!=1) throw new AuthorizationDeniedException(page.permission());
     }
 
     private Predicate predicate(
@@ -84,7 +112,7 @@ public final class OrderDataScope {
             Long proposedWarehouse,
             String candidateField,
             boolean draftCreator,
-            String selfEmployeeField) {
+            String selfEmployeeField, String registerDepartment) {
         if (!alias.matches("[a-z_]*[.]?")) throw new IllegalArgumentException("固定别名无效");
         if (p == null) return new Predicate("1=1", List.of());
         List<Object> args = new ArrayList<>();
@@ -100,7 +128,7 @@ public final class OrderDataScope {
                     String self = selfEmployeeField + "=?";
                     values.add(p.employeeCode());
                     if (draftCreator
-                            && Set.of("order:read", "order:update", "order:cancel", "order:delete")
+                            && Set.of("order:read", "order:register-orders:read", "order:register-lines:read", "order:update", "order:cancel", "order:delete")
                                     .contains(action)) {
                         self =
                                 "("
@@ -128,8 +156,20 @@ public final class OrderDataScope {
                     continue;
                 }
             }
-            if (!"NONE".equals(c.departments().mode()))
-                and.add(path(c.departments(), c.includeDescendants(), true, alias, values));
+            if (!"NONE".equals(c.departments().mode())) {
+                var limit=c.departments();
+                if (registerDepartment == null || !"SPECIFIED".equals(limit.mode())) {
+                    and.add(path(limit, c.includeDescendants(), true, alias, values));
+                } else {
+                    var ids=limit.references().stream().filter(id -> id.matches("[1-9][0-9]*")).toList();
+                    String match=ids.isEmpty() ? "1=0" : registerDepartment + " IN ("
+                            + String.join(",",Collections.nCopies(ids.size(),"?")) + ")";
+                    values.addAll(ids);
+                    if (c.includeDescendants() && draftCreator)
+                        match="("+match+" OR "+path(limit,true,true,alias,values)+")";
+                    and.add(match);
+                }
+            }
             if (!"NONE".equals(c.regions().mode()))
                 and.add(path(c.regions(), c.includeDescendants(), false, alias, values));
             if (!"NONE".equals(c.warehouses().mode()))
@@ -140,8 +180,8 @@ public final class OrderDataScope {
             boolean ownRead = "SELF".equals(c.scopeMode()) && action.endsWith(":read");
             boolean ownership =
                     (!ownRead && "SELF".equals(c.scopeMode()))
-                            || Set.of("DEPARTMENT", "REGION").contains(c.scopeMode())
-                            || !Set.of("NONE", "ALL").contains(c.departments().mode())
+                            || "REGION".equals(c.scopeMode()) || (registerDepartment == null && "DEPARTMENT".equals(c.scopeMode()))
+                            || (registerDepartment == null && !Set.of("NONE", "ALL").contains(c.departments().mode()))
                             || !Set.of("NONE", "ALL").contains(c.regions().mode())
                             || ("ORDER".equals(c.objectType())
                                     && !"ALL".equals(p.regionLimit().mode()));

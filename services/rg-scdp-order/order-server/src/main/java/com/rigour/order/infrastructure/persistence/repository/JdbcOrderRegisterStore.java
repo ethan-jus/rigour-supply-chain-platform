@@ -1,5 +1,6 @@
 package com.rigour.order.infrastructure.persistence.repository;
 
+import com.rigour.order.application.service.sales.RegisterPage;
 import com.rigour.order.api.v1.model.OrderRegisterModels;
 import com.rigour.order.api.v1.model.OrderRegisterModels.HistoryCoverage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.NumberMappingView;
@@ -81,13 +82,13 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
     @Override
     public Optional<OrderRegisterOrderView> findOrder(String tenantId, String orderNo) {
         if (orderNo == null || orderNo.isBlank()) return Optional.empty();
-        return orders(
+        return loadOrders(
                         tenantId,
                         0,
                         1,
                         new OrderCriteria(
                                 orderNo, null, null, null, null, null, null, null, null, null, null, null,
-                                null, null, null, null, null, null, null, null, null, null))
+                                null, null, null, null, null, null, null, null, null, null), true)
                 .items()
                 .stream()
                 .findFirst();
@@ -98,13 +99,14 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
     public OrderRegisterPage<OrderRegisterOrderView> orders(
             String tenantId, int begin, int step, OrderCriteria criteria) {
         return queryCache.read(tenantId, "orders", java.util.Arrays.asList(begin, step, criteria), 15,
-                new tools.jackson.core.type.TypeReference<>() {}, () -> loadOrders(tenantId, begin, step, criteria));
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadOrders(tenantId, begin, step, criteria, false));
     }
 
     private OrderRegisterPage<OrderRegisterOrderView> loadOrders(
-            String tenantId, int begin, int step, OrderCriteria criteria) {
-        var where = orderWhere(tenantId, criteria);
-        long total =
+            String tenantId, int begin, int step, OrderCriteria criteria, boolean invoiceLookup) {
+        var where = orderWhere(tenantId, criteria, invoiceLookup ? null : RegisterPage.ORDERS);
+        if (invoiceLookup) eq(where, "o.order_no", criteria.orderNo());
+        long total = invoiceLookup ? 0 :
                 queryCache.read(tenantId, "loadOrders-count", criteria, 30, new TypeReference<Long>() {}, () -> jdbc.queryForObject(
                         "SELECT COUNT(*) FROM order_sales_order o "
                                 + ORDER_ORIGINAL_JOIN
@@ -124,7 +126,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
-                                + " snap.department_id,snap.department_name,"
+                                + " " + DEPARTMENT + " AS department_id," + DEPARTMENT_NAME + " AS department_name,"
                                 + " o.order_status_code," + orderCollectionStatus() + " AS payment_status_code,o.data_quality_status_code,"
                                 + " ol.original_amount,"
                                 + " o.payable_amount,o.paid_amount,o.unpaid_amount,"
@@ -184,8 +186,9 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                         instant(rs, "synced_at"),
                                         rs.getInt("revision"), instant(rs, "payment_time"), stringList(rs.getString("payment_owner_names")).stream().distinct().sorted().toList()),
                         append(where.args(), step, begin).toArray());
+        if (invoiceLookup) return new OrderRegisterPage<>(items.size(),begin,step,items,Map.of(),null);
         Map<String, BigDecimal> totals = orderTotals(tenantId, criteria);
-        return new OrderRegisterPage<>(total, begin, step, items, totals, historyCoverage(tenantId));
+        return new OrderRegisterPage<>(total, begin, step, items, totals, historyCoverage(tenantId, RegisterPage.ORDERS));
     }
 
     // 使用实际有效收款日期，不能用订单头的同步时间或已作废收款推断到账日期。
@@ -243,7 +246,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
-                                + " snap.department_id,snap.department_name,o.order_status_code," + orderCollectionStatus() + " AS payment_status_code,o.order_date,"
+                                + " " + DEPARTMENT + " AS department_id," + DEPARTMENT_NAME + " AS department_name,o.order_status_code," + orderCollectionStatus() + " AS payment_status_code,o.order_date,"
                                 + " " + allocatedAmount("payable_amount") + " AS allocated_order_amount,"
                                 + " " + lineDiscountAmount() + " AS allocated_discount_amount,"
                                 + " " + lineDiscountRate() + " AS allocated_discount_rate,"
@@ -308,7 +311,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 step,
                 items,
                 Map.copyOf(resultTotals),
-                historyCoverage(tenantId));
+                historyCoverage(tenantId, RegisterPage.LINES));
     }
 
     @Override
@@ -349,7 +352,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                                 + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
-                                + " snap.department_id,snap.department_name,o.order_date,o.payable_amount,"
+                                + " p.payment_owner_department_id AS department_id,p.payment_owner_department_name AS department_name,o.order_date,o.payable_amount,"
                                 + " p.payment_owner_code,p.payment_owner_name,p.payment_owner_evidence,p.payment_owner_department_name,p.payment_owner_region_code,p.paid_amount,p.payment_status_code,p.payment_time,p.transaction_no,"
                                 + " p.voucher_keys_json,p.created_by,p.created_time,p.updated_by,p.updated_time,"
                                 + " p.synced_by,p.synced_at,p.checked_by,p.checked_at,p.revision,"
@@ -365,19 +368,18 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         append(where.args(), step, begin).toArray());
         items = withPaymentAllocations(tenantId, items, criteria);
         var totals = paymentTotals(tenantId, criteria);
-        return new OrderRegisterPage<>(total, begin, step, items, totals, historyCoverage(tenantId));
+        return new OrderRegisterPage<>(total, begin, step, items, totals, historyCoverage(tenantId, RegisterPage.PAYMENTS));
     }
 
     @Override
     public List<String> creators(String tenantId) {
-        return jdbc.queryForList(
-                "SELECT creator_name FROM ("
-                        + " SELECT COALESCE(NULLIF(TRIM(source_creator_name),''),NULLIF(TRIM(created_by),'')) AS creator_name"
-                        + " FROM order_sales_order WHERE tenant_id=? AND deleted=0"
-                        + " GROUP BY COALESCE(NULLIF(TRIM(source_creator_name),''),NULLIF(TRIM(created_by),''))) c"
-                        + " WHERE creator_name IS NOT NULL ORDER BY creator_name",
-                String.class,
-                tenantId);
+        var scope = scopes.registerPredicate(RegisterPage.ORDERS);
+        List<Object> args = new ArrayList<>(List.of(tenantId));
+        args.addAll(scope.args());
+        return jdbc.queryForList("SELECT DISTINCT COALESCE(NULLIF(TRIM(o.source_creator_name),''),NULLIF(TRIM(o.created_by),'')) creator"
+                + " FROM order_sales_order o LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id"
+                + " AND snap.order_id=o.id AND snap.state='FROZEN' WHERE o.tenant_id=? AND o.deleted=0 AND "
+                + scope.sql() + " HAVING creator IS NOT NULL ORDER BY creator", String.class, args.toArray());
     }
 
     @Override
@@ -519,7 +521,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
 
     private Map<String, BigDecimal> orderTotals(String tenantId, OrderCriteria criteria) {
         return queryCache.read(tenantId, "orderTotals", criteria, 30, new TypeReference<>() {},
-                () -> orderTotals(orderWhere(tenantId, criteria)));
+                () -> orderTotals(orderWhere(tenantId, criteria, RegisterPage.ORDERS)));
     }
 
     private Map<String, BigDecimal> orderTotals(Sql where) {
@@ -568,7 +570,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
             if (monthTo.isAfter(to)) monthTo = to;
             var criteria = new OrderCriteria(null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null, null);
-            var where = orderWhere(tenantId, criteria);
+            var where = orderWhere(tenantId, criteria, RegisterPage.ORDERS);
             where.and("o.payable_amount>0");
             where.and("o.order_status_code NOT IN ('CANCELLED','DELETED')");
             // 交易、回款和待收各自按责任人聚合，避免多笔回款放大订单金额。
@@ -779,34 +781,10 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                 code, code);
     }
 
-    private static void departmentFilter(Sql where, java.util.Set<Long> ids, java.util.Set<String> employees, Map<String, Long> regions) {
-        if (ids == null) return;
-        if (ids.isEmpty()) { where.and("1=0"); return; }
-        String sql = "snap.department_id IN (" + String.join(",", java.util.Collections.nCopies(ids.size(), "?")) + ")";
-        List<Object> args = new ArrayList<>(ids);
-        List<String> matching = regions.entrySet().stream().filter(e -> ids.contains(e.getValue())).map(Map.Entry::getKey).toList();
-        String missing = "snap.department_id IS NULL AND NULLIF(TRIM(snap.department_name),'') IS NULL";
-        if (!matching.isEmpty()) {
-            sql += " OR (" + missing + " AND COALESCE(snap.region_code,o.region_code) IN ("
-                    + String.join(",", java.util.Collections.nCopies(matching.size(), "?")) + "))";
-            args.addAll(matching);
-        }
-        if (employees != null && !employees.isEmpty()) {
-            sql += " OR (" + missing;
-            // A known order city takes precedence over the employee's current department.
-            if (!regions.isEmpty()) {
-                sql += " AND (COALESCE(snap.region_code,o.region_code) IS NULL OR COALESCE(snap.region_code,o.region_code) NOT IN ("
-                        + String.join(",", java.util.Collections.nCopies(regions.size(), "?")) + "))";
-                args.addAll(regions.keySet());
-            }
-            sql += " AND COALESCE(snap.employee_code,o.owner_employee_code) IN ("
-                    + String.join(",", java.util.Collections.nCopies(employees.size(), "?")) + "))";
-            args.addAll(employees);
-        }
-        where.and("(" + sql + ")", args.toArray());
-    }
+    private static final String DEPARTMENT = "COALESCE(snap.department_id," + OrderDataScope.recordedDepartment("o.", false) + ")";
+    private static final String DEPARTMENT_NAME = "COALESCE(snap.department_name," + OrderDataScope.recordedDepartment("o.", true) + ")";
 
-    private Sql orderWhere(String tenantId, OrderCriteria c) {
+    private Sql orderWhere(String tenantId, OrderCriteria c, RegisterPage page) {
         var where = new Sql();
         where.and("o.tenant_id=?", tenantId);
         where.and("o.deleted=0");
@@ -818,7 +796,8 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         customerRegion(where, c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
         paymentOwnerFilter(where, c.paymentOwnerEmployeeCode());
-        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
+        if (c.departmentIds() != null && c.departmentIds().isEmpty()) where.and("1=0");
+        else inIds(where, DEPARTMENT, c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         ge(where, LATEST_PAYMENT_TIME, c.paymentTimeFrom());
@@ -845,7 +824,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                     c.invoiceStatusCode());
         }
         eq(where, "COALESCE(NULLIF(TRIM(o.source_creator_name),''),o.created_by)", c.createdBy());
-        var scope = scopes.predicate("order:read", "o.", null);
+        var scope = page == null ? scopes.predicate("order:read","o.",null) : scopes.registerPredicate(page);
         where.and("(" + scope.sql() + ")", scope.args().toArray());
         return where;
     }
@@ -880,7 +859,8 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         customerRegion(where, c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
         paymentOwnerFilter(where, c.paymentOwnerEmployeeCode());
-        departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
+        if (c.departmentIds() != null && c.departmentIds().isEmpty()) where.and("1=0");
+        else inIds(where, DEPARTMENT, c.departmentIds());
         ge(where, "o.order_date", c.orderDateFrom());
         lt(where, "o.order_date", c.orderDateTo());
         eq(where, "o.order_status_code", c.orderStatusCode());
@@ -906,7 +886,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         if (c.hasDiscount() != null) {
             where.and(lineDiscountAmount() + (c.hasDiscount() ? " > 0" : " <= 0"));
         }
-        var scope = scopes.predicate("order:read", "o.", null);
+        var scope = scopes.registerPredicate(RegisterPage.LINES);
         where.and("(" + scope.sql() + ")", scope.args().toArray());
         return where;
     }
@@ -957,26 +937,30 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         if (c.productIds() != null) {
             where.and("EXISTS (SELECT 1 FROM order_sales_order_line l WHERE l.tenant_id=o.tenant_id AND l.order_id=o.id AND l.deleted=0 AND " + paymentProductPredicate(c) + ")");
         }
-        var scope = scopes.predicate(com.rigour.order.application.service.sales.PaymentReadPermission.current(), "o.", null);
+        var scope = scopes.registerPredicate(RegisterPage.PAYMENTS);
         where.and("(" + scope.sql() + ")", scope.args().toArray());
         return where;
     }
 
-    private HistoryCoverage historyCoverage(String tenantId) {
-        return queryCache.read(tenantId, "history-coverage", HistorySyncRules.CUTOVER, 30,
-                new TypeReference<>() {}, () -> loadHistoryCoverage(tenantId));
+    private HistoryCoverage historyCoverage(String tenantId, RegisterPage page) {
+        return queryCache.read(tenantId,"history-coverage",List.of(HistorySyncRules.CUTOVER,page),30,
+                new TypeReference<>() {}, () -> loadHistoryCoverage(tenantId,page));
     }
 
-    private HistoryCoverage loadHistoryCoverage(String tenantId) {
-        long missing =
-                jdbc.queryForObject(
-                        "SELECT COUNT(*) FROM order_sales_order o "
-                                + " WHERE o.tenant_id=? AND o.deleted=0 AND o.order_date<? "
-                                + " AND NOT EXISTS (SELECT 1 FROM order_financial_event e "
-                                + "   WHERE e.tenant_id=o.tenant_id AND e.order_id=o.id) LIMIT 1",
-                        Long.class,
-                        tenantId,
-                        Timestamp.from(HistorySyncRules.CUTOVER));
+    private HistoryCoverage loadHistoryCoverage(String tenantId, RegisterPage page) {
+        var scope=scopes.registerPredicate(page);
+        String join=switch(page) {
+            case PAYMENTS -> " JOIN order_payment_record p ON p.order_id=o.id AND p.tenant_id=o.tenant_id AND p.deleted=0";
+            case LINES -> " JOIN order_sales_order_line l ON l.order_id=o.id AND l.tenant_id=o.tenant_id AND l.deleted=0";
+            case ORDERS -> "";
+        };
+        var args=new ArrayList<Object>(List.of(tenantId,Timestamp.from(HistorySyncRules.CUTOVER)));
+        args.addAll(scope.args());
+        long missing=jdbc.queryForObject("SELECT COUNT(DISTINCT o.id) FROM order_sales_order o"
+                + " LEFT JOIN order_attribution_snapshot snap ON snap.tenant_id=o.tenant_id AND snap.order_id=o.id AND snap.state='FROZEN'"
+                + join + " WHERE o.tenant_id=? AND o.deleted=0 AND o.order_date<?"
+                + " AND NOT EXISTS (SELECT 1 FROM order_financial_event e WHERE e.tenant_id=o.tenant_id AND e.order_id=o.id)"
+                + " AND ("+scope.sql()+")",Long.class,args.toArray());
         return missing == 0
                 ? HistoryCoverage.covered()
                 : HistoryCoverage.incomplete(
@@ -1144,7 +1128,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                     + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                     + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                     + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
-                    + " snap.department_id,snap.department_name,o.order_date,o.payable_amount,"
+                    + " p.payment_owner_department_id AS department_id,p.payment_owner_department_name AS department_name,o.order_date,o.payable_amount,"
                     + " p.payment_owner_code,p.payment_owner_name,p.payment_owner_evidence,p.payment_owner_department_name,p.payment_owner_region_code,p.paid_amount,p.payment_status_code,p.payment_time,p.transaction_no,"
                     + " p.voucher_keys_json,p.created_by,p.created_time,p.updated_by,p.updated_time,"
                     + " p.synced_by,p.synced_at,p.checked_by,p.checked_at,p.revision,"
@@ -1289,7 +1273,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                     criteria.orderNo(), criteria.customerId(), criteria.customerName(), criteria.customerCode(),
                     criteria.regionCode(), criteria.ownerEmployeeCode(), criteria.departmentIds(),
                     criteria.orderDateFrom(), criteria.orderDateTo(), criteria.orderStatusCode(),
-                    criteria.paymentStatusCode(), null, null, null, null, null, null, null, null, criteria.paymentTimeFrom(), criteria.paymentTimeTo(), criteria.departmentEmployeeCodes(), criteria.departmentRegionIds(), criteria.paymentOwnerEmployeeCode()));
+                    criteria.paymentStatusCode(), null, null, null, null, null, null, null, null, criteria.paymentTimeFrom(), criteria.paymentTimeTo(), criteria.departmentEmployeeCodes(), criteria.departmentRegionIds(), criteria.paymentOwnerEmployeeCode()), RegisterPage.LINES);
             boolean lineFiltered = criteria.hasDiscount() != null || (criteria.productKeyword() != null && !criteria.productKeyword().isBlank())
                     || (criteria.productCode() != null && !criteria.productCode().isBlank())
                     || (criteria.productIds() != null && !criteria.productIds().isEmpty());

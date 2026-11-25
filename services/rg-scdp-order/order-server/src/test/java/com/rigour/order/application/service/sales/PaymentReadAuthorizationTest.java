@@ -37,14 +37,13 @@ class PaymentReadAuthorizationTest {
         var service = new PaymentVoucherService(vouchers, urls);
         var audits = mock(PaymentVoucherAuditStore.class);
         var auditService = new PaymentVoucherAuditService(audits, mock(OrderStatusDictionary.class));
-        try (var ignored = finance("order:payment:read")) {
+        try (var ignored = finance("order:register-payments:read")) {
             registers.payments(0, 20, null, null, null, null, null, null, null, null, null, null,
                     null, null, null, null, null, null, null, null, null, null, null, null);
             verify(store).payments(eq(tenant.toString()), eq(0), eq(20), any());
             service.vouchers(1);
             service.checkTransaction("T1");
-            auditService.scan();
-            verify(audits).payments(tenant.toString(), "order:payment:read");
+            assertThatThrownBy(auditService::scan).isInstanceOf(AuthorizationDeniedException.class);
             assertThatThrownBy(registers::creators).isInstanceOf(AuthorizationDeniedException.class);
             assertThatThrownBy(() -> service.recognize(1)).isInstanceOf(AuthorizationDeniedException.class);
             assertThatThrownBy(() -> auditService.review(null)).isInstanceOf(AuthorizationDeniedException.class);
@@ -61,15 +60,14 @@ class PaymentReadAuthorizationTest {
         var catalog = mock(PaymentFilterCatalogClient.class);
         var service = new PaymentFilterService(store, crm, hr, catalog);
         try (var ignored = finance("order:read")) {
-            assertThatThrownBy(service::options).isInstanceOf(AuthorizationDeniedException.class);
+            assertThatThrownBy(() -> service.options(RegisterPage.PAYMENTS)).isInstanceOf(AuthorizationDeniedException.class);
             verifyNoInteractions(store, crm, hr, catalog);
         }
-        when(store.parties(tenant.toString())).thenReturn(new Parties(List.of(new Person("E1","张三","BJ")),List.of("创建人")));
-        when(catalog.catalog(any())).thenReturn(new Catalog(List.of(), List.of()));
-        try (var ignored = finance("order:payment:read")) {
-            assertThat(service.options().employees()).extracting(Person::employeeCode).containsExactly("E1");
-            verify(crm).all(argThat(c -> tenant.equals(c.tenantId()) && c.permissions().equals(Set.of("crm:customer:read"))));
-            verify(hr).departments(argThat(c -> tenant.equals(c.tenantId()) && c.permissions().equals(Set.of("hr:employee:read"))));
+        when(store.visible(tenant.toString(),RegisterPage.PAYMENTS)).thenReturn(new PaymentFilterStore.Visible(
+                List.of(new Person("E1","张三","BJ")),List.of("创建人"),Set.of(),java.util.Map.of(),List.of(),List.of()));
+        try (var ignored = finance("order:register-payments:read")) {
+            assertThat(service.options(RegisterPage.PAYMENTS).employees()).extracting(Person::employeeCode).containsExactly("E1");
+            verifyNoInteractions(crm, hr, catalog);
         }
     }
 }

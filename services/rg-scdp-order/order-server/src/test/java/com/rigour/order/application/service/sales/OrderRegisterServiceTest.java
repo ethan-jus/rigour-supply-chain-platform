@@ -86,7 +86,7 @@ class OrderRegisterServiceTest {
     }
 
     @Test
-    void ordersFillDepartmentFromHrWhenSnapshotMissing() {
+    void ordersKeepMissingEvidencePendingAfterEmployeeTransfer() {
         OrderRegisterStore store = mock(OrderRegisterStore.class);
         CrmCustomerAreaDisplayClient crm = mock(CrmCustomerAreaDisplayClient.class);
         HrEmployeeDisplayClient hr = mock(HrEmployeeDisplayClient.class);
@@ -101,7 +101,7 @@ class OrderRegisterServiceTest {
         var page = service.orders(0, 20, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
         assertThat(page.items()).hasSize(1);
-        assertThat(page.items().get(0).departmentName()).isEqualTo("上海市");
+        assertThat(page.items().get(0).departmentName()).isNull();
     }
 
     @Test
@@ -138,7 +138,7 @@ class OrderRegisterServiceTest {
         verify(store).orders(eq(TENANT), eq(0), eq(20), captor.capture());
         verify(hr).departmentIdsInScope(any(), eq(7L), eq(true));
         assertThat(captor.getValue().departmentIds()).containsExactlyInAnyOrder(7L, 8L, 9L);
-        assertThat(captor.getValue().departmentEmployeeCodes()).containsExactly("EMP001");
+        assertThat(captor.getValue().departmentEmployeeCodes()).isEmpty();
     }
 
     @Test
@@ -164,15 +164,12 @@ class OrderRegisterServiceTest {
     }
 
     @Test
-    void ordersFailWhenDepartmentMembersCannotBeReadAndRejectInvalidReceiptRange() {
+    void ordersRejectInvalidReceiptRange() {
         var store = mock(OrderRegisterStore.class);
         var hr = mock(HrEmployeeDisplayClient.class);
         var service = new OrderRegisterService(store, mock(CrmCustomerAreaDisplayClient.class), hr, invoiceStore(), resolverProvider());
         TestAuthorizationContext.set(caller("order:read"));
         when(hr.departmentIdsInScope(any(), eq(7L), eq(false))).thenReturn(Set.of(7L));
-        when(hr.departmentEmployeeCodes(any(), eq(7L), eq(false))).thenThrow(new IllegalStateException("HR unavailable"));
-        assertThatThrownBy(() -> service.orders(0,20,null,null,null,null,null,null,7L,false,null,null,null,null,null,null,null,null,null,null,null,null,null,null, null))
-                .isInstanceOf(BusinessException.class).extracting(e -> ((BusinessException)e).getErrorCode()).isEqualTo(ErrorCode.SERVICE_UNAVAILABLE);
         assertThatThrownBy(() -> service.orders(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,
                 java.time.Instant.parse("2026-10-01T00:00:00Z"),java.time.Instant.parse("2026-09-01T00:00:00Z"), null)).isInstanceOf(BusinessException.class);
         verify(store,never()).orders(any(),anyInt(),anyInt(),any());
@@ -209,7 +206,7 @@ class OrderRegisterServiceTest {
     }
 
     @Test
-    void displaysOrderCityDepartmentInsteadOfEmployeesCurrentDepartment() {
+    void customerRegionCannotSupplyAMissingSalesDepartment() {
         var store = mock(OrderRegisterStore.class);
         var crm = mock(CrmCustomerAreaDisplayClient.class);
         var hr = mock(HrEmployeeDisplayClient.class);
@@ -222,8 +219,8 @@ class OrderRegisterServiceTest {
         when(hr.resolve(any(),any())).thenReturn(List.of(new HrEmployeeDisplayClient.EmployeeDisplay("EMP001","张三","ACTIVE","石家庄")));
         var service = new OrderRegisterService(store,crm,hr,invoiceStore(),resolverProvider());
         var page = service.orders(0,20,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null, null);
-        assertThat(page.items().getFirst().departmentId()).isEqualTo(28L);
-        assertThat(page.items().getFirst().departmentName()).isEqualTo("唐山市");
+        assertThat(page.items().getFirst().departmentId()).isNull();
+        assertThat(page.items().getFirst().departmentName()).isNull();
         assertThat(page.items().getFirst().ownerEmployeeCode()).isEqualTo("EMP001");
         assertThat(page.items().getFirst().paymentOwnerNames()).containsExactly("李四", "王五");
     }

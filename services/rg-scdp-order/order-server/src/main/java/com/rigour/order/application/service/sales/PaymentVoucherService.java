@@ -49,7 +49,7 @@ public class PaymentVoucherService {
     private static String tenant() {
         var caller = AuthorizationContext.requireCurrent();
         if (caller.tenantId() == null) throw new AuthorizationDeniedException("tenant-caller");
-        AuthorizationContext.requirePermission(PaymentReadPermission.current());
+        AuthorizationContext.requirePermission(RegisterPage.PAYMENTS.permission());
         return caller.tenantId().toString();
     }
     private static BusinessException badRequest(String message) {

@@ -36,6 +36,9 @@ public interface HrEmployeeDisplayClient {
 
     default List<DepartmentDisplay> departments(CallerIdentity caller) { return List.of(); }
 
+    record Assignment(long id, long departmentId, String departmentName) {}
+    default Assignment assignmentAt(CallerIdentity caller, String code, java.time.Instant at) { return null; }
+
     record DepartmentDisplay(Long id, Long parentId, String name, String status) {}
 
     record EmployeeDisplay(
