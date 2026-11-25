@@ -7,6 +7,7 @@ import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -24,6 +25,7 @@ public class TargetSettingsService {
                     "YANGZHANGGUI_SALES_AMOUNT",
                     "SALES_AMOUNT",
                     "RECEIPT_AMOUNT");
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private final TargetSettingsStore store;
     private final Clock clock;
     private com.rigour.hr.application.port.out.HrPayrollComponentStore components;
@@ -151,21 +153,91 @@ public class TargetSettingsService {
         this.clock = clock;
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public Settings settings(String month) {
         var actor = actor(READ);
-        month(month);
-        var subjects = visibleSubjects(actor.tenantId().toString());
-        return new Settings(
-                month,
-                subjects,
-                effective(
-                        actor.tenantId().toString(),
-                        month,
-                        month,
-                        subjects,
-                        editableMetrics(actor.tenantId().toString()),
-                        true));
+        String tenant = actor.tenantId().toString();
+        var period = month(month);
+        if (period.isBefore(currentMonth())) return visibleArchive(tenant, period);
+        var subjects = visibleSubjects(tenant);
+        return new Settings(month, subjects,
+                effective(tenant, month, month, subjects, editableMetrics(tenant), true), false);
+    }
+
+    private YearMonth currentMonth() {
+        return YearMonth.now(clock.withZone(BUSINESS_ZONE));
+    }
+
+    private Settings visibleArchive(String tenant, YearMonth period) {
+        var archived = store.archive(tenant, period).orElseGet(() -> {
+            // HR organization writes and live business target saves share this tenant row lock.
+            store.lockOrganization(tenant);
+            return store.archive(tenant, period).orElseGet(() -> createArchive(tenant, period));
+        });
+        var readable = store.permittedSubjects(tenant, READ);
+        boolean unrestricted = store.canReadAllArchivedSubjects();
+        var savedSubjects = new HashSet<String>();
+        archived.targets().stream().filter(target -> target.revision() > 0)
+                .forEach(target -> savedSubjects.add(target.dimensionType() + ":" + target.code()));
+        var subjects = archived.subjects().stream()
+                .filter(subject -> unrestricted || readable.contains(subjectKey(subject)))
+                .filter(subject -> !directSalesMember(subject) || savedSubjects.contains(subjectKey(subject)))
+                .map(subject -> visibleSubject(subject, false, readable, unrestricted))
+                .toList();
+        var visible = new HashSet<>(subjects.stream().map(TargetSettingsService::subjectKey).toList());
+        var targets = archived.targets().stream()
+                .filter(target -> visible.contains(target.dimensionType() + ":" + target.code())).toList();
+        return new Settings(archived.month(), subjects, targets, true);
+    }
+
+    private Settings createArchive(String tenant, YearMonth period) {
+        String month = period.toString();
+        var known = store.historicalSubjects(tenant, period);
+        var subjects = new LinkedHashMap<String, Subject>();
+        known.forEach(subject -> subjects.put(subjectKey(subject), subject));
+        var saved = store.targets(tenant, month, month);
+        var targets = new LinkedHashMap<String, Target>();
+        // Keep the latest persisted value of every business metric, including explicit zero.
+        for (var target : saved) {
+            if (!METRICS.contains(target.metric())) continue;
+            String id = target.dimensionType() + ":" + target.code();
+            String name = target.name() == null || target.name().isBlank() ? target.code() : target.name();
+            subjects.putIfAbsent(id, new Subject(target.dimensionType(), target.code(), name,
+                    null, null, null, null, false, null, true));
+            targets.put(id + ":" + target.metric(), target);
+        }
+        // Historical roster entries have the same initial values as the live settings. A target
+        // with no provable roster entry retains only explicitly saved metrics.
+        for (var subject : known) {
+            for (String metric : METRICS) {
+                targets.putIfAbsent(subjectKey(subject) + ":" + metric,
+                        new Target(month, subject.dimensionType(), subject.code(), subject.name(), metric,
+                                initialValue(subject.dimensionType(), metric), 0));
+            }
+        }
+        var snapshot = new Settings(month, List.copyOf(subjects.values()), List.copyOf(targets.values()), true);
+        return subjects.isEmpty() ? snapshot : store.archive(tenant, period, snapshot);
+    }
+
+    private static String subjectKey(Subject subject) {
+        return subject.dimensionType() + ":" + subject.code();
+    }
+
+    private static boolean directSalesMember(Subject subject) {
+        return "SALES_OWNER".equals(subject.dimensionType()) && "销售部".equals(subject.departmentName());
+    }
+
+    private static boolean activeSubject(Subject subject) {
+        return !"SALES_OWNER".equals(subject.dimensionType()) || "ACTIVE".equals(subject.employmentStatus());
+    }
+
+    private static Subject visibleSubject(Subject subject, boolean writable, Set<String> readable, boolean unrestricted) {
+        var parent = subject.parentCode();
+        boolean canSeeParent = parent == null || unrestricted || readable.contains("CITY:" + parent);
+        return new Subject(subject.dimensionType(), subject.code(), subject.name(),
+                canSeeParent ? subject.cityCode() : null, canSeeParent ? subject.cityName() : null,
+                canSeeParent ? subject.departmentName() : null, subject.employmentStatus(), writable,
+                canSeeParent ? parent : null, subject.historicalPlacementUnknown());
     }
 
     /**
@@ -283,18 +355,10 @@ public class TargetSettingsService {
             writable = store.permittedSubjects(tenant, WRITE);
         var writeKeys = writable;
         return store.subjects(tenant).stream()
-                .filter(s -> readable.contains(s.dimensionType() + ":" + s.code()))
-                .map(
-                        s ->
-                                new Subject(
-                                        s.dimensionType(),
-                                        s.code(),
-                                        s.name(),
-                                        s.cityCode(),
-                                        s.cityName(),
-                                        s.departmentName(),
-                                        s.employmentStatus(),
-                                        writeKeys.contains(s.dimensionType() + ":" + s.code())))
+                .filter(TargetSettingsService::activeSubject)
+                .filter(subject -> !directSalesMember(subject))
+                .filter(subject -> readable.contains(subjectKey(subject)))
+                .map(subject -> visibleSubject(subject, writeKeys.contains(subjectKey(subject)), readable, false))
                 .toList();
     }
 
@@ -311,14 +375,18 @@ public class TargetSettingsService {
                 || batch.changes().isEmpty()
                 || batch.changes().size() > 800) throw invalid("请选择1至800项指标变更");
         var period = month(batch.month());
-        String reason =
-                reason(
-                        batch.reason(),
-                        !period.isAfter(YearMonth.now(clock.withZone(ZoneId.of("Asia/Shanghai")))));
+        String tenant = actor.tenantId().toString();
+        boolean writesBusiness = batch.changes().stream()
+                .anyMatch(c -> c != null && c.metric() != null && METRICS.contains(c.metric()));
+        if (writesBusiness) store.lockOrganization(tenant);
+        var now = clock.instant();
+        var current = YearMonth.from(now.atZone(BUSINESS_ZONE));
+        if (writesBusiness && period.isBefore(current)) throw invalid("历史月份经营目标已归档");
+        String reason = reason(batch.reason(), !period.isAfter(current));
         var subjects = new HashMap<String, Subject>();
-        store.subjects(actor.tenantId().toString())
-                .forEach(s -> subjects.put(s.dimensionType() + ":" + s.code(), s));
-        var permitted = store.permittedSubjects(actor.tenantId().toString(), WRITE);
+        store.subjects(tenant).forEach(subject -> subjects.put(subjectKey(subject), subject));
+        var permitted = store.permittedSubjects(tenant, WRITE);
+        var editable = editableMetrics(tenant);
         var seen = new HashSet<String>();
         for (var c : batch.changes()) {
             if (c == null) throw invalid("指标不能为空");
@@ -326,7 +394,7 @@ public class TargetSettingsService {
                     c.metric(),
                     c.value(),
                     c.expectedRevision(),
-                    editableMetrics(actor.tenantId().toString()));
+                    editable);
             if (!METRICS.contains(c.metric()) && !"SALES_OWNER".equals(c.dimensionType()))
                 throw invalid("薪酬目标请在人员维度核定，不能将部门编号当成任职城市编号");
             if (!METRICS.contains(c.metric())
@@ -335,8 +403,12 @@ public class TargetSettingsService {
             if (!seen.add(c.dimensionType() + ":" + c.code() + ":" + c.metric()))
                 throw invalid("重复的目标指标");
             var s = subjects.get(c.dimensionType() + ":" + c.code());
-            if (s == null) throw invalid("城市或销售已不存在，请刷新列表");
+            if (s == null) throw invalid("部门或销售已不存在，请刷新列表");
             checkScope(s, permitted);
+            if (METRICS.contains(c.metric()) && directSalesMember(s))
+                throw invalid("销售部直属人员不参与月度经营目标设置");
+            if (METRICS.contains(c.metric()) && !activeSubject(s))
+                throw invalid("人员已离职，请刷新列表");
         }
         for (var c : batch.changes())
             store.save(
@@ -346,13 +418,20 @@ public class TargetSettingsService {
                     subjects.get(c.dimensionType() + ":" + c.code()),
                     c,
                     reason,
-                    clock.instant());
+                    now);
     }
 
-    @Transactional(readOnly = true)
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public List<History> history(String month, String type, String code) {
         var actor = actor(READ);
-        month(month);
+        var period = month(month);
+        String tenant = actor.tenantId().toString();
+        if (period.isBefore(currentMonth())) {
+            if (visibleArchive(tenant, period).subjects().stream()
+                    .noneMatch(s -> s.dimensionType().equals(type) && s.code().equals(code)))
+                throw new AuthorizationDeniedException("hr-target-scope");
+            return store.history(tenant, month, type, code);
+        }
         var subject =
                 store.subjects(actor.tenantId().toString()).stream()
                         .filter(s -> s.dimensionType().equals(type) && s.code().equals(code))

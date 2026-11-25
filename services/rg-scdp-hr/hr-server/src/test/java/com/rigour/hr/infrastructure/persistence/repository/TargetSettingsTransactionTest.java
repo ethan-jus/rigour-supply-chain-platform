@@ -42,6 +42,7 @@ class TargetSettingsTransactionTest {
                 Files.readString(
                         Path.of("src/main/resources/db/migration/V9__hr_business_targets.sql")));
         store = spy(new JdbcTargetSettingsStore(jdbc, mock(HrDataScope.class)));
+        doNothing().when(store).lockOrganization(anyString());
         doReturn(List.of(subject)).when(store).subjects(tenant.toString());
         doReturn(Set.of("CITY:BJ")).when(store).permittedSubjects(anyString(), anyString());
         var raw =
@@ -137,7 +138,7 @@ class TargetSettingsTransactionTest {
         jdbc.execute(
                 "CREATE TABLE hr_department(id BIGINT,tenant_id VARCHAR(64),department_code"
                     + " VARCHAR(64),department_name VARCHAR(64),deleted INT,status_code"
-                    + " VARCHAR(20))");
+                    + " VARCHAR(20),parent_id BIGINT)");
         jdbc.execute(
                 "CREATE TABLE hr_department_closure(tenant_id VARCHAR(64),ancestor_id"
                     + " BIGINT,descendant_id BIGINT)");
@@ -147,7 +148,7 @@ class TargetSettingsTransactionTest {
                     + " BIGINT,employment_status VARCHAR(20),deleted INT)");
         jdbc.update(
                 "INSERT INTO hr_department"
-                    + " VALUES(1,?,'SALES','销售部',0,'ACTIVE'),(2,?,'BJ','北京',0,'ACTIVE'),(9,?,'HR','人事部',0,'ACTIVE')",
+                    + " VALUES(1,?,'SALES','销售部',0,'ACTIVE',NULL),(2,?,'BJ','北京',0,'ACTIVE',1),(9,?,'HR','人事部',0,'ACTIVE',NULL)",
                 tenant.toString(),
                 tenant.toString(),
                 tenant.toString());
@@ -160,7 +161,7 @@ class TargetSettingsTransactionTest {
                 .extracting(Subject::code)
                 .containsExactly("BJ");
         jdbc.update(
-                "INSERT INTO hr_department VALUES(3,?,'BJ-1','北京一部',0,'ACTIVE')",
+                "INSERT INTO hr_department VALUES(3,?,'BJ-1','北京一部',0,'ACTIVE',2)",
                 tenant.toString());
         jdbc.update(
                 "INSERT INTO hr_department_closure VALUES(?,1,3),(?,2,3)",

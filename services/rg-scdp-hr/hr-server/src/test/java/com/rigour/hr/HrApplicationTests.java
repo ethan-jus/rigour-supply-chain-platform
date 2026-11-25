@@ -848,7 +848,7 @@ class HrApplicationTests {
         jdbcTemplate.update("INSERT INTO hr_department(tenant_id,department_code,department_name) VALUES(?,'X','一组')",tenant);
         long department=jdbcTemplate.queryForObject("SELECT id FROM hr_department WHERE tenant_id=?",Long.class,tenant);
         jdbcTemplate.update("UPDATE hr_employee SET department_id=?, department_name_snapshot='一组',updated_time=? WHERE tenant_id=?",department,firstUtc,tenant);
-        jdbcTemplate.update("INSERT INTO hr_department_parent_history VALUES(?,?,?,?,?),(?,?,?,?,?),(?,?,?,?,?),(?,?,?,?,?)",
+        jdbcTemplate.update("INSERT INTO hr_department_parent_history(tenant_id,department_id,effective_at,parent_id,department_name) VALUES(?,?,?,?,?),(?,?,?,?,?),(?,?,?,?,?),(?,?,?,?,?)",
             tenant,department,firstUtc,9001L,"一组",tenant,9001L,firstUtc,null,"北区",tenant,9002L,firstUtc,null,"南区",tenant,department,secondUtc,9002L,"新一组");
         org.assertj.core.api.Assertions.assertThat(query.find(tenant,first,java.util.List.of(code)).getFirst().departmentAncestors()).containsEntry(9001L,"北区").doesNotContainKey(9002L);
         org.assertj.core.api.Assertions.assertThat(query.find(tenant,second,java.util.List.of(code)).getFirst().departmentAncestors()).containsEntry(9002L,"南区").doesNotContainKey(9001L);

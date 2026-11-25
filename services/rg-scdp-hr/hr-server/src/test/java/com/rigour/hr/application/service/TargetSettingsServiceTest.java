@@ -22,7 +22,7 @@ class TargetSettingsServiceTest {
                     store, Clock.fixed(Instant.parse("2026-10-09T08:00:00Z"), ZoneOffset.UTC));
     private final Subject city = new Subject("CITY", "BJ", "北京", "BJ", "北京", null, null, false);
     private final Subject sales =
-            new Subject("SALES_OWNER", "E1", "销售", "BJ", "北京", "销售部", "ACTIVE", false);
+            new Subject("SALES_OWNER", "E1", "销售", "BJ", "北京", "北京", "ACTIVE", false);
 
     @BeforeEach
     void setup() {
@@ -56,6 +56,41 @@ class TargetSettingsServiceTest {
 
     Change change(String type, String code, String metric, String value) {
         return new Change(type, code, metric, value == null ? null : new BigDecimal(value), 0);
+    }
+
+    @Test
+    void directSalesMembersDoNotGetNewTargetsAndPreviouslySavedHistoryRemainsReadable() {
+        var direct = new Subject("SALES_OWNER", "ROOT", "直属人员", "SALES", "销售部", "销售部", "ACTIVE", false);
+        var prior = new Subject("SALES_OWNER", "ROOT", "直属人员", null, null, "销售部", null, false);
+        when(store.subjects(tenant.toString())).thenReturn(List.of(city, sales, direct));
+        when(store.permittedSubjects(anyString(), anyString()))
+                .thenReturn(Set.of("CITY:BJ", "SALES_OWNER:E1", "SALES_OWNER:ROOT"));
+
+        for (String month : List.of("2026-10", "2026-11")) {
+            var live = service.settings(month);
+            assertThat(live.subjects()).extracting(Subject::code).containsExactly("BJ", "E1");
+            assertThat(live.targets()).noneMatch(t -> t.code().equals("ROOT"));
+            assertThatThrownBy(() -> service.save(new Batch(month,
+                    List.of(change("SALES_OWNER", "ROOT", "SALES_AMOUNT", "1")), "调整原因")))
+                    .hasMessageContaining("直属人员");
+        }
+        verify(store, never()).save(anyString(), anyString(), anyString(), any(), any(), anyString(), any());
+
+        var period = YearMonth.of(2026, 9);
+        var initial = new Target("2026-09", "SALES_OWNER", "ROOT", "直属人员",
+                "SALES_AMOUNT", new BigDecimal("40000"), 0);
+        when(store.archive(tenant.toString(), period)).thenReturn(Optional.of(
+                new Settings("2026-09", List.of(prior), List.of(initial), true)));
+        assertThat(service.settings("2026-09").subjects()).isEmpty();
+
+        var saved = new Target("2026-09", "SALES_OWNER", "ROOT", "直属人员",
+                "SALES_AMOUNT", BigDecimal.ZERO, 2);
+        when(store.archive(tenant.toString(), period)).thenReturn(Optional.of(
+                new Settings("2026-09", List.of(prior), List.of(saved), true)));
+        assertThat(service.settings("2026-09").targets()).containsExactly(saved);
+
+        serviceCaller();
+        assertThat(service.values("2026-10", "2026-10")).anyMatch(t -> t.code().equals("ROOT"));
     }
 
     @Test

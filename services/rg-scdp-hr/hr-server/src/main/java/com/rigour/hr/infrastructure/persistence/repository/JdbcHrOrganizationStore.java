@@ -239,12 +239,15 @@ UPDATE hr_employee SET department_name_snapshot=?,revision=revision+1,updated_ti
                                 target,
                                 c.departmentName());
                     }
-                    if (old == null || !java.util.Objects.equals(old.parentId(),c.parentId()) || !old.departmentName().equals(c.departmentName())) {
+                    if (old == null || !Objects.equals(old.parentId(), c.parentId())
+                            || !old.departmentName().equals(c.departmentName())
+                            || !old.statusCode().equals(c.statusCode())) {
                         jdbc.update("""
-                            INSERT INTO hr_department_parent_history(tenant_id,department_id,effective_at,parent_id,department_name)
-                            SELECT tenant_id,id,updated_time,parent_id,department_name FROM hr_department WHERE tenant_id=? AND id=?
-                            ON DUPLICATE KEY UPDATE parent_id=?,department_name=?
-                            """,tenant,target,c.parentId(),c.departmentName());
+                            INSERT INTO hr_department_parent_history(tenant_id,department_id,effective_at,
+                                parent_id,department_name,department_code,status_code)
+                            SELECT tenant_id,id,updated_time,parent_id,department_name,department_code,status_code
+                              FROM hr_department WHERE tenant_id=? AND id=?
+                            """, tenant, target);
                     }
                     rebuild(tenant);
                     change(
@@ -314,6 +317,12 @@ UPDATE hr_employee SET department_name_snapshot=?,revision=revision+1,updated_ti
                         throw new IllegalArgumentException("薪酬、报销、考勤或经营目标引用了此部门。如需停止使用，请编辑并停用部门");
                     jdbc.update("DELETE FROM hr_department_closure WHERE tenant_id=? AND (ancestor_id=? OR descendant_id=?)",
                             tenant, id, id);
+                    jdbc.update("""
+                        INSERT INTO hr_department_parent_history(tenant_id,department_id,effective_at,
+                            parent_id,department_name,department_code,status_code)
+                        SELECT tenant_id,id,UTC_TIMESTAMP(6),parent_id,department_name,department_code,'DELETED'
+                          FROM hr_department WHERE tenant_id=? AND id=?
+                        """, tenant, id);
                     jdbc.update("DELETE FROM hr_department WHERE tenant_id=? AND id=? AND revision=?", tenant, id, revision);
                     change(tenant, "DEPARTMENT_DELETE", String.valueOf(id), actor);
                 });

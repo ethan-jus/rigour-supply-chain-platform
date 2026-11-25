@@ -8,6 +8,7 @@ import com.rigour.shared.core.exception.BusinessException;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.sql.Timestamp;
 import java.time.*;
@@ -15,6 +16,7 @@ import java.util.*;
 
 @Repository
 public class JdbcTargetSettingsStore implements TargetSettingsStore {
+    private final JsonMapper json = JsonMapper.builder().build();
     private final JdbcTemplate jdbc;
     private final HrDataScope scope;
 
@@ -66,12 +68,15 @@ public class JdbcTargetSettingsStore implements TargetSettingsStore {
                 new ArrayList<>(
                         jdbc.query(
                                 """
-                                SELECT department_code,department_name FROM hr_department
-                                 WHERE tenant_id=? AND id IN (
+                                SELECT d.department_code,d.department_name,p.department_code
+                                  FROM hr_department d LEFT JOIN hr_department p
+                                    ON p.tenant_id=d.tenant_id AND p.id=d.parent_id
+                                   AND p.department_name<>'销售部' AND p.deleted=0 AND p.status_code='ACTIVE'
+                                 WHERE d.tenant_id=? AND d.id IN (
                                 """
                                         + SALES_DEPARTMENT
                                         + """
- ) AND department_name<>'销售部' ORDER BY department_name,department_code
+ ) AND d.department_name<>'销售部' ORDER BY d.department_name,d.department_code
 """,
                                 (r, n) ->
                                         new Subject(
@@ -82,6 +87,8 @@ public class JdbcTargetSettingsStore implements TargetSettingsStore {
                                                 r.getString(2),
                                                 null,
                                                 null,
+                                                false,
+                                                r.getString(3),
                                                 false),
                                 tenant,
                                 tenant));
@@ -105,10 +112,92 @@ SELECT e.employee_code,e.employee_name,d.department_code,d.department_name,e.emp
                                         r.getString(4),
                                         r.getString(4),
                                         r.getString(5),
+                                        false,
+                                        r.getString(3),
                                         false),
                         tenant,
                         tenant));
         return result;
+    }
+
+    @Override
+    public boolean canReadAllArchivedSubjects() {
+        return scope.fullEmployeeDirectory("hr:targets:read");
+    }
+
+    @Override
+    public void lockOrganization(String tenant) {
+        jdbc.update("""
+            INSERT INTO hr_organization_state(tenant_id) VALUES(?) ON DUPLICATE KEY UPDATE tenant_id=tenant_id
+            """, tenant);
+    }
+
+    private static final String HISTORICAL_DEPARTMENTS = """
+        WITH RECURSIVE revisions AS (
+            SELECT h.*, ROW_NUMBER() OVER (PARTITION BY h.department_id ORDER BY h.effective_at DESC) AS rn
+              FROM hr_department_parent_history h
+             WHERE h.tenant_id=? AND h.effective_at<?
+        ), org AS (
+            SELECT department_id,parent_id,department_code,department_name,status_code,0 AS depth
+              FROM revisions WHERE rn=1 AND department_name='销售部'
+                AND COALESCE(status_code,'ACTIVE')='ACTIVE'
+            UNION ALL
+            SELECT d.department_id,d.parent_id,d.department_code,d.department_name,d.status_code,o.depth+1
+              FROM revisions d JOIN org o ON o.department_id=d.parent_id
+             WHERE d.rn=1 AND d.department_name<>'销售部' AND d.department_code IS NOT NULL
+               AND COALESCE(d.status_code,'ACTIVE')<>'DELETED' AND o.depth<64
+        )
+        """;
+
+    @Override
+    public List<Subject> historicalSubjects(String tenant, YearMonth month) {
+        var cutoff = LocalDateTime.ofInstant(month.plusMonths(1).atDay(1)
+                .atStartOfDay(ZoneId.of("Asia/Shanghai")).toInstant(), ZoneOffset.UTC);
+        var result = new ArrayList<>(jdbc.query(HISTORICAL_DEPARTMENTS + """
+            SELECT d.department_code,d.department_name,CASE WHEN p.depth>0 THEN p.department_code END
+              FROM org d JOIN org p ON p.department_id=d.parent_id
+             WHERE d.depth>0 AND COALESCE(d.status_code,'ACTIVE')='ACTIVE'
+             ORDER BY d.department_name,d.department_code
+            """, (r, n) -> new Subject("CITY", r.getString(1), r.getString(2), r.getString(1),
+                    r.getString(2), null, null, false, r.getString(3), false), tenant, cutoff));
+        result.addAll(jdbc.query(HISTORICAL_DEPARTMENTS + """
+            , assignments AS (
+                SELECT a.employee_code,a.department_id,
+                       ROW_NUMBER() OVER (PARTITION BY a.employee_code ORDER BY a.effective_from DESC,a.id DESC) AS rn
+                  FROM hr_employee_assignment a WHERE a.tenant_id=? AND a.effective_from<?
+                   AND (a.effective_to IS NULL OR a.effective_to>=?)
+            )
+            SELECT a.employee_code,e.employee_name,
+                   CASE WHEN d.depth>0 THEN d.department_code END,d.department_name
+              FROM assignments a JOIN org d ON d.department_id=a.department_id
+              JOIN hr_employee e ON e.tenant_id=? AND e.employee_code=a.employee_code
+             WHERE a.rn=1 AND COALESCE(d.status_code,'ACTIVE')='ACTIVE'
+             ORDER BY e.employee_name,a.employee_code
+            """, (r, n) -> new Subject("SALES_OWNER", r.getString(1), r.getString(2), r.getString(3),
+                    r.getString(4), r.getString(4), null, false, r.getString(3), false),
+                tenant, cutoff, tenant, cutoff, cutoff, tenant));
+        return result;
+    }
+
+    @Override
+    public Optional<Settings> archive(String tenant, YearMonth month) {
+        return readArchive(tenant, month, false);
+    }
+
+    @Override
+    public Settings archive(String tenant, YearMonth month, Settings snapshot) {
+        jdbc.update("""
+            INSERT INTO hr_business_target_month_archive(tenant_id,target_month,snapshot_json) VALUES(?,?,?)
+            ON DUPLICATE KEY UPDATE target_month=target_month
+            """, tenant, month.atDay(1), json.writeValueAsString(snapshot));
+        return readArchive(tenant, month, true).orElseThrow();
+    }
+
+    private Optional<Settings> readArchive(String tenant, YearMonth month, boolean latest) {
+        return jdbc.query("""
+            SELECT snapshot_json FROM hr_business_target_month_archive WHERE tenant_id=? AND target_month=?
+            """ + (latest ? " FOR UPDATE" : ""), (r, n) -> json.readValue(r.getString(1), Settings.class),
+                tenant, month.atDay(1)).stream().findFirst();
     }
 
     @Override

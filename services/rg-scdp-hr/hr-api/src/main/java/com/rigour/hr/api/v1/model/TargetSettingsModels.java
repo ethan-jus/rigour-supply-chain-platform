@@ -15,7 +15,14 @@ public final class TargetSettingsModels {
             String cityName,
             String departmentName,
             String employmentStatus,
-            boolean writable) {}
+            boolean writable,
+            String parentCode,
+            boolean historicalPlacementUnknown) {
+        public Subject(String dimensionType, String code, String name, String cityCode, String cityName,
+                String departmentName, String employmentStatus, boolean writable) {
+            this(dimensionType, code, name, cityCode, cityName, departmentName, employmentStatus, writable, null, false);
+        }
+    }
 
     public record Target(
             String month,
@@ -28,7 +35,8 @@ public final class TargetSettingsModels {
 
     public record BusinessTargets(BigDecimal salesTargetAmount, BigDecimal receiptTargetAmount) {}
 
-    public record Settings(String month, List<Subject> subjects, List<Target> targets) {}
+    public record Settings(String month, List<Subject> subjects, List<Target> targets, boolean archived) {}
+
 
     public record Change(
             String dimensionType,

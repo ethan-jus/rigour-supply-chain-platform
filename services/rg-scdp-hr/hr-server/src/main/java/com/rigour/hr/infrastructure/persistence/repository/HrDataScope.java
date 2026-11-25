@@ -196,6 +196,15 @@ public final class HrDataScope {
                                         && Set.of("NONE", "ALL").contains(c.warehouses().mode()));
     }
 
+    boolean fullEmployeeDirectory(String action) {
+        var policy = policy(action);
+        return policy != null && policy.clauses().stream().anyMatch(c ->
+                "EMPLOYEE".equals(c.objectType()) && "ALL".equals(c.scopeMode())
+                        && Set.of("NONE", "ALL").contains(c.departments().mode())
+                        && Set.of("NONE", "ALL").contains(c.regions().mode())
+                        && Set.of("NONE", "ALL").contains(c.warehouses().mode()));
+    }
+
     public void requireDepartment(String tenant, long department, String action) {
         var predicate = departmentPredicate(action);
         List<Object> values = new ArrayList<>(List.of(tenant, department));
