@@ -61,7 +61,7 @@ class IntegrationV34ConvergenceMySqlTest {
             var flyway = migration(ds, "latest");
             flyway.migrate();
             flyway.validate();
-            assertThat(flyway.info().current().getVersion().toString()).isEqualTo("35");
+            assertThat(flyway.info().current().getVersion().toString()).isEqualTo("36");
             assertThat(jdbc.queryForObject("SELECT id FROM migration_sentinel", Integer.class)).isEqualTo(42);
             if (!history.isEmpty()) assertThat(jdbc.queryForList("SELECT * FROM flyway_schema_history ORDER BY installed_rank").subList(0, history.size())).isEqualTo(history);
             assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=DATABASE() AND table_name='integration_dictionary_mapping' AND column_name='carrier_backfill_revision'", Integer.class)).isOne();

@@ -387,6 +387,13 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
     }
 
     @Override
+    public Set<String> lockedSalesSettlementIds(
+            String tenant, String employee, String month, List<String> collectionSourceIds) {
+        if (collectionSourceIds.isEmpty()) return Set.of();
+        return Set.copyOf(mapper.lockedSalesSettlementIds(tenant, employee, month, collectionSourceIds));
+    }
+
+    @Override
     public Set<String> released(String tenant) {
         return new HashSet<>(mapper.released(tenant));
     }

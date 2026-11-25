@@ -3,6 +3,7 @@ package com.rigour.order.api.v1;
 import com.rigour.order.api.v1.model.OrderCollectionSourceView;
 import com.rigour.order.api.v1.model.OrderCommissionSourceLineView;
 import com.rigour.order.api.v1.model.OrderDeliveryCostSourceView;
+import com.rigour.order.api.v1.model.OrderPayrollSettlementView;
 import com.rigour.shared.core.api.ApiResponse;
 
 import org.springframework.web.bind.annotation.GetMapping;
@@ -43,4 +44,10 @@ public interface OrderCostSourceApi {
             @RequestParam(required = false) String employeeCode,
             @RequestParam(required = false) String cityCode,
             @RequestParam LocalDate through);
+
+    @GetMapping("/api/v1/orders/cost-sources/payroll-settlements")
+    ApiResponse<List<OrderPayrollSettlementView>> payrollSettlements(
+            @RequestParam String employeeCode,
+            @RequestParam LocalDate from,
+            @RequestParam LocalDate to);
 }

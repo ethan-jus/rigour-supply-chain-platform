@@ -142,12 +142,116 @@ class HrPayrollPerformanceExportServiceTest {
                 .hasMessageContaining("订单资料待核定");
     }
 
+    @Test void closingOwnerReceivesTheWholeOrderWithItsProductBreakdown() {
+        var month = YearMonth.of(2026, 10);
+        var seller = row();
+        var recipient = new PayrollDetailView("P2", seller.month(), "E2", "回款人乙",
+                seller.departmentId(), "北京", "北京", "REVIEW", 1, seller.calculation(), Instant.EPOCH);
+        var sellerLines = List.of(
+                line("L1", "ORDER", "2026-10-01", 10, "3000", "10000"),
+                line("L2", "ORDER", "2026-10-01", 20, "7000", "10000"));
+        var evidence = new PayrollCollectionEvidenceView(
+                "FULL:ORDER", "ORDER", month.atDay(12), n("10000"), "FULLY_PAID", "P2", "RC-2",
+                "E2", "回款人乙", "MANUAL", month.atDay(11), BigDecimal.ZERO,
+                List.of(
+                        new PayrollCollectionEvidenceView.ProductLine(
+                                "L1", 10L, 10L, "澳洋台呢", "SET", n("5"), n("3000")),
+                        new PayrollCollectionEvidenceView.ProductLine(
+                                "L2", 20L, 20L, "方便面", "BUCKET", n("100"), n("7000"))));
+        var noReceipts = new HrPayrollPerformanceExportService.ReceiptFacts(BigDecimal.ZERO, List.of(), List.of());
+        var closingReceipts = new HrPayrollPerformanceExportService.ReceiptFacts(n("10000"), List.of(evidence), List.of());
+
+        var sales = HrPayrollPerformanceExportService.summarize(
+                seller, sellerLines, noReceipts, products(), categories(), null, null);
+        assertThat(sales.salesAmount()).isEqualByComparingTo("10000");
+        assertThat(sales.collectionAmount()).isZero();
+        assertThat(sales.clothSales()).allSatisfy(group -> assertThat(group.quantities()).isEmpty());
+
+        var receipts = HrPayrollPerformanceExportService.summarize(
+                recipient, List.of(), closingReceipts, products(), categories(), null, null);
+        assertThat(receipts.salesAmount()).isZero();
+        assertThat(receipts.collectionAmount()).isEqualByComparingTo("10000");
+        assertThat(receipts.categories()).filteredOn(c -> c.code().equals("CLOTH")).singleElement()
+                .satisfies(c -> assertThat(c.collectionAmount()).isEqualByComparingTo("3000"));
+        assertThat(receipts.clothSales()).filteredOn(c -> c.code().equals("A300_A500")).singleElement()
+                .satisfies(c -> assertThat(c.quantities())
+                        .containsExactly(new PayrollPerformanceExportView.UnitQuantity("SET", n("5"))));
+    }
+
+    @Test void confirmedExportKeepsFrozenReceiptBasisAfterLiveOrdersChange() {
+        var month = YearMonth.of(2026, 10);
+        var row = mock(PayrollDetailView.class);
+        var calculation = mock(PayrollCalculationView.class);
+        when(row.month()).thenReturn(month.toString());
+        when(row.employeeCode()).thenReturn("E1");
+        when(row.statusCode()).thenReturn("CONFIRMED");
+        when(row.calculation()).thenReturn(calculation);
+        when(calculation.settledOrders()).thenReturn(List.of(
+                new PayrollCollectionEvidenceView("FULL:OLD", "OLD", month.atDay(2), n("10000"), "FULLY_PAID")));
+        var lines = List.of(
+                line("L1", "OLD", "2026-09-30", 10, "5000", "5000"),
+                line("L2", "NEW", "2026-10-01", 20, "20000", "20000"));
+        var saved = HrPayrollPerformanceExportService.archivedReceipts(month, row, lines);
+        var report = HrPayrollPerformanceExportService.summarize(row, lines, saved, products(), categories(), null, null);
+        assertThat(report.collectionAmount()).isEqualByComparingTo("10000");
+        assertThat(report.salesAmount()).isEqualByComparingTo("20000");
+    }
+
+    @Test void unknownCollectionBasisRemainsPending() {
+        var pending = new HrPayrollPerformanceExportService.ReceiptFacts(
+                null, List.of(), List.of("SO-1：结清回款人待核"));
+        var result = HrPayrollPerformanceExportService.summarize(
+                row(), List.of(), pending, products(), categories(), null, null);
+        assertThat(result.collectionAmount()).isNull();
+        assertThat(result.issues()).contains("SO-1：结清回款人待核");
+    }
+
+    @Test void exportKeepsArchivedSalesCollectionsAndPreservesManagerReportRules() {
+        var workflow = mock(HrPayrollWorkflowService.class);
+        var source = mock(HrPayrollSource.class);
+        var targets = mock(TargetSettingsStore.class);
+        var store = mock(HrPayrollStore.class);
+        var attendance = mock(HrAttendanceStore.class);
+        var attribution = mock(PayrollSettlementAttribution.class);
+        var service = new HrPayrollPerformanceExportService(workflow, source, targets, store, attendance, attribution);
+        var month = YearMonth.of(2026, 10);
+        var tenant = UUID.randomUUID();
+        var user = UUID.randomUUID();
+        String action = "hr:payroll:read";
+        TestAuthorizationContext.set(new CallerIdentity("TENANT", user, tenant, user, null, UUID.randomUUID(),
+                0, 0, 0, Set.of(), Set.of(action)));
+        var query = new PayrollQuery(0, 200, month.toString(), null, null, null, null, null, null, List.of("P1"));
+        var wage = mock(PayrollDetailView.class);
+        when(wage.month()).thenReturn(month.toString());
+        when(wage.employeeCode()).thenReturn("E1");
+        when(wage.statusCode()).thenReturn("PAID");
+        var calc = mock(PayrollCalculationView.class);
+        when(wage.calculation()).thenReturn(calc);
+        when(calc.settledOrders()).thenReturn(List.of(
+                new PayrollCollectionEvidenceView("FULL:OLD", "OLD", month.atDay(4), n("9000"), "FULLY_PAID")));
+        var employee = mock(PayrollEmployeeView.class);
+        when(store.employee(tenant.toString(), "E1", action)).thenReturn(employee);
+        when(workflow.export(query)).thenReturn(List.of(wage));
+        when(attendance.employee(tenant.toString(), month, "E1", action))
+                .thenReturn(mock(HrAttendanceStore.Employee.class));
+        when(source.payrollLines(tenant.toString(), "E1", null, month.atEndOfMonth()))
+                .thenReturn(List.of(line("L1", "OLD", "2026-09-21", 10, "5000", "5000")));
+
+        when(employee.payrollCategory()).thenReturn("SALES");
+        assertThat(service.export(query)).singleElement()
+                .satisfies(report -> assertThat(report.collectionAmount()).isEqualByComparingTo("9000"));
+        when(employee.payrollCategory()).thenReturn("CITY_MANAGER");
+        assertThat(service.export(query)).singleElement()
+                .satisfies(report -> assertThat(report.collectionAmount()).isEqualByComparingTo("5000"));
+        verifyNoInteractions(attribution);
+    }
+
     @Test void authorizationAndSelectionMustPassBeforeReadingOtherDomains() {
         var workflow = mock(HrPayrollWorkflowService.class);
         var source = mock(HrPayrollSource.class);
         var targets = mock(TargetSettingsStore.class);
         var service = new HrPayrollPerformanceExportService(workflow, source, targets,
-                mock(HrPayrollStore.class), mock(HrAttendanceStore.class));
+                mock(HrPayrollStore.class), mock(HrAttendanceStore.class), mock(PayrollSettlementAttribution.class));
         var query = new PayrollQuery(0, 200, "2026-10", null, null, null, null, null, null, List.of("P1"));
         assertThatThrownBy(() -> service.export(query)).isInstanceOf(AuthorizationDeniedException.class);
         UUID user = UUID.randomUUID(), tenant = UUID.randomUUID();

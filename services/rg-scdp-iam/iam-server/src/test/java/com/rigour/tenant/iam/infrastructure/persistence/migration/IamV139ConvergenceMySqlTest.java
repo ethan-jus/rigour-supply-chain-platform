@@ -67,7 +67,8 @@ SELECT MAX(installed_rank)+1,'139','cost dashboard permissions','SQL',?,-8120608
                             : jdbc.queryForMap(
                                     "SELECT * FROM flyway_schema_history WHERE version='139'");
             var beforeRoles = cohort.equals("fresh") ? null : roles(jdbc);
-            var flyway = migration(source, "latest");
+            // V158 and later intentionally change role grants as part of the SCM authorization changes.
+            var flyway = migration(source, "157");
             flyway.migrate();
             flyway.validate();
             assertThat(flyway.info().current().getVersion().toString()).isEqualTo("157");

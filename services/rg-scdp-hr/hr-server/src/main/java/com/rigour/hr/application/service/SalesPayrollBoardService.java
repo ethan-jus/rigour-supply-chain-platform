@@ -21,6 +21,7 @@ public class SalesPayrollBoardService {
     private final HrAttendanceStore attendance;
     private final HrPayrollStore store;
     private final HrPayrollSource source;
+    private final PayrollSettlementAttribution settlementAttribution;
     private final SupplyAuthorizationClient authorizations;
     private final com.rigour.hr.infrastructure.persistence.repository.SalesStatementPublications
             publications;
@@ -34,11 +35,13 @@ public class SalesPayrollBoardService {
             SupplyAuthorizationClient authorizations,
             com.rigour.hr.infrastructure.persistence.repository.SalesStatementPublications
                     publications,
-            HrAttendanceStore attendance) {
+            HrAttendanceStore attendance,
+            PayrollSettlementAttribution settlementAttribution) {
         this.attendance = attendance;
         this.publications = publications;
         this.store = store;
         this.source = source;
+        this.settlementAttribution = settlementAttribution;
         this.authorizations = authorizations;
     }
 
@@ -100,23 +103,28 @@ public class SalesPayrollBoardService {
                     && ((e.entryDate() != null && e.entryDate().isAfter(period.atEndOfMonth()))
                             || (e.leaveDate() != null && e.leaveDate().isBefore(period.atDay(1)))))
                 continue;
-            var facts =
-                    snapshot != null && LOCKED.contains(snapshot.statusCode())
-                            ? List.<OrderPayrollLineView>of()
-                            : source.payrollLines(
-                                    tenant, e.employeeCode(), null, period.atEndOfMonth());
-            result.add(employee(period, snapshot, e, facts));
+            result.add(teamEmployee(tenant, period, snapshot, e));
         }
         for (var row : saved.values())
-            if (sales(row, null)) {
-                var facts =
-                        LOCKED.contains(row.statusCode())
-                                ? List.<OrderPayrollLineView>of()
-                                : source.payrollLines(
-                                        tenant, row.employeeCode(), null, period.atEndOfMonth());
-                result.add(employee(period, row, null, facts));
-            }
+            if (sales(row, null)) result.add(teamEmployee(tenant, period, row, null));
         return new SalesPayrollBoardView(month, List.copyOf(result));
+    }
+
+    private Employee teamEmployee(
+            String tenant, YearMonth period, PayrollDetailView row, PayrollEmployeeView person) {
+        if (row != null && LOCKED.contains(row.statusCode()))
+            return employee(period, row, person, List.of());
+        var code = row == null ? person.employeeCode() : row.employeeCode();
+        if ("SALES".equals(payrollRole(row, person == null ? null : person.payrollCategory()))
+                && settlementAttribution.applies(period))
+            return employee(
+                    period,
+                    row,
+                    person,
+                    List.of(),
+                    settlementAttribution.calculate(tenant, code, period));
+        return employee(
+                period, row, person, source.payrollLines(tenant, code, null, period.atEndOfMonth()));
     }
 
     public List<SalesPerformanceRow> performance(String month) {
@@ -191,13 +199,21 @@ public class SalesPayrollBoardService {
     }
 
     private static boolean sales(PayrollDetailView row, String currentCategory) {
+        var role = payrollRole(row, currentCategory);
+        return role != null && SALES.contains(role);
+    }
+
+    static String payrollRole(PayrollDetailView row, String currentCategory) {
         if (row != null
                 && row.calculation() != null
                 && row.calculation().scheme() != null
                 && row.calculation().scheme().scheme() != null
                 && row.calculation().scheme().scheme().definition() != null)
-            return SALES.contains(row.calculation().scheme().scheme().definition().role());
-        return currentCategory != null && SALES.contains(currentCategory);
+            return row.calculation().scheme().scheme().definition().role();
+        if (row != null && row.calculation() != null && row.calculation().salarySource() != null
+                && row.calculation().salarySource().payrollCategory() != null)
+            return row.calculation().salarySource().payrollCategory();
+        return currentCategory;
     }
 
     private static YearMonth period(String value) {
@@ -213,6 +229,15 @@ public class SalesPayrollBoardService {
             PayrollDetailView row,
             PayrollEmployeeView person,
             List<OrderPayrollLineView> facts) {
+        return employee(month, row, person, facts, null);
+    }
+
+    private static Employee employee(
+            YearMonth month,
+            PayrollDetailView row,
+            PayrollEmployeeView person,
+            List<OrderPayrollLineView> facts,
+            PayrollSettlementAttribution.Result settlement) {
         var c = row == null ? null : row.calculation();
         boolean locked = row != null && LOCKED.contains(row.statusCode());
         var orders = new LinkedHashMap<String, Order>();
@@ -236,12 +261,7 @@ public class SalesPayrollBoardService {
                             && month.equals(YearMonth.from(s.date())))
                         orders.putIfAbsent(
                                 s.sourceId(),
-                                new Order(
-                                        s.sourceId(),
-                                        s.orderNo(),
-                                        s.date(),
-                                        s.amount(),
-                                        "CONFIRMED"));
+                                settledOrder(s, "CONFIRMED"));
             } else {
                 for (var d :
                         c.details() == null
@@ -270,6 +290,23 @@ public class SalesPayrollBoardService {
                     issues.add("该工资快照缺少整单结清明细");
                 }
             }
+        } else if (settlement != null) {
+            issues.addAll(settlement.issues());
+            for (var s : settlement.evidence())
+                orders.put(s.sourceId(), settledOrder(s, "ELIGIBLE"));
+            for (var f : settlement.rows())
+                if (!orders.containsKey("FULL:" + f.orderId()))
+                    orders.putIfAbsent(
+                            f.orderId(),
+                            new Order(
+                                    f.orderId(),
+                                    f.orderNo(),
+                                    f.fullyPaidDate(),
+                                    null,
+                                    "REVIEW",
+                                    f.paymentNo(),
+                                    f.paymentOwnerCode(),
+                                    f.paymentOwnerName()));
         } else {
             for (var f : facts) {
                 if (f.fullyPaidDate() == null || !month.equals(YearMonth.from(f.fullyPaidDate()))) {
@@ -294,7 +331,9 @@ public class SalesPayrollBoardService {
             }
         }
         var basis =
-                basisKnown
+                !locked && settlement != null
+                        ? settlement.amount()
+                        : basisKnown
                         ? orders.values().stream()
                                 .map(Order::basis)
                                 .filter(Objects::nonNull)
@@ -331,7 +370,7 @@ public class SalesPayrollBoardService {
                 row == null ? person.employeeName() : row.employeeName(),
                 row == null ? person.cityName() : row.cityName(),
                 row == null ? "NOT_CALCULATED" : row.statusCode(),
-                locked ? "SNAPSHOT" : "ORDER",
+                locked ? "SNAPSHOT" : settlement == null ? "ORDER" : "SETTLEMENT_PAYMENT",
                 basis,
                 List.copyOf(orders.values()),
                 c == null ? null : c.commission(),
@@ -360,5 +399,17 @@ public class SalesPayrollBoardService {
                         : person != null ? person.payrollCategory() : null,
                 perf == null ? null : perf.collectionTarget(),
                 c != null && c.corrections() != null ? c.corrections() : List.of());
+    }
+
+    private static Order settledOrder(PayrollCollectionEvidenceView evidence, String state) {
+        return new Order(
+                evidence.sourceId(),
+                evidence.orderNo(),
+                evidence.date(),
+                evidence.amount(),
+                state,
+                evidence.settlementPaymentNo(),
+                evidence.paymentOwnerCode(),
+                evidence.paymentOwnerName());
     }
 }

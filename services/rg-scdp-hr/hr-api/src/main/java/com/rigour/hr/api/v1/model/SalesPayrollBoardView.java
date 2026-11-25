@@ -7,7 +7,18 @@ import java.util.List;
 
 public record SalesPayrollBoardView(String month, List<Employee> employees) {
     public record Order(
-            String id, String orderNo, LocalDate settledOn, BigDecimal basis, String state) {}
+            String id,
+            String orderNo,
+            LocalDate settledOn,
+            BigDecimal basis,
+            String state,
+            String settlementPaymentNo,
+            String paymentOwnerCode,
+            String paymentOwnerName) {
+        public Order(String id, String orderNo, LocalDate settledOn, BigDecimal basis, String state) {
+            this(id, orderNo, settledOn, basis, state, null, null, null);
+        }
+    }
 
     public record Commission(
             String orderNo,

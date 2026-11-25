@@ -2,12 +2,14 @@ package com.rigour.architecture;
 
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.MigrationVersion;
+import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
 
+import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Files;
 import java.sql.DriverManager;
@@ -23,6 +25,8 @@ class DatabaseUpgradeMySqlTest {
     private static final Path ROOT = Path.of(System.getProperty("repositoryRoot"));
     @Container static final MySQLContainer MYSQL = new MySQLContainer("mysql:8.4")
             .withDatabaseName("upgrade_fixture").withUsername("root").withPassword("upgrade-fixture-password");
+
+    @TempDir Path temporary;
 
     record Upgrade(String domain, String previous) {}
 
@@ -47,8 +51,9 @@ class DatabaseUpgradeMySqlTest {
         String url = MYSQL.getJdbcUrl().replace("/upgrade_fixture", "/" + schema);
         Path migration = ROOT.resolve("services/rg-scdp-" + upgrade.domain() + "/" + upgrade.domain()
                 + "-server/src/main/resources/db/migration");
+        Path selectedMigration = selectMigrations(upgrade.domain(), migration);
         List<MigrationVersion> versions;
-        try (var files = Files.list(migration)) {
+        try (var files = Files.list(selectedMigration)) {
             versions = files.filter(file -> file.getFileName().toString().matches("V.*__.*\\.sql"))
                     .map(file -> MigrationVersion.fromVersion(file.getFileName().toString().substring(1).split("__", 2)[0]))
                     .toList();
@@ -58,7 +63,7 @@ class DatabaseUpgradeMySqlTest {
         MigrationVersion latest = versions.stream().max(MigrationVersion::compareTo).orElseThrow();
         int laterMigrations = (int) versions.stream().filter(version -> version.compareTo(previousVersion) > 0).count();
         Flyway previous = Flyway.configure().dataSource(url, MYSQL.getUsername(), MYSQL.getPassword())
-                .locations("filesystem:" + migration).target(upgrade.previous())
+                .locations("filesystem:" + selectedMigration).target(upgrade.previous())
                 .baselineOnMigrate(false).outOfOrder(false).cleanDisabled(true).load();
         previous.migrate();
         previous.validate();
@@ -70,7 +75,7 @@ class DatabaseUpgradeMySqlTest {
             statement.execute("INSERT INTO upgrade_business_sentinel VALUES(42,'existing-business-data')");
         }
         Flyway next = Flyway.configure().dataSource(url, MYSQL.getUsername(), MYSQL.getPassword())
-                .locations("filesystem:" + migration, "filesystem:" + migration.resolveSibling("bootstrap"))
+                .locations("filesystem:" + selectedMigration, "filesystem:" + migration.resolveSibling("bootstrap"))
                 .baselineOnMigrate(false).outOfOrder(false).cleanDisabled(true).load();
         assertEquals(laterMigrations, next.migrate().migrationsExecuted);
         next.validate();
@@ -90,6 +95,29 @@ class DatabaseUpgradeMySqlTest {
         assertEquals(0, next.migrate().migrationsExecuted);
         next.validate();
         assertEquals(after, history(url));
+    }
+
+    private Path selectMigrations(String domain, Path migration) throws IOException {
+        // These fixtures start before the divergent versions. The service providers select
+        // the canonical script in that case and verify the alternate histories in their own suites.
+        String alternate = switch (domain) {
+            case "foundation" -> "V61__erp_product_specification_status_dictionaries.sql";
+            case "integration" -> "V34__retire_feishu_import_configuration.sql";
+            default -> null;
+        };
+        if (alternate == null) return migration;
+        Path alternateScript = migration.resolve(alternate);
+        assertTrue(Files.isRegularFile(alternateScript), alternateScript::toString);
+        Path selected = Files.createDirectory(temporary.resolve(domain));
+        try (var files = Files.walk(migration)) {
+            for (Path file : files.filter(Files::isRegularFile).toList()) {
+                if (file.equals(alternateScript)) continue;
+                Path target = selected.resolve(migration.relativize(file));
+                Files.createDirectories(target.getParent());
+                Files.copy(file, target);
+            }
+        }
+        return selected;
     }
 
     private List<List<String>> history(String url) throws Exception {

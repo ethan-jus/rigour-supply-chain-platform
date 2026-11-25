@@ -6,6 +6,8 @@ import static org.mockito.Mockito.*;
 
 import com.rigour.hr.api.v1.model.*;
 import com.rigour.hr.application.port.out.*;
+import com.rigour.order.api.v1.model.OrderPayrollLineView;
+import com.rigour.order.api.v1.model.OrderPayrollSettlementView;
 
 import org.junit.jupiter.api.*;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -593,6 +595,123 @@ class ConfiguredPayrollServiceTest {
         assertThat(result.performanceDetail().processPay()).isZero();
         assertThat(result.performanceDetail().collectionPay()).isEqualByComparingTo("900");
         assertThat(result.grossPay()).isEqualByComparingTo("5650");
+    }
+
+    @Test
+    void closingPayerReceivesFullOrderForSalaryWhileSellerKeepsCommissionSource() {
+        var month = YearMonth.of(2026, 11);
+        var collector = new PayrollEmployeeView(
+                "B", "回款人", 1L, "销售部", null, employee.entryDate(), null, "SALES");
+        service.setSettlementAttribution(new PayrollSettlementAttribution(source, payroll, month.toString()));
+        var paid = settlement("tail", "B", "已冻结回款人", "COMPLETE");
+        when(source.payrollSettlements("t", "B", month.atDay(1), month.atEndOfMonth()))
+                .thenReturn(List.of(paid));
+        var amount = new BigDecimal("10000");
+        var sold = new OrderPayrollLineView(
+                "L", "O", "SO", "A", "C", 1L, 1L, 1L, "商品", "BOX",
+                LocalDate.of(2026, 9, 1), BigDecimal.ONE, amount, amount, amount, amount,
+                paid.fullyPaidDate(), BigDecimal.ZERO, null, "COMPLETE");
+        when(source.payrollLines("t", "A", null, month.atEndOfMonth())).thenReturn(List.of(sold));
+        when(source.performanceEvidence(anyString(), anyString(), any(), any()))
+                .thenReturn(new com.rigour.sales.api.v1.model.SalesPayrollEvidenceView(true, List.of()));
+
+        var original = service.calculateIfConfigured("t", employee, month).orElseThrow();
+        var result = service.calculateIfConfigured("t", collector, month).orElseThrow();
+
+        assertThat(original.performanceDetail().collections()).isZero();
+        assertThat(original.settledOrders()).isEmpty();
+        assertThat(result.performanceDetail().collections()).isEqualByComparingTo(amount);
+        assertThat(result.baseSalary()).isGreaterThan(original.baseSalary());
+        assertThat(result.scheme().performanceBase()).isEqualByComparingTo("1500");
+        assertThat(result.performanceDetail().sources()).isEqualTo(result.settledOrders());
+        assertThat(result.settledOrders()).singleElement().satisfies(order -> {
+            assertThat(order.paymentOwnerCode()).isEqualTo("B");
+            assertThat(order.settlementPaymentId()).isEqualTo("tail");
+            assertThat(order.date()).isEqualTo(paid.fullyPaidDate());
+            assertThat(order.productLines()).hasSize(1);
+        });
+        verify(commissions).calculate(
+                eq("t"), eq(employee), eq(month), any(), anyList(), eq(List.of(sold)), anyList());
+
+        when(source.payrollSettlements("t", "B", month.atDay(1), month.atEndOfMonth()))
+                .thenReturn(List.of(settlement("changed-tail", "B", "归属证据已变更", "COMPLETE")));
+        var refreshed = service.calculateIfConfigured("t", collector, month).orElseThrow();
+        assertThat(refreshed.performanceDetail().collections()).isEqualByComparingTo(amount);
+        assertThat(refreshed.sourceFingerprint()).isNotEqualTo(result.sourceFingerprint());
+
+        var priorMonth = month.minusMonths(1);
+        service.calculateIfConfigured("t", employee, priorMonth).orElseThrow();
+        verify(source, never()).payrollSettlements("t", "A", priorMonth.atDay(1), priorMonth.atEndOfMonth());
+    }
+
+    @Test
+    void missingClosingPayerOrUnavailableSourceDoesNotBecomeZeroAchievement() {
+        var month = YearMonth.of(2026, 11);
+        var attribution = new PayrollSettlementAttribution(source, payroll, month.toString());
+        when(source.payrollSettlements("t", "A", month.atDay(1), month.atEndOfMonth()))
+                .thenReturn(List.of(settlement("tail", null, null, "PAYMENT_OWNER_PENDING")))
+                .thenThrow(new IllegalStateException("订单服务暂不可用"));
+
+        var missing = attribution.calculate("t", "A", month);
+        assertThat(missing.amount()).isNull();
+        assertThat(missing.evidence()).isEmpty();
+        assertThat(missing.issues()).anyMatch(issue -> issue.contains("缺少回款人"));
+
+        var unavailable = attribution.calculate("t", "A", month);
+        assertThat(unavailable.amount()).isNull();
+        assertThat(unavailable.issues()).anyMatch(issue -> issue.contains("暂不可用"));
+    }
+
+    @Test
+    void settlementAlreadyIncludedInLockedPayrollRequiresReview() {
+        var month = YearMonth.of(2026, 11);
+        var attribution = new PayrollSettlementAttribution(source, payroll, month.toString());
+        when(source.payrollSettlements("t", "B", month.atDay(1), month.atEndOfMonth()))
+                .thenReturn(List.of(settlement("tail", "B", "已冻结回款人", "COMPLETE")));
+        when(payroll.lockedSalesSettlementIds("t", "B", month.toString(), List.of("FULL:O")))
+                .thenReturn(Set.of("FULL:O"));
+
+        var result = attribution.calculate("t", "B", month);
+        assertThat(result.amount()).isNull();
+        assertThat(result.evidence()).isEmpty();
+        assertThat(result.issues()).containsExactly("SO：已计入确认或发放的薪酬，归属变更须核对原工资单");
+    }
+
+    @Test
+    void partialReceiptPreviouslyAssessedUnderOriginalSellerRequiresReviewOnCutover() {
+        var month = YearMonth.of(2026, 11);
+        var collector = new PayrollEmployeeView(
+                "B", "回款人", 1L, "销售部", null, employee.entryDate(), null, "SALES");
+        service.setSettlementAttribution(new PayrollSettlementAttribution(source, payroll, month.toString()));
+        when(source.payrollSettlements("t", "B", month.atDay(1), month.atEndOfMonth()))
+                .thenReturn(List.of(settlement("tail", "B", "已冻结回款人", "COMPLETE")));
+        when(source.performanceEvidence(anyString(), anyString(), any(), any()))
+                .thenReturn(new com.rigour.sales.api.v1.model.SalesPayrollEvidenceView(true, List.of()));
+        var previousMonth = month.minusMonths(1);
+        var partialReceipt = new PayrollCollectionEvidenceView(
+                "receipt-1", "SO", previousMonth.atDay(8), new BigDecimal("9000"), "PAYMENT");
+        var performance = new PayrollPerformanceResultView(
+                null, null, null, null, null, partialReceipt.amount(), null, null,
+                List.of(), List.of(partialReceipt), List.of());
+        var legacyCalculation = new PayrollCalculationView(
+                null, null, null, null, null, null, null, null, List.of(), List.of(),
+                List.of(), null, "legacy", performance, null);
+        when(payroll.commissionHistory("t", "A", previousMonth.toString())).thenReturn(List.of(
+                new PayrollDetailView("old", previousMonth.toString(), "A", "员工", 1L, "销售部",
+                        null, "PAID", 1, legacyCalculation, Instant.EPOCH)));
+
+        var current = service.calculateIfConfigured("t", collector, month).orElseThrow();
+        assertThat(current.issues()).anyMatch(issue -> issue.contains("旧规则已考核部分回款"));
+    }
+
+    private static OrderPayrollSettlementView settlement(
+            String paymentId, String owner, String evidence, String quality) {
+        return new OrderPayrollSettlementView(
+                "O", "SO", "A", paymentId, "R-2", owner, owner, evidence,
+                LocalDate.of(2026, 11, 3), LocalDate.of(2026, 11, 2),
+                new BigDecimal("10000"), BigDecimal.ZERO, quality,
+                List.of(new OrderPayrollSettlementView.ProductLine(
+                        "L", 1L, 1L, "商品", "BOX", BigDecimal.ONE, new BigDecimal("10000"))));
     }
 
     @Test

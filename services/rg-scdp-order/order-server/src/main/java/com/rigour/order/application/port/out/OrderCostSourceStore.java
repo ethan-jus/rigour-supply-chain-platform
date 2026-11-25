@@ -3,6 +3,7 @@ package com.rigour.order.application.port.out;
 import com.rigour.order.api.v1.model.OrderCollectionSourceView;
 import com.rigour.order.api.v1.model.OrderCommissionSourceLineView;
 import com.rigour.order.api.v1.model.OrderDeliveryCostSourceView;
+import com.rigour.order.api.v1.model.OrderPayrollSettlementView;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -25,6 +26,9 @@ public interface OrderCostSourceStore {
             String tenant, String employeeCode, String cityCode, LocalDate through) {
         throw new UnsupportedOperationException("整单付清来源尚未接入");
     }
+
+    List<OrderPayrollSettlementView> payrollSettlements(
+            String tenant, String employeeCode, LocalDate from, LocalDate to);
 
     default List<OrderDeliveryCostSourceView> deliveries(
             String tenant, String keyword, List<Long> ids, String city, int begin, String action) {
