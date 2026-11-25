@@ -900,11 +900,11 @@ class OrderAttributionAndScopeIntegrationTest {
         // 业务员调岗：当前归属字段改到新部门/新业务员，历史快照仍冻结在部门 10
         jdbc.update("UPDATE order_sales_order SET owner_employee_code='EMP-B' WHERE id=?", id);
 
-        // 数据范围授权：本用例独立声明 order:read 全量可见
-        when(iam.authorization(any(), eq("order:read")))
+        // 数据范围授权：本用例独立声明 order:register-orders:read 全量可见
+        when(iam.authorization(any(), eq("order:register-orders:read")))
                 .thenReturn(
                         policy(
-                                "order:read",
+                                "order:register-orders:read",
                                 List.of(
                                         new Clause(
                                                 UUID.randomUUID(),
@@ -918,7 +918,7 @@ class OrderAttributionAndScopeIntegrationTest {
                                 all()));
         try (var ctx =
                 com.rigour.tenant.iam.client.SupplyAuthorizationContext.open(
-                        iam, actor, policy("order:read", List.of(), all(), all()))) {
+                        iam, actor, policy("order:register-orders:read", List.of(), all(), all()))) {
             assertThat(ordersInDepartments(Set.of(10L))).contains("dept-snapshot");
             assertThat(ordersInDepartments(Set.of(20L))).doesNotContain("dept-snapshot");
         }

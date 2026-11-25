@@ -20,7 +20,7 @@ class HttpHrEmployeeDisplayClientTest {
         server.expect(requestTo("https://hr.test/api/v1/hr/employees?begin=0&step=2&employeeCode=ZS"))
                 .andExpect(header(RequestHeaders.TENANT_ID,tenant.toString()))
                 .andRespond(withSuccess("""
-                        {"code":"OK","data":{"total":1,"items":[{"id":7,"employeeCode":"ZS"}]}}
+                        {"code":"OK","data":{"total":1,"begin":0,"step":2,"items":[{"id":7,"employeeCode":"ZS"}]}}
                         """,MediaType.APPLICATION_JSON));
         server.expect(requestTo("https://hr.test/api/v1/hr/employees/7/assignments"))
                 .andRespond(withSuccess("""
