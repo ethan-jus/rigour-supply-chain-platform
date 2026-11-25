@@ -1190,6 +1190,30 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         if (old.get("source_updated_at") != null && c.updatedAt() != null
                 && c.updatedAt().isBefore(instant(old.get("source_updated_at"))))
             return new Intake("STALE", group, "旧版本响应已忽略");
+        // 历史核销保留原入账事实；同一收款来源的资金作废状态仍需接续。
+        if ("CANCELLED".equals(c.status()) && c.updatedAt() != null
+                && money(old, "amount").compareTo(c.amount()) == 0
+                && Objects.equals(text(old, "source_order_no"), c.sourceOrderNo())) {
+            var funds = jdbc.queryForList("SELECT * FROM order_fund_document WHERE tenant_id=? AND connector_id=?"
+                    + " AND source_system_code='DINGHUOBAO' AND direction_code='RECEIPT' AND source_document_no=?"
+                    + " AND deleted=0 FOR UPDATE", t, c.connectorId().toString(), c.receiptNo());
+            for (var fund : funds) {
+                if (!Objects.equals(text(fund, "source_order_no"), c.sourceOrderNo())
+                        || money(fund, "amount").compareTo(c.amount()) != 0
+                        || "CANCELLED".equals(text(fund, "document_status_code"))) continue;
+                auditChange(t, c.connectorId(), "FUND_RECEIPT", c.receiptNo(), fund, c);
+                jdbc.update("UPDATE order_fund_document SET document_status_code='CANCELLED',revision=revision+1,"
+                        + "updated_by='SYSTEM',updated_time=? WHERE tenant_id=? AND id=?", ts(Instant.now()), t, num(fund, "id"));
+            }
+            if ("CANCELLED".equals(text(old, "state")) && "CANCELLED".equals(text(old, "source_status"))
+                    && Objects.equals(old.get("customer_id"), c.customerId())) {
+                jdbc.update("UPDATE order_sync_receipt SET checksum=?,source_updated_at=?,pending_payload=NULL,"
+                        + "pending_checksum=NULL,revision=revision+1 WHERE tenant_id=? AND connector_id=? AND receipt_no=?"
+                        + " AND (checksum<>? OR pending_checksum IS NOT NULL)", c.checksum(), ts(c.updatedAt()),
+                        t, c.connectorId().toString(), c.receiptNo(), c.checksum());
+                return new Intake("CANCELLED", group, null);
+            }
+        }
         boolean sameFacts = c.updatedAt() != null && old.get("occurred_at") != null
                 && instant(old.get("occurred_at")).isBefore(HistorySyncRules.CUTOVER)
                 && money(old, "amount").compareTo(c.amount()) == 0

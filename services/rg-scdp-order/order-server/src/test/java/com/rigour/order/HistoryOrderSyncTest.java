@@ -616,6 +616,9 @@ class HistoryOrderSyncTest {
 
     @Test
     void cancelledUnlinkedReceiptCannotBeRestoredByNormalOrHistoricalReplay() {
+        db.execute("CREATE TABLE order_fund_document(id BIGINT,tenant_id VARCHAR(36),connector_id VARCHAR(36),"
+                + "source_system_code VARCHAR(32),direction_code VARCHAR(20),source_document_no VARCHAR(128),source_order_no VARCHAR(128),"
+                + "document_status_code VARCHAR(32),amount DECIMAL(20,2),occurred_time TIMESTAMP,revision INT,updated_by VARCHAR(50),updated_time TIMESTAMP,deleted INT)");
         var cancelled=new Receipt(connector,"VOID-1","MISSING-ORDER",1L,new BigDecimal("78"),
                 date,"CANCELLED",date,"cancelled");
         assertThat(pay(cancelled).state()).isEqualTo("CANCELLED");
@@ -964,6 +967,30 @@ class HistoryOrderSyncTest {
 
     private Intake syncHistorical(Receipt c) {
         return tx.execute(s -> store.historicalReceiptStatus(tenant, c));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CANCELLED", "BASELINE_COVERED"})
+    void historicalCancelledReceiptReconcilesFundWithoutRewritingBaseline(String state) {
+        pendingHistoricalReceipt();
+        db.execute("ALTER TABLE order_fund_document ADD source_order_no VARCHAR(128)");
+        db.update("UPDATE order_fund_document SET source_order_no='D1',document_status_code='CONFIRMED'");
+        db.update("UPDATE order_sync_source SET state='CANCELLED'");
+        db.update("UPDATE order_sync_receipt SET state=?,source_status=?", state,
+                "CANCELLED".equals(state) ? "CANCELLED" : "CONFIRMED");
+        var before = db.queryForList("SELECT * FROM order_payment_record");
+        var command = historicalStatus("CANCELLED", "cancelled-source");
+        assertThat(syncHistorical(command).state()).isEqualTo("CANCELLED".equals(state) ? "CANCELLED" : "SOURCE_CHANGED_REVIEW");
+        assertThat(db.queryForObject("SELECT document_status_code FROM order_fund_document", String.class)).isEqualTo("CANCELLED");
+        assertThat(db.queryForList("SELECT * FROM order_payment_record")).isEqualTo(before);
+        assertThat(db.queryForObject("SELECT occurred_time FROM order_fund_document", java.sql.Timestamp.class)).isEqualTo(java.sql.Timestamp.from(date));
+        assertThat(db.queryForObject("SELECT amount FROM order_fund_document", BigDecimal.class)).isEqualByComparingTo("300");
+        var funds = db.queryForList("SELECT * FROM order_fund_document");
+        syncHistorical(command);
+        assertThat(db.queryForList("SELECT * FROM order_fund_document")).isEqualTo(funds);
+        var stale = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("300"), date, "CONFIRMED", date, "stale");
+        assertThat(syncHistorical(stale).state()).isEqualTo("STALE");
+        assertThat(db.queryForList("SELECT * FROM order_fund_document")).isEqualTo(funds);
     }
 
     @Test
