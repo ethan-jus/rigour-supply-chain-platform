@@ -94,10 +94,12 @@ class CrmApplicationTests {
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer_responsibility_history WHERE tenant_id=? AND reason LIKE '归属地区为空%';", Integer.class, tenant.toString())).isEqualTo(1);
         // 已绑定且来源未变的客户也能补空；随后重放不会反复改地区版本。
         jdbcTemplate.update("UPDATE crm_customer SET region_code=NULL,region_name=NULL WHERE tenant_id=?", tenant.toString());
+        assertThat(store.pendingCustomerRecords(tenant, connector)).extracting(SourceRecord::sourceId).containsExactly(record.sourceId());
         run = start(tenant, connector, actor, type);
         finish(tenant, connector, run, type, store.importRecord(tenant, connector, run, type, record));
         var repaired = jdbcTemplate.queryForMap("SELECT region_code,region_name,region_revision,revision,business_created_at FROM crm_customer WHERE tenant_id=?", tenant.toString());
         assertThat(repaired).containsEntry("region_code", "CITY");
+        assertThat(store.pendingCustomerRecords(tenant, connector)).isEmpty();
         run = start(tenant, connector, actor, type);
         finish(tenant, connector, run, type, store.importRecord(tenant, connector, run, type, record));
         assertThat(jdbcTemplate.queryForMap("SELECT region_code,region_name,region_revision,revision,business_created_at FROM crm_customer WHERE tenant_id=?", tenant.toString())).isEqualTo(repaired);

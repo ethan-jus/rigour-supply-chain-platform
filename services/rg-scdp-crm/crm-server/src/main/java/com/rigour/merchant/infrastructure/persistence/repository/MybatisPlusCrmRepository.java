@@ -2406,7 +2406,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                         .or().apply("""
                             target_id IN (SELECT c.party_id FROM crm_customer c WHERE c.tenant_id={0} AND c.deleted=0
                               AND (NULLIF(TRIM(c.owner_employee_code),'') IS NULL
-                                OR NULLIF(TRIM(c.owner_employee_name_snapshot),'') IS NULL))
+                                OR NULLIF(TRIM(c.owner_employee_name_snapshot),'') IS NULL
+                                OR NULLIF(TRIM(c.region_code),'') IS NULL))
                             """, tenantId.toString())))
                 .stream().map(b -> new SourceRecord(b.sourceObjectId, b.sourceCode, b.sourceName,
                         b.sourceStatus, b.sourceCreatedAt == null ? null : b.sourceCreatedAt.toInstant(ZoneOffset.UTC),
