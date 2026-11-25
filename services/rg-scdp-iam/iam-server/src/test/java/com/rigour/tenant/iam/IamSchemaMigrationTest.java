@@ -79,9 +79,9 @@ class IamSchemaMigrationTest {
             statement.execute("INSERT INTO migration_sentinel VALUES(42)");
         }
         Flyway upgraded = migration(true, "latest");
-        assertEquals(33, upgraded.migrate().migrationsExecuted);
+        assertEquals(34, upgraded.migrate().migrationsExecuted);
         upgraded.validate();
-        assertEquals(historyCount + 33, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
+        assertEquals(historyCount + 34, scalar("SELECT COUNT(*) FROM flyway_schema_history"));
         assertEquals("166", upgraded.info().current().getVersion().getVersion());
         assertEquals(checksum, scalar("SELECT checksum FROM flyway_schema_history WHERE version='120'"));
         assertEquals(0, scalar("SELECT COUNT(*) FROM flyway_schema_history WHERE type='SQL_BASELINE'"));
