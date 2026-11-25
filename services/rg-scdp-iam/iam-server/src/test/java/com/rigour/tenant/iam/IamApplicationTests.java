@@ -1974,7 +1974,7 @@ INSERT INTO iam_user_credential (
     }
 
     @Test
-    void supplyCrudLifecyclePersistsRulesAndCleansAssociationsWithoutDeletingLogin() {
+    void supplyCrudLifecycleDeletesDedicatedLoginAndProtectsSharedAccounts() {
         var actor = insertTenantAdministrator().actor();
         appSettingsStore.initialize(actor);
         var folder = appSettingsStore.saveMenu(actor, null,
@@ -2026,13 +2026,37 @@ INSERT INTO iam_user_credential (
                 .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
         assertThat(cutover.preview(actor, member.id(), "order:read").policy()).isNull();
         assertThat(cutover.preview(actor, member.id(), "order:read").permissions()).isEmpty();
+        byte[] tenant = uuidBytes(actor.tenantId()), user = uuidBytes(member.id()), session = uuidBytes(UUID.randomUUID());
+        jdbcTemplate.update("""
+                INSERT INTO iam_auth_session(id,principal_scope,tenant_id,principal_id,client_type,issued_at,last_seen_at,expires_at,status)
+                VALUES(?,'TENANT',?,?,'WEB',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)+INTERVAL 1 DAY,'ACTIVE')
+                """, session, tenant, user);
+        byte[] latest = uuidBytes(UUID.randomUUID());
+        jdbcTemplate.update("""
+                INSERT INTO iam_refresh_token(id,session_id,token_hash,issued_at,expires_at,created_at)
+                VALUES(?,?,UNHEX(SHA2(UUID(),256)),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)+INTERVAL 1 DAY,UTC_TIMESTAMP(6))
+                """, latest, session);
+        jdbcTemplate.update("""
+                INSERT INTO iam_refresh_token(id,session_id,token_hash,issued_at,expires_at,created_at,consumed_at,replaced_by_id)
+                VALUES(?,?,UNHEX(SHA2(UUID(),256)),UTC_TIMESTAMP(6),UTC_TIMESTAMP(6)+INTERVAL 1 DAY,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6),?)
+                """, uuidBytes(UUID.randomUUID()), session, latest);
+        byte[] otherApp = jdbcTemplate.queryForObject("SELECT id FROM iam_application WHERE app_code='DHB'", byte[].class);
+        jdbcTemplate.update("INSERT INTO iam_app_settings(tenant_id,application_id) VALUES(?,?)", tenant, otherApp);
+        jdbcTemplate.update("INSERT INTO iam_app_member(tenant_id,application_id,user_id,status) VALUES(?,?,?,'ACTIVE')", tenant, otherApp, user);
+        assertThatThrownBy(() -> appMembers.delete(actor, member.id(), disabled.version())).hasMessageContaining("其他应用");
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_refresh_token WHERE session_id=?", Integer.class, session)).isEqualTo(2);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_user_credential WHERE user_id=?", Integer.class, user)).isOne();
+        jdbcTemplate.update("DELETE FROM iam_app_member WHERE tenant_id=? AND application_id=? AND user_id=?",tenant,otherApp,user);
         appMembers.delete(actor, member.id(), disabled.version());
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_app_member_role WHERE tenant_id=? AND user_id=?",
                 Integer.class, uuidBytes(actor.tenantId()), uuidBytes(member.id()))).isZero();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_app_employee_binding WHERE tenant_id=? AND user_id=?",
                 Integer.class, uuidBytes(actor.tenantId()), uuidBytes(member.id()))).isZero();
-        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_user WHERE tenant_id=? AND id=? AND deleted_at IS NULL",
-                Integer.class, uuidBytes(actor.tenantId()), uuidBytes(member.id()))).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_user WHERE tenant_id=? AND id=?", Integer.class, tenant, user)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_user_credential WHERE user_id=?", Integer.class, user)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_auth_session WHERE id=?", Integer.class, session)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_refresh_token WHERE session_id=?", Integer.class, session)).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM iam_app_audit WHERE tenant_id=? AND target_id=? AND action_code='MEMBER_BINDING_HISTORY'", Integer.class, tenant, member.id().toString())).isPositive();
         var currentRole = appRoles.roles(actor).stream().filter(r -> r.id().equals(role.id())).findFirst().orElseThrow();
         var retired = appRoles.saveRole(actor, role.id(),
                 new com.rigour.tenant.iam.application.service.settings.AppAccessModels.RoleCommand(

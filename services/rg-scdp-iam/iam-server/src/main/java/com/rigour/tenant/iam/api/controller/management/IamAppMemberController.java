@@ -57,7 +57,7 @@ public final class IamAppMemberController {
         service.status(IamAppSettingsController.actor(), id, c);
     }
 
-    @DeleteMapping("/users/{id}")
+    @DeleteMapping("/users/{id}/login-account")
     public void delete(@PathVariable UUID id, @RequestParam long version) {
         service.delete(IamAppSettingsController.actor(), id, version);
     }

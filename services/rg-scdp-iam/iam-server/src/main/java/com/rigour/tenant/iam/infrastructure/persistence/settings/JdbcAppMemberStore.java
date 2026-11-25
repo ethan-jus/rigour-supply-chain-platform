@@ -610,30 +610,10 @@ public class JdbcAppMemberStore implements AppMemberStore {
                     requireNotSelf(a, id);
                     if (!"DISABLED".equals(old.status()))
                         throw new RequestValidationException("请先禁用供应链用户");
-                    persistAssignments(a, id, List.of());
-                    jdbc.update(
-                            "DELETE FROM iam_app_employee_binding WHERE tenant_id=? AND"
-                                    + " application_id=? AND user_id=?",
-                            tenant(a),
-                            app(),
-                            bin(id));
-                    jdbc.update(
-                            "UPDATE iam_app_employee_binding_history SET"
-                                    + " effective_to=UTC_TIMESTAMP(6) WHERE tenant_id=? AND"
-                                    + " application_id=? AND user_id=? AND effective_to IS NULL",
-                            tenant(a),
-                            app(),
-                            bin(id));
-                    jdbc.update(
-                            "UPDATE iam_app_member SET"
-                                + " deleted_at=UTC_TIMESTAMP(6),version=version+1,security_version=security_version+1"
-                                + " WHERE tenant_id=? AND application_id=? AND user_id=?",
-                            tenant(a),
-                            app(),
-                            bin(id));
+                    SupplyAccountDeletion.delete(jdbc, a.tenantId(), settings.applicationId(), id);
                     settings.requireManagementEntry(a);
                     settings.bump(a);
-                    settings.audit(a, "MEMBER_DELETE", id.toString(), "删除供应链资格，保留历史记录");
+                    settings.audit(a, "MEMBER_DELETE", id.toString(), "永久删除供应链专用登录账号、凭证和会话");
                 });
     }
 
