@@ -111,8 +111,9 @@ public class JdbcDhbPageSyncJobStore implements DhbPageSyncJobStore {
                 dependencyId.toString(), tenant.toString(), jobId.toString());
     }
 
+    @org.springframework.transaction.annotation.Transactional
     public boolean finishAbandoned(UUID tenant, DhbPageSyncJob observed, Instant now) {
-        return jdbc.update("UPDATE integration_dhb_page_job SET status='FAILED',active_slot=NULL,"
+        int recovered = jdbc.update("UPDATE integration_dhb_page_job SET status='FAILED',active_slot=NULL,"
                         + "stage='原执行已中断且依赖任务已核实结束，保留游标等待原计划续跑',finished_at=?"
                         + " WHERE tenant_id=? AND connector_id=? AND job_id=?"
                         + " AND status IN ('QUEUED','RUNNING') AND heartbeat_at=? AND heartbeat_at<?"
@@ -123,7 +124,20 @@ public class JdbcDhbPageSyncJobStore implements DhbPageSyncJobStore {
                 utc(now), tenant.toString(), observed.connectorId().toString(), observed.jobId().toString(),
                 utc(observed.heartbeatAt()), utc(now.minusSeconds(900)),
                 tenant.toString(), observed.connectorId().toString(), utc(now),
-                tenant.toString(), observed.connectorId().toString(), utc(now)) == 1;
+                tenant.toString(), observed.connectorId().toString(), utc(now));
+        if (recovered != 1) return false;
+        // 同一次已核实中断的内部 run 和 task 必须一起结束，否则后续仍被 RUNNING 拦住。
+        jdbc.update("UPDATE integration_sync_task t JOIN integration_sync_run r"
+                        + " ON r.tenant_id=t.tenant_id AND r.task_id=t.id"
+                        + " SET t.task_status='FAILED',t.next_run_at=NULL,t.updated_at=?,t.version=t.version+1,"
+                        + "r.status='FAILED',r.error_code='DHB_ABANDONED_RUN',"
+                        + "r.error_message='原执行已中断，保留已成功游标等待接续',r.finished_at=?,r.updated_at=?,r.version=r.version+1"
+                        + " WHERE t.tenant_id=UUID_TO_BIN(?) AND t.connector_id=UUID_TO_BIN(?)"
+                        + " AND t.deleted_at IS NULL AND t.task_status='RUNNING' AND r.status='RUNNING'"
+                        + " AND t.last_run_at=r.started_at AND r.started_at>=? AND r.started_at<=?",
+                utc(now), utc(now), utc(now), tenant.toString(), observed.connectorId().toString(),
+                utc(observed.startedAt()), utc(observed.heartbeatAt()));
+        return true;
     }
 
     public void finish(

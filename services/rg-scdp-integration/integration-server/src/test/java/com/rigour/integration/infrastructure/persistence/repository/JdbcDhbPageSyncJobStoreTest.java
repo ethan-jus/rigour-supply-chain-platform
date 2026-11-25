@@ -36,6 +36,11 @@ class JdbcDhbPageSyncJobStoreTest {
                         new ClassPathResource("db/migration/V16__integration_dhb_orchestration_lease.sql"))
                 .execute(ds);
         jdbc = new JdbcTemplate(ds);
+        jdbc.execute("CREATE TABLE integration_sync_task(id BINARY(16),tenant_id BINARY(16),connector_id BINARY(16),"
+                + "task_status VARCHAR(16),next_run_at DATETIME(6),last_run_at DATETIME(6),updated_at DATETIME(6),version BIGINT,deleted_at DATETIME(6))");
+        jdbc.execute("CREATE TABLE integration_sync_run(id BINARY(16),tenant_id BINARY(16),task_id BINARY(16),"
+                + "status VARCHAR(16),started_at DATETIME(6),finished_at DATETIME(6),updated_at DATETIME(6),version BIGINT,"
+                + "error_code VARCHAR(64),error_message VARCHAR(500),cursor_after VARCHAR(128))");
         store = new JdbcDhbPageSyncJobStore(jdbc, JsonMapper.builder().build());
     }
 
@@ -67,6 +72,41 @@ class JdbcDhbPageSyncJobStoreTest {
         assertThat(store.finishAbandoned(tenant, fresh, now.plusSeconds(901))).isTrue();
         assertThat(store.find(tenant, id).orElseThrow().status()).isEqualTo("FAILED");
         assertThat(store.reserve(tenant, UUID.randomUUID(), command(connector), now.plusSeconds(902)).jobId()).isNotEqualTo(id);
+    }
+
+    @Test
+    void abandonedPageReleasesOnlyItsMatchingInternalRunAndRetainsCursor() {
+        UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID(), id=UUID.randomUUID();
+        Instant start=Instant.parse("2026-11-25T00:00:00Z"), heartbeat=start.plusSeconds(300), now=start.plusSeconds(3600);
+        store.reserve(tenant,id,command(connector),start);store.claim(tenant,id,heartbeat);
+        var observed=store.find(tenant,id).orElseThrow();
+        UUID target=internalRun(tenant,connector,start.plusSeconds(60));
+        UUID otherConnector=internalRun(tenant,UUID.randomUUID(),start.plusSeconds(60));
+        UUID otherTenant=internalRun(UUID.randomUUID(),connector,start.plusSeconds(60));
+        UUID newer=internalRun(tenant,connector,heartbeat.plusSeconds(60));
+        var tx=new org.springframework.transaction.support.TransactionTemplate(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(jdbc.getDataSource()));
+        assertThatThrownBy(() -> tx.executeWithoutResult(status -> {
+            assertThat(store.finishAbandoned(tenant,observed,now)).isTrue();
+            throw new IllegalStateException("rollback verification");
+        })).isInstanceOf(IllegalStateException.class);
+        assertThat(store.find(tenant,id).orElseThrow().status()).isEqualTo("RUNNING");
+        assertThat(jdbc.queryForObject("SELECT task_status FROM integration_sync_task WHERE id=UUID_TO_BIN(?)",String.class,target.toString())).isEqualTo("RUNNING");
+        Boolean recovered=tx.execute(status -> store.finishAbandoned(tenant,observed,now));
+        assertThat(recovered).isTrue();
+        assertThat(jdbc.queryForObject("SELECT task_status FROM integration_sync_task WHERE id=UUID_TO_BIN(?)",String.class,target.toString())).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT status FROM integration_sync_run WHERE task_id=UUID_TO_BIN(?)",String.class,target.toString())).isEqualTo("FAILED");
+        assertThat(jdbc.queryForObject("SELECT cursor_after FROM integration_sync_run WHERE task_id=UUID_TO_BIN(?)",String.class,target.toString())).isEqualTo("preserved-cursor");
+        for (UUID kept:List.of(otherConnector,otherTenant,newer))
+            assertThat(jdbc.queryForObject("SELECT task_status FROM integration_sync_task WHERE id=UUID_TO_BIN(?)",String.class,kept.toString())).isEqualTo("RUNNING");
+        assertThat(store.finishAbandoned(tenant,observed,now)).isFalse();
+    }
+
+    private UUID internalRun(UUID tenant, UUID connector, Instant started) {
+        UUID task=UUID.randomUUID();var time=LocalDateTime.ofInstant(started,ZoneOffset.UTC);
+        jdbc.update("INSERT INTO integration_sync_task VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'RUNNING',NULL,?,?,0,NULL)",task.toString(),tenant.toString(),connector.toString(),time,time);
+        jdbc.update("INSERT INTO integration_sync_run VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),'RUNNING',?,NULL,?,0,NULL,NULL,'preserved-cursor')",UUID.randomUUID().toString(),tenant.toString(),task.toString(),time,time);
+        return task;
     }
 
     @Test
