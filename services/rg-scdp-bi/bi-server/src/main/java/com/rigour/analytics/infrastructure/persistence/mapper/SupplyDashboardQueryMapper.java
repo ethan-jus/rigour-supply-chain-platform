@@ -410,6 +410,43 @@ SELECT COUNT(*) AS orderCount,
             @Param("customerTypeCode") String customerTypeCode,
             @Param("sourceSystemCode") String sourceSystemCode);
 
+    @Select("""
+            <script>
+            SELECT 'sales_amount' AS metricCode,
+                   DATE(TIMESTAMPADD(HOUR,8,o.order_date)) AS period,
+                   COUNT(*) AS orderCount,COUNT(DISTINCT o.customer_id) AS orderingCustomerCount,
+                   COALESCE(SUM(o.payable_amount),0) AS salesAmount,
+                   COALESCE(SUM(o.paid_amount),0) AS paidAmount,
+                   COALESCE(SUM(o.unpaid_amount),0) AS unpaidAmount,
+                   MAX(o.source_updated_time) AS latestUpdatedTime
+            <if test="retention">
+                 , COUNT(DISTINCT CASE WHEN h.first_order_date &lt; #{from} THEN o.customer_id END) AS returningCustomerCount
+                 , COUNT(DISTINCT CASE WHEN h.first_order_date BETWEEN #{from} AND #{to} THEN o.customer_id END) AS newCustomerCount
+                 , COUNT(DISTINCT CASE WHEN EXTRACT(YEAR_MONTH FROM TIMESTAMPADD(HOUR,8,h.first_order_date))
+                       &lt; EXTRACT(YEAR_MONTH FROM TIMESTAMPADD(HOUR,8,o.order_date))
+                       THEN o.customer_id END) AS annualReturningCustomerCount
+            </if>
+              FROM bi_sales_order_fact o
+            <if test="retention">
+              LEFT JOIN bi_dashboard_customer_history h ON h.tenant_id=o.tenant_id AND h.customer_id=o.customer_id
+            </if>
+             WHERE o.tenant_id=#{tenantId} AND o.deleted=0 AND o.order_status_code NOT IN ('CANCELLED','DELETED')
+               AND o.order_date BETWEEN #{from} AND #{to}
+            <if test="regionCode != null"> AND o.region_code""" + REGION_SCOPE + """
+            </if>
+            <if test="ownerStaffCode != null"> AND o.owner_staff_code=#{ownerStaffCode} </if>
+            <if test="customerTypeCode != null"> AND o.customer_type_code=#{customerTypeCode} </if>
+            <if test="sourceSystemCode != null"> AND o.source_system_code=#{sourceSystemCode} </if>
+             GROUP BY DATE(TIMESTAMPADD(HOUR,8,o.order_date)) WITH ROLLUP
+            </script>
+            """)
+    List<Map<String, Object>> boardOrderMetrics(
+            @Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from, @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode, @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode, @Param("sourceSystemCode") String sourceSystemCode,
+            @Param("retention") boolean retention);
+
     @Select(
             """
             <script>
@@ -1397,15 +1434,7 @@ SELECT p.owner_staff_code AS ownerStaffCode,
             @Param("customerTypeCode") String customerTypeCode,
             @Param("sourceSystemCode") String sourceSystemCode);
 
-    /** 仅按到账日期聚合城市回款，不按订单日期过滤或关联订单行。 */
-    @Select(
-            """
-<script>
-SELECT COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
-       COALESCE(MAX(display_city.city_name), MAX(NULLIF(TRIM(p.region_name), '')), MAX(NULLIF(TRIM(p.region_code), '')), '归属待核对') AS regionName,
-       COALESCE(SUM(p.paid_amount), 0) AS receiptAmount,
-       COUNT(*) AS paymentCount,
-       COUNT(DISTINCT p.customer_id) AS customerCount
+    String CITY_RECEIPT_SOURCE = """
   FROM bi_sales_payment_fact p
 """ + DISPLAY_CITY_JOIN + "p.region_code " + DISPLAY_CITY_END + """
  WHERE p.tenant_id = #{tenantId}
@@ -1425,11 +1454,42 @@ SELECT COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKN
 <if test="sourceSystemCode != null">
    AND p.source_system_code = #{sourceSystemCode}
 </if>
+""";
+
+    /** 仅按到账日期聚合城市回款，不按订单日期过滤或关联订单行。 */
+    @Select("""
+<script>
+SELECT COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(TRIM(p.region_name), '')), MAX(NULLIF(TRIM(p.region_code), '')), '归属待核对') AS regionName,
+       COALESCE(SUM(p.paid_amount), 0) AS receiptAmount,
+       COUNT(*) AS paymentCount,
+       COUNT(DISTINCT p.customer_id) AS customerCount
+""" + CITY_RECEIPT_SOURCE + """
  GROUP BY COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKNOWN')
  ORDER BY receiptAmount DESC, regionCode
 </script>
 """)
     List<Map<String, Object>> cityReceipts(
+            @Param("tenantId") String tenantId,
+            @Param("from") LocalDateTime from,
+            @Param("to") LocalDateTime to,
+            @Param("regionCode") String regionCode,
+            @Param("ownerStaffCode") String ownerStaffCode,
+            @Param("customerTypeCode") String customerTypeCode,
+            @Param("sourceSystemCode") String sourceSystemCode);
+
+    @Select("""
+<script>
+SELECT DATE(TIMESTAMPADD(HOUR, 8, p.payment_time)) AS receiptDay,
+       COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKNOWN') AS regionCode,
+       COALESCE(MAX(display_city.city_name), MAX(NULLIF(TRIM(p.region_name), '')), MAX(NULLIF(TRIM(p.region_code), '')), '归属待核对') AS regionName,
+       SUM(p.paid_amount) AS receiptAmount
+""" + CITY_RECEIPT_SOURCE + """
+ GROUP BY receiptDay, COALESCE(display_city.region_code, NULLIF(TRIM(p.region_code), ''), 'UNKNOWN')
+ ORDER BY receiptDay, regionCode
+</script>
+""")
+    List<Map<String, Object>> operatingReceiptDays(
             @Param("tenantId") String tenantId,
             @Param("from") LocalDateTime from,
             @Param("to") LocalDateTime to,
@@ -2577,8 +2637,7 @@ SELECT 'INVENTORY' AS riskType,
             @Param("regionCode") String regionCode,
             @Param("productCategoryId") Long productCategoryId);
 
-    @Select(
-            """
+    String ORDER_PAYMENT_FRESHNESS = """
             SELECT 'ORDER_SALES_ORDER' AS sourceCode, '销售订单' AS sourceName,
                    MAX(source_updated_time) AS latestUpdatedTime
               FROM bi_sales_order_fact
@@ -2588,6 +2647,12 @@ SELECT 'INVENTORY' AS riskType,
                    MAX(source_updated_time) AS latestUpdatedTime
               FROM bi_sales_payment_fact
              WHERE tenant_id = #{tenantId} AND deleted = 0
+            """;
+
+    @Select(ORDER_PAYMENT_FRESHNESS)
+    List<Map<String, Object>> operatingOverviewFreshness(@Param("tenantId") String tenantId);
+
+    @Select(ORDER_PAYMENT_FRESHNESS + """
             UNION ALL
             SELECT 'ORDER_SALES_ORDER_LINE' AS sourceCode, '销售订单行' AS sourceName,
                    MAX(source_updated_time) AS latestUpdatedTime
@@ -5348,8 +5413,13 @@ LEFT JOIN bi_source_order_order_sales_order source_order
  ON source_order.tenant_id=o.tenant_id AND source_order.id=o.order_id
 LEFT JOIN bi_sales_contact_city_dim frozen_city ON frozen_city.tenant_id=o.tenant_id
  AND a.attribution_state='FROZEN'
- AND (frozen_city.department_id=a.department_id
-      OR JSON_CONTAINS(a.department_path,CAST(frozen_city.department_id AS JSON)))
+ AND frozen_city.department_id=(
+   SELECT candidate.department_id FROM bi_sales_contact_city_dim candidate
+    WHERE candidate.tenant_id=o.tenant_id
+      AND (candidate.department_id=a.department_id
+           OR JSON_CONTAINS(a.department_path,CAST(candidate.department_id AS JSON)))
+    ORDER BY (candidate.department_id=a.department_id) DESC,JSON_LENGTH(candidate.department_path) DESC
+    LIMIT 1)
 LEFT JOIN (
  SELECT tenant_id,source_code,MIN(region_code) AS region_code,MIN(city_name) AS city_name
  FROM (

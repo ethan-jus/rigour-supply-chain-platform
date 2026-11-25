@@ -6,6 +6,8 @@ import java.util.List;
 
 /** 当前角色数据范围内的事实查询。 */
 public interface BiDataScopeStore {
+    com.rigour.analytics.api.v1.model.DepartmentDashboardFilters departmentFilters(String tenant, String employee);
+
     boolean appObjectVisible(String tenantId, String city, String employee, String action);
 
     SupplyDashboardFilterOptionsView filterOptions(

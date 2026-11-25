@@ -1,5 +1,6 @@
 package com.rigour.analytics.infrastructure.cache;
 
+import com.rigour.analytics.application.model.CustomerRegionSelection;
 import com.rigour.shared.cache.*;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.tenant.iam.client.SupplyAuthorizationContext;
@@ -94,7 +95,7 @@ public class QueryCacheConfiguration {
             var caller = AuthorizationContext.current().orElse(null);
             if (caller == null || !"TENANT".equals(caller.principalScope())) return null;
             var policy = SupplyAuthorizationContext.requireAction("analytics:dashboard:read");
-            return Arrays.asList(caller, policy);
+            return Arrays.asList(caller, policy, CustomerRegionSelection.current());
         }, () -> {
             var attributes = RequestContextHolder.getRequestAttributes();
             if (!(attributes instanceof ServletRequestAttributes request)) return false;

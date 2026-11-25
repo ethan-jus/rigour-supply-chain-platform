@@ -4,6 +4,7 @@ import com.rigour.analytics.api.v1.model.PaymentRiskView;
 import com.rigour.analytics.api.v1.model.PaymentRiskView.*;
 import com.rigour.analytics.application.model.BiBusinessTime;
 import com.rigour.analytics.application.port.out.PaymentRiskStore;
+import com.rigour.analytics.application.port.out.ReceivablesStore;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.core.api.ErrorCode;
@@ -26,11 +27,14 @@ public class PaymentRiskService {
     public static final int MAX_LINES = 50_000;
     private static final Set<String> LEVELS = Set.of("LOW", "MEDIUM", "HIGH", "SEVERE", "UNKNOWN");
     private final PaymentRiskStore store;
+    private final ReceivablesStore receivables;
     private final BiDataScopeService scopes;
     private final Clock clock;
 
-    public PaymentRiskService(PaymentRiskStore store, BiDataScopeService scopes, Clock analyticsClock) {
+    public PaymentRiskService(PaymentRiskStore store, ReceivablesStore receivables,
+                              BiDataScopeService scopes, Clock analyticsClock) {
         this.store = store;
+        this.receivables = receivables;
         this.scopes = scopes;
         this.clock = analyticsClock;
     }
@@ -47,14 +51,16 @@ public class PaymentRiskService {
             throw bad("产品分类标识必须大于0");
         var scope = scopes.resolve(region, owner);
         String tenant = caller.tenantId().toString();
-        return queryCache.read(tenant, "payment-risk", Arrays.asList(from, to, scope.regionCode(), scope.ownerStaffCode(),
-                categoryIds == null ? List.of() : categoryIds.stream().sorted().toList(), riskLevel,
+        return queryCache.read(tenant, "payment-risk-v3", Arrays.asList(from, to, scope.regionCode(), scope.ownerStaffCode(),
+                categoryIds == null ? List.of() : categoryIds.stream().distinct().sorted().toList(), riskLevel,
                 clock.instant().atZone(BiBusinessTime.ZONE).toLocalDate()), 30,
                 new tools.jackson.core.type.TypeReference<>() {}, () -> loadRisk(tenant, from, to, scope.regionCode(), scope.ownerStaffCode(), categoryIds, riskLevel));
     }
 
     private PaymentRiskView loadRisk(String tenant, Instant from, Instant to, String region, String owner,
             List<Long> categoryIds, String riskLevel) {
+        if (receivables.projectedAt(tenant) == null)
+            throw new BusinessException(ErrorCode.SERVICE_UNAVAILABLE, "资金数据尚未完成同步", List.of());
         var generatedAt = clock.instant();
         var categories = store.categories(tenant);
         var catalog = categories.stream().collect(Collectors.toMap(Category::id, Function.identity()));

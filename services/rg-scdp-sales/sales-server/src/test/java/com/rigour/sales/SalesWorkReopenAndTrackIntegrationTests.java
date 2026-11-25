@@ -33,6 +33,8 @@ import java.util.UUID;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -495,8 +497,9 @@ class SalesWorkReopenAndTrackIntegrationTests {
         assertThat(track.points().getFirst().longitude()).isEqualByComparingTo(origin.add(offset));
     }
 
-    @Test
-    void confirmedTrackBackfillsAcrossBatchesWithoutReprocessingAnOlderSession() {
+    @ParameterizedTest
+    @ValueSource(strings = {"APP_GPS", "APP_IOS_LOCATION"})
+    void confirmedTrackBackfillsAcrossBatchesWithoutReprocessingAnOlderSession(String source) {
         jdbc.update("UPDATE sales_field_policy_version SET location_sample_interval_seconds=5 WHERE id=?", bin(policyVersionId));
         var lng = new BigDecimal("120.100000");
         var lat = new BigDecimal("30.200000");
@@ -531,7 +534,7 @@ class SalesWorkReopenAndTrackIntegrationTests {
                 List.of("new-2","new-3"), List.of("new-3","new-4"), List.of("new-4","new-5"), List.of("new-5","new-6"));
         var points = java.util.stream.IntStream.range(0, original.size()).mapToObj(index ->
                 new LocationPointCommand("new-" + index, null, null, accuracy, now.minusSeconds(45 - index * 5L),
-                        index == 7 ? "APP_GPS_STILL" : "APP_GPS",
+                        index == 7 && "APP_GPS".equals(source) ? "APP_GPS_STILL" : source,
                         original.get(index).longitude(), original.get(index).latitude(), "WGS84", proofs.get(index))).toList();
         var first = new LocationBatchCommand("confirmed-first", points.subList(0,2), day.locationSessionId());
         var second = new LocationBatchCommand("confirmed-second", points.subList(2,8), day.locationSessionId());

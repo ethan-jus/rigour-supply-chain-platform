@@ -22,7 +22,7 @@ class PaymentRiskRepositoryTest {
                 CREATE TABLE bi_sales_order_fact(
                 tenant_id VARCHAR,order_id BIGINT,order_no VARCHAR,customer_name VARCHAR,
                 region_code VARCHAR,region_name VARCHAR,owner_staff_code VARCHAR,owner_staff_name VARCHAR,
-                order_date TIMESTAMP,order_status_code VARCHAR,deleted INT,
+                order_date TIMESTAMP,order_status_code VARCHAR,payment_status_code VARCHAR,deleted INT,
                 payable_amount DECIMAL(24,6),paid_amount DECIMAL(24,6),synced_time TIMESTAMP)
                 """);
         jdbc.execute("""
@@ -39,12 +39,13 @@ class PaymentRiskRepositoryTest {
                 parent_id BIGINT,category_name VARCHAR,ordinal INT,deleted INT)
                 """);
         jdbc.update("INSERT INTO bi_product_category_dim VALUES('T',1,NULL,'台呢',1,0),('OTHER',2,NULL,'私有分类',1,0)");
-        for (int id = 1; id <= 6; id++) {
+        for (int id = 1; id <= 7; id++) {
             jdbc.update("""
                     INSERT INTO bi_sales_order_fact VALUES(?,?,'ORDER','客户','CD','成都','A','业务员A',
-                    '2026-09-25 00:00:00',?,?,?,?,'2026-10-20 00:00:00')
+                    '2026-09-25 00:00:00',?,?,?,?,?,'2026-10-20 00:00:00')
                     """, id == 6 ? "OTHER" : "T", id, id == 4 ? "CANCELLED" : "COMPLETED",
-                    id == 5 ? 1 : 0, id == 3 ? 0 : 10000, id == 2 ? 10000 : 6000);
+                    id == 7 ? "PAID" : null, id == 5 ? 1 : 0, id == 3 ? 0 : 10000,
+                    id == 2 || id == 7 ? 10000 : 6000);
         }
         jdbc.update("""
                 INSERT INTO bi_sales_order_line_fact VALUES
@@ -52,8 +53,28 @@ class PaymentRiskRepositoryTest {
                 ('T',1,3,13,'删除行',3,'配件',1,2000),('OTHER',1,1,11,'其他租户',9,'私有分类',0,3000)
                 """);
         jdbc.update("INSERT INTO bi_product_dim VALUES('T',12,2,'球杆'),('OTHER',11,9,'其他租户')");
-        jdbc.execute("CREATE TABLE bi_order_balance_event(tenant_id VARCHAR,order_id BIGINT,effective_at TIMESTAMP,paid DECIMAL(24,6),adjustment DECIMAL(24,6))");
-        jdbc.update("INSERT INTO bi_order_balance_event VALUES('T',1,'2026-10-01',6000,-400),('T',2,'2026-10-01',10000,0),('T',1,'2026-11-01',3600,0)");
+        jdbc.execute("""
+                CREATE ALIAS UNHEX AS $$
+                    byte[] unhex(String value) { return java.util.HexFormat.of().parseHex(value); }
+                $$
+                """);
+        jdbc.execute("CREATE TABLE bi_cash_receipt(tenant_id VARCHAR,id VARBINARY,cash_at TIMESTAMP,verified INT)");
+        jdbc.execute("""
+                CREATE TABLE bi_cash_application(tenant_id VARCHAR,order_id BIGINT,cash_key VARCHAR,
+                    effective_at TIMESTAMP,amount DECIMAL(24,6),verified INT)
+                """);
+        jdbc.execute("CREATE TABLE bi_receivable_opening(tenant_id VARCHAR,id BIGINT,baseline_at TIMESTAMP,opening_paid DECIMAL(24,6))");
+        jdbc.execute("""
+                CREATE TABLE bi_receivable_adjustment(tenant_id VARCHAR,order_id BIGINT,effective_at TIMESTAMP,
+                    receivable_delta DECIMAL(24,6),received_delta DECIMAL(24,6),deleted INT,event_type VARCHAR)
+                """);
+        jdbc.update("INSERT INTO bi_receivable_opening VALUES('T',1,'2026-10-01',1000),('T',2,'2026-10-01',10000)");
+        jdbc.update("INSERT INTO bi_cash_receipt VALUES('T',X'01','2026-10-01',1),('T',X'02','2026-11-01',1)");
+        jdbc.update("""
+                INSERT INTO bi_cash_application VALUES
+                ('T',1,'01','2026-10-01',5000,1),('T',1,'02','2026-10-01',3600,1)
+                """);
+        jdbc.update("INSERT INTO bi_receivable_adjustment VALUES('T',1,'2026-10-01',-400,0,0,'CREDIT_NOTE')");
         OperatingCityTestSchema.install(jdbc);
     }
 

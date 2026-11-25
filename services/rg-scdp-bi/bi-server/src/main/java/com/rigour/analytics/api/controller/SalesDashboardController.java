@@ -2,6 +2,7 @@ package com.rigour.analytics.api.controller;
 
 import com.rigour.analytics.application.model.SalesDashboardData;
 import com.rigour.analytics.application.model.SalesDashboardSummary;
+import com.rigour.analytics.application.port.out.SalesDashboardStore.Projection;
 import java.util.List;
 import com.rigour.analytics.application.service.SalesDashboardService;
 import com.rigour.shared.core.api.ApiResponse;
@@ -26,7 +27,8 @@ public class SalesDashboardController {
             @RequestParam(required = false) String ownerStaffCode,
             @RequestParam(required = false) String customerTypeCode,
             @RequestParam(required = false) Long productCategoryId,
-            @RequestParam(required = false) String sourceSystemCode) {
+            @RequestParam(required = false) String sourceSystemCode,
+            @RequestParam(defaultValue = "FULL") Projection projection) {
         return ApiResponse.success(
                 service.query(
                         from,
@@ -35,7 +37,8 @@ public class SalesDashboardController {
                         ownerStaffCode,
                         customerTypeCode,
                         productCategoryId,
-                        sourceSystemCode));
+                        sourceSystemCode,
+                        projection));
     }
 
     public record Selection(List<String> ownerStaffCodes) {}

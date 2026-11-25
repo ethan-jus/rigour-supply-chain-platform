@@ -33,9 +33,16 @@ public class SalesDashboardService {
             String customerType,
             Long category,
             String source) {
+        return query(from, to, region, owner, customerType, category, source, SalesDashboardStore.Projection.FULL);
+    }
+
+    public SalesDashboardData query(Instant from, Instant to, String region, String owner,
+            String customerType, Long category, String source, SalesDashboardStore.Projection projection) {
         var filter = filter(from, to, region, owner, customerType, category, source);
         var actor = AuthorizationContext.requireCurrent();
-        var data = store.query(actor.tenantId().toString(), filter);
+        var tenant = actor.tenantId().toString();
+        var data = projection == SalesDashboardStore.Projection.FULL ? store.query(tenant, filter)
+                : store.query(tenant, filter, projection);
         if (data.products().isEmpty()) return data;
         var urls = images.urls(actor.tenantId().toString(), data.products().stream()
                 .map(SalesDashboardData.Product::productId).distinct().toList());

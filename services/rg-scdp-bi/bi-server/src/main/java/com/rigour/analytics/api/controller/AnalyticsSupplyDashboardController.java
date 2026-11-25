@@ -6,6 +6,7 @@ import com.rigour.analytics.api.v1.model.SupplyDashboardDataTrustView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardFilterOptionsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOverviewView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardOperatingAnalysisView;
+import com.rigour.analytics.api.v1.model.SupplyDashboardProductSalesItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshCommand;
 import com.rigour.analytics.api.v1.model.SupplyDashboardRefreshRunView;
 import com.rigour.analytics.application.service.SupplyDashboardGovernanceService;
@@ -14,6 +15,7 @@ import com.rigour.analytics.application.service.SupplyDashboardRefreshService;
 import com.rigour.analytics.application.service.BiDataScopeService;
 import com.rigour.shared.core.api.ApiResponse;
 import java.time.Instant;
+import java.util.List;
 import org.springframework.web.bind.annotation.RestController;
 
 /** 供应链 BI 看板 HTTP 边界。 */
@@ -36,19 +38,33 @@ public final class AnalyticsSupplyDashboardController implements AnalyticsSupply
     }
 
     @Override
+    public ApiResponse<com.rigour.analytics.api.v1.model.DepartmentDashboardFilters> departmentFilters() {
+        return ApiResponse.success(scopes.departmentFilters());
+    }
+
+    @Override
     public ApiResponse<SupplyDashboardOverviewView> overview(
             Instant from, Instant to, String regionCode, String ownerStaffCode,
-            String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
+            String customerTypeCode, Long productCategoryId, String sourceSystemCode,
+            OverviewProjection projection) {
         return ApiResponse.success(queryService.overview(
-                from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode));
+                from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode, projection));
+    }
+
+    @Override
+    public ApiResponse<List<SupplyDashboardProductSalesItemView>> operatingOverviewRanking(
+            OverviewRankingKind kind, Instant from, Instant to, String regionCode, String ownerStaffCode,
+            String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
+        return ApiResponse.success(queryService.operatingOverviewRanking(
+                kind, from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode));
     }
 
     @Override
     public ApiResponse<SupplyDashboardOperatingAnalysisView> operatingAnalysis(
             Instant from, Instant to, String regionCode, String ownerStaffCode,
-            String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
+            String customerTypeCode, Long productCategoryId, String sourceSystemCode, boolean cityBoard) {
         return ApiResponse.success(queryService.operatingAnalysis(
-                from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode));
+                from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode, cityBoard));
     }
 
     @Override

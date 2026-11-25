@@ -81,12 +81,12 @@ public class HrDashboardTargets {
     }
 
     public List<CityMonthlyGoal> cityGoals(String tenant, int year, String region) {
-        var selected = selectedRegions(tenant, region);
-        return reportingGoals(tenant, values(tenant, year + "-01", year + "-12"), region).stream()
-                .filter(
-                        t ->
-                                "CITY".equals(t.dimensionType())
-                                        && (selected == null || selected.contains(t.code())))
+        return cityGoals(tenant, values(tenant, year + "-01", year + "-12"), region);
+    }
+
+    public List<CityMonthlyGoal> cityGoals(String tenant, List<Target> values, String region) {
+        return reportingGoals(tenant, values, region).stream()
+                .filter(t -> "CITY".equals(t.dimensionType()))
                 .collect(
                         Collectors.groupingBy(
                                 t -> t.code() + ":" + t.month(), TreeMap::new, Collectors.toList()))

@@ -250,6 +250,35 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
+    void crossCityOrderLineAndPaymentShareCustomerRegionIndependentlyOfPerformanceDepartment() {
+        String tenant = UUID.randomUUID().toString();
+        long id = order(tenant,"CROSS-001",1L,"CUSTOMER","苏州客户","SUZHOU","ZHANG","张三","2026-11-01T00:00:00Z",10000,0);
+        insertLine(tenant,id,1,"商品","10000");
+        insertPayment(tenant,"CROSS-P",id,"2026-11-02T00:00:00Z",6000,"CHECKED",null);
+        jdbc.update("""
+                INSERT INTO order_attribution_snapshot(tenant_id,order_id,state,employee_code,employee_name,
+                  department_id,department_name,department_path,region_code,region_path,source_version,
+                  customer_revision,employee_revision,organization_version,resolved_at,frozen_at,revision)
+                VALUES (?,?,'FROZEN','ZHANG','张三',20,'无锡市部','[5,20]','SUZHOU','["JS","SUZHOU"]','1',1,1,1,NOW(),NOW(),1)
+                """,tenant,id);
+        jdbc.update("UPDATE order_payment_record SET payment_owner_region_code='WUXI',payment_owner_department_id=20 WHERE tenant_id=?",tenant);
+        for (String region : List.of("SUZHOU","JS","WUXI","SU")) {
+            var depts=java.util.Set.of(20L);
+            var orders=store.orders(tenant,0,20,new OrderCriteria(null,null,null,null,region,null,depts,
+                    null,null,null,null,null,null,null,null,null,null,null,null,null,null,null));
+            var lines=store.lines(tenant,0,20,new LineCriteria(null,null,null,null,region,null,depts,
+                    null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,Map.of(),null));
+            var payments=store.payments(tenant,0,20,new PaymentCriteria(null,null,null,null,region,null,depts,
+                    null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,Map.of()));
+            int count=region.equals("SUZHOU") || region.equals("JS") ? 1 : 0;
+            assertThat(orders.total()).isEqualTo(count);
+            assertThat(lines.total()).isEqualTo(count);
+            assertThat(payments.total()).isEqualTo(count);
+            if (count==1) assertThat(payments.items().getFirst().regionCode()).isEqualTo("SUZHOU");
+        }
+    }
+
+    @Test
     void historyCoverageRequiresFinancialEventsBeforeCutover() {
         HistoryCoverage missing = store.orders(TENANT, 0, 1, new OrderCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null)).coverage();
         assertThat(missing.historyComplete()).isFalse();

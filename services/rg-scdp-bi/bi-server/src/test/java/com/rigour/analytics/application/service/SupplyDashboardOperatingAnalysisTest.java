@@ -74,7 +74,7 @@ class SupplyDashboardOperatingAnalysisTest {
     void endpointUsesOverviewQueryAndReturnsIsoTimesAndEmptyArrays() throws Exception {
         mvc.perform(get(PATH).param("from", "2026-09-01T00:00:00Z")
                         .param("to", "2026-09-10T23:59:59.999999Z")
-                        .param("regionCode", " bj ").param("ownerStaffCode", " S1 ")
+                        .param("regionCode", " bj-east ").param("ownerStaffCode", " S1 ")
                         .param("customerTypeCode", " store ").param("sourceSystemCode", " dhb "))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value("OK"))
@@ -94,7 +94,7 @@ class SupplyDashboardOperatingAnalysisTest {
         ArgumentCaptor<SupplyDashboardFilter> previous = ArgumentCaptor.forClass(SupplyDashboardFilter.class);
         verify(store).operatingAnalysis(eq(TENANT.toString()), current.capture(), previous.capture());
         for (SupplyDashboardFilter filter : List.of(current.getValue(), previous.getValue())) {
-            assertThat(filter.regionCode()).isEqualTo("BJ");
+            assertThat(filter.regionCode()).isEqualTo("BJ-EAST");
             assertThat(filter.ownerStaffCode()).isEqualTo("S1");
             assertThat(filter.customerTypeCode()).isEqualTo("STORE");
             assertThat(filter.sourceSystemCode()).isEqualTo("DINGHUOBAO");
@@ -157,7 +157,7 @@ class SupplyDashboardOperatingAnalysisTest {
     }
 
     static Stream<Arguments> invalidFilters() {
-        return Stream.of(Arguments.of("regionCode", "bad-code"),
+        return Stream.of(Arguments.of("regionCode", "x".repeat(65)),
                 Arguments.of("ownerStaffCode", "x".repeat(51)),
                 Arguments.of("customerTypeCode", "bad type"),
                 Arguments.of("sourceSystemCode", "bad-source"));

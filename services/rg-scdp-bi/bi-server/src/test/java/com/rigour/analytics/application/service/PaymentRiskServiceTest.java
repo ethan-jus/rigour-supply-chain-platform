@@ -6,7 +6,9 @@ import com.rigour.analytics.api.v1.model.PaymentRiskView.Category;
 import com.rigour.analytics.application.port.out.BiDataScopeStore;
 import com.rigour.analytics.application.port.out.PaymentRiskStore;
 import com.rigour.analytics.application.port.out.PaymentRiskStore.Fact;
+import com.rigour.analytics.application.port.out.ReceivablesStore;
 import com.rigour.shared.context.*;
+import com.rigour.shared.core.api.ErrorCode;
 import com.rigour.shared.core.exception.BusinessException;
 import java.math.BigDecimal;
 import java.time.*;
@@ -17,18 +19,28 @@ class PaymentRiskServiceTest {
     private final UUID tenant = UUID.randomUUID(), user = UUID.randomUUID();
     private final Instant now = Instant.parse("2026-10-19T16:00:00Z");
     private final PaymentRiskStore store = mock(PaymentRiskStore.class);
-    private final PaymentRiskService service = new PaymentRiskService(store,
+    private final ReceivablesStore receivables = mock(ReceivablesStore.class);
+    private final PaymentRiskService service = new PaymentRiskService(store, receivables,
             new BiDataScopeService(mock(BiDataScopeStore.class)), Clock.fixed(now, ZoneOffset.UTC));
 
     @BeforeEach void setup() {
         com.rigour.analytics.TestRoleScope.set(new CallerIdentity("TENANT", user, tenant, user,
                 null, UUID.randomUUID(), 1, 1, 1, Set.of("sales"), Set.of("analytics:dashboard:read")));
+        when(receivables.projectedAt(tenant.toString())).thenReturn(now);
         when(store.categories(anyString())).thenReturn(List.of(new Category("1", null, "台呢"),
                 new Category("11", "1", "台呢子分类"), new Category("2", null, "球杆")));
         when(store.load(anyString(), any(), any(), any(), any(), anyInt()))
                 .thenReturn(List.of(fact("11", "台呢子分类"), fact("2", "球杆"), fact("11", "台呢子分类")));
     }
     @AfterEach void clear() { com.rigour.analytics.TestRoleScope.clear(); }
+
+    @Test void missingFinancialSnapshotDoesNotReportEveryOrderAsUnpaid() {
+        when(receivables.projectedAt(tenant.toString())).thenReturn(null);
+        assertThatThrownBy(() -> query(null, null))
+                .isInstanceOfSatisfying(BusinessException.class,
+                        error -> assertThat(error.getErrorCode()).isEqualTo(ErrorCode.SERVICE_UNAVAILABLE));
+        verifyNoInteractions(store);
+    }
 
     @Test void thresholdsIncludeBoundaryDayAndUnknownNeverBecomesLow() {
         int[] cloth = {0, 10, 11, 20, 21, 30, 31};

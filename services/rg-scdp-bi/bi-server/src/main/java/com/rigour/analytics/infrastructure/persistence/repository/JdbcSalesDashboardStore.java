@@ -13,6 +13,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.sql.Timestamp;
 import java.time.*;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @Repository
 public class JdbcSalesDashboardStore implements SalesDashboardStore {
@@ -95,11 +96,19 @@ public class JdbcSalesDashboardStore implements SalesDashboardStore {
     @Override
     @Transactional(readOnly = true)
     public SalesDashboardData query(String tenant, SupplyDashboardFilter f) {
-        return queryCache.read(tenant, "query", f, 60,
-                new tools.jackson.core.type.TypeReference<>() {}, () -> loadQuery(tenant, f));
+        return query(tenant, f, Projection.FULL);
     }
 
-    private SalesDashboardData loadQuery(String tenant, SupplyDashboardFilter f) {
+    @Override
+    @Transactional(readOnly = true)
+    public SalesDashboardData query(String tenant, SupplyDashboardFilter f, Projection projection) {
+        return queryCache.read(tenant, "salesDashboard", List.of(f, projection), 60,
+                new tools.jackson.core.type.TypeReference<>() {}, () -> loadQuery(tenant, f, projection));
+    }
+
+    private record RankingRow(Person person, DailyReceipt daily) {}
+
+    private SalesDashboardData loadQuery(String tenant, SupplyDashboardFilter f, Projection projection) {
         int year = f.from().atZone(BiBusinessTime.ZONE).getYear();
         var args =
                 new MapSqlParameterSource("tenant", tenant)
@@ -122,7 +131,7 @@ public class JdbcSalesDashboardStore implements SalesDashboardStore {
                                         LocalDate.of(year + 1, 1, 1)
                                                 .atStartOfDay(BiBusinessTime.ZONE)
                                                 .toInstant()));
-        var people =
+        var ranking =
                 BiScopedQueries.query(
                         jdbc,
                         BASE
@@ -131,9 +140,11 @@ public class JdbcSalesDashboardStore implements SalesDashboardStore {
            GROUP_CONCAT(DISTINCT region_name ORDER BY region_name SEPARATOR '、') city,
            SUM(payable_amount) sales,SUM(paid_amount) paid
     FROM orders WHERE order_date BETWEEN :from AND :to GROUP BY owner_staff_code),
+period_payments AS (SELECT owner_staff_code,owner_staff_name,region_name,payment_time,paid_amount
+    FROM payments WHERE payment_time BETWEEN :from AND :to),
 cash AS (SELECT owner_staff_code code,MAX(owner_staff_name) name,
            GROUP_CONCAT(DISTINCT region_name ORDER BY region_name SEPARATOR '、') city,SUM(paid_amount) receipts
-    FROM payments WHERE payment_time BETWEEN :from AND :to GROUP BY owner_staff_code),
+    FROM period_payments GROUP BY owner_staff_code),
 roster AS (SELECT DISTINCT e.employee_code code FROM bi_employee_dim e
     JOIN bi_sales_contact_city_dim c ON c.tenant_id=e.tenant_id
       AND (e.department_id=c.department_id OR REPLACE(REPLACE(REPLACE(e.department_path,'[',','),']',','),' ','') LIKE CONCAT('%,',c.department_id,',%'))
@@ -143,38 +154,37 @@ roster AS (SELECT DISTINCT e.employee_code code FROM bi_employee_dim e
 codes AS (SELECT code FROM sales UNION SELECT code FROM cash UNION SELECT code FROM roster)
 SELECT c.code,COALESCE(e.employee_name,s.name,p.name,c.code) name,
        COALESCE(s.city,p.city,e.city_name,'归属待核对') city,e.employment_status,
-       COALESCE(s.sales,0) sales,COALESCE(s.paid,0) paid,COALESCE(p.receipts,0) receipts
+       COALESCE(s.sales,0) sales,COALESCE(s.paid,0) paid,COALESCE(p.receipts,0) receipts,NULL period
   FROM codes c LEFT JOIN sales s ON s.code=c.code LEFT JOIN cash p ON p.code=c.code
   LEFT JOIN bi_employee_dim e ON e.tenant_id=:tenant AND e.employee_code=c.code
  WHERE c.code IS NOT NULL AND TRIM(c.code)<>'' AND UPPER(c.code) NOT IN ('UNKNOWN','MULTI')
- ORDER BY sales DESC,c.code
+ UNION ALL
+ SELECT NULL,NULL,NULL,NULL,0,0,SUM(paid_amount),DATE_FORMAT(TIMESTAMPADD(HOUR,8,payment_time),'%Y-%m-%d')
+   FROM period_payments GROUP BY DATE_FORMAT(TIMESTAMPADD(HOUR,8,payment_time),'%Y-%m-%d')
+ ORDER BY period,sales DESC,code
 """,
                         args,
-                        (r, n) ->
-                                new Person(
+                        (r, n) -> {
+                            String period = r.getString("period");
+                            if (period != null)
+                                return new RankingRow(null, new DailyReceipt(period, r.getBigDecimal("receipts")));
+                            return new RankingRow(new Person(
                                         r.getString("code"),
                                         r.getString("name"),
                                         r.getString("city"),
                                         r.getString("employment_status"),
                                         r.getBigDecimal("sales"),
                                         r.getBigDecimal("paid"),
-                                        r.getBigDecimal("receipts")));
-        var goals = targets.values(tenant,year+"-01",year+"-12").stream()
-            .filter(g -> "SALES_OWNER".equals(g.dimensionType()) && people.stream().anyMatch(p -> p.code().equals(g.code())))
+                                        r.getBigDecimal("receipts")), null);
+                        });
+        var people = ranking.stream().map(RankingRow::person).filter(java.util.Objects::nonNull).toList();
+        var daily = ranking.stream().map(RankingRow::daily).filter(java.util.Objects::nonNull).toList();
+        var codes = people.stream().map(Person::code).collect(Collectors.toSet());
+        var goals = projection == Projection.COMPARISON || codes.isEmpty() ? List.<Goal>of()
+            : targets.values(tenant,year+"-01",year+"-12").stream()
+            .filter(g -> "SALES_OWNER".equals(g.dimensionType()) && codes.contains(g.code()))
             .map(g -> new Goal(g.code(),YearMonth.parse(g.month()).getMonthValue(),g.metric(),g.value())).toList();
-        var daily =
-                BiScopedQueries.query(
-                        jdbc,
-                        BASE
-                                + """
-SELECT DATE_FORMAT(TIMESTAMPADD(HOUR,8,payment_time),'%Y-%m-%d') period,SUM(paid_amount) AS receiptValue
-  FROM payments WHERE payment_time BETWEEN :from AND :to GROUP BY period ORDER BY period
-""",
-                        args,
-                        (r, n) ->
-                                new DailyReceipt(
-                                        r.getString("period"), r.getBigDecimal("receiptValue")));
-        if (f.ownerStaffCode() == null)
+        if (f.ownerStaffCode() == null || projection != Projection.FULL)
             return new SalesDashboardData(
                     people, goals, null, List.of(), List.of(), List.of(), null, null, daily);
         var history =

@@ -1,5 +1,7 @@
 package com.rigour.analytics.application.service;
 
+import com.rigour.analytics.api.v1.AnalyticsSupplyDashboardApi.OverviewProjection;
+import com.rigour.analytics.api.v1.AnalyticsSupplyDashboardApi.OverviewRankingKind;
 import com.rigour.analytics.api.v1.model.SupplyDashboardReceiptDetailsView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCostItemView;
 import com.rigour.analytics.api.v1.model.SupplyDashboardCityCustomerItemView;
@@ -41,9 +43,11 @@ import java.time.DateTimeException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
+import java.util.TreeMap;
 import java.util.regex.Pattern;
 
 /** 供应链 BI 看板查询用例。 */
@@ -90,6 +94,13 @@ public final class SupplyDashboardQueryService {
             String customerTypeCode,
             Long productCategoryId,
             String sourceSystemCode) {
+        return overview(from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId,
+                sourceSystemCode, OverviewProjection.FULL);
+    }
+
+    public SupplyDashboardOverviewView overview(
+            Instant from, Instant to, String regionCode, String ownerStaffCode, String customerTypeCode,
+            Long productCategoryId, String sourceSystemCode, OverviewProjection projection) {
         CallerIdentity actor = actor();
         var scope = scopes.resolve(regionCode, ownerStaffCode);
         String tenantId = actor.tenantId().toString();
@@ -105,6 +116,12 @@ public final class SupplyDashboardQueryService {
                         customerTypeCode,
                         productCategoryId,
                         sourceSystemCode);
+        if (projection == OverviewProjection.SALES || projection == OverviewProjection.SALES_COMPARISON
+                || projection == OverviewProjection.CITY || projection == OverviewProjection.CITY_COMPARISON)
+            return boardOverview(filter, now, scope, projection);
+        if (projection != OverviewProjection.FULL)
+            return operatingOverview(tenantId, filter, now, scope.fullTenant(),
+                    projection == OverviewProjection.OPERATING_COMPARISON);
         SupplyDashboardData data = store.overview(tenantId, filter);
         var cash=funds==null?null:funds.overview(filter,scope);
         var cards=cash==null?metrics(data):metrics(data).stream().map(m -> switch(m.metricCode()) {
@@ -186,7 +203,104 @@ public final class SupplyDashboardQueryService {
                 data.risks().stream().map(SupplyDashboardQueryService::risk).toList(),
                 data.freshness().stream().map(SupplyDashboardQueryService::freshness).toList(),
                 rolePerspectives(),
-                definitions(now, cutoff));
+                definitions(now, cutoff),
+                null);
+    }
+
+    public List<SupplyDashboardProductSalesItemView> operatingOverviewRanking(
+            OverviewRankingKind kind, Instant from, Instant to, String regionCode, String ownerStaffCode,
+            String customerTypeCode, Long productCategoryId, String sourceSystemCode) {
+        String tenantId = actor().tenantId().toString();
+        var scope = scopes.resolve(regionCode, ownerStaffCode);
+        var selection = filter(tenantId, Instant.now(clock), from, to, scope.regionCode(),
+                scope.ownerStaffCode(), customerTypeCode, productCategoryId, sourceSystemCode);
+        return store.operatingOverviewRanking(tenantId, selection, kind).stream()
+                .map(SupplyDashboardQueryService::productSales)
+                .toList();
+    }
+
+    private SupplyDashboardOverviewView boardOverview(SupplyDashboardFilter filter, Instant now,
+            BiDataScopeService.ScopedSelection scope, OverviewProjection projection) {
+        boolean city = projection == OverviewProjection.CITY || projection == OverviewProjection.CITY_COMPARISON;
+        boolean comparison = projection == OverviewProjection.CITY_COMPARISON || projection == OverviewProjection.SALES_COMPARISON;
+        var data = store.boardOverview(scope.tenantId(), filter, city, comparison);
+        var sales = data.sales();
+        // 部门金额和到账趋势沿用资金看板口径；销售看板的到账仍来自销售回款事实。
+        var cash = city && funds != null ? funds.overview(filter, scope) : null;
+        boolean cityReceipts = scope.fullTenant() || (filter.ownerStaffCode() == null && filter.productCategoryId() == null);
+        var cards = List.of(
+                metric("sales_amount", "本期交易额", money(sales.salesAmount()), "CNY", "按本期有效订单汇总"),
+                metric("paid_amount", "本期订单累计回款", money(sales.paidAmount()), "CNY", "包含后续月份到账"),
+                metric("unpaid_amount", "待回款", cash == null ? money(sales.unpaidAmount()) : cash.outstanding(),
+                        "CNY", "按所选期末有效应收余额汇总"),
+                metric("order_count", "订单数", decimal(sales.orderCount()), "COUNT", "本期有效订单数量"),
+                metric("cooperated_customer_count", "成交客户", decimal(sales.orderingCustomerCount()), "COUNT", "本期下单去重客户"),
+                metric("receipt_amount", "本期到账", cash != null && cityReceipts ? cash.received() : null,
+                        "CNY", "按到账日期统计"));
+        var freshness = city && !scope.fullTenant() ? List.<SupplyDashboardDataFreshnessView>of()
+                : data.freshness().stream().map(SupplyDashboardQueryService::freshness).toList();
+        var cutoff = scope.fullTenant()
+                ? data.freshness().stream().map(SupplyDashboardStore.DataFreshness::latestUpdatedTime)
+                        .filter(Objects::nonNull).max(Instant::compareTo).orElse(null)
+                : sales.latestUpdatedTime();
+        var details = city || comparison ? null : new SupplyDashboardOverviewView.OperatingDetails(
+                List.of(), customerRetention(data.customerRetention()), List.of());
+        return new SupplyDashboardOverviewView(
+                filter.from(), filter.to(), now, cards,
+                data.salesTrend().stream().map(SupplyDashboardQueryService::trend).toList(),
+                cash != null && cityReceipts ? cash.days() : List.of(), List.of(),
+                data.citySalesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                data.salesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(), List.of(), List.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                data.cityTargets().stream().map(SupplyDashboardQueryService::targetCompletion).toList(),
+                data.salesTargets().stream().map(SupplyDashboardQueryService::targetCompletion).toList(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), freshness,
+                List.of(), definitions(now, cutoff), details);
+    }
+
+    private SupplyDashboardOverviewView operatingOverview(
+            String tenantId, SupplyDashboardFilter filter, Instant now, boolean fullTenant, boolean comparison) {
+        boolean includeReceipts = filter.productCategoryId() == null
+                && (fullTenant || filter.ownerStaffCode() == null);
+        var data = store.operatingOverview(tenantId, filter, comparison, includeReceipts);
+        var sales = data.sales();
+        var daily = new TreeMap<String, BigDecimal>();
+        var cities = new LinkedHashMap<String, SupplyDashboardOverviewView.CityReceipt>();
+        BigDecimal received = BigDecimal.ZERO;
+        for (var row : data.receiptDays()) {
+            var amount = row.receiptAmount();
+            received = received.add(amount);
+            daily.merge(row.day(), amount, BigDecimal::add);
+            cities.merge(row.regionCode(),
+                    new SupplyDashboardOverviewView.CityReceipt(row.regionCode(), row.regionName(), amount),
+                    (city, next) -> new SupplyDashboardOverviewView.CityReceipt(
+                            city.regionCode(), city.regionName(), city.receiptAmount().add(next.receiptAmount())));
+        }
+        var cards = List.of(
+                metric("sales_amount", "本期交易额", money(sales.salesAmount()), "CNY", "按本期有效订单汇总"),
+                metric("paid_amount", "本期订单累计回款", money(sales.paidAmount()), "CNY", "包含后续月份到账"),
+                metric("unpaid_amount", "本期订单未回款", money(sales.unpaidAmount()), "CNY", "按本期订单的当前应收余额汇总"),
+                metric("order_count", "订单数", decimal(sales.orderCount()), "COUNT", "本期有效订单数量"),
+                metric("cooperated_customer_count", "成交客户", decimal(sales.orderingCustomerCount()), "COUNT", "本期下单去重客户"),
+                metric("receipt_amount", "本期到账", includeReceipts ? money(received) : null, "CNY", "按到账日期汇总待确认及已确认回款"));
+        var cashTrend = daily.entrySet().stream()
+                .map(day -> new SupplyDashboardTrendPointView("receipt_amount", day.getKey(), day.getValue(), null))
+                .toList();
+        var details = new SupplyDashboardOverviewView.OperatingDetails(
+                List.copyOf(cities.values()),
+                customerRetention(data.customerRetention()),
+                data.cityMonthlyGoals().stream().map(SupplyDashboardQueryService::cityMonthlyGoal).toList());
+        return new SupplyDashboardOverviewView(
+                filter.from(), filter.to(), now, cards,
+                data.salesTrend().stream().map(SupplyDashboardQueryService::trend).toList(),
+                cashTrend, List.of(),
+                data.citySalesRanking().stream().map(SupplyDashboardQueryService::ranking).toList(),
+                List.of(), List.of(), List.of(), List.of(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                data.cityTargetCompletions().stream().map(SupplyDashboardQueryService::targetCompletion).toList(),
+                List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(),
+                data.freshness().stream().map(SupplyDashboardQueryService::freshness).toList(),
+                List.of(), List.of(), details);
     }
 
     public SupplyDashboardOperatingAnalysisView operatingAnalysis(
@@ -197,6 +311,12 @@ public final class SupplyDashboardQueryService {
             String customerTypeCode,
             Long productCategoryId,
             String sourceSystemCode) {
+        return operatingAnalysis(from, to, regionCode, ownerStaffCode, customerTypeCode, productCategoryId, sourceSystemCode, false);
+    }
+
+    public SupplyDashboardOperatingAnalysisView operatingAnalysis(
+            Instant from, Instant to, String regionCode, String ownerStaffCode, String customerTypeCode,
+            Long productCategoryId, String sourceSystemCode, boolean cityBoard) {
         String tenantId = actor().tenantId().toString();
         var scope = scopes.resolve(regionCode, ownerStaffCode);
         if (productCategoryId != null) {
@@ -229,9 +349,10 @@ public final class SupplyDashboardQueryService {
         } catch (DateTimeException | ArithmeticException exception) {
             throw badRequest("前期时间窗口超出支持范围");
         }
-        SupplyDashboardStore.OperatingAnalysisData data =
-                store.operatingAnalysis(
-                        tenantId, current, withWindow(current, previousFrom, previousTo));
+        var previous = withWindow(current, previousFrom, previousTo);
+        SupplyDashboardStore.OperatingAnalysisData data = cityBoard
+                ? store.operatingAnalysis(tenantId, current, previous, true)
+                : store.operatingAnalysis(tenantId, current, previous);
         return new SupplyDashboardOperatingAnalysisView(
                 currentFrom,
                 currentTo,
@@ -283,15 +404,24 @@ public final class SupplyDashboardQueryService {
                                 item.regionCode(), item.regionName(), money(item.receiptAmount()),
                                 number(item.paymentCount()), number(item.customerCount())))
                         .toList(),
-                data.customerRetention() == null ? null : new SupplyDashboardOperatingAnalysisView.CustomerRetention(
-                        number(data.customerRetention().orderingCustomerCount()),
-                        number(data.customerRetention().returningCustomerCount()),
-                        data.customerRetention().newCustomerCount(),data.customerRetention().annualReturningCustomerCount()),
-                data.cityMonthlyGoals().stream().map(g -> new SupplyDashboardOperatingAnalysisView.CityMonthlyGoal(
-                        g.regionCode(),g.regionName(),g.month(),g.salesTarget(),g.receiptTarget(),
-                        g.contactedStoreTarget(),g.orderedStoreTarget(),g.yangzhangguiSalesTarget(),g.configuredCount())).toList(),
+                customerRetention(data.customerRetention()),
+                data.cityMonthlyGoals().stream().map(SupplyDashboardQueryService::cityMonthlyGoal).toList(),
                 data.salesPeople().stream().map(p -> new SupplyDashboardOperatingAnalysisView.SalesPerson(
                         p.ownerStaffCode(), p.ownerStaffName(), p.employmentStatus())).toList());
+    }
+
+    private static SupplyDashboardOperatingAnalysisView.CustomerRetention customerRetention(
+            SupplyDashboardStore.CustomerRetention row) {
+        return row == null ? null : new SupplyDashboardOperatingAnalysisView.CustomerRetention(
+                number(row.orderingCustomerCount()), number(row.returningCustomerCount()),
+                row.newCustomerCount(), row.annualReturningCustomerCount());
+    }
+
+    private static SupplyDashboardOperatingAnalysisView.CityMonthlyGoal cityMonthlyGoal(
+            SupplyDashboardStore.CityMonthlyGoal goal) {
+        return new SupplyDashboardOperatingAnalysisView.CityMonthlyGoal(
+                goal.regionCode(), goal.regionName(), goal.month(), goal.salesTarget(), goal.receiptTarget(),
+                goal.contactedStoreTarget(), goal.orderedStoreTarget(), goal.yangzhangguiSalesTarget(), goal.configuredCount());
     }
 
     /** 旧仓储包含未分区的附属聚合，受限响应使用白名单，避免新增字段意外穿透。 */
@@ -467,7 +597,8 @@ public final class SupplyDashboardQueryService {
                         : List.of(),
                 List.of(),
                 List.of(),
-                definitions(now, data.sales().latestUpdatedTime()));
+                definitions(now, data.sales().latestUpdatedTime()),
+                null);
     }
 
     private SupplyDashboardFilter filter(
@@ -486,7 +617,7 @@ public final class SupplyDashboardQueryService {
         return new SupplyDashboardFilter(
                 normalizedFrom,
                 normalizedTo,
-                code(regionCode, "regionCode"),
+                text(regionCode, 64, "regionCode"),
                 text(ownerStaffCode, 50, "ownerStaffCode"),
                 code(customerTypeCode, "customerTypeCode"),
                 positiveId(productCategoryId, "productCategoryId"),

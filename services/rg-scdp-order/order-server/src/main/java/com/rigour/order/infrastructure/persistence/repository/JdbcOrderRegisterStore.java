@@ -346,7 +346,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
                         "SELECT " + selectedPaymentAmount("p.paid_amount", criteria) + " AS allocated_payment_amount,p.id,p.payment_no,COALESCE(NULLIF(p.source_record_id,''),NULLIF(p.source_document_no,'')) AS source_record_id,p.order_id,o.order_no,"
                                 + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                                 + " p.customer_id,p.customer_code_snapshot,p.customer_name_snapshot,"
-                                + " COALESCE(p.payment_owner_region_code COLLATE utf8mb4_general_ci,snap.region_code,o.region_code) AS region_code,"
+                                + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                                 + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                                 + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
                                 + " snap.department_id,snap.department_name,o.order_date,o.payable_amount,"
@@ -773,6 +773,12 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         return " ORDER BY " + column + ("asc".equalsIgnoreCase(c.sortDirection()) ? " ASC" : " DESC") + ",o.id DESC";
     }
 
+    private static void customerRegion(Sql where, String code) {
+        if (code == null || code.isBlank()) return;
+        where.and("(COALESCE(snap.region_code,o.region_code)=? OR JSON_CONTAINS(snap.region_path, JSON_QUOTE(?)))",
+                code, code);
+    }
+
     private static void departmentFilter(Sql where, java.util.Set<Long> ids, java.util.Set<String> employees, Map<String, Long> regions) {
         if (ids == null) return;
         if (ids.isEmpty()) { where.and("1=0"); return; }
@@ -809,7 +815,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         eq(where, "o.customer_id", c.customerId());
         like(where, "o.customer_name_snapshot", c.customerName());
         like(where, "o.customer_code_snapshot", c.customerCode());
-        like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
+        customerRegion(where, c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
         paymentOwnerFilter(where, c.paymentOwnerEmployeeCode());
         departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
@@ -871,7 +877,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         eq(where, "o.customer_id", c.customerId());
         like(where, "o.customer_name_snapshot", c.customerName());
         like(where, "o.customer_code_snapshot", c.customerCode());
-        like(where, "COALESCE(snap.region_code,o.region_code)", c.regionCode());
+        customerRegion(where, c.regionCode());
         eq(where, "COALESCE(snap.employee_code,o.owner_employee_code)", c.ownerEmployeeCode());
         paymentOwnerFilter(where, c.paymentOwnerEmployeeCode());
         departmentFilter(where, c.departmentIds(), c.departmentEmployeeCodes(), c.departmentRegionIds());
@@ -925,7 +931,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
         eq(where, "o.customer_id", c.customerId());
         like(where, "o.customer_name_snapshot", c.customerName());
         like(where, "o.customer_code_snapshot", c.customerCode());
-        like(where, "COALESCE(p.payment_owner_region_code COLLATE utf8mb4_general_ci,snap.region_code,o.region_code)", c.regionCode());
+        customerRegion(where, c.regionCode());
         if ("__PENDING__".equals(c.ownerEmployeeCode())) where.and("(p.payment_owner_evidence IS NULL OR p.payment_owner_code IS NULL)");
         else eq(where, "p.payment_owner_code", c.ownerEmployeeCode());
         inIds(where, "p.payment_owner_department_id", c.departmentIds());
@@ -1135,7 +1141,7 @@ public class JdbcOrderRegisterStore implements OrderRegisterStore {
             "SELECT p.id,p.payment_no,COALESCE(NULLIF(p.source_record_id,''),NULLIF(p.source_document_no,'')) AS source_record_id,p.order_id,o.order_no,"
                     + " " + DHB_ORDER_NO_EXPRESSION + " AS dhb_order_no,"
                     + " p.customer_id,p.customer_code_snapshot,p.customer_name_snapshot,"
-                    + " COALESCE(p.payment_owner_region_code COLLATE utf8mb4_general_ci,snap.region_code,o.region_code) AS region_code,"
+                    + " COALESCE(snap.region_code,o.region_code) AS region_code,"
                     + " COALESCE(snap.employee_code,o.owner_employee_code) AS owner_employee_code,"
                     + " COALESCE(snap.employee_name,o.owner_employee_name_snapshot) AS owner_employee_name,"
                     + " snap.department_id,snap.department_name,o.order_date,o.payable_amount,"

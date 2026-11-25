@@ -391,6 +391,9 @@ class HrApplicationTests {
         var child = organizations.saveDepartment(tenant, null,
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(root.id(), "杭州", 10, "ACTIVE", 0, null, null, null), "admin");
         assertThat(organizations.departments(tenant)).containsExactly(root, child);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.deleteDepartment(tenant, root.id(), root.revision(), "admin"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("下级");
+
         assertThat(organizations.departments("other-tenant")).isEmpty();
         var edited = organizations.saveDepartment(tenant, child.id(),
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "杭州区域", 5, "ACTIVE", child.revision(), null, null, null), "admin");
@@ -402,11 +405,14 @@ class HrApplicationTests {
                 new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "旧版本覆盖", 5, "ACTIVE", child.revision(), null, null, null), "admin"))
                 .isInstanceOfSatisfying(com.rigour.shared.core.exception.BusinessException.class,
                         failure -> assertThat(failure.getErrorCode()).isEqualTo(com.rigour.shared.core.api.ErrorCode.CONFLICT));
-        var inactive = organizations.saveDepartment(tenant, child.id(),
-                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, edited.departmentName(), 5, "INACTIVE", edited.revision(), null, null, null), "admin");
-        organizations.deleteDepartment(tenant, child.id(), inactive.revision(), "admin");
+        jdbcTemplate.update("INSERT INTO hr_business_target(tenant_id,target_month,dimension_type,dimension_code,metric_code,target_value) VALUES(?,'2026-11-01','CITY',?,'SALES_AMOUNT',100)", tenant, edited.departmentCode());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> organizations.deleteDepartment(tenant, child.id(), edited.revision(), "admin"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("经营目标");
+        jdbcTemplate.update("DELETE FROM hr_business_target WHERE tenant_id=? AND dimension_code=?", tenant, edited.departmentCode());
+        organizations.deleteDepartment(tenant, child.id(), edited.revision(), "admin");
         assertThat(organizations.departments(tenant)).containsExactly(root);
-        assertThat(jdbcTemplate.queryForObject("SELECT deleted FROM hr_department WHERE tenant_id=? AND id=?", Integer.class, tenant, child.id())).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_department WHERE tenant_id=? AND id=?", Integer.class, tenant, child.id())).isZero();
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_organization_change WHERE tenant_id=? AND event_type='DEPARTMENT_DELETE' AND object_ref=?", Integer.class, tenant, String.valueOf(child.id()))).isOne();
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM hr_department_closure WHERE tenant_id=? AND descendant_id=?", Integer.class, tenant, child.id())).isZero();
     }
 
