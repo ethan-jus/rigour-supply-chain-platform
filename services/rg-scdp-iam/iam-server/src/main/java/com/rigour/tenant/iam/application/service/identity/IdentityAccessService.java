@@ -27,7 +27,8 @@ public final class IdentityAccessService {
         // 旧数据升级准备期保留供应链旧授权，启用新模型后仅使用应用角色授权。
         if (!"ACTIVE".equals(context.mode())) permissions.addAll(identity.permissions());
         return new CurrentUser(identity.id(), identity.tenantId(), identity.tenantName(),
-                identity.principalScope(), identity.username(), identity.displayName(),
+                identity.principalScope(), identity.username(),
+                context.memberDisplayName() == null ? identity.displayName() : context.memberDisplayName(),
                 "ACTIVE".equals(context.mode()) ? reader.readSupplyRoles(query) : identity.roles(),
                 permissions);
     }

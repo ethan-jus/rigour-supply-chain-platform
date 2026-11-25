@@ -123,7 +123,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
         return new Member(
                 r.id(),
                 r.username(),
-                employee == null ? r.globalName() : employee.employeeName(),
+                displayName(r, employee),
                 r.kind(),
                 r.status(),
                 r.remark(),
@@ -137,6 +137,13 @@ public class JdbcAppMemberStore implements AppMemberStore {
                 r.createdTime(),
                 auditActor(a, r.id(), false),
                 r.updatedTime());
+    }
+
+    private static String displayName(Raw account, Employee employee) {
+        if (employee != null && employee.employeeName() != null && !employee.employeeName().isBlank())
+            return employee.employeeName();
+        return "PROTECTED".equals(account.kind()) && account.employeeCode() == null
+                ? account.globalName() : account.username();
     }
 
     private String auditActor(Actor a, UUID id, boolean created) {
@@ -210,7 +217,7 @@ public class JdbcAppMemberStore implements AppMemberStore {
                 for (var row : batch) {
                     var employee =
                             row.employeeCode() == null ? null : found.get(row.employeeCode());
-                    String displayedName = employee == null ? row.globalName() : employee.employeeName();
+                    String displayedName = displayName(row, employee);
                     boolean departmentMatches = departmentId == null || (employee != null
                             && (departmentId.equals(employee.departmentId())
                                 || employee.departmentAncestorIds().contains(departmentId)));
@@ -396,11 +403,13 @@ public class JdbcAppMemberStore implements AppMemberStore {
                                 tenant(a),
                                 app(),
                                 bin(target));
-                        // 用户管理展示的姓名取自关联员工，保存时同步登录身份，避免两处实名不一致。
-                        jdbc.update(
-                                "UPDATE iam_user SET display_name=?,updated_at=UTC_TIMESTAMP(6),updated_by=?"
-                                        + " WHERE tenant_id=? AND id=? AND deleted_at IS NULL",
-                                employee.employeeName(), bin(a.principalId()), tenant(a), bin(target));
+                    }
+                    // 兼容读取统一账号资料的旧入口；已有账号首次关联也需要校正其资料。
+                    if (old != null || c.existingUserId() != null) {
+                        jdbc.update("""
+                                UPDATE iam_user SET display_name=?,version=version+1,updated_at=UTC_TIMESTAMP(6),updated_by=?
+                                 WHERE tenant_id=? AND id=? AND deleted_at IS NULL AND BINARY display_name<>BINARY ?
+                                """, employee.employeeName(), bin(a.principalId()), tenant(a), bin(target), employee.employeeName());
                     }
                     if (bindingChanged) {
                         if (settings.count(

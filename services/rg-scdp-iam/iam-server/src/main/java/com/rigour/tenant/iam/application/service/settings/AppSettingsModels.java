@@ -16,9 +16,10 @@ public final class AppSettingsModels {
             String mode,
             long version,
             Set<String> permissions,
-            Map<String, String> actionLabels) {
+            Map<String, String> actionLabels,
+            String memberDisplayName) {
         public Context(boolean initialized, boolean canInitialize, String mode, long version, Set<String> permissions) {
-            this(initialized, canInitialize, mode, version, permissions, Map.of());
+            this(initialized, canInitialize, mode, version, permissions, Map.of(), null);
         }
     }
 

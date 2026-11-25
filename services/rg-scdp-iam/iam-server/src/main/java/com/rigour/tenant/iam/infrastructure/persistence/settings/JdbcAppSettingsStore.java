@@ -159,7 +159,7 @@ SELECT COUNT(*) FROM iam_user u JOIN iam_tenant t ON t.id=u.tenant_id
                 .filter(node -> "BUTTON".equals(node.type()) && node.permissionCode() != null
                         && permissions.contains(node.permissionCode()) && "ACTIVE".equals(node.status()))
                 .collect(Collectors.toMap(Node::permissionCode, Node::name, (first, other) -> first));
-        return new Context(true, false, "ACTIVE", version, permissions, labels);
+        return new Context(true, false, "ACTIVE", version, permissions, labels, memberDisplayName(actor));
     }
 
     private boolean canBootstrap(Actor actor) {
@@ -445,28 +445,41 @@ SELECT resource_id,display_name_override,icon_key_override,sort_order_override,v
         return readOnce(new ReadKey("eligible", actor, null), () -> loadEligible(actor));
     }
 
+    private record Binding(String kind, String code, long access, String username, boolean active, boolean hasRole) {}
+
+    private Optional<Binding> binding(Actor actor) {
+        return readOnce(new ReadKey("memberBinding", actor, null), () ->
+                jdbc.query("""
+                        SELECT m.member_kind,b.employee_code,b.hr_access_version,u.username,m.status,
+                               EXISTS(SELECT 1 FROM iam_app_member_role mr JOIN iam_app_role r
+                                 ON r.tenant_id=mr.tenant_id AND r.application_id=mr.application_id AND r.id=mr.role_id
+                                WHERE mr.tenant_id=m.tenant_id AND mr.application_id=m.application_id
+                                  AND mr.user_id=m.user_id AND r.status='ACTIVE' AND r.deleted_at IS NULL) AS has_role
+                          FROM iam_app_member m
+                          LEFT JOIN iam_app_employee_binding b ON b.tenant_id=m.tenant_id
+                               AND b.application_id=m.application_id AND b.user_id=m.user_id
+                          JOIN iam_user u ON u.tenant_id=m.tenant_id AND u.id=m.user_id AND u.status='ACTIVE' AND u.deleted_at IS NULL
+                         WHERE m.tenant_id=? AND m.application_id=? AND m.user_id=? AND m.deleted_at IS NULL
+                        """, (rs, n) -> new Binding(rs.getString(1), rs.getString(2), rs.getLong(3),
+                                rs.getString(4), "ACTIVE".equals(rs.getString(5)), rs.getBoolean(6)),
+                        bin(actor.tenantId()), bin(applicationId()), bin(actor.principalId())).stream().findFirst());
+    }
+
     private boolean loadEligible(Actor actor) {
-        record Binding(String kind, String code, long access) {}
-        List<Binding> bindings =
-                jdbc.query(
-                        """
-SELECT m.member_kind,b.employee_code,b.hr_access_version FROM iam_app_member m
-  LEFT JOIN iam_app_employee_binding b ON b.tenant_id=m.tenant_id AND b.application_id=m.application_id AND b.user_id=m.user_id
-  JOIN iam_user u ON u.tenant_id=m.tenant_id AND u.id=m.user_id AND u.status='ACTIVE' AND u.deleted_at IS NULL
- WHERE m.tenant_id=? AND m.application_id=? AND m.user_id=? AND m.status='ACTIVE' AND m.deleted_at IS NULL
-   AND EXISTS(SELECT 1 FROM iam_app_member_role mr JOIN iam_app_role r ON r.tenant_id=mr.tenant_id AND r.application_id=mr.application_id AND r.id=mr.role_id
-     WHERE mr.tenant_id=m.tenant_id AND mr.application_id=m.application_id AND mr.user_id=m.user_id AND r.status='ACTIVE' AND r.deleted_at IS NULL)
-""",
-                        (rs, n) -> new Binding(rs.getString(1), rs.getString(2), rs.getLong(3)),
-                        bin(actor.tenantId()),
-                        bin(applicationId()),
-                        bin(actor.principalId()));
-        if (bindings.size() != 1) return false;
-        Binding binding = bindings.getFirst();
-        if ("PROTECTED".equals(binding.kind())) return true;
-        if (binding.code() == null) return false;
-        var employee = authorizationEmployee(actor, binding.code());
-        return employee.usable() && employee.accessVersion() == binding.access();
+        var member = binding(actor).orElse(null);
+        if (member == null || !member.active() || !member.hasRole()) return false;
+        if ("PROTECTED".equals(member.kind())) return true;
+        if (member.code() == null) return false;
+        var employee = authorizationEmployee(actor, member.code());
+        return employee.usable() && employee.accessVersion() == member.access();
+    }
+
+    private String memberDisplayName(Actor actor) {
+        var member = binding(actor).orElse(null);
+        if (member == null) return null;
+        if (member.code() == null) return "PROTECTED".equals(member.kind()) ? null : member.username();
+        String name = authorizationEmployee(actor, member.code()).employeeName();
+        return name == null || name.isBlank() ? member.username() : name;
     }
 
     com.rigour.tenant.iam.application.port.out.AppEmployeeClient.Employee authorizationEmployee(Actor actor, String code) {

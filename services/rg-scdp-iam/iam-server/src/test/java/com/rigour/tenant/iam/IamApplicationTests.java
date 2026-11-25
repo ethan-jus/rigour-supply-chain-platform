@@ -1782,6 +1782,30 @@ INSERT INTO iam_user_credential (
     }
 
     @Test
+    void currentNameFollowsEmployeeRebindingAndHrRenameAcrossRequests() {
+        var admin = insertTenantAdministrator().actor();
+        appSettingsStore.initialize(admin);
+        var role = supplyTestRole(admin, "NAME_READ", Set.of("order:read"), List.of());
+        var roles = List.of(supplyTestAssignment(role));
+        supplyTestEmployee(admin, "EMP-OLD", 1, List.of(1L));
+        var target = supplyTestEmployee(admin, "EMP-NEW", 2, List.of(2L));
+        var member = appMembers.save(admin, null, supplyTestCommand("name-reader", "EMP-OLD", "ACTIVE", 0, roles));
+        var caller = new IdentityAccessQuery("TENANT", member.id(), admin.tenantId());
+        assertThat(identityAccessService.currentUser(caller).displayName()).isEqualTo("EMP-OLD");
+        appMembers.save(admin, member.id(), supplyTestCommand("name-reader", "EMP-NEW", "ACTIVE", member.version(), roles));
+        jdbcTemplate.update("UPDATE iam_user SET display_name='旧账号姓名' WHERE tenant_id=? AND id=?",
+                uuidBytes(admin.tenantId()), uuidBytes(member.id()));
+        assertThat(identityAccessService.currentUser(caller).displayName()).isEqualTo("EMP-NEW");
+        var renamed = new com.rigour.tenant.iam.application.port.out.AppEmployeeClient.Employee(
+                target.id(), target.employeeCode(), "改名后的员工", "ACTIVE", 2L, "部门", "SALES", "销售",
+                List.of(2L), 2, 1, 0, true, null);
+        org.mockito.Mockito.when(appEmployees.employee(admin.tenantId(), target.employeeCode())).thenReturn(renamed);
+        assertThat(identityAccessService.currentUser(caller).displayName()).isEqualTo("改名后的员工");
+        assertThat(appSettingsStore.context(new Actor("TENANT", member.id(), admin.tenantId())).memberDisplayName())
+                .isEqualTo("改名后的员工");
+    }
+
+    @Test
     void supplyMemberEmployeeBindingAndRoleBatchRemainApplicationLocal() {
         var fixture = insertTenantAdministrator();
         var actor = fixture.actor();
