@@ -24,7 +24,13 @@ public final class HistorySyncModels {
 
     public record CancelSourceOrder(UUID connectorId, String sourceNo, String orderStatusCode,
                                     Instant orderDate, BigDecimal amount, String customerName,
-                                    Instant sourceUpdatedAt, CancelledOrderAttribution attribution, SourceLifecycleEvidence evidence) {
+                                    Instant sourceUpdatedAt, CancelledOrderAttribution attribution, SourceLifecycleEvidence evidence,
+                                    List<SalesOrderLineCommand> originalLines) {
+        public CancelSourceOrder(UUID connectorId, String sourceNo, String orderStatusCode,
+                Instant orderDate, BigDecimal amount, String customerName, Instant sourceUpdatedAt,
+                CancelledOrderAttribution attribution, SourceLifecycleEvidence evidence) {
+            this(connectorId,sourceNo,orderStatusCode,orderDate,amount,customerName,sourceUpdatedAt,attribution,evidence,null);
+        }
         public CancelSourceOrder(UUID connectorId, String sourceNo, String orderStatusCode,
                 Instant orderDate, BigDecimal amount, String customerName, Instant sourceUpdatedAt, CancelledOrderAttribution attribution) {
             this(connectorId,sourceNo,orderStatusCode,orderDate,amount,customerName,sourceUpdatedAt,attribution,null);

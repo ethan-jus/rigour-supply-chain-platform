@@ -988,7 +988,7 @@ class HistoryOrderSyncTest {
     }
 
     @Test
-    void normalBaselineCancellationUpdatesOnlyMatchingFundAndRetainsReview() {
+    void normalInactiveBaselineCancellationClosesSourceWithoutCreatingMoney() {
         pendingHistoricalReceipt();
         db.update("UPDATE order_fund_document SET source_order_no='D1',document_status_code='CONFIRMED'");
         db.update("DELETE FROM order_payment_record");
@@ -996,10 +996,13 @@ class HistoryOrderSyncTest {
         db.update("UPDATE order_sync_receipt SET occurred_at=?,source_status='CONFIRMED',state='BASELINE_COVERED'",
                 java.sql.Timestamp.from(paidAt));
         var command = receipt("R1", "D1", "300", "CANCELLED", "cancelled-source");
-        assertThat(pay(command).state()).isEqualTo("SOURCE_CHANGED_REVIEW");
+        assertThat(pay(command).state()).isEqualTo("CANCELLED");
         assertThat(db.queryForObject("SELECT document_status_code FROM order_fund_document", String.class)).isEqualTo("CANCELLED");
-        assertThat(db.queryForObject("SELECT state FROM order_sync_receipt", String.class)).isEqualTo("BASELINE_COVERED");
-        assertThat(db.queryForObject("SELECT source_status FROM order_sync_receipt", String.class)).isEqualTo("CONFIRMED");
+        assertThat(db.queryForObject("SELECT state FROM order_sync_receipt", String.class)).isEqualTo("CANCELLED");
+        assertThat(db.queryForObject("SELECT source_status FROM order_sync_receipt", String.class)).isEqualTo("CANCELLED");
+        var ledger = db.queryForList("SELECT * FROM order_sync_receipt");
+        assertThat(pay(command).state()).isEqualTo("CANCELLED");
+        assertThat(db.queryForList("SELECT * FROM order_sync_receipt")).isEqualTo(ledger);
         assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();
     }
 

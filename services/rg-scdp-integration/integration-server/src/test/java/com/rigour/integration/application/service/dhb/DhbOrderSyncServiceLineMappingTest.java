@@ -88,7 +88,7 @@ class DhbOrderSyncServiceLineMappingTest {
         when(store.persistRawObject(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(raw);
         when(client.getOrderContent(any(), eq("D1"))).thenReturn(new DhbClient.OrderDetail("D1", "zeroSettlement".equals(scenario) ? "finished" : terminal,
                 BigDecimal.ONE, Map.of("DiscountTotal", "zeroSettlement".equals(scenario) ? "0.0000" : "1.00",
-                        "ClientName", "取消门店", "StaffName", "业务员", "AdminUser", "制单人")));
+                        "OrderTotal", "216", "ClientName", "取消门店", "StaffName", "业务员", "AdminUser", "制单人")));
         when(projection.cancelSourceOrder(any(), any())).thenReturn(
                 new com.rigour.order.api.v1.model.HistorySyncModels.Intake(terminal, null, null));
         var method = DhbOrderSyncService.class.getDeclaredMethod("projectOrder",
@@ -99,7 +99,8 @@ class DhbOrderSyncServiceLineMappingTest {
                 .isEqualTo(DhbOrderSyncService.ProjectionOutcome.CHANGED);
         verify(projection).cancelSourceOrder(any(), argThat(c -> c.connectorId().equals(connector) && c.sourceNo().equals("D1") && c.orderStatusCode().equals(terminal)
                 && c.customerName().equals("取消门店") && c.attribution().ownerEmployeeName().equals("业务员")
-                && c.attribution().sourceCreatorName().equals("制单人")));
+                && c.attribution().sourceCreatorName().equals("制单人")
+                && (!"zeroSettlement".equals(scenario) || c.amount().compareTo(new BigDecimal("216")) == 0)));
         org.mockito.Mockito.verifyNoMoreInteractions(projection);
         if (cancelledInList) verify(client).getOrderContent(any(), eq("D1"));
         verify(store).markRawProcessed(tenant, raw.rawLandingId());

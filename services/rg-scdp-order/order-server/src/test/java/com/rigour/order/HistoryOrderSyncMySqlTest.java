@@ -113,6 +113,35 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
         db.execute("ALTER TABLE order_sales_order_line ADD revision INT DEFAULT 0, ADD updated_by VARCHAR(64), ADD updated_time TIMESTAMP");
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"new", "zero", "nonzero", "originalZero"})
+    void cancelledZeroSettlementRetainsOriginalPriceAndLinesWithoutPayment(String scenario) {
+        String originalAmount = "originalZero".equals(scenario) ? "0" : "216";
+        if (!"new".equals(scenario)) order(1, 1, "nonzero".equals(scenario) ? "210" : "0", "0", "24");
+        cancellationColumns();
+        db.execute("ALTER TABLE order_sales_order ADD original_amount DECIMAL(24,6) DEFAULT 0, ADD discount_amount DECIMAL(24,6) DEFAULT 0, MODIFY deleted INT DEFAULT 0, MODIFY revision INT DEFAULT 1");
+        db.execute("ALTER TABLE order_sales_order_line ADD line_no INT, ADD product_code_snapshot VARCHAR(128), ADD sku_code_snapshot VARCHAR(128), ADD unit_price DECIMAL(24,6), ADD discount_amount DECIMAL(24,6), ADD remark VARCHAR(1000), ADD source_line_id VARCHAR(128), MODIFY deleted INT DEFAULT 0");
+        if (!"new".equals(scenario)) {
+            db.update("UPDATE order_sales_order SET source_system_code='DINGHUOBAO',source_order_no='ZERO',deleted=1 WHERE id=1");
+            db.update("UPDATE order_sales_order_line SET deleted=1 WHERE order_id=1");
+        }
+        var line = new com.rigour.order.api.v1.model.SalesOrderLineCommand(1L, 2L, "P1", "S1", "商品", null, "BUCKET",
+                new java.math.BigDecimal("24"), new java.math.BigDecimal("originalZero".equals(scenario) ? "0" : "9"), null, java.math.BigDecimal.ZERO, null, "L1");
+        var command = new com.rigour.order.api.v1.model.HistorySyncModels.CancelSourceOrder(connector, "ZERO", "CANCELLED", date,
+                new java.math.BigDecimal(originalAmount), "恋湖", date, null, null, java.util.List.of(line));
+        tx.executeWithoutResult(s -> store.cancelSourceOrder(tenant, "tester", command));
+        var before = db.queryForList("SELECT * FROM order_sales_order");
+        tx.executeWithoutResult(s -> store.cancelSourceOrder(tenant, "tester", command));
+        org.assertj.core.api.Assertions.assertThat(db.queryForList("SELECT * FROM order_sales_order")).isEqualTo(before);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT payable_amount FROM order_sales_order", java.math.BigDecimal.class))
+                .isEqualByComparingTo("nonzero".equals(scenario) ? "210" : originalAmount);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT order_status_code FROM order_sales_order", String.class)).isEqualTo("CANCELLED");
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_sales_order", Integer.class)).isZero();
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sales_order_line WHERE deleted=0", Integer.class)).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT SUM(line_amount) FROM order_sales_order_line WHERE deleted=0", java.math.BigDecimal.class)).isEqualByComparingTo(originalAmount);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();
+    }
+
     @org.junit.jupiter.api.Test
     void sourceCancellationRetainsProjectionsAndIsIdempotent() {
         order(1, 1, "78", "0", "1");

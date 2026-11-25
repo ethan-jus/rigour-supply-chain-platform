@@ -135,7 +135,7 @@ class DhbScheduledHistoryProtectionTest {
         verifyNoInteractions(client, hr);
     }
     @ParameterizedTest
-    @ValueSource(strings = {"SYNCED", "HISTORY_REVIEW", "SOURCE_CHANGED_REVIEW", "STALE"})
+    @ValueSource(strings = {"SYNCED", "HISTORY_REVIEW", "SOURCE_CHANGED_REVIEW", "STALE", "MANUAL_PROTECTED", "ORDER_CANCELLED"})
     void historicalReceiptUsesStatusOnlyEndpointAndRetainsUnresolvedWork(String state) throws Exception {
         var tenant = UUID.randomUUID();
         var actor = new CallerIdentity("SERVICE", UUID.randomUUID(), tenant, null, null,
@@ -158,7 +158,7 @@ class DhbScheduledHistoryProtectionTest {
         method.setAccessible(true);
         var result = method.invoke(service, actor, task, UUID.randomUUID(), data);
         assertThat(result).isEqualTo(switch (state) {
-            case "SYNCED" -> DhbOrderSyncService.ProjectionOutcome.ACCEPTED;
+            case "SYNCED", "MANUAL_PROTECTED", "ORDER_CANCELLED" -> DhbOrderSyncService.ProjectionOutcome.ACCEPTED;
             case "STALE" -> DhbOrderSyncService.ProjectionOutcome.DUPLICATE;
             default -> DhbOrderSyncService.ProjectionOutcome.REJECTED;
         });
@@ -168,6 +168,36 @@ class DhbScheduledHistoryProtectionTest {
         verify(projection, never()).createFundDocument(any(), any());
         verify(projection, never()).updateFundDocument(any(), any(), any());
         if (state.endsWith("REVIEW")) verify(store, never()).markRawProcessed(any(), any());
+    }
+
+    @org.junit.jupiter.api.Test
+    void refundRedReversalProjectsOnlyFundAndNeverCreatesOrderPayment() throws Exception {
+        var tenant = UUID.randomUUID();
+        var actor = new CallerIdentity("SERVICE", UUID.randomUUID(), tenant, null, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of());
+        var task = new DhbSyncStore.SyncTaskContext(tenant, UUID.randomUUID(), UUID.randomUUID(),
+                "orders", "ORDER", "ACTIVE", "https://example.test", "test", "ACTIVE", 100, 1, 0, true);
+        var store = mock(DhbSyncStore.class);
+        var projection = mock(OrderSalesOrderProjectionClient.class);
+        var service = new DhbOrderSyncService(store, mock(DhbClient.class), projection, mock(HrDhbStaffSyncClient.class));
+        var time = Instant.parse("2026-09-29T05:10:50Z");
+        var data = new DhbClient.Receipt("R1", "R1", null, null, null, null, null, new BigDecimal("1146"),
+                "pend_receipted", time, time, time, null, null, null, null, null, Map.of("TypeId", "Refund_Red_Reversal", "IncexpId", "6"));
+        var raw = new DhbSyncStore.RawObjectPersistResult(UUID.randomUUID(), "hash", true);
+        when(store.persistRawObject(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(raw);
+        var fund = mock(com.rigour.order.api.v1.model.FundDocumentDetailView.class);
+        when(fund.id()).thenReturn(1L);
+        when(fund.documentNo()).thenReturn("F1");
+        when(projection.createFundDocument(any(), any())).thenReturn(fund);
+        var method = DhbOrderSyncService.class.getDeclaredMethod("projectReceipt", CallerIdentity.class,
+                DhbSyncStore.SyncTaskContext.class, UUID.class, DhbClient.Receipt.class);
+        method.setAccessible(true);
+        assertThat(method.invoke(service, actor, task, UUID.randomUUID(), data)).isEqualTo(DhbOrderSyncService.ProjectionOutcome.ACCEPTED);
+        verify(projection).createFundDocument(any(), argThat(c -> "REVERSAL".equals(c.businessTypeCode()) && c.amount().compareTo(new BigDecimal("1146")) == 0));
+        verify(projection, never()).registerReceipt(any(), any());
+        verify(projection, never()).syncHistoricalReceiptStatus(any(), any());
+        verify(projection, never()).createSalesPayment(any(), any());
+        verify(store).markRawProcessed(tenant, raw.rawLandingId());
     }
 
 }

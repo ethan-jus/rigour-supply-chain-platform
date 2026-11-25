@@ -500,6 +500,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         ts(c.sourceUpdatedAt()), ts(c.sourceUpdatedAt()));
             }
         }
+        restoreCancelledOrderDetails(t, actor, c);
         // 同版本重放也补齐早期取消分支遗漏的快照；已有归属及历史飞书主体保持不变。
         var fields = new LinkedHashMap<String, Object>();
         fields.put("customer_name_snapshot", c.customerName());
@@ -538,6 +539,42 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             auditChange(t,c.connectorId(),"ORDER_LIFECYCLE",c.sourceNo(),orders,c);
         }
         return new Intake(status, group, null);
+    }
+
+    /** 零结算表示取消；只补来源直属订单缺失的原值，不改历史关联主体或已有非零金额。 */
+    private void restoreCancelledOrderDetails(String t, String actor, CancelSourceOrder c) {
+        if (c.originalLines() == null || c.originalLines().isEmpty()) return;
+        require(c.amount() != null && c.amount().signum() >= 0, "取消订单原金额缺失");
+        BigDecimal total = c.originalLines().stream().map(l -> l.quantity().multiply(l.unitPrice()))
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        require(total.setScale(2, RoundingMode.HALF_UP).compareTo(c.amount().setScale(2, RoundingMode.HALF_UP)) == 0,
+                "取消订单原金额与商品明细不一致");
+        var rows = jdbc.queryForList("SELECT * FROM order_sales_order WHERE tenant_id=? AND source_system_code='DINGHUOBAO'"
+                + " AND source_order_no=? AND order_status_code='CANCELLED' AND deleted=0 FOR UPDATE", t, c.sourceNo());
+        for (var order : rows) {
+            long orderId = num(order, "id");
+            var lines = jdbc.queryForList("SELECT * FROM order_sales_order_line WHERE tenant_id=? AND order_id=? AND deleted=0", t, orderId);
+            boolean missingAmount = money(order, "payable_amount").signum() == 0 && c.amount().signum() > 0;
+            if (!missingAmount && !lines.isEmpty()) continue;
+            auditChange(t, c.connectorId(), "CANCELLED_ORDER_DETAILS", c.sourceNo(), Map.of("order", order, "lines", lines), c);
+            if (missingAmount) jdbc.update("UPDATE order_sales_order SET original_amount=?,payable_amount=?,discount_amount=0,"
+                    + "revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
+                    c.amount(), c.amount(), actor, t, orderId);
+            else if (money(order, "original_amount").signum() == 0) jdbc.update(
+                    "UPDATE order_sales_order SET original_amount=?,revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6)"
+                            + " WHERE tenant_id=? AND id=?", c.amount(), actor, t, orderId);
+            if (lines.isEmpty()) {
+                int lineNo = 0;
+                for (var line : c.originalLines()) {
+                    jdbc.update("INSERT INTO order_sales_order_line(tenant_id,order_id,line_no,product_id,product_variant_id,"
+                            + "product_code_snapshot,sku_code_snapshot,product_name_snapshot,specification_snapshot,unit_code,"
+                            + "quantity,unit_price,discount_amount,line_amount,remark,source_line_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?)",
+                            t, orderId, ++lineNo, line.productId(), line.productVariantId(), line.productCodeSnapshot(),
+                            line.skuCodeSnapshot(), line.productNameSnapshot(), line.specificationSnapshot(), line.unitCode(),
+                            line.quantity(), line.unitPrice(), line.quantity().multiply(line.unitPrice()), line.remark(), line.sourceLineId());
+                }
+            }
+        }
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
@@ -1190,6 +1227,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         if (old.get("source_updated_at") != null && c.updatedAt() != null
                 && c.updatedAt().isBefore(instant(old.get("source_updated_at"))))
             return new Intake("STALE", group, "旧版本响应已忽略");
+        if (closeInactiveReceiptSource(t, c, old, sources))
+            return new Intake("CANCELLED".equals(c.status()) ? "CANCELLED" : "ORDER_CANCELLED", group, null);
         // 历史核销保留原入账事实；同一收款来源的资金作废状态仍需接续。
         if ("CANCELLED".equals(c.status()) && c.updatedAt() != null
                 && money(old, "amount").compareTo(c.amount()) == 0
@@ -1216,6 +1255,14 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 && c.checksum().equals(text(old, "checksum")) && old.get("pending_checksum") == null
                 && Set.of("SYNCED", "ALLOCATED", "BASELINE_COVERED", "CANCELLED").contains(text(old, "state")))
             return confirmedReceiptResult(t, c, group);
+        if (sameFacts && "BASELINE_COVERED".equals(text(old, "state"))
+                && Objects.equals(text(old, "source_status"), c.status())) {
+            // 已覆盖的历史款只刷新来源版本；来源收款毛额不能再次充当订单折后应收。
+            jdbc.update("UPDATE order_sync_receipt SET checksum=?,source_updated_at=?,pending_payload=NULL,"
+                    + "pending_checksum=NULL,revision=revision+1 WHERE tenant_id=? AND connector_id=? AND receipt_no=?",
+                    c.checksum(), ts(c.updatedAt()), t, c.connectorId().toString(), c.receiptNo());
+            return confirmedReceiptResult(t, c, group);
+        }
         if (sameFacts && !"CANCELLED".equals(text(old, "source_status"))) {
             if (receivedReceipt(c.status())) {
                 BigDecimal other = jdbc.queryForObject("SELECT COALESCE(SUM(amount),0) FROM order_sync_receipt"
@@ -1247,6 +1294,29 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                     + " WHERE tenant_id=? AND connector_id=? AND receipt_no=?", JSON.writeValueAsString(c),
                     c.checksum(), t, c.connectorId().toString(), c.receiptNo());
         return new Intake("SOURCE_CHANGED_REVIEW", group, "历史回款金额、关联或状态需核对，已保留原日期及入账事实");
+    }
+
+    private boolean closeInactiveReceiptSource(String t, Receipt c, Map<String, Object> old, List<Map<String, Object>> sources) {
+        boolean inactive = !sources.isEmpty() && Set.of("CANCELLED", "DELETED").contains(text(sources.getFirst(), "state"));
+        if ((!inactive && !(sources.isEmpty() && "CANCELLED".equals(c.status())))
+                || c.updatedAt() == null || money(old, "amount").compareTo(c.amount()) != 0
+                || !Objects.equals(text(old, "source_order_no"), c.sourceOrderNo())
+                || !Objects.equals(old.get("customer_id"), c.customerId())) return false;
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM order_sync_allocation WHERE tenant_id=? AND connector_id=? AND receipt_no=?",
+                Long.class, t, c.connectorId().toString(), c.receiptNo()) > 0) return false;
+        if (jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE tenant_id=? AND connector_id=?"
+                + " AND (source_document_no=? OR source_record_id=?) AND deleted=0 AND payment_status_code<>'CANCELLED'",
+                Long.class, t, c.connectorId().toString(), c.receiptNo(), c.receiptNo()) > 0) return false;
+        if ("CANCELLED".equals(c.status())) cancelReceiptFund(t, c);
+        if (!c.checksum().equals(text(old, "checksum")) || old.get("pending_checksum") != null
+                || !Objects.equals(text(old, "source_status"), c.status())) {
+            auditChange(t, c.connectorId(), "INACTIVE_RECEIPT_SOURCE", c.receiptNo(), old, c);
+            jdbc.update("UPDATE order_sync_receipt SET source_status=?,state=?,checksum=?,source_updated_at=?,"
+                    + "pending_payload=NULL,pending_checksum=NULL,revision=revision+1 WHERE tenant_id=? AND connector_id=? AND receipt_no=?",
+                    c.status(), "CANCELLED".equals(c.status()) ? "CANCELLED" : text(old, "state"), c.checksum(), ts(c.updatedAt()),
+                    t, c.connectorId().toString(), c.receiptNo());
+        }
+        return true;
     }
 
     private void cancelReceiptFund(String t, Receipt c) {
@@ -1303,9 +1373,21 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         t,
                         c.connectorId().toString(),
                         c.receiptNo());
+        if (!old.isEmpty()
+                && (old.getFirst().get("source_updated_at") == null || c.updatedAt() == null
+                    || !c.updatedAt().isBefore(instant(old.getFirst().get("source_updated_at"))))
+                && closeInactiveReceiptSource(t, c, old.getFirst(), sources))
+            return new Intake("CANCELLED".equals(c.status()) ? "CANCELLED" : "ORDER_CANCELLED", group, null);
         // 已人工对账覆盖的来源款重放只更新元数据，不把原始毛额再次视为新增回款。
         boolean coveredReplay = !old.isEmpty()
-                && "BASELINE_COVERED".equals(text(old.getFirst(), "state"))
+                && ("BASELINE_COVERED".equals(text(old.getFirst(), "state"))
+                    || "NEW".equals(text(old.getFirst(), "state"))
+                        && jdbc.queryForObject("SELECT COUNT(*) FROM order_payment_record p JOIN order_sales_order o"
+                                + " ON o.tenant_id=? AND o.id=p.order_id WHERE p.tenant_id=? AND p.connector_id=?"
+                                + " AND p.source_system_code='DINGHUOBAO' AND p.source_document_no=? AND p.customer_id=?"
+                                + " AND p.paid_amount=? AND p.deleted=0 AND p.payment_status_code IN ('RECEIVED','CHECKED')"
+                                + " AND o.source_system_code='DINGHUOBAO' AND o.source_order_no=? AND o.deleted=0",
+                                Long.class, t, t, c.connectorId().toString(), c.receiptNo(), customer, c.amount(), c.sourceOrderNo()) == 1)
                 && money(old.getFirst(), "amount").compareTo(c.amount()) == 0
                 && Objects.equals(instant(old.getFirst().get("occurred_at")), c.occurredAt())
                 && Objects.equals(text(old.getFirst(), "source_order_no"), c.sourceOrderNo())

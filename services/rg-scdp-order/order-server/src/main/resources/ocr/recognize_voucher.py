@@ -160,6 +160,8 @@ def main():
             json.dump(result, target, ensure_ascii=False)
         return
     from rapidocr import RapidOCR, OCRVersion, ModelType
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
     params = {'EngineConfig.onnxruntime.intra_op_num_threads': 1,
               'EngineConfig.onnxruntime.inter_op_num_threads': 1}
     # CentOS 7 uses the compatible v4 mobile models with ONNX Runtime 1.16.3.

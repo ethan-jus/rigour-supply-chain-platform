@@ -1449,8 +1449,9 @@ public final class DhbOrderSyncService {
                     resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
                     return ProjectionOutcome.CHANGED;
                 }
-                if (Set.of("BOUND", "STALE").contains(intake.state())) {
+                if (Set.of("BOUND", "STALE", "MANUAL_PROTECTED").contains(intake.state())) {
                     store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                    resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_ORDER, sourceOrderNo);
                     return ProjectionOutcome.DUPLICATE;
                 }
                 // 9/4 前的订货宝订单以飞书历史订单为主体（需求文档 9.2）：这里只登记来源、
@@ -1579,6 +1580,19 @@ public final class DhbOrderSyncService {
             Map<Long, Optional<String>> customerRegionCache) {
         Map<String, Object> content = map(detail == null ? null : detail.attributes());
         Map<String, Object> list = map(summary.attributes());
+        BigDecimal amount = sourceSettlementAmount(detail, summary);
+        boolean zeroSettlement = amount != null && amount.signum() == 0;
+        List<SalesOrderLineCommand> originalLines = null;
+        if (zeroSettlement) {
+            amount = decimal(firstObject(content, "OrderTotal"));
+            if (!rows(content, "OrderProduct", "OrderProducts", "OrderGoods", "Goods", "Products", "list", "body").isEmpty()) {
+                originalLines = salesOrderLines(caller.tenantId(), task.connectorId(), sourceOrderNo, content).stream()
+                        .map(line -> new SalesOrderLineCommand(line.productId(), line.productVariantId(),
+                                line.productCodeSnapshot(), line.skuCodeSnapshot(), line.productNameSnapshot(),
+                                line.specificationSnapshot(), line.unitCode(), line.quantity(), line.unitPrice(),
+                                null, BigDecimal.ZERO, line.remark(), line.sourceLineId())).toList();
+            }
+        }
         var result =
                 orderProjectionClient.cancelSourceOrder(
                         orderServiceCaller(caller.tenantId()),
@@ -1593,7 +1607,7 @@ public final class DhbOrderSyncService {
                                         "OrderDate",
                                         "order_date",
                                         "createdAt"),
-                                sourceSettlementAmount(detail, summary),
+                                amount,
                                 first(
                                         content,
                                         list,
@@ -1616,9 +1630,10 @@ public final class DhbOrderSyncService {
                                         first(content, list, "CancelUserName", "DeleteUserName"),
                                         firstInstant(
                                                 content, list, null, "CancelTime", "DeleteTime"),
-                                        "订货宝明确返回失效状态")));
+                                        zeroSettlement ? "订货宝特批后成单价为零，按已确认规则取消并保留原金额及商品" : "订货宝明确返回失效状态"),
+                                originalLines));
         if (result == null) throw new IllegalStateException("来源取消接口未返回结果");
-        if (!Set.of("CANCELLED", "DELETED", "STALE").contains(result.state())) {
+        if (!Set.of("CANCELLED", "DELETED", "STALE", "MANUAL_PROTECTED").contains(result.state())) {
             recordRejected(
                     caller,
                     task,
@@ -2808,6 +2823,12 @@ public final class DhbOrderSyncService {
                             receipt == null ? null : receipt.updatedAt(),
                             attributes,
                             Instant.now());
+            if ("refund_red_reversal".equals(lower(first(attributes, "TypeId")))) {
+                projectFundReceipt(caller, task, runId, sourceReceiptNo, receipt, attributes, raw);
+                store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
+                resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_PAYMENT, sourceReceiptNo);
+                return ProjectionOutcome.ACCEPTED;
+            }
             ExternalObjectMapping receiptCustomer =
                     optionalMappingAny(
                             caller.tenantId(),
@@ -2845,7 +2866,7 @@ public final class DhbOrderSyncService {
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
                 return ProjectionOutcome.DUPLICATE;
             }
-            if ("ORDER_CANCELLED".equals(receiptIntake.state())) {
+            if (Set.of("ORDER_CANCELLED", "MANUAL_PROTECTED").contains(receiptIntake.state())) {
                 store.markRawProcessed(caller.tenantId(), raw.rawLandingId());
                 resolveProjectionIssues(caller, SOURCE_OBJECT_SALES_PAYMENT, sourceReceiptNo);
                 return ProjectionOutcome.ACCEPTED;
@@ -8010,6 +8031,7 @@ public final class DhbOrderSyncService {
 
     private static String receiptFundBusinessTypeCode(
             String sourceBusinessType, Map<String, Object> attributes, String sourceOrderNo) {
+        if ("refund_red_reversal".equals(lower(first(attributes, "TypeId")))) return "REVERSAL";
         String source =
                 firstNonBlank(
                         sourceBusinessType,
