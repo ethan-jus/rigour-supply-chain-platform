@@ -647,8 +647,10 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                         customerProjectionBatch,
                         addressProjectionBatch)) {
             markSeen(binding, runId, snapshot, now);
-            if (type == CrmMasterDataObjectType.CUSTOMER)
+            if (type == CrmMasterDataObjectType.CUSTOMER) {
                 refreshCustomerProfile(tenantId, runId, binding.targetId, snapshot, now);
+                responsibilities.fillMissingRegionFromOwnerDepartment(tenantId.toString(), binding.targetId);
+            }
             if (type == CrmMasterDataObjectType.ADDRESS) refreshAddressCustomer(tenantId, binding.targetId);
             return ImportResult.duplicateOne();
         }
@@ -971,6 +973,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         upsertContactAddress(tenantId, partyId, f, now, sourceChanged);
         upsertAssignments(tenantId, connectorId, partyId, f, now, sourceChanged);
         upsertInternalCustomer(tenantId, partyId, record, f, typeId, now, sourceChanged, matched);
+        responsibilities.fillMissingRegionFromOwnerDepartment(tenantId.toString(), bytes(partyId));
         return Target.resolved("PARTY", partyId);
     }
 

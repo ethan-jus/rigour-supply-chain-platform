@@ -27,6 +27,44 @@ public final class CrmResponsibilityWriter {
         return owner;
     }
 
+    /** 仅补空归属；同名有效地区须唯一，地区父链完整，已有地区不跟随员工调岗。 */
+    public void fillMissingRegionFromOwnerDepartment(String tenant, byte[] partyId) {
+        var customers = jdbc.queryForList("SELECT id,owner_employee_code,owner_employee_name_snapshot,region_code,revision"
+                + " FROM crm_customer WHERE tenant_id=? AND party_id=? AND deleted=0"
+                + " AND (region_code IS NULL OR TRIM(region_code)='') FOR UPDATE", tenant, partyId);
+        for (var customer : customers) {
+            String code = (String)customer.get("owner_employee_code");
+            if (code == null || code.isBlank()) continue;
+            var owner = employees.owner(tenant, code);
+            if (owner == null || !owner.usable() || !code.equals(owner.code()) || owner.departmentId() == null
+                    || owner.departmentName() == null || owner.departmentName().isBlank()) continue;
+            String department = owner.departmentName().strip();
+            String cityAlias = department.endsWith("市") ? department.substring(0, department.length() - 1) : department + "市";
+            var areas = jdbc.queryForList("SELECT area_code,area_name FROM crm_customer_area WHERE tenant_id=UUID_TO_BIN(?)"
+                    + " AND area_name IN (?,?) AND status='ACTIVE' AND deleted=0", tenant, department, cityAlias);
+            if (areas.size() != 1) continue;
+            String region = (String)areas.getFirst().get("area_code"), next = region;
+            var seen = new HashSet<String>();
+            boolean valid = true;
+            while (next != null) {
+                if (!seen.add(next) || seen.size() > 100) { valid = false; break; }
+                var parents = jdbc.queryForList("SELECT parent_area_code FROM crm_customer_area WHERE tenant_id=UUID_TO_BIN(?)"
+                        + " AND area_code=? AND status='ACTIVE' AND deleted=0", tenant, next);
+                if (parents.size() != 1) { valid = false; break; }
+                next = (String)parents.getFirst().get("parent_area_code");
+            }
+            if (!valid) continue;
+            long id = ((Number)customer.get("id")).longValue();
+            int changed = jdbc.update("UPDATE crm_customer SET region_code=?,region_name=?,region_management_mode='LOCAL',"
+                    + "revision=revision+1,updated_by='SYSTEM',updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND id=?"
+                    + " AND revision=? AND (region_code IS NULL OR TRIM(region_code)='')", region,
+                    areas.getFirst().get("area_name"), tenant, id, customer.get("revision"));
+            if (changed == 1) changed(tenant, id, code, (String)customer.get("owner_employee_name_snapshot"),
+                    (String)customer.get("region_code"), code, (String)customer.get("owner_employee_name_snapshot"),
+                    region, "SYSTEM", "SYSTEM", "归属地区为空，按业务员所属部门默认：" + department, false);
+        }
+    }
+
     public void requireAssignmentPermission() {
         if (AuthorizationContext.current().isPresent())
             AuthorizationContext.requirePermission("crm:customer:assign-owner");

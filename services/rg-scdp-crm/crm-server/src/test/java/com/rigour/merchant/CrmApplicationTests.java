@@ -77,6 +77,54 @@ class CrmApplicationTests {
     @Autowired
     private com.rigour.merchant.application.port.out.AnalyticsSourceSnapshotStore sourceSnapshot;
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"西安市,西安市", "石家庄,石家庄市"})
+    void sourceSyncDefaultsMissingRegionFromEmployeeDepartmentAndPreservesExisting(String department, String areaName) {
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID(), actor = UUID.randomUUID();
+        queryStore.createCustomerArea(tenant, "CITY", new CrmCustomerAreaCommand(areaName, null, "ACTIVE", 0, 1), actor);
+        org.mockito.Mockito.when(employeeClient.owner(tenant.toString(), "EMP-PRIMARY"))
+                .thenReturn(new com.rigour.merchant.application.port.out.CrmEmployeeClient.Owner(
+                        "EMP-PRIMARY", "本系统员工", true, null, 1, 12L, department, List.of(), 1, 1));
+        var type = CrmMasterDataObjectType.CUSTOMER;
+        var record = customerRecord("默认归属测试");
+        UUID run = start(tenant, connector, actor, type);
+        finish(tenant, connector, run, type, store.importRecord(tenant, connector, run, type, record));
+        var first = jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString());
+        assertThat(first).containsEntry("region_code", "CITY").containsEntry("region_name", areaName);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer_responsibility_history WHERE tenant_id=? AND reason LIKE '归属地区为空%';", Integer.class, tenant.toString())).isEqualTo(1);
+        // 已绑定且来源未变的客户也能补空；随后重放不会反复改地区版本。
+        jdbcTemplate.update("UPDATE crm_customer SET region_code=NULL,region_name=NULL WHERE tenant_id=?", tenant.toString());
+        run = start(tenant, connector, actor, type);
+        finish(tenant, connector, run, type, store.importRecord(tenant, connector, run, type, record));
+        var repaired = jdbcTemplate.queryForMap("SELECT region_code,region_name,region_revision,revision,business_created_at FROM crm_customer WHERE tenant_id=?", tenant.toString());
+        assertThat(repaired).containsEntry("region_code", "CITY");
+        run = start(tenant, connector, actor, type);
+        finish(tenant, connector, run, type, store.importRecord(tenant, connector, run, type, record));
+        assertThat(jdbcTemplate.queryForMap("SELECT region_code,region_name,region_revision,revision,business_created_at FROM crm_customer WHERE tenant_id=?", tenant.toString())).isEqualTo(repaired);
+        jdbcTemplate.update("UPDATE crm_customer SET region_code='MANUAL',region_name='人工地区' WHERE tenant_id=?", tenant.toString());
+        run = start(tenant, connector, actor, type);
+        finish(tenant, connector, run, type, store.importRecord(tenant, connector, run, type, record));
+        assertThat(jdbcTemplate.queryForObject("SELECT region_code FROM crm_customer WHERE tenant_id=?", String.class, tenant.toString())).isEqualTo("MANUAL");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"OTHER_TENANT", "AMBIGUOUS", "INACTIVE_PARENT"})
+    void defaultRegionRequiresUniqueActiveAreaInSameTenant(String problem) {
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID(), actor = UUID.randomUUID();
+        UUID areaTenant = "OTHER_TENANT".equals(problem) ? UUID.randomUUID() : tenant;
+        queryStore.createCustomerArea(areaTenant, "PARENT", new CrmCustomerAreaCommand("陕西省", null, "ACTIVE", 0, 1), actor);
+        queryStore.createCustomerArea(areaTenant, "CITY", new CrmCustomerAreaCommand("西安市", "PARENT", "ACTIVE", 0, 1), actor);
+        if ("AMBIGUOUS".equals(problem))
+            queryStore.createCustomerArea(tenant, "ALIAS", new CrmCustomerAreaCommand("西安", null, "ACTIVE", 0, 1), actor);
+        if ("INACTIVE_PARENT".equals(problem)) jdbcTemplate.update("UPDATE crm_customer_area SET status='INACTIVE' WHERE tenant_id=UUID_TO_BIN(?) AND area_code='PARENT'", tenant.toString());
+        org.mockito.Mockito.when(employeeClient.owner(tenant.toString(), "EMP-PRIMARY"))
+                .thenReturn(new com.rigour.merchant.application.port.out.CrmEmployeeClient.Owner(
+                        "EMP-PRIMARY", "本系统员工", true, null, 1, 12L, "西安市", List.of(), 1, 1));
+        var type = CrmMasterDataObjectType.CUSTOMER; UUID run = start(tenant, connector, actor, type);
+        finish(tenant, connector, run, type, store.importRecord(tenant, connector, run, type, customerRecord("地区暂不可选")));
+        assertThat(jdbcTemplate.queryForObject("SELECT region_code FROM crm_customer WHERE tenant_id=?", String.class, tenant.toString())).isNull();
+    }
+
     @Test
     void importedAreaAtRevisionZeroCanMoveWithoutChangingCustomerReferences() {
         UUID tenant = UUID.randomUUID(), actor = UUID.randomUUID(), connector = UUID.randomUUID();
