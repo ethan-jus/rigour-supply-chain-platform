@@ -246,12 +246,15 @@ class IamApplicationTests {
                 "SUPPLY_CHAIN.PAGE.SALES_RISK_CASES", "analytics:dashboard:read",
                 "SUPPLY_CHAIN.PAGE.SALES_PERFORMANCE", "analytics:dashboard:read",
                 "SUPPLY_CHAIN.PAGE.BI_RECEIVABLES", "analytics:dashboard:read",
-                "SUPPLY_CHAIN.PAGE.SALES_VISITS_RECORDS", "sales:dashboard:read",
                 "SUPPLY_CHAIN.PAGE.HR_SALES_PAYROLL", "hr:payroll:read");
         var resourcePermissions = jdbcTemplate.query(
                 "SELECT resource_code,permission_code FROM iam_resource WHERE permission_code IS NOT NULL",
                 (row, index) -> Map.entry(row.getString("resource_code"), row.getString("permission_code")));
-        assertThat(resourcePermissions).containsAll(sharedPagePermissions.entrySet());
+        assertThat(resourcePermissions)
+                .containsAll(sharedPagePermissions.entrySet())
+                .contains(
+                        Map.entry("SUPPLY_CHAIN.PAGE.SALES_DASHBOARD", "sales:fieldwork:read"),
+                        Map.entry("SUPPLY_CHAIN.PAGE.SALES_VISITS_RECORDS", "sales:visit-record:read"));
         assertThat(resourcePermissions.stream()
                         .filter(entry -> !entry.getValue().equals(sharedPagePermissions.get(entry.getKey())))
                         .map(Map.Entry::getValue)
