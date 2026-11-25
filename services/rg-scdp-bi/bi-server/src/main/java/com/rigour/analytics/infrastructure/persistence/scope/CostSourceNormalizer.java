@@ -1,6 +1,7 @@
 package com.rigour.analytics.infrastructure.persistence.scope;
 
 import com.rigour.analytics.application.port.out.CostDashboardStore.City;
+import com.rigour.analytics.domain.cost.CostAnalysis;
 import com.rigour.analytics.domain.cost.CostFact;
 import com.rigour.analytics.domain.cost.CostFact.Dimension;
 import com.rigour.hr.api.v1.model.HrCostCityReference;
@@ -223,6 +224,14 @@ public final class CostSourceNormalizer {
         String transportMissing = text(data, "_transportMissing");
         if ("ORDER".equals(source) && transportMissing != null)
             dims.put("transportMissing", new Dimension(transportMissing, transportMissing, false));
+        if ("ORDER".equals(source) && "freight".equals(category)) {
+            boolean sales = "SALES".equals(text(data, "_transportEmployeeRole"));
+            dims.put(
+                    "transportEmployeeRole",
+                    sales
+                            ? new Dimension("SALES", "业务员", false)
+                            : new Dimension("OWNER", "费用负责人", false));
+        }
         if (text(data, "_ledgerRootId") != null) {
             dims.put(
                     "rootSourceId",
@@ -261,9 +270,12 @@ public final class CostSourceNormalizer {
                     "component",
                     new Dimension(freight ? "FREIGHT" : "GOODS", freight ? "采购运费" : "采购货款", false));
         }
-        String costMonth = text(data, "costMonth");
+        String transportMonth =
+                "ORDER".equals(source) ? text(data, "ledger", "costMonth") : null;
+        String costMonth = first(transportMonth, text(data, "costMonth"));
         boolean monthly =
-                text(data, "_ledgerPartition") != null
+                transportMonth != null
+                        || text(data, "_ledgerPartition") != null
                         || "PAYROLL".equals(r.get("category_code"))
                         || "RENTAL".equals(r.get("category_code"))
                         || expense
@@ -499,10 +511,7 @@ public final class CostSourceNormalizer {
                 "ORDER".equals(source) && "ACTIVE".equals(r.get("status_code"))
                         ? "DRAFT"
                         : r.get("status_code"),
-                Set.of("PAID", "UNPAID")
-                                .contains(Objects.toString(r.get("payment_status_code"), ""))
-                        ? r.get("payment_status_code")
-                        : "UNKNOWN",
+                CostAnalysis.normalizedPayment(source, r.get("payment_status_code")),
                 "HR".equals(source) ? null : r.get("source_system"),
                 employee,
                 employeeName,

@@ -3,12 +3,15 @@ package com.rigour.analytics.infrastructure.persistence.scope;
 import static org.assertj.core.api.Assertions.*;
 
 import com.rigour.analytics.domain.cost.CostAnalysis;
+import com.rigour.analytics.domain.cost.CostPeriod;
 
 import org.junit.jupiter.api.Test;
 
 import tools.jackson.databind.json.JsonMapper;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.YearMonth;
 import java.util.*;
 
 class CostLedgerPartitionsTest {
@@ -73,10 +76,46 @@ class CostLedgerPartitionsTest {
         assertThat(CostAnalysis.count(facts)).isEqualTo(1);
         assertThat(facts)
                 .allSatisfy(
-                        f ->
+                        f -> {
                                 assertThat(f.rootSourceId())
-                                        .isEqualTo("08000000-0000-0000-0000-000000000001"));
+                                        .isEqualTo("08000000-0000-0000-0000-000000000001");
+                                assertThat(f.date()).isEqualTo(LocalDate.of(2026, 11, 3));
+                        });
         assertThat(CostLedgerPartitions.expand("ERP", row("61000", data), json)).isEqualTo(rows);
+    }
+
+    @Test
+    void draftAndCompletedTransportUseAccountingMonthAndKeepOccurrenceDate() {
+        var r = row("25.71", """
+                {"_transportMissing":"EVIDENCE","ledger":{"schemaVersion":2,"costMonth":"2026-12",
+                  "feeItems":[{"feeKey":"F","feeTypeCode":"FREIGHT","bearerCode":"COMPANY","ourAmount":25.71}]}}
+                """);
+        r.put("cost_date", "2026-11-30");
+        r.put("status_code", "DRAFT");
+        r.put("source_system", "HUOLALA");
+        r.put("sources_json", """
+                [{"linkRoleCode":"COST","allocations":[{"feeKey":"F","cityCode":"C1","amount":25.71}]}]
+                """);
+        var normalizer = new CostSourceNormalizer(json);
+        var november = CostPeriod.resolve(2026, 11, "previous", LocalDate.of(2026, 12, 4));
+        var december = CostPeriod.resolve(2026, 12, "previous", LocalDate.of(2026, 12, 4));
+        var draft = normalizer.normalize(
+                "ORDER", CostLedgerPartitions.expand("ORDER", r, json).getFirst(), List.of(), Map.of());
+        assertThat(draft.confirmed()).isFalse();
+        assertThat(draft.dimension("transportMissing").key()).isEqualTo("EVIDENCE");
+
+        r.put("status_code", "CONFIRMED");
+        r.put("data_json", r.get("data_json").replace("\"_transportMissing\":\"EVIDENCE\",", ""));
+        var confirmed = normalizer.normalize(
+                "ORDER", CostLedgerPartitions.expand("ORDER", r, json).getFirst(), List.of(), Map.of());
+        assertThat(confirmed.confirmed()).isTrue();
+        assertThat(confirmed.amount()).isEqualByComparingTo("25.71");
+        for (var fact : List.of(draft, confirmed)) {
+            assertThat(fact.inPeriod(november, false)).isFalse();
+            assertThat(fact.inPeriod(december, false)).isTrue();
+            assertThat(fact.costMonth()).isEqualTo(YearMonth.of(2026, 12));
+            assertThat(fact.date()).isEqualTo(LocalDate.of(2026, 11, 30));
+        }
     }
 
     @Test
@@ -114,8 +153,8 @@ class CostLedgerPartitionsTest {
         r.put(
                 "sources_json",
 """
-[{"linkRoleCode":"COST","employeeCode":"E1","employeeName":"张三","departmentId":10,"departmentName":"销售一部","allocations":[{"feeKey":"F","cityCode":"C1","amount":100.00}]},
- {"linkRoleCode":"COST","employeeCode":"E2","employeeName":"李四","departmentId":20,"departmentName":"销售二部","allocations":[{"feeKey":"F","cityCode":"C1","amount":200.01}]},
+[{"linkRoleCode":"COST","orderTypeCode":"SALES_ORDER","employeeCode":"E1","employeeName":"张三","departmentId":10,"departmentName":"销售一部","allocations":[{"feeKey":"F","cityCode":"C1","amount":100.00}]},
+ {"linkRoleCode":"COST","orderTypeCode":"SALES_ORDER","employeeCode":"E2","employeeName":"李四","departmentId":20,"departmentName":"销售二部","allocations":[{"feeKey":"F","cityCode":"C1","amount":200.01}]},
  {"linkRoleCode":"TRACE","employeeCode":"RECORDER","allocations":[]}]
 """);
         var rows = CostLedgerPartitions.expand("ORDER", r, json);
@@ -136,6 +175,32 @@ class CostLedgerPartitionsTest {
         assertThat(facts)
                 .extracting(x -> x.dimension("department").key())
                 .containsExactly("department:10", "department:20");
+        assertThat(facts)
+                .extracting(x -> x.dimension("transportEmployeeRole").key())
+                .containsExactly("SALES", "SALES");
+    }
+
+    @Test
+    void deliveryRolesFollowVerifiedAllocationAndDoNotMixWithinSameEmployee() {
+        var r = row("80.00", """
+                {"ledger":{"schemaVersion":2,"transportPurposeCode":"DELIVERY","costMonth":"2026-11",
+                  "feeItems":[{"feeKey":"F","feeTypeCode":"FREIGHT","bearerCode":"COMPANY","ourAmount":80.00}]}}
+                """);
+        r.put("sources_json", """
+                [{"linkRoleCode":"COST","orderTypeCode":"SALES_ORDER","employeeCode":"E1","departmentId":10,
+                  "allocations":[{"feeKey":"F","cityCode":"C1","amount":30.00}]},
+                 {"linkRoleCode":"COST","orderTypeCode":"OTHER","employeeCode":"E1","departmentId":10,
+                  "allocations":[{"feeKey":"F","cityCode":"C1","amount":50.00}]}]
+                """);
+        var normalizer = new CostSourceNormalizer(json);
+        var facts = CostLedgerPartitions.expand("ORDER", r, json).stream()
+                .map(part -> normalizer.normalize("ORDER", part, List.of(), Map.of()))
+                .toList();
+        assertThat(facts)
+                .extracting(f -> f.dimension("transportEmployeeRole").key(), f -> f.amount().toPlainString())
+                .containsExactlyInAnyOrder(tuple("SALES", "30.00"), tuple("OWNER", "50.00"));
+        assertThat(CostAnalysis.count(facts)).isEqualTo(1);
+        assertThat(CostAnalysis.amount(facts)).isEqualByComparingTo("80.00");
     }
 
     @Test

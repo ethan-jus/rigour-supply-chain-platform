@@ -9,7 +9,17 @@ import java.util.function.Function;
 public final class CostAnalysis {
     private CostAnalysis() {}
 
-    public static final String NORMALIZATION_VERSION = "16";
+    public static final String NORMALIZATION_VERSION = "18";
+
+    private static final Set<String> ORDER_PAYMENT_STATUSES =
+            Set.of("PAID", "UNPAID", "PARTIAL_PAID", "NOT_REQUIRED", "NEEDS_REVIEW", "UNKNOWN");
+
+    public static String normalizedPayment(String source, String payment) {
+        if (payment == null) return "UNKNOWN";
+        if ("ORDER".equals(source))
+            return ORDER_PAYMENT_STATUSES.contains(payment) ? payment : "UNKNOWN";
+        return "PAID".equals(payment) || "UNPAID".equals(payment) ? payment : "UNKNOWN";
+    }
 
     public static final Map<String, String> CATEGORIES;
 
@@ -145,8 +155,8 @@ public final class CostAnalysis {
                 throw new IllegalArgumentException("专题与分析维度不兼容");
             if (dimensionKey != null && dimension == null)
                 throw new IllegalArgumentException("对象筛选缺少维度");
-            if (!Set.of("ALL", "CONFIRMED", "DRAFT", "VOID").contains(status)
-                    || !Set.of("ALL", "PAID", "UNPAID", "UNKNOWN").contains(payment))
+            if (!Set.of("ALL", "CONFIRMED", "DRAFT", "VOID", "REVIEW").contains(status)
+                    || !("ALL".equals(payment) || ORDER_PAYMENT_STATUSES.contains(payment)))
                 throw new IllegalArgumentException("未知费用状态");
             if (!Set.of("current", "previous").contains(side)
                     || page < 1
@@ -168,12 +178,16 @@ public final class CostAnalysis {
 
         public boolean ledger(CostFact r) {
             return matches(r)
-                    && ("ALL".equals(status) || status.equals(r.status()))
+                    && (reviewOnly() ? r.needsReview() : "ALL".equals(status) || status.equals(r.status()))
                     && ("ALL".equals(payment) || payment.equals(r.payment()))
                     && (!missingAmount || r.amount() == null && !"VOID".equals(r.status()))
                     && (search == null
                             || search.isBlank()
                             || searchable(r).contains(search.toLowerCase(Locale.ROOT)));
+        }
+
+        public boolean reviewOnly() {
+            return "REVIEW".equals(status);
         }
     }
 
@@ -221,6 +235,10 @@ public final class CostAnalysis {
                 .map(CostFact::documentKey)
                 .distinct()
                 .count();
+    }
+
+    public static long documents(List<CostFact> rows) {
+        return rows.stream().map(CostFact::documentKey).distinct().count();
     }
 
     public static String money(BigDecimal value) {

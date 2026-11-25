@@ -108,6 +108,7 @@ public class CostDashboardService {
                             freight = BigDecimal.ZERO,
                             logistics = BigDecimal.ZERO;
                     Map<String, BigDecimal> people = new TreeMap<>();
+                    Map<String, Set<String>> roles = new HashMap<>();
                     Map<String, BigDecimal> transports = new TreeMap<>();
                     Map<String, String> transportLabels = new HashMap<>();
                     Map<String, CostFact> labels = new HashMap<>();
@@ -121,13 +122,11 @@ public class CostDashboardService {
                             var leg = fact.dimension("leg");
                             transports.merge(leg.key(), fact.amount(), BigDecimal::add);
                             transportLabels.put(leg.key(), leg.label());
-                            String role =
-                                    "dict:COST_TRANSPORT_PURPOSE:DELIVERY"
-                                                    .equals(fact.dimension("leg").key())
-                                            ? "业务员"
-                                            : "费用负责人";
-                            String key = role + ":" + fact.dimension("employee").key();
+                            var role = fact.dimension("transportEmployeeRole");
+                            String key = fact.dimension("employee").key();
                             people.merge(key, fact.amount(), BigDecimal::add);
+                            roles.computeIfAbsent(key, ignored -> new TreeSet<>())
+                                    .add(role.missing() ? "费用负责人" : role.label());
                             labels.put(key, fact);
                         }
                     }
@@ -145,7 +144,7 @@ public class CostDashboardService {
                                                 fact.dimension("employee").missing()
                                                         ? "待归属人员"
                                                         : fact.dimension("employee").label(),
-                                                key.substring(0, key.indexOf(':')),
+                                                String.join("、", roles.get(key)),
                                                 value.toPlainString()));
                             });
                     var dimension = facts.getFirst().dimension("department");
@@ -210,6 +209,7 @@ public class CostDashboardService {
                 latest.records().stream()
                         .filter(a::visible)
                         .filter(r -> "CONFIRMED".equals(r.status()))
+                        .filter(r -> !f.reviewOnly() || r.needsReview())
                         .map(CostFact::key)
                         .collect(java.util.stream.Collectors.toSet());
         List<CostFact> rows =
@@ -263,7 +263,7 @@ public class CostDashboardService {
                         comparison,
                         comparison ? null : "无可比期确认记录",
                         dataState,
-                        a.exportAllowed(),
+                        a.exportAllowed() && !f.reviewOnly(),
                         CATEGORIES.keySet().stream().filter(a.categories()::contains).toList(),
                         pending.isEmpty() ? Map.of() : Map.of("freight", (long) pending.size()));
         return new Context(snapshot, a, f, p, rows, pending, meta);
@@ -522,7 +522,8 @@ public class CostDashboardService {
                         money(sum(rows, r -> "DRAFT".equals(r.status()))),
                         rows.stream()
                                 .filter(r -> r.amount() == null && !"VOID".equals(r.status()))
-                                .count()),
+                                .count(),
+                        documents(rows)),
                 c.filter().page(),
                 c.filter().size(),
                 rows.subList(offset, Math.min(rows.size(), offset + c.filter().size())).stream()
@@ -535,7 +536,7 @@ public class CostDashboardService {
         return sorted(
                 period(c.rows(), c.filter(), c.period(), "previous".equals(c.filter().side()), true)
                         .stream()
-                        .filter(CostFact::confirmed)
+                        .filter(r -> c.filter().reviewOnly() || r.confirmed())
                         .toList());
     }
 
@@ -543,12 +544,12 @@ public class CostDashboardService {
         var c = context(q);
         var fact =
                 c.rows().stream()
-                        .filter(CostFact::confirmed)
+                        .filter(r -> c.filter().reviewOnly() || r.confirmed())
                         .filter(
                                 r ->
                                         r.source().equals(source)
                                                 && r.sourceId().equals(id)
-                                                && c.filter().matches(r)
+                                                && c.filter().ledger(r)
                                                 && r.inPeriod(
                                                         c.period(),
                                                         "previous".equals(c.filter().side())))
@@ -563,6 +564,7 @@ public class CostDashboardService {
                 || !Objects.equals(current.status(), fact.status()))
             throw new CostDashboardFailure("SOURCE_VERSION_CHANGED", 409, "源单据已更新，请刷新整个看板后查看");
         Map<String, String> dimensions = new LinkedHashMap<>();
+        if (fact.needsReview()) dimensions.put("待核对原因", fact.dimension("costTreatment").label());
         DIMENSIONS
                 .get(fact.category())
                 .forEach(
@@ -788,17 +790,11 @@ public class CostDashboardService {
                                         "CONFIRMED".equals(r.status())
                                                 && "LINKED".equals(r.treatment()))),
                 rows.stream()
-                        .filter(
-                                r ->
-                                        "CONFIRMED".equals(r.status())
-                                                && "REVIEW".equals(r.treatment()))
+                        .filter(CostFact::needsReview)
+                        .map(CostFact::documentKey)
+                        .distinct()
                         .count(),
-                money(
-                        sum(
-                                rows,
-                                r ->
-                                        "CONFIRMED".equals(r.status())
-                                                && "REVIEW".equals(r.treatment()))));
+                money(sum(rows, CostFact::needsReview)));
     }
 
     private static BigDecimal scopeTotal(Context c, String scope) {

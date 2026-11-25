@@ -71,10 +71,14 @@ public class MybatisPlusCostDashboardRepository implements CostDashboardStore {
                                 .first("/* supply-scoped */")
                                 .eq("tenant_id", tenant)
                                 .eq("id", id));
-        if (s == null
-                || instant(s.getGeneratedAt())
-                        .isBefore(clock.instant().minus(Duration.ofHours(24))))
+        if (s == null)
             throw com.rigour.analytics.application.service.CostDashboardFailure.expired();
+        if (instant(s.getGeneratedAt()).isBefore(clock.instant().minus(Duration.ofHours(24)))) {
+            // 只允许来源刷新失败时继续读取该租户最近一次完整批次，历史固定批次仍按有效期退出。
+            var state = state(tenant);
+            if (state == null || !"FAILED".equals(state.status()) || !id.equals(state.snapshotId()))
+                throw com.rigour.analytics.application.service.CostDashboardFailure.expired();
+        }
         String key = tenant + ":" + id;
         var cached = cache.get(key);
         if (cached != null) return cached;

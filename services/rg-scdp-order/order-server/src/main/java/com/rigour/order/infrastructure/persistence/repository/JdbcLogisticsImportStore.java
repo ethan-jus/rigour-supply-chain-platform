@@ -10,6 +10,8 @@ import org.springframework.stereotype.Repository;
 
 import tools.jackson.databind.ObjectMapper;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.*;
 
 @Repository
@@ -358,8 +360,34 @@ public class JdbcLogisticsImportStore implements LogisticsImportStore {
                 changed,
                 tenant,
                 current.id());
+        // 支付进度变化无需重核账单，但必须让 BI 源快照失效。
+        if (current.costId() != null
+                && (!"API".equals(current.sourceChannel())
+                        || !platformPaymentStatus(order).equals(platformPaymentStatus(last))))
+            jdbc.update(
+                    "UPDATE order_logistics_cost_guard SET version=version+1 WHERE tenant_id=?",
+                    tenant);
         return lockManaged(tenant, actor, true, current.id())
                 .withSyncOutcome(inserted ? "CREATED" : changed ? "UPDATED" : "UNCHANGED");
+    }
+
+    static String platformPaymentStatus(CarrierOrder order) {
+        var facts = order.facts();
+        if (facts == null) return "NEEDS_REVIEW";
+        var paid = paymentMoney(order.paidAmount());
+        var unpaid = paymentMoney(facts.unpaidAmount());
+        var total = paymentMoney(facts.billAmount());
+        var refund = paymentMoney(facts.refundAmount());
+        if (paid == null || unpaid == null || total == null
+                || (refund != null && refund.signum() > 0)
+                || paid.add(unpaid).compareTo(total) != 0) return "NEEDS_REVIEW";
+        if (total.signum() == 0) return "NOT_REQUIRED";
+        if (unpaid.signum() == 0) return "PAID";
+        return paid.signum() > 0 ? "PARTIAL_PAID" : "UNPAID";
+    }
+
+    private static BigDecimal paymentMoney(BigDecimal value) {
+        return value == null || value.signum() < 0 ? null : value.setScale(2, RoundingMode.HALF_UP);
     }
 
     private void mergeEvidence(

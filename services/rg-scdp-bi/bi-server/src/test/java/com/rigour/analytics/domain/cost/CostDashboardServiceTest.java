@@ -200,6 +200,68 @@ class CostDashboardServiceTest {
     }
 
     @Test
+    void mixedRolesReconcileToOneEmployeeAndExportShowsTheFiltersAndBothCounts() {
+        var normalizer =
+                new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
+                        JsonMapper.builder().build());
+        List<CostFact> rows = new ArrayList<>();
+        for (String role : List.of("SALES", "OWNER")) {
+            var entry =
+                    normalizer.normalize(
+                            "ORDER",
+                            Map.ofEntries(
+                                    Map.entry("id", role),
+                                    Map.entry("document_no", "T-001"),
+                                    Map.entry("amount", "SALES".equals(role) ? "30.00" : "50.00"),
+                                    Map.entry("status_code", "CONFIRMED"),
+                                    Map.entry("payment_status_code", "PAID"),
+                                    Map.entry("cost_date", "2026-09-30"),
+                                    Map.entry("owner_employee_code", "E1"),
+                                    Map.entry("owner_employee_name", "测试人员"),
+                                    Map.entry("department_id", "10"),
+                                    Map.entry("department_name", "测试部门"),
+                                    Map.entry("revision", "1"),
+                                    Map.entry("category_code", "LOGISTICS"),
+                                    Map.entry("payer_code", "COMPANY"),
+                                    Map.entry("data_json", "{}")),
+                            List.of(),
+                            Map.of());
+            var dimensions = new HashMap<>(entry.dimensions());
+            dimensions.put("rootSourceId", new CostFact.Dimension("T-001", "T-001", false));
+            dimensions.put("periodBasis", new CostFact.Dimension("MONTH", "按费用所属月", false));
+            dimensions.put("costMonth", new CostFact.Dimension("2026-10", "2026-10", false));
+            dimensions.put(
+                    "transportEmployeeRole",
+                    new CostFact.Dimension(role, "SALES".equals(role) ? "业务员" : "费用负责人", false));
+            rows.add(entry.withDimensions(dimensions));
+        }
+        useFacts(rows);
+        var board = query(null, "freight", "current", "ALL");
+        var person = service.departments(board).getFirst().people().getFirst();
+        assertThat(service.departments(board).getFirst().people()).hasSize(1);
+        assertThat(person.role()).isEqualTo("业务员、费用负责人");
+        assertThat(person.amount()).isEqualTo("80.00");
+        var drill =
+                new CostDashboardQuery(
+                        2026, 10, "previous", null, "opex", "freight", "employee",
+                        person.employeeCode(), "CONFIRMED", "ALL", null, "current", 1, 20,
+                        null, false, "department:10");
+        var records = service.records(drill);
+        assertThat(records.summary().confirmed()).isEqualTo(person.amount());
+        assertThat(records.summary().count()).isEqualTo(2);
+        assertThat(records.summary().documentCount()).isEqualTo(1);
+        assertThat(service.overview(drill).current().count()).isEqualTo(1);
+        var context = service.context(drill);
+        assertThat(CostDashboardExportService.csv(context, service.matching(context)))
+                .contains(
+                        "\"明细行数\",\"2\",\"匹配单据数\",\"1\"",
+                        "\"部门筛选\",\"测试部门\"",
+                        "\"分析维度\",\"员工\",\"维度选项\",\"测试人员\"",
+                        "\"2026-09-30\"",
+                        "\"已完善\",\"已付款\",\"2026-10\"");
+    }
+
+    @Test
     void recordsWorkspaceUsesOneAuthorizationAndOneCompleteSnapshot() {
         authorize(null);
         var q = query(null, null, "current", "ALL");
@@ -399,6 +461,65 @@ class CostDashboardServiceTest {
         assertThat(csv).doesNotContain("DRAFT", "VOID", "待确认", "已作废");
         assertThatThrownBy(() -> service.detail(q, "ERP", "ERP-DRAFT-PAID"))
                 .hasMessageContaining("费用不存在或无访问权限");
+    }
+
+    @Test
+    void transportPaymentIsConsistentAcrossRecordsFiltersAndExport() {
+        var labels =
+                Map.of(
+                        "PAID", "已付款",
+                        "UNPAID", "未付款",
+                        "PARTIAL_PAID", "部分付款",
+                        "NOT_REQUIRED", "无需付款",
+                        "NEEDS_REVIEW", "待核对",
+                        "UNKNOWN", "未记录");
+        var normalizer =
+                new com.rigour.analytics.infrastructure.persistence.scope.CostSourceNormalizer(
+                        JsonMapper.builder().build());
+        var rows =
+                labels.keySet().stream()
+                        .map(
+                                payment ->
+                                        normalizer.normalize(
+                                                "ORDER",
+                                                Map.ofEntries(
+                                                        Map.entry("id", payment),
+                                                        Map.entry("document_no", payment),
+                                                        Map.entry("title", "运输费用"),
+                                                        Map.entry(
+                                                                "amount",
+                                                                "NOT_REQUIRED".equals(payment)
+                                                                        ? "0.00"
+                                                                        : "25.71"),
+                                                        Map.entry("status_code", "CONFIRMED"),
+                                                        Map.entry("payment_status_code", payment),
+                                                        Map.entry("source_system", "HUOLALA"),
+                                                        Map.entry("cost_date", "2026-10-01"),
+                                                        Map.entry("revision", "1"),
+                                                        Map.entry("category_code", "LOGISTICS"),
+                                                        Map.entry("payer_code", "COMPANY"),
+                                                        Map.entry("data_json", "{}")),
+                                                List.of(),
+                                                Map.of()))
+                        .toList();
+        useFacts(rows);
+        var summary = service.overview(query(null, "freight", "current", "ALL")).current();
+        assertThat(summary.amount()).isEqualTo("128.55");
+        assertThat(summary.unpaid()).isEqualTo("25.71");
+        labels.forEach(
+                (payment, label) -> {
+                    var q = query(null, "freight", "current", payment);
+                    assertThat(service.records(q).items())
+                            .singleElement()
+                            .satisfies(
+                                    row -> {
+                                        assertThat(row.documentNo()).isEqualTo(payment);
+                                        assertThat(row.payment()).isEqualTo(payment);
+                                    });
+                    var context = service.context(q);
+                    assertThat(CostDashboardExportService.csv(context, service.matching(context)))
+                            .contains("\"" + label + "\"");
+                });
     }
 
     @Test
@@ -1034,6 +1155,54 @@ class CostDashboardServiceTest {
         assertThatThrownBy(() -> linked.detail(september("warehouse"), "ERP", row.sourceId()))
                 .hasMessageContaining("费用不存在或无访问权限");
         verify(original, times(1)).verify("ERP", "RENTAL", row.sourceId());
+    }
+
+    @Test
+    void reviewLedgerProvidesTheReasonAndOriginalWithoutCountingOrExportingTheCost() {
+        var confirmed = crossMonthRent();
+        var rawReview = crossMonthRent();
+        var dimensions = new HashMap<>(rawReview.dimensions());
+        dimensions.put("costTreatment", new CostFact.Dimension("REVIEW", "缺少应付金额", false));
+        var review = rawReview.withDimensions(dimensions);
+        useFacts(List.of(confirmed, review));
+        var overview = query(null, "warehouse", "current", "ALL");
+        var reviewQuery =
+                new CostDashboardQuery(
+                        2026, 10, "previous", null, "opex", "warehouse", null, null, "REVIEW",
+                        "ALL", null, "current", 1, 20, null, false);
+        assertThat(service.overview(overview).current().reviewCount()).isEqualTo(1);
+        assertThat(service.overview(overview).current().amount()).isEqualTo("6000.00");
+        assertThat(service.records(overview).items()).extracting(r -> r.sourceId())
+                .containsExactly(confirmed.sourceId());
+        var records = service.records(reviewQuery);
+        assertThat(records.items()).extracting(r -> r.sourceId()).containsExactly(review.sourceId());
+        assertThat(records.summary().confirmed()).isEqualTo("0.00");
+        assertThat(records.meta().exportAllowed()).isFalse();
+        assertThatThrownBy(() -> service.detail(overview, "ERP", review.sourceId()))
+                .hasMessageContaining("费用不存在或无访问权限");
+
+        var original = mock(CostSourceDetail.class);
+        when(original.verify("ERP", "RENTAL", review.rootSourceId()))
+                .thenReturn(new CostSourceDetail.State("CONFIRMED", review.revision()));
+        var linked =
+                new CostDashboardService(
+                        store, mock(CostDashboardRefreshService.class), access, original, true, clock);
+        var detail = linked.detail(reviewQuery, "ERP", review.sourceId());
+        assertThat(detail.dimensions()).containsEntry("待核对原因", "缺少应付金额");
+        assertThat(detail.sourceRoute()).endsWith("sourceId=" + review.rootSourceId());
+        var export =
+                new CostDashboardExportService(
+                        linked, access, mock(CostExportStore.class), JsonMapper.builder().build(), clock, true);
+        try {
+            assertThatThrownBy(() -> export.create(reviewQuery)).hasMessageContaining("待核对来源仅供查看");
+        } finally {
+            export.close();
+        }
+        sources.remove("warehouse");
+        authorize(all);
+        assertThat(linked.records(reviewQuery).items()).isEmpty();
+        assertThatThrownBy(() -> linked.detail(reviewQuery, "ERP", review.sourceId()))
+                .hasMessageContaining("费用不存在或无访问权限");
     }
 
     @Test

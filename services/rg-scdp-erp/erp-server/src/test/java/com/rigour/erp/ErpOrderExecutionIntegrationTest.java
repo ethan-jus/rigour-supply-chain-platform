@@ -81,6 +81,24 @@ class ErpOrderExecutionIntegrationTest {
         assertThat(new BigDecimal(facts.getFirst().get("amount"))).isEqualByComparingTo("90");
         assertThat(goodsCosts.page(UUID.randomUUID().toString(), "")).isEmpty();
         assertThat(goodsCosts.page(tenant,facts.getFirst().get("id"))).isEmpty();
+
+        Long orderId = jdbc.queryForObject(
+                "SELECT id FROM erp_procurement_order WHERE tenant_id=? AND procurement_no='PO-COLLATION'",
+                Long.class, tenant);
+        String original = """
+                {"typeCode":"PURCHASE","goods":{"purchaseOrderId":%d}}
+                """.formatted(orderId);
+        Map<String, String> manualGoods = new HashMap<>(
+                Map.of("category_code", "PURCHASE", "type_code", "PURCHASE", "data_json", original));
+        goodsCosts.reconcileLegacy(tenant, List.of(manualGoods));
+        assertThat(manualGoods.get("data_json")).contains("REFERENCE");
+
+        jdbc.update("UPDATE erp_procurement_order SET status_code='CANCELLED' WHERE tenant_id=? AND id=?",
+                tenant, orderId);
+        manualGoods.put("data_json", original);
+        goodsCosts.reconcileLegacy(tenant, List.of(manualGoods));
+        assertThat(goodsCosts.page(tenant, "")).isEmpty();
+        assertThat(manualGoods.get("data_json")).isEqualTo(original);
     }
 
     @BeforeEach

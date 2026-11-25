@@ -96,10 +96,10 @@ class CostAnalyticsSourceTest {
                         mapper.lock("tenant");
                         mapper.advanceAnalyticsVersion("tenant");
                         assertThat(source.version("tenant"))
-                                .isEqualTo("2:transport-types-v5-readiness");
+                                .isEqualTo("2:transport-types-v6-payment");
                         status.setRollbackOnly();
                     });
-            assertThat(source.version("tenant")).isEqualTo("1:transport-types-v5-readiness");
+            assertThat(source.version("tenant")).isEqualTo("1:transport-types-v6-payment");
         } finally {
             ds.destroy();
         }

@@ -6,6 +6,8 @@ import static org.mockito.Mockito.*;
 import com.rigour.order.infrastructure.persistence.mapper.OrderLogisticsCostMapper;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
 
@@ -108,5 +110,58 @@ class LegacyPlatformCostProjectionTest {
                                 .path("ourAmount")
                                 .isNull())
                 .isTrue();
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "25.71,0.00,25.71,0.00,PAID",
+        "0.00,25.71,25.71,0.00,UNPAID",
+        "10.00,15.71,25.71,0.00,PARTIAL_PAID",
+        "0.00,0.00,0.00,0.00,NOT_REQUIRED",
+        "25.71,0.00,25.71,1.00,NEEDS_REVIEW",
+        "25.71,0.00,30.00,0.00,NEEDS_REVIEW",
+        "null,0.00,25.71,0.00,NEEDS_REVIEW"
+    })
+    void projectsLinkedPaymentFromCurrentPlatformFactsWithoutChangingCost(
+            String paid, String unpaid, String total, String refund, String expected) {
+        db.execute("ALTER TABLE order_logistics_import_order ADD source_json LONGTEXT");
+        db.execute("ALTER TABLE order_logistics_import_order ADD latest_source_json LONGTEXT");
+        db.execute("ALTER TABLE order_logistics_import_order ADD source_channel VARCHAR(20)");
+        db.update(
+                "INSERT INTO order_logistics_import_order(tenant_id,cost_id,source_channel,source_json,latest_source_json)"
+                    + " VALUES('T','C1','API',?,?),('OTHER','C1','API',?,NULL),"
+                    + "('T','MANUAL','EXCEL',?,NULL),('T','FROZEN','API',?,NULL)",
+                bill("0", "25.71", "25.71", "0"),
+                bill(paid, unpaid, total, refund),
+                bill("0", "25.71", "25.71", "0"),
+                bill("25.71", "0", "25.71", "0"),
+                bill("25.71", "0", "25.71", "0"));
+        var linked = row("25.71");
+        var manual = row("25.71");
+        manual.put("id", "MANUAL");
+        manual.put("source_system", "MANUAL");
+        manual.put("payment_status_code", "UNPAID");
+        var frozen = row("25.71");
+        frozen.put("id", "FROZEN");
+        frozen.put("source_system", "MANUAL");
+        var unlinked = row("25.71");
+        unlinked.put("id", "UNLINKED");
+        unlinked.put("payment_status_code", "UNKNOWN");
+
+        source.enrichPlatformPayments("T", List.of(linked, manual, frozen, unlinked));
+
+        assertThat(linked)
+                .containsEntry("payment_status_code", expected)
+                .containsEntry("amount", "25.71")
+                .containsEntry("status_code", "ACTIVE");
+        assertThat(manual).containsEntry("payment_status_code", "UNPAID");
+        assertThat(frozen).containsEntry("payment_status_code", "PAID");
+        assertThat(unlinked).containsEntry("payment_status_code", "UNKNOWN");
+    }
+
+    private static String bill(String paid, String unpaid, String total, String refund) {
+        return """
+                {"line":0,"paidAmount":%s,"facts":{"unpaidAmount":%s,"billAmount":%s,"refundAmount":%s}}
+                """.formatted(paid, unpaid, total, refund);
     }
 }

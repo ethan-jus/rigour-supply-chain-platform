@@ -79,19 +79,20 @@ public class MybatisPlusCostAnalyticsSource {
             Map<String, String> values = new LinkedHashMap<>();
             for (String column : COLUMNS) values.put(column, exact(row.get(column)));
             if (goods != null && "PURCHASE".equals(values.get("category_code"))) {
-                values.put("data_json", goods.reconcileLegacy(tenant, values.get("data_json")));
                 values.put("department_id", departments.get(values.get("warehouse_id")));
                 values.put("owner_employee_code", null);
                 values.put("owner_employee_name", null);
             }
             items.add(values);
         }
-        if (goods != null)
+        if (goods != null) {
+            goods.reconcileLegacy(tenant, items);
             for (var row : goods.page(tenant, cursor)) {
                 Map<String, String> values = new LinkedHashMap<>();
                 for (String column : COLUMNS) values.put(column, row.get(column));
                 items.add(values);
             }
+        }
         items.sort(Comparator.comparing(v -> v.get("id")));
         return new Page(version, items.stream().limit(1000).toList());
     }

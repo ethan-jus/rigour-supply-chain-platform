@@ -62,7 +62,8 @@ public class LogisticsCostFilterTest {
         jdbc.execute(
                 "CREATE TABLE order_logistics_import_order(id VARCHAR(50) PRIMARY KEY, tenant_id"
                         + " VARCHAR(50),cost_id VARCHAR(50),source_json LONGTEXT,latest_source_json"
-                        + " LONGTEXT,source_channel VARCHAR(16) DEFAULT 'API') DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
+                        + " LONGTEXT,source_channel VARCHAR(16) DEFAULT 'API',business_json JSON)"
+                        + " DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
         jdbc.execute(
                 "CREATE TABLE order_transport_shipment_source(tenant_id VARCHAR(50),cost_id"
                         + " VARCHAR(50),latest_json LONGTEXT) DEFAULT CHARSET=utf8mb4"
@@ -238,7 +239,6 @@ public class LogisticsCostFilterTest {
 
     @Test
     void transportPlacerAndBusinessNumberUseTheDisplayedSourceBeforePagination() {
-        jdbc.execute("ALTER TABLE order_logistics_import_order ADD source_channel VARCHAR(8), ADD business_json JSON");
         insert("platform", "T1", "HLL", 7L);
         jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");
         jdbc.update("""
@@ -378,7 +378,6 @@ public class LogisticsCostFilterTest {
     @Test
     void deliveryModeFiltersTotalsAndIncludesLegacyPlatformRecords() {
         jdbc.execute("ALTER TABLE order_logistics_cost ADD delivery_mode_code VARCHAR(50)");
-        jdbc.execute("ALTER TABLE order_logistics_import_order ADD source_channel VARCHAR(8)");
         insert("platform", "T1", "PLATFORM", 7L);
         insert("express", "T1", "EXPRESS", 7L);
         jdbc.update("UPDATE order_logistics_cost SET source_warehouse_id=warehouse_id");

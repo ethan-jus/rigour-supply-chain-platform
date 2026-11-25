@@ -66,9 +66,10 @@ public class CostDashboardExportService {
     public CostDashboardExportView create(CostDashboardQuery query) {
         var c = service.context(query);
         requireExport(c.access());
+        if (c.filter().reviewOnly()) throw new IllegalArgumentException("待核对来源仅供查看");
         var rows = service.matching(c);
         requireExportRows(c.access(), rows);
-        if (rows.size() > 100000) throw new IllegalArgumentException("单次导出最多10万笔，请缩小筛选范围");
+        if (rows.size() > 100000) throw new IllegalArgumentException("单次导出最多10万行，请缩小筛选范围");
         String id = UUID.randomUUID().toString(),
                 tenant = c.snapshot().tenant(),
                 actor = c.access().actor().principalId().toString();
@@ -249,10 +250,22 @@ public class CostDashboardExportService {
                 c.period().previousFrom() + " 至 " + c.period().previousTo());
         append(
                 out,
-                "匹配笔数",
+                "明细行数",
                 String.valueOf(rows.size()),
+                "匹配单据数",
+                String.valueOf(CostAnalysis.documents(rows)),
                 "已确认金额",
                 CostAnalysis.money(CostAnalysis.amount(rows)));
+        var filter = c.filter();
+        if (filter.department() != null)
+            append(out, "部门筛选", filterDimension(rows, "department", filter.department()));
+        if (filter.dimensionKey() != null)
+            append(
+                    out,
+                    "分析维度",
+                    CostAnalysis.DIMENSION_LABELS.get(filter.dimension()),
+                    "维度选项",
+                    filterDimension(rows, filter.dimension(), filter.dimensionKey()));
         append(
                 out,
                 "单据号",
@@ -273,14 +286,32 @@ public class CostDashboardExportService {
                     r.title(),
                     CostAnalysis.CATEGORIES.get(r.category()),
                     r.cityName(),
-                    r.date().toString(),
+                    "PAYROLL".equals(r.sourceCategory()) ? "" : r.date().toString(),
                     CostAnalysis.money(r.amount()),
-                    statusLabel(r.status()),
+                    recordStatusLabel(r),
                     statusLabel(r.payment()),
                     r.costMonth().toString(),
                     itemValue(r),
                     String.join("、", r.originalNumbers()));
         return out.toString();
+    }
+
+    private static String filterDimension(List<CostFact> rows, String dimension, String key) {
+        if (key.startsWith("dict:")) return key;
+        return rows.stream()
+                .map(r -> r.dimension(dimension))
+                .filter(value -> key.equals(value.key()))
+                .map(CostFact.Dimension::label)
+                .findFirst()
+                .orElse(key);
+    }
+
+    private static String recordStatusLabel(CostFact row) {
+        if ("ORDER".equals(row.source())) {
+            if ("CONFIRMED".equals(row.status())) return "已完善";
+            if ("DRAFT".equals(row.status())) return "待完善";
+        }
+        return statusLabel(row.status());
     }
 
     private static String itemValue(CostFact r) {
@@ -296,6 +327,9 @@ public class CostDashboardExportService {
             case "VOID" -> "已作废";
             case "PAID" -> "已付款";
             case "UNPAID" -> "未付款";
+            case "PARTIAL_PAID" -> "部分付款";
+            case "NOT_REQUIRED" -> "无需付款";
+            case "NEEDS_REVIEW" -> "待核对";
             default -> "未记录";
         };
     }
