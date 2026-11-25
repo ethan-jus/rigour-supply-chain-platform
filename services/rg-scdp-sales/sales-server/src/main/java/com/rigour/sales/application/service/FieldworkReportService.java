@@ -21,7 +21,6 @@ import java.util.stream.Collectors;
 @Service
 public class FieldworkReportService {
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
-    private static final String READ = "sales:dashboard:read";
     private final FieldworkFacts facts;
     private final FieldworkDirectory directory;
     private final SalesManagementScope scopes;
@@ -99,9 +98,9 @@ public class FieldworkReportService {
                 || size > 100) throw new RequestValidationException("工作日或分页范围无效");
     }
 
-    private Access access(CallerIdentity caller) {
-        AuthorizationContext.requirePermission(READ);
-        return scopes.resolve(caller, READ);
+    private Access access(CallerIdentity caller, String action) {
+        AuthorizationContext.requirePermission(action);
+        return scopes.resolve(caller, action);
     }
 
     private static <T> List<T> page(List<T> all, int page, int size) {
@@ -211,7 +210,7 @@ public class FieldworkReportService {
         if (date.isAfter(LocalDate.now(clock.withZone(ZONE))))
             throw new RequestValidationException("工作日报不能查询未来日期");
         var caller = SalesWorkContextService.requireTenantCaller();
-        var scope = access(caller);
+        var scope = access(caller, SalesManagementScope.FIELDWORK_READ);
         var tenant = caller.tenantId();
         var now = clock.instant();
         var roster = facts.roster(tenant, date, scope);
@@ -476,7 +475,7 @@ public class FieldworkReportService {
         var caller = SalesWorkContextService.requireTenantCaller();
         var rows =
                 facts.commitments(
-                        caller.tenantId(), access(caller), status, from, through, ownerCode,
+                        caller.tenantId(), access(caller, "sales:dashboard:read"), status, from, through, ownerCode,
                         size + 1, (page - 1) * size);
         var names =
                 organizations(
@@ -506,8 +505,8 @@ public class FieldworkReportService {
 
     public VisitContent visitContent(UUID visitId) {
         var caller = SalesWorkContextService.requireTenantCaller();
-        return facts.visitContent(caller.tenantId(), access(caller), visitId)
-                .orElseThrow(() -> new AuthorizationDeniedException(READ));
+        return facts.visitContent(caller.tenantId(), access(caller, SalesManagementScope.VISIT_RECORD_READ), visitId)
+                .orElseThrow(() -> new AuthorizationDeniedException(SalesManagementScope.VISIT_RECORD_READ));
     }
 
     public Ledger ledger(
@@ -544,7 +543,7 @@ public class FieldworkReportService {
         var now = clock.instant();
         if (!blank(origin) && !Set.of("PLANNED", "UNPLANNED").contains(origin))
             throw new RequestValidationException("拜访来源无效");
-        var scope = access(caller);
+        var scope = access(caller, SalesManagementScope.VISIT_RECORD_READ);
         var rows = facts.visits(tenant, from, to, scope, null);
         var cities = new TreeSet<String>();
         var visibleDepartments = new HashSet<String>();

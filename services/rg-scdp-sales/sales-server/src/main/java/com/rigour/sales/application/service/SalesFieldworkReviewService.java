@@ -46,6 +46,7 @@ public class SalesFieldworkReviewService {
 
     public List<Case> managementDay(UUID profile, UUID day) {
         var caller=SalesWorkContextService.requireTenantCaller();
+        fieldwork.requireProfile(profile,SalesManagementScope.FIELDWORK_READ);
         fieldwork.requireProfile(profile,"sales:risk:read");
         if(days.findWorkDay(caller.tenantId(),profile,day).isEmpty()) throw new RequestValidationException("当日作业不存在");
         return cases.byDay(caller.tenantId(),day);

@@ -22,6 +22,11 @@ import com.rigour.sales.application.service.SalesWorkRecordingService;
 import com.rigour.sales.application.service.SalesWorkManagementService;
 import com.rigour.sales.application.service.SalesWorkVisitService;
 import com.rigour.sales.application.service.SalesWorkVisitPlanService;
+import com.rigour.sales.application.port.out.FieldworkDirectory;
+import com.rigour.sales.application.port.out.FieldworkFacts;
+import com.rigour.sales.application.service.FieldworkReportService;
+import com.rigour.sales.application.service.SalesManagementScope;
+import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView;
 import com.rigour.sales.testing.RecordingMediaSamples;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.CallerIdentity;
@@ -336,6 +341,59 @@ class SalesWorkVisitIntegrationTests {
         voices.identifyVisits();
         assertThat(analysisRows.speakers(tenantId,visit.id()).getFirst().name()).isEqualTo("A");
         assertThat(analysisService.read(visit.id(),false)).isEqualTo(analysisService.read(visit.id(),true));
+    }
+
+    @Test
+    void fieldworkAndVisitPagesApplyTheirOwnEmployeeScopes(
+            @Autowired FieldworkFacts facts, @Autowired SalesManagementScope scopes) {
+        var coworkerVisit = createLifecycleCapture("scope-coworker");
+        jdbc.update("UPDATE sales_profile SET employee_id=NULL, platform_user_id=?, hr_employee_id=101, hr_employee_code='PEER' WHERE tenant_id=? AND id=?",
+                bin(UUID.randomUUID()), bin(tenantId), bin(profileId));
+        long employeeNumber = 102;
+        for (String code : List.of("SELF", "OTHER")) {
+            jdbc.update("""
+                    INSERT INTO sales_profile(id,tenant_id,platform_user_id,hr_employee_id,sales_no,hr_employee_code,status,effective_from,created_at,updated_at)
+                    VALUES(?,?,?,?,?,?,'ACTIVE',UTC_TIMESTAMP(6)-INTERVAL 1 DAY,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
+                    """, bin(UUID.randomUUID()), bin(tenantId), bin(UUID.randomUUID()), employeeNumber++, code, code);
+        }
+        var directory = org.mockito.Mockito.mock(FieldworkDirectory.class);
+        org.mockito.Mockito.when(directory.sources(org.mockito.ArgumentMatchers.eq(tenantId), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(new com.rigour.merchant.api.v1.model.FieldworkSources.Result(Map.of(), Map.of()));
+        var report = new FieldworkReportService(facts, directory, scopes, java.time.Clock.systemUTC());
+        var all = new SupplyAuthorizationView.Limit("ALL", List.of());
+        var department = new SupplyAuthorizationView.Limit("SPECIFIED", List.of("42"));
+        var self = new SupplyAuthorizationView.Clause(UUID.randomUUID(), "EMPLOYEE", "SELF", all, all, all, false);
+        var team = new SupplyAuthorizationView.Clause(UUID.randomUUID(), "EMPLOYEE", "DEPARTMENT", department, all, all, false);
+        var grants = new java.util.HashMap<String,List<SupplyAuthorizationView.Clause>>();
+        grants.put("sales:fieldwork:read", List.of(self, team));
+        grants.put("sales:visit-record:read", List.of(self));
+        setAnalysisCaller(tenantId, userId, Set.copyOf(grants.keySet()));
+        org.mockito.Mockito.when(managementDirectory.departmentMembers(org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.eq(List.of("42")), org.mockito.ArgumentMatchers.eq(false)))
+                .thenReturn(List.of("SELF", "PEER"));
+        org.mockito.Mockito.doAnswer(invocation -> {
+            CallerIdentity caller = invocation.getArgument(0);
+            String action = invocation.getArgument(1);
+            return new SupplyAuthorizationView("ACTIVE", tenantId, userId, "SELF", 1, 1, 1, 1,
+                    caller.permissions(), action, true, grants.get(action), all, all);
+        }).when(managementDirectory).authorization(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString());
+
+        LocalDate day = jdbc.queryForObject("SELECT business_date FROM sales_work_day WHERE tenant_id=? AND sales_profile_id=?",
+                LocalDate.class, bin(tenantId), bin(profileId));
+        var filters = new FieldworkReportService.Filters(null, null, false, null, null, false, null, 1, 10);
+        var work = report.report(day, filters);
+        assertThat(work.items()).extracting(e -> e.employeeCode()).containsExactlyInAnyOrder("SELF", "PEER");
+        assertThat(work.people()).hasSize(2);
+        assertThat(work.summary().visitingPeople()).isOne();
+        assertThat(report.ledger(day, day, null, null, null, false, null, null, null, null, null, 1, 10).total()).isZero();
+        assertThatThrownBy(() -> report.visitContent(coworkerVisit)).isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+
+        grants.put("sales:fieldwork:read", List.of(self));
+        grants.put("sales:visit-record:read", List.of(team));
+        assertThat(report.report(day, filters).items()).extracting(e -> e.employeeCode()).containsExactly("SELF");
+        assertThat(report.ledger(day, day, null, null, null, false, null, null, null, null, null, 1, 10).items())
+                .extracting(v -> v.id()).containsExactly(coworkerVisit);
+        assertThat(report.visitContent(coworkerVisit)).isNotNull();
     }
 
     @Test
@@ -1196,7 +1254,7 @@ class SalesWorkVisitIntegrationTests {
                     "sales:location:write", "sales:visit:own:read", "sales:visit:own:write", "sales:poi:read",
                     "sales:recording:own:read", "sales:recording:own:write", "sales:track:own:read",
                     "sales:evidence:own:read", "sales:evidence:own:write", "sales:evidence:sensitive:read",
-                    "sales:dashboard:read", "sales:visit:review", "sales:risk:read", "sales:risk:write", "sales:recording:sensitive:play",
+                    "sales:dashboard:read", "sales:fieldwork:read", "sales:visit-record:read", "sales:visit:review", "sales:risk:read", "sales:risk:write", "sales:recording:sensitive:play",
                     "sales:location:sensitive:read", "sales:visit-plan:own:read",
                     "sales:visit-plan:read", "sales:visit-plan:write"));
             Method set = AuthorizationContext.class.getDeclaredMethod("set", CallerIdentity.class);

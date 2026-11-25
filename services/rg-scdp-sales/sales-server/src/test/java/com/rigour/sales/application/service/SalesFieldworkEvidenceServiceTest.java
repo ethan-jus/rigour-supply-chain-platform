@@ -41,8 +41,10 @@ class SalesFieldworkEvidenceServiceTest {
     }
     @Test void historyUsesIndependentRiskScope(){
         UUID visit=UUID.randomUUID();var capture=new Capture(visit,profile,day,LocalDate.now(),12L,14L,"门店",Instant.now(),null,"CHECKED_IN",null,null,null);
-        var scope=new SalesManagementDirectory.Access(false,Set.of("visible"));when(access.access("sales:risk:read")).thenReturn(scope);
-        when(repository.capture(tenant,visit)).thenReturn(Optional.of(capture));service.history(visit,2,10,true);
-        verify(access).requireVisit(visit,"sales:risk:read");verify(repository).history(tenant,capture,scope,2,10,true);
+        var scope=new SalesManagementDirectory.Access(false,Set.of("visible"));
+        when(access.access("sales:risk:read")).thenReturn(new SalesManagementDirectory.Access(false,Set.of("visible","risk-only")));
+        when(access.access("sales:visit-record:read")).thenReturn(new SalesManagementDirectory.Access(false,Set.of("visible","ledger-only")));
+        when(repository.capture(tenant,visit)).thenReturn(Optional.of(capture));service.history(visit,2,10,true,false);
+        verify(access).requireVisibleVisit(tenant,visit,scope,"sales:visit-record:read");verify(repository).history(tenant,capture,scope,2,10,true);
     }
 }

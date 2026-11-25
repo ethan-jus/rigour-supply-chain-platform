@@ -24,13 +24,13 @@ public class SalesFieldworkService {
     }
     public Page page(LocalDate date,String status,String keyword,String department,boolean descendants,boolean pendingOnly,String riskKind,int page,int size) {
         var caller=SalesWorkContextService.requireTenantCaller();
-        AuthorizationContext.requirePermission("sales:dashboard:read");
+        AuthorizationContext.requirePermission(SalesManagementScope.FIELDWORK_READ);
         if(date==null||page<1||page>100000||size<1||size>100||keyword!=null&&keyword.length()>80
                 ||status!=null&&!status.isBlank()&&!Set.of("ACTIVE","FINISHED","NOT_STARTED").contains(status)
                 ||department!=null&&!department.isBlank()&&!department.matches("[1-9][0-9]{0,17}")
                 ||riskKind!=null&&!riskKind.isBlank()&&!Set.of("DEVICE","LOCATION","TRACK_GAP","RECORDING").contains(riskKind))
             throw new RequestValidationException("外勤查询条件无效");
-        var scope=scopes.resolve(caller,"sales:dashboard:read");
+        var scope=scopes.resolve(caller,SalesManagementScope.FIELDWORK_READ);
         if(department!=null&&!department.isBlank()) {
             var members=new HashSet<>(directory.departmentMembers(caller,List.of(department),descendants));
             if(!scope.all()) members.retainAll(scope.employeeCodes());
@@ -51,9 +51,9 @@ public class SalesFieldworkService {
         return new Page(date,result,totals.total(),page,size,totals);
     }
     public List<Department> departments() {
-        var caller=SalesWorkContextService.requireTenantCaller();AuthorizationContext.requirePermission("sales:dashboard:read");
+        var caller=SalesWorkContextService.requireTenantCaller();AuthorizationContext.requirePermission(SalesManagementScope.FIELDWORK_READ);
         var result=new TreeMap<Long,Department>();
-        for(var person:identities(caller,scopes.resolve(caller,"sales:dashboard:read")))
+        for(var person:identities(caller,scopes.resolve(caller,SalesManagementScope.FIELDWORK_READ)))
             if(person.departmentId()!=null&&person.departmentName()!=null) result.put(person.departmentId(),new Department(person.departmentId().toString(),person.departmentName()));
         return List.copyOf(result.values());
     }
@@ -83,6 +83,9 @@ public class SalesFieldworkService {
     public void requireVisit(UUID visit,String action) {
         var caller=SalesWorkContextService.requireTenantCaller();AuthorizationContext.requirePermission(action);
         var scope=scopes.resolve(caller,action);
-        if(!scope.all()&&!scope.allows(repository.visitEmployeeCode(caller.tenantId(),visit).orElse(null))) throw new AuthorizationDeniedException(action);
+        requireVisibleVisit(caller.tenantId(),visit,scope,action);
+    }
+    void requireVisibleVisit(UUID tenant,UUID visit,SalesManagementDirectory.Access scope,String action) {
+        if(!scope.all()&&!scope.allows(repository.visitEmployeeCode(tenant,visit).orElse(null))) throw new AuthorizationDeniedException(action);
     }
 }

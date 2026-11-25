@@ -21,14 +21,14 @@ class SalesFieldworkServiceTest {
     final SalesFieldworkService service=new SalesFieldworkService(repository,directory,scopes);
     @BeforeEach void caller() throws Exception {
         var method=AuthorizationContext.class.getDeclaredMethod("set",CallerIdentity.class);method.setAccessible(true);
-        method.invoke(null,new CallerIdentity("TENANT",user,tenant,user,null,UUID.randomUUID(),1,1,1,Set.of(),Set.of("sales:dashboard:read")));
+        method.invoke(null,new CallerIdentity("TENANT",user,tenant,user,null,UUID.randomUUID(),1,1,1,Set.of(),Set.of("sales:fieldwork:read")));
         when(repository.totals(eq(tenant),any(),any(),any(SalesFieldworkRepository.Search.class))).thenReturn(new Totals(0,0,0,0,0,0));
         when(repository.page(eq(tenant),any(),any(),any(SalesFieldworkRepository.Search.class),anyInt(),anyInt())).thenReturn(List.of());
     }
     @AfterEach void clear() throws Exception {var m=AuthorizationContext.class.getDeclaredMethod("clear");m.setAccessible(true);m.invoke(null);}
     HrEmployeeIdentityView person(String code,String name,long department){return new HrEmployeeIdentityView(1L,code,name,"ACTIVE",department,"部门"+department,null,null,List.of(),1,1,1,true,null);}
     @Test void selectedDepartmentIntersectsPermissionAndTotalsUseSameFilter(){
-        when(scopes.resolve(any(),eq("sales:dashboard:read"))).thenReturn(new SalesManagementDirectory.Access(false,Set.of("visible","outside-department")));
+        when(scopes.resolve(any(),eq("sales:fieldwork:read"))).thenReturn(new SalesManagementDirectory.Access(false,Set.of("visible","outside-department")));
         when(directory.departmentMembers(any(),eq(List.of("8")),eq(true))).thenReturn(List.of("visible","unauthorized"));
         service.page(LocalDate.of(2026,11,13),"ACTIVE","","8",true,true,"DEVICE",2,20);
         var scope=ArgumentCaptor.forClass(SalesManagementDirectory.Access.class);var search=ArgumentCaptor.forClass(SalesFieldworkRepository.Search.class);

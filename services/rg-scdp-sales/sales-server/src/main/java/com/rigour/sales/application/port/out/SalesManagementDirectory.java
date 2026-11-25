@@ -8,6 +8,13 @@ import java.util.Set;
 public interface SalesManagementDirectory {
     record Access(boolean all, Set<String> employeeCodes) {
         public Access { employeeCodes = Set.copyOf(employeeCodes); }
+        public Access intersect(Access other) {
+            if (all) return other;
+            if (other.all()) return this;
+            var shared = new java.util.HashSet<>(employeeCodes);
+            shared.retainAll(other.employeeCodes());
+            return new Access(false, shared);
+        }
         public boolean allows(String code) { return all || code != null && employeeCodes.contains(code); }
     }
 
