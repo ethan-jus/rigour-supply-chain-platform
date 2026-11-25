@@ -892,7 +892,9 @@ public final class DhbOrderSyncService {
                     new DhbIncrementalWorkStore.Item(
                             id,
                             fingerprint(
-                                    (value instanceof Shipment ? "source-facts-v2:" : "")
+                                    (value instanceof Shipment ? "source-facts-v2:"
+                                            : value instanceof Payment ? "payment-status-v2:"
+                                            : value instanceof Receipt ? "receipt-state-v2:" : "")
                                             + payload),
                             payload,
                             updated));
@@ -3336,6 +3338,13 @@ public final class DhbOrderSyncService {
                                 sourcePaymentNo,
                                 payment.transactionAt());
                 if (business.isBefore(HISTORY_CUTOVER)) {
+                    String status = verifiedReceiptStatus(payment.status());
+                    var refreshed = orderProjectionClient.syncHistoricalPaymentStatus(orderServiceCaller(caller.tenantId()),
+                            new com.rigour.order.api.v1.model.HistorySyncModels.FundPaymentStatus(task.connectorId(),
+                                    sourcePaymentNo, payment.orderNumber(), "CONFIRMED".equals(status) ? "CONFIRMED"
+                                            : "CANCELLED".equals(status) ? "CANCELLED" : "PENDING"));
+                    if (refreshed == null || !Set.of("SYNCED", "MANUAL_PROTECTED").contains(refreshed.state()))
+                        throw new IllegalStateException("历史付款状态尚未核对成功");
                     syncPaymentVouchers(caller, task, payment, sourcePaymentNo, attributes);
                     return ProjectionOutcome.DUPLICATE;
                 }

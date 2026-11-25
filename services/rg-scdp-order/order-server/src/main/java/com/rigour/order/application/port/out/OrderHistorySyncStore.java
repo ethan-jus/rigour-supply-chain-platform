@@ -28,6 +28,8 @@ public interface OrderHistorySyncStore {
 
     Intake historicalReceiptStatus(String tenant, Receipt c);
 
+    Intake historicalPaymentStatus(String tenant, FundPaymentStatus command);
+
     Intake receiptVouchers(String tenant, String actor, ReceiptVouchers command);
 
     java.util.List<VoucherBackfillCandidate> claimVoucherBackfill(String tenant, VoucherBackfillClaim command);

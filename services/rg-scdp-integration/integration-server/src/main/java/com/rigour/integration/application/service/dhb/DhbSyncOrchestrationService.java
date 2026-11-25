@@ -245,6 +245,7 @@ public final class DhbSyncOrchestrationService {
                             validateBusinessChain(actor.tenantId(), command.connectorId());
                             if (!refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, true)) break;
                             runIncrementalOrderPackageSteps(caller, bucket, pages, steps, progress, true);
+                            appendPaymentStatusReconciliation(caller, bucket, pages, steps, progress);
                             appendScheduledShipmentLogistics(caller, bucket, pages, steps, progress);
                         }
                         case VOUCHER_BACKFILL -> {
@@ -256,7 +257,8 @@ public final class DhbSyncOrchestrationService {
                             if (bucket.orderTarget == null) throw new IllegalArgumentException("未配置订单同步任务");
                             if (command.scope() == com.rigour.integration.api.v1.model.DhbPageSyncCommand.Scope.RECEIPT
                                     && !refreshCustomersBeforeReceipts(actor, caller, bucket, pages, steps, progress, background)) break;
-                            SyncRunView r=orderSyncService.runOrderPull(caller,bucket.orderTarget.taskId(),
+                            SyncRunView r=orderSyncService.runOrderPull(
+                                Set.of("RECEIPT", "PAYMENT").contains(type) ? protectHistory(caller) : caller, bucket.orderTarget.taskId(),
                                 new SyncRunCommand(command.from(),command.to(),null,null,null,type),pages,progress);
                             steps.add(orderPackageStep(type, r));
                         }
@@ -728,6 +730,23 @@ public final class DhbSyncOrchestrationService {
             catch (RuntimeException error) { steps.add(failed("ORDER", "VOUCHER_BACKFILL", error)); }
         }
 
+    }
+
+    /** 付款接口只有创建时间筛选，单独每日全量核对后续确认和作废，不挪动普通增量游标。 */
+    private void appendPaymentStatusReconciliation(CallerIdentity caller, TargetBucket bucket, int pages,
+            List<DhbSyncOrchestrationStepView> steps, java.util.function.Consumer<String> progress) {
+        String scope = "PAYMENT_STATUS_RECONCILIATION";
+        Instant end = clock.instant().minus(SCHEDULED_WINDOW_SAFETY_LAG);
+        Instant previous = objectCheckpoints.successfulTo(caller.tenantId(), bucket.key.connectorId(), scope);
+        if (previous != null && previous.plus(Duration.ofDays(1)).isAfter(end)) return;
+        progress.accept("正在核对历史付款确认及作废状态（每日全量补查）");
+        try {
+            var result = orderSyncService.runOrderPull(protectHistory(caller), bucket.orderTarget.taskId(),
+                    new SyncRunCommand(Instant.parse("2000-01-01T00:00:00Z"), end, null, null, null, "PAYMENT"), pages, progress);
+            steps.add(orderPackageStep(scope, result));
+            if ("SUCCEEDED".equals(result.status()) || "DHB_DURABLE_PROJECTION_PENDING".equals(result.errorCode()))
+                objectCheckpoints.completed(caller.tenantId(), bucket.key.connectorId(), scope, end, result.runId());
+        } catch (RuntimeException error) { steps.add(failed("ORDER", scope, error)); }
     }
 
     private void appendScheduledShipmentLogistics(

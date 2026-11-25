@@ -852,6 +852,12 @@ public final class HttpOrderSalesOrderProjectionClient implements OrderSalesOrde
     }
 
     @Override
+    public com.rigour.order.api.v1.model.HistorySyncModels.Intake syncHistoricalPaymentStatus(
+            CallerIdentity caller, com.rigour.order.api.v1.model.HistorySyncModels.FundPaymentStatus command) {
+        return historyIntake(caller, "/payments/historical-status", command);
+    }
+
+    @Override
     public com.rigour.order.api.v1.model.HistorySyncModels.Intake syncReceiptVouchers(
             CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers command) {

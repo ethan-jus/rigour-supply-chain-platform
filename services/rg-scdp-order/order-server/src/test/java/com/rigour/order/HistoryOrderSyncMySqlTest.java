@@ -69,6 +69,48 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
         org.assertj.core.api.Assertions.assertThat(store.knownSources(tenant, connector, "UNLINKED")).isEmpty();
     }
 
+    @org.junit.jupiter.api.Test
+    void cancelledParentStillPropagatesExplicitReceiptCancellationExactlyOnce() {
+        order(1, 1, "78", "0", "1");
+        intake("D1", 1, "78", "1");
+        bind(java.util.List.of("D1"), java.util.List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "78", "RECEIVED", "initial"));
+        db.update("UPDATE order_sync_source SET state='CANCELLED'");
+        db.update("UPDATE order_sales_order SET order_status_code='CANCELLED'");
+        pay(receipt("R1", "D1", "78", "CANCELLED", "cancelled"));
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT source_status FROM order_sync_receipt", String.class)).isEqualTo("CANCELLED");
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT payment_status_code FROM order_payment_record", String.class)).isEqualTo("CANCELLED");
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_payment_record", Integer.class)).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(paid(1)).isZero();
+        var before = db.queryForList("SELECT * FROM order_payment_record");
+        pay(receipt("R1", "D1", "78", "CANCELLED", "cancelled"));
+        org.assertj.core.api.Assertions.assertThat(db.queryForList("SELECT * FROM order_payment_record")).isEqualTo(before);
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT order_status_code FROM order_sales_order", String.class)).isEqualTo("CANCELLED");
+    }
+
+    @org.junit.jupiter.api.Test
+    void historicalPaymentStatusPreservesMoneyDatesIdentityAndManualProtection() {
+        db.execute("CREATE TABLE order_fund_document(id BIGINT,tenant_id VARCHAR(36),connector_id VARCHAR(36),"
+                + "source_system_code VARCHAR(32),direction_code VARCHAR(20),source_document_no VARCHAR(128),source_order_no VARCHAR(128),"
+                + "document_status_code VARCHAR(32),amount DECIMAL(20,2),occurred_time TIMESTAMP,revision INT,updated_by VARCHAR(50),updated_time TIMESTAMP,deleted INT)");
+        db.execute("CREATE TABLE order_payment_voucher_source(tenant_id VARCHAR(36),connector_id VARCHAR(36),source_payment_no VARCHAR(128),payment_id BIGINT)");
+        for (int id = 1; id <= 3; id++) db.update("INSERT INTO order_fund_document VALUES(?,?,?,'DINGHUOBAO',?,'FP1','D1','PENDING',27,?,0,NULL,NULL,0)",
+                id, id == 2 ? java.util.UUID.randomUUID().toString() : tenant, connector.toString(),
+                id == 3 ? "RECEIPT" : "PAYMENT", java.sql.Timestamp.from(date));
+        var facts = db.queryForList("SELECT id,tenant_id,connector_id,source_document_no,source_order_no,amount,occurred_time,deleted FROM order_fund_document ORDER BY id");
+        var command = new com.rigour.order.api.v1.model.HistorySyncModels.FundPaymentStatus(connector, "FP1", "D1", "CONFIRMED");
+        tx.executeWithoutResult(t -> store.historicalPaymentStatus(tenant, command));
+        tx.executeWithoutResult(t -> store.historicalPaymentStatus(tenant, command));
+        org.assertj.core.api.Assertions.assertThat(db.queryForList("SELECT document_status_code FROM order_fund_document ORDER BY id", String.class))
+                .containsExactly("CONFIRMED", "PENDING", "PENDING");
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT revision FROM order_fund_document WHERE id=1", Integer.class)).isEqualTo(1);
+        org.assertj.core.api.Assertions.assertThat(db.queryForList("SELECT id,tenant_id,connector_id,source_document_no,source_order_no,amount,occurred_time,deleted FROM order_fund_document ORDER BY id")).isEqualTo(facts);
+        protect("D1", 1);
+        var cancelled = new com.rigour.order.api.v1.model.HistorySyncModels.FundPaymentStatus(connector, "FP1", "D1", "CANCELLED");
+        org.assertj.core.api.Assertions.assertThat(tx.execute(t -> store.historicalPaymentStatus(tenant, cancelled)).state()).isEqualTo("MANUAL_PROTECTED");
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT document_status_code FROM order_fund_document WHERE id=1", String.class)).isEqualTo("CONFIRMED");
+    }
+
     private void cancellationColumns() {
         db.execute("ALTER TABLE order_sales_order ADD updated_by VARCHAR(64), ADD source_status_code VARCHAR(64), ADD source_updated_at DATETIME(6), ADD created_by VARCHAR(64), ADD data_quality_status_code VARCHAR(32), ADD data_quality_message VARCHAR(256), MODIFY id BIGINT AUTO_INCREMENT, ADD UNIQUE KEY uk_test_id(id)");
         db.execute("ALTER TABLE order_sales_order_line ADD revision INT DEFAULT 0, ADD updated_by VARCHAR(64), ADD updated_time TIMESTAMP");

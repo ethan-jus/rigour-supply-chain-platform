@@ -111,6 +111,21 @@ public class JdbcDhbPageSyncJobStore implements DhbPageSyncJobStore {
                 dependencyId.toString(), tenant.toString(), jobId.toString());
     }
 
+    public boolean finishAbandoned(UUID tenant, DhbPageSyncJob observed, Instant now) {
+        return jdbc.update("UPDATE integration_dhb_page_job SET status='FAILED',active_slot=NULL,"
+                        + "stage='原执行已中断且依赖任务已核实结束，保留游标等待原计划续跑',finished_at=?"
+                        + " WHERE tenant_id=? AND connector_id=? AND job_id=?"
+                        + " AND status IN ('QUEUED','RUNNING') AND heartbeat_at=? AND heartbeat_at<?"
+                        + " AND NOT EXISTS (SELECT 1 FROM integration_dhb_orchestration_lease"
+                        + " WHERE tenant_id=UUID_TO_BIN(?) AND connector_id=UUID_TO_BIN(?) AND expires_at>?)"
+                        + " AND NOT EXISTS (SELECT 1 FROM integration_connector_sync_lease"
+                        + " WHERE tenant_id=UUID_TO_BIN(?) AND connector_id=UUID_TO_BIN(?) AND expires_at>?)",
+                utc(now), tenant.toString(), observed.connectorId().toString(), observed.jobId().toString(),
+                utc(observed.heartbeatAt()), utc(now.minusSeconds(900)),
+                tenant.toString(), observed.connectorId().toString(), utc(now),
+                tenant.toString(), observed.connectorId().toString(), utc(now)) == 1;
+    }
+
     public void finish(
             UUID tenant,
             UUID jobId,

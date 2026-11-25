@@ -18,6 +18,10 @@ public final class HistorySyncModels {
     public record ReceiptVouchers(UUID connectorId, String receiptNo, String sourcePaymentNo,
                                   String sourceOrderNo, String sourceStatus, java.util.List<String> objectKeys) {}
 
+    /** 只刷新已存在付款资金单的来源状态，不创建资金或改写历史金额日期。 */
+    public record FundPaymentStatus(UUID connectorId, String sourcePaymentNo,
+                                    String sourceOrderNo, String sourceStatus) {}
+
     public record CancelSourceOrder(UUID connectorId, String sourceNo, String orderStatusCode,
                                     Instant orderDate, BigDecimal amount, String customerName,
                                     Instant sourceUpdatedAt, CancelledOrderAttribution attribution, SourceLifecycleEvidence evidence) {

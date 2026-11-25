@@ -20,6 +20,25 @@ class DhbPageSyncJobServiceTest {
     final Instant now = Instant.parse("2026-09-22T08:00:00Z");
 
     @Test
+    void staleRunningJobChecksRemoteWorkBeforeAtomicRecovery() {
+        var store = mock(DhbPageSyncJobStore.class);
+        var crm = mock(CrmDhbDomainSyncClient.class);
+        var job = new DhbPageSyncJob(id, connector, "BUSINESS_CHAIN", "RUNNING", "中断",
+                now.minusSeconds(3600), now.minusSeconds(3500), null, null);
+        var remote = new com.rigour.merchant.api.v1.model.CustomerSyncJob(UUID.randomUUID(), connector,
+                "RUNNING", "处理中", now, now, null);
+        when(crm.customerJobs(any(), eq(connector), any(), any())).thenReturn(List.of(remote), List.of());
+        var service = new DhbPageSyncJobService(mock(DhbSyncOrchestrationService.class), store,
+                Clock.fixed(now, ZoneOffset.UTC), crm);
+        try {
+            service.reconcile(tenant, job);
+            verify(store, never()).finishAbandoned(any(), any(), any());
+            service.reconcile(tenant, job);
+            verify(store).finishAbandoned(tenant, job, now);
+        } finally { service.close(); }
+    }
+
+    @Test
     void reconcilesOnlyThePersistedDependencyAndLeavesWholeChainFailedForNextIncrementalRun() {
         var store = mock(DhbPageSyncJobStore.class);
         var crm = mock(CrmDhbDomainSyncClient.class);
@@ -227,6 +246,33 @@ class DhbPageSyncJobServiceTest {
         } finally {
             service.close();
         }
+    }
+
+    @Test
+    void shutdownWaitsForWorkerToPersistItsTerminalResult() throws Exception {
+        var delegate = mock(DhbSyncOrchestrationService.class);
+        var store = mock(DhbPageSyncJobStore.class);
+        when(store.reserve(eq(tenant), eq(id), any(), any())).thenReturn(job("QUEUED", now));
+        when(store.claim(eq(tenant), eq(id), any())).thenReturn(true);
+        when(store.find(tenant, id)).thenReturn(Optional.of(job("RUNNING", now)));
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        when(delegate.runPage(any(), any(), any(), eq(true))).thenAnswer(call -> {
+            entered.countDown();
+            release.await(5, TimeUnit.SECONDS);
+            return new DhbSyncOrchestrationResult(id, "SUCCEEDED", "MANUAL", now, now, List.of());
+        });
+        var service = new DhbPageSyncJobService(delegate, store, Clock.fixed(now, ZoneOffset.UTC), mock(CrmDhbDomainSyncClient.class));
+        try {
+            service.start(caller(tenant), id, command());
+            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+            var closing = CompletableFuture.runAsync(service::close);
+            assertThatThrownBy(() -> closing.get(100, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class);
+            release.countDown();
+            closing.get(2, TimeUnit.SECONDS);
+            verify(store).finish(eq(tenant), eq(id), eq("SUCCEEDED"), anyString(), any(), any());
+            assertThat(service.isStopping()).isTrue();
+        } finally { release.countDown(); service.close(); }
     }
 
     @Test

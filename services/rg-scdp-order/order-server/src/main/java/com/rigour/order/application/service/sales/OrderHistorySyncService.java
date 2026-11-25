@@ -90,6 +90,11 @@ public class OrderHistorySyncService {
         return store.historicalReceiptStatus(a.tenantId().toString(), c);
     }
 
+    public Intake historicalPaymentStatus(FundPaymentStatus c) {
+        var a = actor(true, true);
+        return store.historicalPaymentStatus(a.tenantId().toString(), c);
+    }
+
     public Intake receiptVouchers(ReceiptVouchers c) {
         var a = actor(true, true);
         return store.receiptVouchers(a.tenantId().toString(), a.principalId().toString(), c);

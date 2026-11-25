@@ -22,6 +22,7 @@ import java.util.concurrent.*;
 class JdbcDhbPageSyncJobStoreTest {
     @Container static final MySQLContainer<?> MYSQL = new MySQLContainer<>("mysql:8.4");
     static JdbcDhbPageSyncJobStore store;
+    static JdbcTemplate jdbc;
 
     @BeforeAll
     static void setup() {
@@ -30,14 +31,42 @@ class JdbcDhbPageSyncJobStoreTest {
                         MYSQL.getJdbcUrl(), MYSQL.getUsername(), MYSQL.getPassword());
         new ResourceDatabasePopulator(
                         new ClassPathResource("db/migration/V25__dhb_page_sync_jobs.sql"),
-                        new ClassPathResource("db/migration/V33__dhb_page_job_dependency.sql"))
+                        new ClassPathResource("db/migration/V33__dhb_page_job_dependency.sql"),
+                        new ClassPathResource("db/migration/V10__integration_connector_sync_lease.sql"),
+                        new ClassPathResource("db/migration/V16__integration_dhb_orchestration_lease.sql"))
                 .execute(ds);
-        store = new JdbcDhbPageSyncJobStore(new JdbcTemplate(ds), JsonMapper.builder().build());
+        jdbc = new JdbcTemplate(ds);
+        store = new JdbcDhbPageSyncJobStore(jdbc, JsonMapper.builder().build());
     }
 
     DhbPageSyncCommand command(UUID c) {
         return new DhbPageSyncCommand(
                 DhbPageSyncCommand.Scope.ORDER_SALES_PACKAGE, c, null, null, 500, true);
+    }
+
+    @Test
+    void abandonedJobRequiresExpiredLeasesUnchangedHeartbeatAndCorrectTenant() {
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID(), id = UUID.randomUUID();
+        Instant start = Instant.parse("2026-11-25T00:00:00Z"), now = start.plusSeconds(3600);
+        store.reserve(tenant, id, command(connector), start);
+        store.claim(tenant, id, start);
+        var observed = store.find(tenant, id).orElseThrow();
+        assertThat(store.finishAbandoned(UUID.randomUUID(), observed, now)).isFalse();
+        for (String table : List.of("integration_dhb_orchestration_lease", "integration_connector_sync_lease")) {
+            jdbc.update("INSERT INTO " + table + " VALUES(UUID_TO_BIN(?),UUID_TO_BIN(?),UUID_TO_BIN(?),?,'test',?,?,?)",
+                    UUID.randomUUID().toString(), tenant.toString(), connector.toString(), UUID.randomUUID().toString(),
+                    LocalDateTime.ofInstant(start, ZoneOffset.UTC), LocalDateTime.ofInstant(start, ZoneOffset.UTC),
+                    LocalDateTime.ofInstant(now.plusSeconds(60), ZoneOffset.UTC));
+            assertThat(store.finishAbandoned(tenant, observed, now)).isFalse();
+            jdbc.update("DELETE FROM " + table + " WHERE tenant_id=UUID_TO_BIN(?)", tenant.toString());
+        }
+        store.heartbeat(tenant, id, now);
+        assertThat(store.finishAbandoned(tenant, observed, now)).isFalse();
+        var fresh = store.find(tenant, id).orElseThrow();
+        assertThat(store.finishAbandoned(tenant, fresh, now)).isFalse();
+        assertThat(store.finishAbandoned(tenant, fresh, now.plusSeconds(901))).isTrue();
+        assertThat(store.find(tenant, id).orElseThrow().status()).isEqualTo("FAILED");
+        assertThat(store.reserve(tenant, UUID.randomUUID(), command(connector), now.plusSeconds(902)).jobId()).isNotEqualTo(id);
     }
 
     @Test

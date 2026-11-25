@@ -67,6 +67,10 @@ public class OrderHistorySyncController implements OrderHistorySyncApi {
         return ApiResponse.success(service.historicalReceiptStatus(c));
     }
 
+    public ApiResponse<Intake> historicalPaymentStatus(FundPaymentStatus c) {
+        return ApiResponse.success(service.historicalPaymentStatus(c));
+    }
+
     public ApiResponse<Intake> receiptVouchers(ReceiptVouchers c) {
         return ApiResponse.success(service.receiptVouchers(c));
     }

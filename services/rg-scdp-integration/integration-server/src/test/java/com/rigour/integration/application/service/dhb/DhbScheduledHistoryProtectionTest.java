@@ -51,6 +51,7 @@ class DhbScheduledHistoryProtectionTest {
         var client = mock(DhbClient.class);
         var projection = mock(OrderSalesOrderProjectionClient.class);
         when(projection.syncReceiptVouchers(any(), any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED",null,null));
+        when(projection.syncHistoricalPaymentStatus(any(), any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED", null, null));
         var hr = mock(HrDhbStaffSyncClient.class);
         var service = new DhbOrderSyncService(store, client, projection, hr);
         var old = Instant.parse("2026-09-02T16:00:00Z");
@@ -128,6 +129,7 @@ class DhbScheduledHistoryProtectionTest {
                     && "SERVICE".equals(c.principalScope())), eq(task.connectorId()), eq("D1"));
         }
         verifyNoMoreInteractions(store);
+        if (object.equals("payment")) verify(projection).syncHistoricalPaymentStatus(any(), argThat(c -> "P1".equals(c.sourcePaymentNo()) && "CANCELLED".equals(c.sourceStatus())));
         if (object.equals("payment")) verify(projection).syncReceiptVouchers(any(), argThat(c -> c.sourceStatus().equals("CANCELLED") && c.objectKeys().isEmpty()));
         verifyNoMoreInteractions(projection);
         verifyNoInteractions(client, hr);

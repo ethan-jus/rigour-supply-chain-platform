@@ -75,6 +75,7 @@ public class DhbScheduleService {
     }
 
     public void tick() {
+        if (worker.isStopping()) return;
         for (var entry : schedules.running()) {
             var p = entry.plan();
             if ("BI_REFRESH".equals(p.key())) continue;
@@ -91,7 +92,9 @@ public class DhbScheduleService {
                 continue;
             }
             var j = job.get();
-            if ("UNKNOWN".equals(j.status()))
+            if ("UNKNOWN".equals(j.status())
+                    || Set.of("QUEUED", "RUNNING").contains(j.status())
+                    && j.heartbeatAt().isBefore(clock.instant().minusSeconds(90)))
                 j = worker.reconcile(UUID.fromString(entry.tenant()), j);
             if (Set.of("QUEUED", "RUNNING").contains(j.status())) {
                 if (j.heartbeatAt().isBefore(clock.instant().minusSeconds(90)))

@@ -42,6 +42,7 @@ public class DhbPageSyncJobService {
                         return t;
                     });
     private final Set<Key> owned = ConcurrentHashMap.newKeySet();
+    private volatile boolean stopping;
 
     public DhbPageSyncJobService(
             DhbSyncOrchestrationService delegate, DhbPageSyncJobStore store, Clock clock,
@@ -174,8 +175,29 @@ public class DhbPageSyncJobService {
     }
 
     public DhbPageSyncJob reconcile(UUID tenant, DhbPageSyncJob job) {
-        if (!"UNKNOWN".equals(job.status()) || owned.contains(new Key(tenant, job.jobId())))
+        if (owned.contains(new Key(tenant, job.jobId()))) return job;
+        if (Set.of("QUEUED", "RUNNING").contains(job.status())) {
+            if (!job.heartbeatAt().isBefore(clock.instant().minusSeconds(900))) return job;
+            try {
+                var caller = DhbSyncOrchestrationService.serviceCaller(tenant);
+                // 心跳失联不能证明远程执行结束；核对整个未结束窗口，任何在途依赖都保留占位。
+                var remote = crm.customerJobs(caller, job.connectorId(), job.startedAt(), clock.instant());
+                if (remote == null || remote.stream().anyMatch(j ->
+                        !job.connectorId().equals(j.connectorId())
+                                || !Set.of("SUCCEEDED", "FAILED").contains(j.status()))) return job;
+                if (job.dependencyJobId() != null) {
+                    var dependency = crm.customerJob(caller, job.dependencyJobId());
+                    if (dependency == null || !job.connectorId().equals(dependency.connectorId())
+                            || !Set.of("SUCCEEDED", "FAILED").contains(dependency.status())) return job;
+                }
+                if (store.finishAbandoned(tenant, job, clock.instant()))
+                    return store.find(tenant, job.jobId()).orElse(job);
+            } catch (RuntimeException unavailable) {
+                log.warn("中断任务依赖暂未核实，保留原任务 jobId={}", job.jobId());
+            }
             return job;
+        }
+        if (!"UNKNOWN".equals(job.status())) return job;
         try {
             var caller = DhbSyncOrchestrationService.serviceCaller(tenant);
             var dependency = job.dependencyJobId();
@@ -238,9 +260,23 @@ public class DhbPageSyncJobService {
 
     @PreDestroy
     public void close() {
-        heartbeat.shutdown();
+        stopping = true;
         workers.shutdown();
+        try {
+            if (!workers.awaitTermination(20, TimeUnit.SECONDS)) {
+                workers.shutdownNow();
+                workers.awaitTermination(5, TimeUnit.SECONDS);
+            }
+            // 超时仍在途的任务保留占位；重启后由心跳、租约及远程依赖联合核实。
+        } catch (InterruptedException interrupted) {
+            workers.shutdownNow();
+            Thread.currentThread().interrupt();
+        } finally {
+            heartbeat.shutdown();
+        }
     }
+
+    public boolean isStopping() { return stopping; }
 
     private record Key(UUID tenant, UUID id) {}
 }

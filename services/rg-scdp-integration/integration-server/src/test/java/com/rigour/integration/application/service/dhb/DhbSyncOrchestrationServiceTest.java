@@ -126,6 +126,26 @@ class DhbSyncOrchestrationServiceTest {
         org.mockito.Mockito.verifyNoInteractions(orderSyncService);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void dailyPaymentStatusScanUsesIndependentCursorAndDoesNotAdvanceOnFailure(boolean failed) {
+        service = serviceWithIncrementalWindow(null, Instant.parse("2026-11-17T07:00:00Z"));
+        when(objectCheckpoints.successfulTo(any(), any(), any())).thenReturn(Instant.parse("2026-11-17T06:00:00Z"));
+        when(objectCheckpoints.successfulTo(any(), any(), eq("PAYMENT_STATUS_RECONCILIATION"))).thenReturn(null);
+        when(crmClient.syncLatestCustomersInBackground(any(),any(),any(),anyInt(),any(),any())).thenReturn(crmResult());
+        when(orderSyncService.runOrderPull(any(), any(), any(), anyInt(), any())).thenAnswer(call -> {
+            SyncRunCommand command = call.getArgument(2);
+            if (command.from().isBefore(Instant.parse("2026-09-03T16:00:00Z"))) {
+                assertThat(command.syncScope()).isEqualTo("PAYMENT");
+                assertThat(((CallerIdentity)call.getArgument(0)).roles()).contains("DHB_PROTECT_HISTORY");
+                if (failed) throw new IllegalStateException("未完成分页");
+            }
+            return orderResult();
+        });
+        service.runScheduledChain(TENANT_ID, CONNECTOR_ID, ignored -> {});
+        verify(objectCheckpoints, org.mockito.Mockito.times(failed ? 0 : 1)).completed(any(), any(), eq("PAYMENT_STATUS_RECONCILIATION"), any(), any());
+    }
+
     @Test
     void scheduledChainIncludesLogisticsOnlyWithItsOwnCursor() {
         service = serviceWithIncrementalWindow(null, Instant.parse("2026-11-17T07:00:00Z"));
@@ -151,7 +171,8 @@ class DhbSyncOrchestrationServiceTest {
         when(orderSyncService.runOrderPull(any(),any(),any(),org.mockito.ArgumentMatchers.anyInt(),any())).thenAnswer(call -> {
             CallerIdentity actor=call.getArgument(0);SyncRunCommand command=call.getArgument(2);
             assertThat(actor.roles()).contains("DHB_PROTECT_HISTORY");
-            assertThat(command.from()).isAfterOrEqualTo(Instant.parse("2026-09-03T16:00:00Z"));
+            if (!"PAYMENT".equals(command.syncScope()))
+                assertThat(command.from()).isAfterOrEqualTo(Instant.parse("2026-09-03T16:00:00Z"));
             return orderResult();
         });
         var result=service.runScheduledChain(TENANT_ID,CONNECTOR_ID,ignored -> {});
@@ -583,6 +604,16 @@ class DhbSyncOrchestrationServiceTest {
         var result=service.runPage(manualCaller(),new DhbPageSyncCommand(DhbPageSyncCommand.Scope.RECEIPT,CONNECTOR_ID,Instant.parse("2026-08-01T00:00:00Z"),Instant.parse("2026-08-02T00:00:00Z"),10));
         verify(orderSyncService).runOrderPull(any(),eq(ORDER_TASK_ID),any(),eq(10),any());
         assertThat(result.tenants().getFirst().steps()).noneMatch(step -> "SKIPPED".equals(step.status()));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = DhbPageSyncCommand.Scope.class, names = {"RECEIPT", "PAYMENT"})
+    void explicitFinancialWindowRetainsHistoricalProtection(DhbPageSyncCommand.Scope scope) {
+        when(orderSyncService.runOrderPull(any(), any(), any(), anyInt(), any())).thenReturn(orderResult());
+        service.runPage(manualCaller(), new DhbPageSyncCommand(scope, CONNECTOR_ID,
+                Instant.parse("2000-01-01T00:00:00Z"), Instant.parse("2026-11-25T00:00:00Z"), 100));
+        verify(orderSyncService).runOrderPull(argThat(c -> c.roles().contains("DHB_PROTECT_HISTORY")),
+                eq(ORDER_TASK_ID), any(), eq(100), any());
     }
 
     @Test

@@ -21,6 +21,9 @@ public interface DhbPageSyncJobStore {
 
     default void dependency(UUID tenant, UUID jobId, UUID dependencyId) {}
 
+    /** 仅在心跳版本未变且两层执行租约均已失效时收敛孤立任务。 */
+    boolean finishAbandoned(UUID tenant, DhbPageSyncJob observed, Instant now);
+
     void finish(
             UUID tenant,
             UUID jobId,

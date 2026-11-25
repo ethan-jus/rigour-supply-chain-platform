@@ -612,6 +612,8 @@ class DhbOrderSyncProgressTest {
                                             : List.<DhbClient.Payment>of();
                             return new DhbClient.Page<>(q.page(), rows.size(), rows);
                         });
+        when(projection.syncHistoricalPaymentStatus(any(), any()))
+                .thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED", null, null));
         when(projection.syncReceiptVouchers(any(), any()))
                 .thenReturn(
                         new com.rigour.order.api.v1.model.HistorySyncModels.Intake(
@@ -654,6 +656,8 @@ class DhbOrderSyncProgressTest {
         verify(projection)
                 .claimVoucherBackfill(
                         any(), argThat(c -> c.connectorId().equals(connector) && c.limit() == 1));
+        verify(projection).syncHistoricalPaymentStatus(any(), argThat(c -> "CANCELED".equals(c.sourcePaymentNo())
+                && "CANCELLED".equals(c.sourceStatus())));
         verifyNoMoreInteractions(projection);
     }
 

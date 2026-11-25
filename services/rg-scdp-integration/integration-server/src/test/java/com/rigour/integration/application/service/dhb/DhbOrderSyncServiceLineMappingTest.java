@@ -1675,6 +1675,8 @@ class DhbOrderSyncServiceLineMappingTest {
             return new DhbClient.Page<>(query.page(), rows.size(), rows);
         });
         when(client.downloadAttachment(any(), any())).thenReturn(new DhbClient.DownloadedFile(new byte[]{1,2}, "image/png"));
+        when(projection.syncHistoricalPaymentStatus(any(), any()))
+                .thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED", null, null));
         when(projection.syncReceiptVouchers(any(), any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED", null, null));
         var caller = new com.rigour.shared.context.CallerIdentity("SERVICE", actor, tenant, null, null, UUID.randomUUID(),
                 0, 0, 0, java.util.Set.of("DHB_PROTECT_HISTORY"), java.util.Set.of("integration:dhb:write"));

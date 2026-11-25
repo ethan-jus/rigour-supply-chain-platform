@@ -53,6 +53,11 @@ public interface OrderSalesOrderProjectionClient {
         throw new UnsupportedOperationException("必须先部署历史订单保护接口");
     }
 
+    default com.rigour.order.api.v1.model.HistorySyncModels.Intake syncHistoricalPaymentStatus(
+            CallerIdentity caller, com.rigour.order.api.v1.model.HistorySyncModels.FundPaymentStatus command) {
+        throw new UnsupportedOperationException("历史付款状态接口未实现");
+    }
+
     default com.rigour.order.api.v1.model.HistorySyncModels.Intake syncReceiptVouchers(
             CallerIdentity caller,
             com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers command) {

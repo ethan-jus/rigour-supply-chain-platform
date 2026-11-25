@@ -46,6 +46,9 @@ public interface OrderHistorySyncApi {
     @PostMapping(BASE + "/receipts/historical-status")
     ApiResponse<Intake> historicalReceiptStatus(@RequestBody Receipt command);
 
+    @PostMapping(BASE + "/payments/historical-status")
+    ApiResponse<Intake> historicalPaymentStatus(@RequestBody FundPaymentStatus command);
+
     @PostMapping(BASE + "/receipts/vouchers")
     ApiResponse<Intake> receiptVouchers(@RequestBody ReceiptVouchers command);
 

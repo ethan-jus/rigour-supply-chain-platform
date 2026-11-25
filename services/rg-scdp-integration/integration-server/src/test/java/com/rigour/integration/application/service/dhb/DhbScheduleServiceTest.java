@@ -46,6 +46,21 @@ class DhbScheduleServiceTest {
     }
 
     @Test
+    void staleRunningJobIsReconciledAndOriginalScheduleReleased() {
+        UUID id = UUID.randomUUID();
+        var stale = new com.rigour.integration.api.v1.model.DhbPageSyncJob(id, connector,
+                "BUSINESS_CHAIN", "RUNNING", "旧任务", now.minusSeconds(3600), now.minusSeconds(3500), null, null);
+        var ended = new com.rigour.integration.api.v1.model.DhbPageSyncJob(id, connector,
+                "BUSINESS_CHAIN", "FAILED", "已恢复", stale.startedAt(), stale.heartbeatAt(), now, null);
+        when(store.running()).thenReturn(List.of(new SyncScheduleStore.Entry(tenant.toString(),
+                plan(connector.toString(), id.toString(), stale.startedAt()), now)));
+        when(jobs.find(tenant, id)).thenReturn(Optional.of(stale));
+        when(worker.reconcile(tenant, stale)).thenReturn(ended);
+        service.tick();
+        verify(store).finish(tenant.toString(), connector.toString(), id.toString(), "FAILED", "已恢复", now);
+    }
+
+    @Test
     void configuringChainRequiresIntegrationWrite() {
         var command =
                 new SaveScheduleCommand(new ScheduleSettings(false, "FIXED_DELAY", 60, null), 0);
@@ -75,7 +90,7 @@ class DhbScheduleServiceTest {
                         command,
                         who.principalId().toString(),
                         now);
-        verifyNoInteractions(worker);
+        verify(worker, never()).startScheduled(any(), any(), any());
     }
 
     @Test
@@ -88,7 +103,8 @@ class DhbScheduleServiceTest {
         when(store.running()).thenReturn(List.of(bi));
         when(store.due(now)).thenReturn(List.of(bi));
         service.tick();
-        verifyNoInteractions(worker, jobs);
+        verifyNoInteractions(jobs);
+        verify(worker, never()).startScheduled(any(), any(), any());
         verify(store, never()).claim(any(), any(), anyLong(), any(), any());
     }
 
@@ -102,7 +118,7 @@ class DhbScheduleServiceTest {
                                         plan(connector.toString(), null, null),
                                         null)));
         service.tick();
-        verifyNoInteractions(worker);
+        verify(worker, never()).startScheduled(any(), any(), any());
     }
 
     @Test
@@ -124,6 +140,6 @@ class DhbScheduleServiceTest {
                         eq("UNKNOWN"),
                         anyString(),
                         eq(now));
-        verifyNoInteractions(worker);
+        verify(worker, never()).startScheduled(any(), any(), any());
     }
 }

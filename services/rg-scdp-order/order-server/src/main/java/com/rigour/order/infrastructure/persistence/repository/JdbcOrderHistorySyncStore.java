@@ -97,6 +97,30 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
 
     @Override
     @Transactional
+    public Intake historicalPaymentStatus(String tenant, FundPaymentStatus c) {
+        require(c != null && c.connectorId() != null, "付款来源连接不能为空");
+        id(c.sourcePaymentNo());
+        require(Set.of("CONFIRMED", "PENDING", "CANCELLED").contains(c.sourceStatus()), "付款来源状态未知");
+        var protectedResult = new ManualOrderSyncGuard(jdbc).check(tenant, c.connectorId(), c.sourceOrderNo(),
+                null, c.sourcePaymentNo(), "PAYMENT_STATUS", c);
+        if (protectedResult != null) return protectedResult;
+        var funds = jdbc.queryForList("SELECT * FROM order_fund_document WHERE tenant_id=? AND connector_id=?"
+                + " AND source_system_code='DINGHUOBAO' AND direction_code='PAYMENT' AND source_document_no=?"
+                + " AND deleted=0 FOR UPDATE", tenant, c.connectorId().toString(), c.sourcePaymentNo());
+        for (var fund : funds) {
+            require(Objects.equals(text(fund, "source_order_no"), c.sourceOrderNo()), "付款单来源订单发生变化，需核对");
+            if (Objects.equals(text(fund, "document_status_code"), c.sourceStatus())) continue;
+            auditChange(tenant, c.connectorId(), "PAYMENT_STATUS", c.sourcePaymentNo(), fund, c);
+            jdbc.update("UPDATE order_fund_document SET document_status_code=?,revision=revision+1,"
+                    + "updated_by='SYSTEM',updated_time=? WHERE tenant_id=? AND id=?", c.sourceStatus(),
+                    ts(Instant.now()), tenant, num(fund, "id"));
+            queryCache.changed(tenant);
+        }
+        return new Intake("SYNCED", null, funds.isEmpty() ? "没有已入账付款，不创建历史资金" : null);
+    }
+
+    @Override
+    @Transactional
     public Intake receiptVouchers(String tenant, String actor, ReceiptVouchers c) {
         queryCache.changed(tenant);
         require(c != null && c.connectorId() != null, "凭证来源连接不能为空");
@@ -1235,7 +1259,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         ? List.<Map<String, Object>>of()
                         : source(t, c.connectorId(), c.sourceOrderNo(), true);
         String group = sources.isEmpty() ? null : text(sources.getFirst(), "group_id");
-        if (!sources.isEmpty() && Set.of("CANCELLED", "DELETED").contains(text(sources.getFirst(), "state")))
+        if (!sources.isEmpty() && Set.of("CANCELLED", "DELETED").contains(text(sources.getFirst(), "state"))
+                && !"CANCELLED".equals(c.status()))
             return new Intake("ORDER_CANCELLED", group, "订单已取消，回款保留在来源记录中");
         Long customer = c.customerId();
         if (!sources.isEmpty()) {
