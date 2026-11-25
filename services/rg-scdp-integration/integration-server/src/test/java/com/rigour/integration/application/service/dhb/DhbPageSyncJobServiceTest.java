@@ -20,6 +20,40 @@ class DhbPageSyncJobServiceTest {
     final Instant now = Instant.parse("2026-09-22T08:00:00Z");
 
     @Test
+    void multiDayInterruptionRespectsCrmWindowLimitAndChecksEverySlice() {
+        var store = mock(DhbPageSyncJobStore.class);
+        var crm = mock(CrmDhbDomainSyncClient.class);
+        var started = now.minus(Duration.ofHours(36));
+        var boundary = started.plus(Duration.ofDays(1));
+        var job = new DhbPageSyncJob(id, connector, "BUSINESS_CHAIN", "RUNNING", "中断",
+                started, started.plusSeconds(40), null, null);
+        var active = new com.rigour.merchant.api.v1.model.CustomerSyncJob(UUID.randomUUID(), connector,
+                "RUNNING", "处理中", now, now, null);
+        when(crm.customerJobs(any(), eq(connector), any(), any())).thenAnswer(call -> {
+            Instant from = call.getArgument(2), to = call.getArgument(3);
+            assertThat(Duration.between(from, to)).isLessThanOrEqualTo(Duration.ofDays(1));
+            return from.equals(boundary) ? List.of(active) : List.of();
+        });
+        var service = new DhbPageSyncJobService(mock(DhbSyncOrchestrationService.class), store,
+                Clock.fixed(now, ZoneOffset.UTC), crm);
+        try {
+            service.reconcile(tenant, job);
+            verify(crm).customerJobs(any(), eq(connector), eq(started), eq(boundary));
+            verify(crm).customerJobs(any(), eq(connector), eq(boundary), eq(now));
+            verify(store, never()).finishAbandoned(any(), any(), any());
+            when(crm.customerJobs(any(), eq(connector), eq(boundary), eq(now))).thenReturn(List.of());
+            service.reconcile(tenant, job);
+            verify(store).finishAbandoned(tenant, job, now);
+            clearInvocations(store);
+            var completed = new com.rigour.merchant.api.v1.model.CustomerSyncJob(UUID.randomUUID(), connector,
+                    "SUCCEEDED", "完成", now, now, null);
+            when(crm.customerJobs(any(), eq(connector), any(), any())).thenReturn(List.of(completed, completed));
+            service.reconcile(tenant, job);
+            verify(store, never()).finishAbandoned(any(), any(), any());
+        } finally { service.close(); }
+    }
+
+    @Test
     void staleRunningJobChecksRemoteWorkBeforeAtomicRecovery() {
         var store = mock(DhbPageSyncJobStore.class);
         var crm = mock(CrmDhbDomainSyncClient.class);

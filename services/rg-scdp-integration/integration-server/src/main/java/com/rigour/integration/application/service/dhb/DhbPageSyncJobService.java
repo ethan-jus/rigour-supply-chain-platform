@@ -181,10 +181,17 @@ public class DhbPageSyncJobService {
             try {
                 var caller = DhbSyncOrchestrationService.serviceCaller(tenant);
                 // 心跳失联不能证明远程执行结束；核对整个未结束窗口，任何在途依赖都保留占位。
-                var remote = crm.customerJobs(caller, job.connectorId(), job.startedAt(), clock.instant());
-                if (remote == null || remote.stream().anyMatch(j ->
-                        !job.connectorId().equals(j.connectorId())
-                                || !Set.of("SUCCEEDED", "FAILED").contains(j.status()))) return job;
+                Instant end = clock.instant();
+                for (Instant from = job.startedAt(); from.isBefore(end); ) {
+                    Instant to = from.plus(Duration.ofDays(1));
+                    if (to.isAfter(end)) to = end;
+                    var remote = crm.customerJobs(caller, job.connectorId(), from, to);
+                    // CRM 至多返回两条；命中上限时无法证明没有遗漏在途任务。
+                    if (remote == null || remote.size() >= 2 || remote.stream().anyMatch(j ->
+                            !job.connectorId().equals(j.connectorId())
+                                    || !Set.of("SUCCEEDED", "FAILED").contains(j.status()))) return job;
+                    from = to;
+                }
                 if (job.dependencyJobId() != null) {
                     var dependency = crm.customerJob(caller, job.dependencyJobId());
                     if (dependency == null || !job.connectorId().equals(dependency.connectorId())
