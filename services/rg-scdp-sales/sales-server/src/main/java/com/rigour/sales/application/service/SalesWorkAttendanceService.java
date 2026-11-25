@@ -596,6 +596,7 @@ public class SalesWorkAttendanceService {
     public WorkDayTrackView managementTrack(UUID salesProfileId, LocalDate date) {
         CallerIdentity caller = requireCaller("sales:location:sensitive:read");
         if (salesProfileId == null || date == null) throw badRequest("销售人员和业务日期不能为空");
+        fieldwork.requireProfile(salesProfileId, SalesManagementScope.FIELDWORK_READ);
         fieldwork.requireProfile(salesProfileId, "sales:location:sensitive:read");
         WorkDayTrackView result = buildTrack(caller.tenantId(), salesProfileId, date, true);
         appendAudit(

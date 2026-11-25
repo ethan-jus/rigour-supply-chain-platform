@@ -12,7 +12,7 @@ public final class AppScopeRules {
 
     public static String objectType(String action) {
         if (action == null) return null;
-        if (Set.of("sales:dashboard:read", "sales:location:sensitive:read", "sales:recording:sensitive:play",
+        if (Set.of("sales:dashboard:read", "sales:fieldwork:read", "sales:visit-record:read", "sales:location:sensitive:read", "sales:recording:sensitive:play",
                 "sales:evidence:sensitive:read", "sales:visit:review", "sales:risk:read", "sales:risk:write").contains(action))
             return "EMPLOYEE";
         if (action.startsWith("order:logistics-cost:")) return "INVENTORY";

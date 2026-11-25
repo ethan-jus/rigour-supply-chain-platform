@@ -9,6 +9,9 @@ import org.springframework.stereotype.Service;
 
 @Service
 public final class SalesManagementScope {
+    static final String FIELDWORK_READ = "sales:fieldwork:read";
+    static final String VISIT_RECORD_READ = "sales:visit-record:read";
+
     private final SalesManagementDirectory directory;
     public SalesManagementScope(SalesManagementDirectory directory) { this.directory=directory; }
     public Access resolve(CallerIdentity caller, String action) {

@@ -166,6 +166,35 @@ class BatchAppAuthorizationTest {
     }
 
     @Test
+    void salesMenusUnionOnlyTheRolesGrantingThatPage() {
+        String fieldwork = "sales:fieldwork:read", visits = "sales:visit-record:read";
+        UUID workPage = UUID.randomUUID(), visitPage = UUID.randomUUID();
+        when(settings.enabledActionNodes(actor, fieldwork)).thenReturn(Set.of(workPage));
+        when(settings.enabledActionNodes(actor, visits)).thenReturn(Set.of(visitPage));
+        contexts.put(actor, new Context(true, false, "ACTIVE", 11, Set.of(fieldwork, visits)));
+        var cityManager = role("DEPARTMENT", Set.of(workPage));
+        var salesperson = role("SELF", Set.of(workPage, visitPage));
+        var unrelated = role("ALL", Set.of(dashboardNode));
+        when(roles.authorizationRoles(actor)).thenReturn(List.of(
+                definition(cityManager), definition(salesperson), definition(unrelated)));
+
+        var policies = store.authorizations(caller(actor), List.of(fieldwork, visits));
+        assertThat(policies.getFirst().clauses()).extracting(c -> c.scopeMode())
+                .containsExactlyInAnyOrder("SELF", "DEPARTMENT");
+        assertThat(policies.getFirst().clauses()).filteredOn(c -> c.roleId().equals(cityManager.id()))
+                .singleElement().satisfies(c -> {
+                    assertThat(c.objectType()).isEqualTo("EMPLOYEE");
+                    assertThat(c.departments().references()).containsExactly("42");
+                    assertThat(c.includeDescendants()).isFalse();
+                });
+        assertThat(policies.getLast().clauses()).singleElement().satisfies(c -> {
+            assertThat(c.roleId()).isEqualTo(salesperson.id());
+            assertThat(c.objectType()).isEqualTo("EMPLOYEE");
+            assertThat(c.scopeMode()).isEqualTo("SELF");
+        });
+    }
+
+    @Test
     void anotherTenantOrUserNeverBorrowsAssignedRolesOrEmployee() {
         var other = new Actor("TENANT", UUID.randomUUID(), UUID.randomUUID());
         addActor(other, "E2", 99L);

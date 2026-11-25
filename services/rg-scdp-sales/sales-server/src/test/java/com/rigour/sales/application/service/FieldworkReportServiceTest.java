@@ -112,7 +112,9 @@ class FieldworkReportServiceTest {
 
     @BeforeEach
     void seed() throws Exception {
-        bind(Set.of("sales:dashboard:read"));
+        bind(Set.of("sales:dashboard:read", "sales:fieldwork:read", "sales:visit-record:read"));
+        when(scope.resolve(any(), eq("sales:fieldwork:read"))).thenReturn(access);
+        when(scope.resolve(any(), eq("sales:visit-record:read"))).thenReturn(access);
         when(scope.resolve(any(), eq("sales:dashboard:read"))).thenReturn(access);
         when(facts.roster(tenant, day, access))
                 .thenReturn(
@@ -175,6 +177,18 @@ class FieldworkReportServiceTest {
                                                 new FieldworkSources.Contacts(
                                                         "READY", now, List.of(contact))),
                                 Map.of()));
+    }
+
+    @Test
+    void eachPageRequiresItsOwnMenuBeforeReadingData() throws Exception {
+        var filters = new FieldworkReportService.Filters(null, null, false, null, null, false, null, 1, 10);
+        bind(Set.of("sales:visit-record:read", "sales:dashboard:read"));
+        assertThatThrownBy(() -> service.report(day, filters)).isInstanceOf(AuthorizationDeniedException.class);
+        bind(Set.of("sales:fieldwork:read", "sales:dashboard:read"));
+        assertThatThrownBy(() -> service.ledger(day, day, null, null, null, false, null, null,
+                null, null, null, 1, 10)).isInstanceOf(AuthorizationDeniedException.class);
+        assertThatThrownBy(() -> service.visitContent(a)).isInstanceOf(AuthorizationDeniedException.class);
+        verifyNoInteractions(facts);
     }
 
     @Test
@@ -416,7 +430,7 @@ class FieldworkReportServiceTest {
     @Test void riskQueueIntersectsItsOwnEmployeeScopeWithDashboardScope() throws Exception {
         var f=new FieldworkReportService.Filters(null,null,false,null,null,true,"risk",1,20);
         assertThatThrownBy(()->service.report(day,f,true)).isInstanceOf(AuthorizationDeniedException.class);
-        bind(Set.of("sales:dashboard:read","sales:risk:read"));
+        bind(Set.of("sales:fieldwork:read","sales:risk:read"));
         when(scope.resolve(any(),eq("sales:risk:read"))).thenReturn(new SalesManagementDirectory.Access(false,Set.of("A")));
         when(facts.issues(tenant,day,access)).thenReturn(List.of(new StaffIssue(a,new Issue(UUID.randomUUID(),null,"GAP","轨迹缺口","OPEN")),
                 new StaffIssue(b,new Issue(UUID.randomUUID(),null,"GAP","范围外","OPEN"))));

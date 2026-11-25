@@ -17,6 +17,7 @@ public class SalesFieldworkEvidenceService {
     }
     public DeviceEvidence devices(UUID profile,UUID day) {
         var caller=SalesWorkContextService.requireTenantCaller();
+        fieldwork.requireProfile(profile,SalesManagementScope.FIELDWORK_READ);
         fieldwork.requireProfile(profile,"sales:risk:read");
         if(days.findWorkDay(caller.tenantId(),profile,day).isEmpty()) throw new RequestValidationException("当日作业不存在");
         var events=repository.devices(caller.tenantId(),profile,day);
@@ -24,11 +25,13 @@ public class SalesFieldworkEvidenceService {
         String comparison=references.size()>1?"DIFFERENT":events.isEmpty()||events.stream().anyMatch(e->e.installationReference()==null)?"UNKNOWN":"SAME";
         return new DeviceEvidence(day,"NOT_OBTAINED","NOT_CONNECTED",comparison,events);
     }
-    public VisitHistory history(UUID visit,int page,int size,boolean throughVisit) {
+    public VisitHistory history(UUID visit,int page,int size,boolean throughVisit,boolean fromFieldwork) {
         var caller=SalesWorkContextService.requireTenantCaller();
-        fieldwork.requireVisit(visit,"sales:risk:read");
+        String menu = fromFieldwork ? SalesManagementScope.FIELDWORK_READ : SalesManagementScope.VISIT_RECORD_READ;
+        var visible = fieldwork.access(menu).intersect(fieldwork.access("sales:risk:read"));
+        fieldwork.requireVisibleVisit(caller.tenantId(), visit, visible, menu);
         if(page<1||page>100000||size<1||size>50) throw new RequestValidationException("分页条件无效");
         var current=repository.capture(caller.tenantId(),visit).orElseThrow(()->new RequestValidationException("拜访不存在"));
-        return repository.history(caller.tenantId(),current,fieldwork.access("sales:risk:read"),page,size,throughVisit);
+        return repository.history(caller.tenantId(),current,visible,page,size,throughVisit);
     }
 }
