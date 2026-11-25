@@ -12,6 +12,8 @@ import com.rigour.erp.infrastructure.persistence.mapper.*;
 import com.rigour.shared.context.*;
 
 import org.junit.jupiter.api.*;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.aop.framework.ProxyFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -33,6 +35,7 @@ public class ProcurementCostRecordPersistenceTest extends ProcurementPersistence
     ProcurementCostRecordService costService;
     ErpCostReferenceMapper sourceMapper;
     JdbcProcurementGoodsCosts goodsProjection;
+    MybatisPlusCostAnalyticsSource costProjection;
 
     @BeforeEach
     void costSetup() throws Exception {
@@ -108,6 +111,8 @@ public class ProcurementCostRecordPersistenceTest extends ProcurementPersistence
                 "CREATE ALIAS IF NOT EXISTS MD5 FOR"
                     + " 'com.rigour.erp.infrastructure.persistence.repository.ProcurementCostRecordPersistenceTest.md5'");
         goodsProjection = new JdbcProcurementGoodsCosts(adapted, JSON, scopes);
+        costProjection = new MybatisPlusCostAnalyticsSource(session.getMapper(ErpCostMapper.class));
+        costProjection.procurementGoods(goodsProjection);
         records = new JdbcProcurementCostRecords(adapted, scopes);
         costService = transaction(new ProcurementCostRecordService(records, costs, refs));
         var user = UUID.randomUUID();
@@ -410,6 +415,115 @@ public class ProcurementCostRecordPersistenceTest extends ProcurementPersistence
                 .isEqualByComparingTo(net.subtract(BigDecimal.ONE));
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM erp_cost_entry", Integer.class))
                 .isZero();
+    }
+
+    @Test
+    void publishedProcurementPayableReplacesLegacyGoodsButNeverFreight() {
+        var order = confirmedOrder();
+        String goodsId = insertLegacyCost(order.id(), "PURCHASE");
+        String freightId = insertLegacyCost(order.id(), "PROCUREMENT_FREIGHT");
+        var projected = costProjection.page(tenant, "").items();
+
+        assertThat(projected).hasSize(3);
+        var goods = byId(projected, goodsId);
+        assertThat(JSON.readTree(goods.get("data_json")).path("_costTreatment").asText())
+                .isEqualTo("REFERENCE");
+        assertThat(goods.get("amount")).isEqualTo("25.71");
+        assertThat(JSON.readTree(byId(projected, freightId).get("data_json")).has("_costTreatment"))
+                .isFalse();
+        assertThat(projected.stream().filter(r -> order.procurementNo().equals(r.get("document_no"))))
+                .singleElement()
+                .satisfies(r -> assertThat(new BigDecimal(r.get("amount"))).isEqualByComparingTo(order.totalAmount()));
+        assertThat(jdbc.queryForObject("SELECT data_json FROM erp_cost_entry WHERE id=?", String.class, goodsId))
+                .doesNotContain("_costTreatment");
+
+        jdbc.update("UPDATE erp_procurement_order SET total_amount=0 WHERE id=?", order.id());
+        jdbc.update(
+                "UPDATE erp_procurement_order_line SET unit_price=0,line_amount=0 WHERE tenant_id=? AND procurement_no=?",
+                tenant,
+                order.procurementNo());
+        projected = costProjection.page(tenant, "").items();
+        assertThat(JSON.readTree(byId(projected, goodsId).get("data_json")).path("_costTreatment").asText())
+                .isEqualTo("REFERENCE");
+        assertThat(projected.stream().filter(r -> order.procurementNo().equals(r.get("document_no"))))
+                .singleElement()
+                .satisfies(r -> assertThat(new BigDecimal(r.get("amount"))).isZero());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+        "status_code='CANCELLED'",
+        "target_warehouse_code='MISSING'",
+        "confirmation_status_code='DRAFT'",
+        "deleted=1"
+    })
+    void unpublishedProcurementDoesNotSuppressConfirmedLegacyGoods(String change) {
+        var order = confirmedOrder();
+        String goodsId = insertLegacyCost(order.id(), "PURCHASE");
+        jdbc.update("UPDATE erp_procurement_order SET " + change + " WHERE id=?", order.id());
+
+        var projected = costProjection.page(tenant, "").items();
+        assertThat(projected).extracting(r -> r.get("id")).containsExactly(goodsId);
+        var legacy = projected.getFirst();
+        assertThat(legacy).containsEntry("amount", "25.71").containsEntry("status_code", "CONFIRMED");
+        assertThat(JSON.readTree(legacy.get("data_json")).has("_costTreatment")).isFalse();
+    }
+
+    @Test
+    void invalidProcurementKeepsManualGoodsUntilPublishedPayableRecovers() {
+        var order = confirmedOrder();
+        String goodsId = insertLegacyCost(order.id(), "PURCHASE");
+        jdbc.update("UPDATE erp_procurement_order SET total_amount=total_amount+1 WHERE id=?", order.id());
+
+        var projected = costProjection.page(tenant, "").items();
+        assertThat(projected).hasSize(2);
+        assertThat(JSON.readTree(byId(projected, goodsId).get("data_json")).has("_costTreatment"))
+                .isFalse();
+        assertThat(projected.stream().filter(r -> order.procurementNo().equals(r.get("document_no"))))
+                .singleElement()
+                .satisfies(r -> {
+                    assertThat(r.get("amount")).isNull();
+                    assertThat(JSON.readTree(r.get("data_json")).path("_costTreatment").asText())
+                            .isEqualTo("REVIEW");
+                });
+        jdbc.update("UPDATE erp_procurement_order SET total_amount=? WHERE id=?", order.totalAmount(), order.id());
+        var recovered = byId(costProjection.page(tenant, "").items(), goodsId);
+        assertThat(JSON.readTree(recovered.get("data_json")).path("_costTreatment").asText())
+                .isEqualTo("REFERENCE");
+    }
+
+    @Test
+    void procurementOfAnotherTenantCannotSuppressLegacyGoods() {
+        var order = confirmedOrder();
+        String goodsId = insertLegacyCost(order.id(), "PURCHASE");
+        jdbc.update("UPDATE erp_procurement_order SET tenant_id=? WHERE id=?", UUID.randomUUID().toString(), order.id());
+        var projected = costProjection.page(tenant, "").items();
+        assertThat(projected).extracting(r -> r.get("id")).containsExactly(goodsId);
+        assertThat(JSON.readTree(projected.getFirst().get("data_json")).has("_costTreatment")).isFalse();
+    }
+
+    private String insertLegacyCost(long orderId, String type) {
+        String id = UUID.randomUUID().toString();
+        jdbc.update(
+                """
+                INSERT INTO erp_cost_entry(
+                  id,tenant_id,document_no,request_id,category_code,title,type_code,city_code,warehouse_id,
+                  cost_date,amount,payment_status_code,status_code,data_json,sources_json,created_by,updated_by
+                ) VALUES(?,?,?,?,'PURCHASE','采购成本',?,'C1',2,'2026-11-04',25.71,'UNPAID','CONFIRMED',?,'[]','actor','actor')
+                """,
+                id,
+                tenant,
+                "LEGACY-" + id,
+                id,
+                type,
+                """
+                {"typeCode":"%s","goods":{"purchaseOrderId":%d}}
+                """.formatted(type, orderId));
+        return id;
+    }
+
+    private static Map<String, String> byId(List<Map<String, String>> rows, String id) {
+        return rows.stream().filter(r -> id.equals(r.get("id"))).findFirst().orElseThrow();
     }
 
     @Test

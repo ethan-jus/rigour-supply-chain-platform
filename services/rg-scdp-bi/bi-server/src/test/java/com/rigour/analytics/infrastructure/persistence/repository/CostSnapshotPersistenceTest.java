@@ -352,6 +352,37 @@ class CostSnapshotPersistenceTest {
     }
 
     @Test
+    void failedRefreshCanReadOnlyLatestExpiredSnapshotForSameTenant() {
+        String tenantId = tenant.toString();
+        projector.refresh(tenantId);
+        String historical = store.state(tenantId).snapshotId();
+        store.snapshot(tenantId, historical);
+        jdbc.update("UPDATE bi_cost_snapshot SET versions_json='{}' WHERE id=?", historical);
+        projector.refresh(tenantId);
+        String latest = store.state(tenantId).snapshotId();
+        assertThat(latest).isNotEqualTo(historical);
+        jdbc.update(
+                "UPDATE bi_cost_snapshot SET generated_at=?",
+                LocalDateTime.of(2026, 10, 17, 0, 0));
+
+        projector.failed(tenantId);
+        var lastGood = store.snapshot(tenantId, latest);
+        assertThat(lastGood.generatedAt()).isEqualTo(Instant.parse("2026-10-17T00:00:00Z"));
+        assertThat(lastGood.records()).hasSize(1001);
+        assertThat(store.state(tenantId).status()).isEqualTo("FAILED");
+        assertThatThrownBy(() -> store.snapshot(tenantId, historical)).hasMessageContaining("过期");
+        assertThatThrownBy(() -> store.snapshot(UUID.randomUUID().toString(), latest))
+                .hasMessageContaining("过期");
+
+        projector.refresh(tenantId);
+        String recovered = store.state(tenantId).snapshotId();
+        assertThat(recovered).isNotEqualTo(latest);
+        assertThat(store.state(tenantId).status()).isEqualTo("SUCCESS");
+        assertThat(store.snapshot(tenantId, recovered).records()).hasSize(1001);
+        assertThatThrownBy(() -> store.snapshot(tenantId, latest)).hasMessageContaining("过期");
+    }
+
+    @Test
     void exportOwnershipAndCancellationCannotBeOverwrittenByLateWorker() {
         var id = UUID.randomUUID().toString();
         exports.create(

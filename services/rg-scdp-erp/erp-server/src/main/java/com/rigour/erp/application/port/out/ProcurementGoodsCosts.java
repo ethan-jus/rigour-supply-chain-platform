@@ -12,7 +12,7 @@ public interface ProcurementGoodsCosts {
 
     Optional<ErpCostDetailView> detail(String tenant, String id, String action);
 
-    String reconcileLegacy(String tenant, String dataJson);
+    void reconcileLegacy(String tenant, List<Map<String, String>> ledgerRows);
 
     default Map<String, String> warehouseDepartments(String tenant) {
         return Map.of();

@@ -1,6 +1,7 @@
 package com.rigour.order.infrastructure.persistence.repository;
 
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.rigour.order.api.v1.model.LogisticsImportModels.CarrierOrder;
 import com.rigour.order.application.port.out.AnalyticsSourceSnapshotStore.Page;
 import com.rigour.order.infrastructure.persistence.entity.OrderLogisticsCostEntity;
 import com.rigour.order.infrastructure.persistence.mapper.OrderLogisticsCostMapper;
@@ -56,7 +57,7 @@ public class MybatisPlusCostAnalyticsSource {
     }
 
     public String version(String tenant) {
-        String base = mapper.analyticsVersion(tenant) + ":transport-types-v5-readiness";
+        String base = mapper.analyticsVersion(tenant) + ":transport-types-v6-payment";
         if (jdbc == null) return base;
         return base
                 + ":cost-revisions:"
@@ -117,9 +118,43 @@ public class MybatisPlusCostAnalyticsSource {
             }
             items.add(values);
         }
+        enrichPlatformPayments(tenant, items);
         enrichSavedPlatformAllocations(tenant, items);
         enrichLegacyAttribution(tenant, items);
         return new Page(version, items);
+    }
+
+    /** 同运输详情取最新平台付款事实，独立于台账金额、分摊和状态。 */
+    void enrichPlatformPayments(String tenant, List<Map<String, String>> items) {
+        if (jdbc == null || items.isEmpty()) return;
+        var args = new ArrayList<Object>();
+        args.add(tenant);
+        items.forEach(r -> args.add(r.get("id")));
+        Map<String, String> payments =
+                jdbc.query(
+                        "SELECT cost_id,COALESCE(latest_source_json,source_json) AS payment_source"
+                            + " FROM order_logistics_import_order WHERE tenant_id=? AND"
+                            + " source_channel='API' AND cost_id IN ("
+                            + String.join(",", Collections.nCopies(items.size(), "?"))
+                            + ")",
+                        rows -> {
+                            Map<String, String> result = new HashMap<>();
+                            while (rows.next()) {
+                                var order =
+                                        json.readValue(
+                                                rows.getString("payment_source"), CarrierOrder.class);
+                                result.merge(
+                                        rows.getString("cost_id"),
+                                        JdbcLogisticsImportStore.platformPaymentStatus(order),
+                                        (first, second) -> first.equals(second) ? first : "NEEDS_REVIEW");
+                            }
+                            return result;
+                        },
+                        args.toArray());
+        for (var row : items) {
+            String payment = payments.get(row.get("id"));
+            if (payment != null) row.put("payment_status_code", payment);
+        }
     }
 
     /** 旧平台记录在确认前只存了业务关系；按保存金额投影，不能用最新平台账单重算历史成本。 */

@@ -14,6 +14,7 @@ import tools.jackson.databind.node.ObjectNode;
 import java.math.BigDecimal;
 import java.time.*;
 import java.util.*;
+import java.util.stream.Collectors;
 
 @Repository
 public class JdbcProcurementGoodsCosts implements ProcurementGoodsCosts {
@@ -97,7 +98,7 @@ WHERE d.tenant_id=? AND d.deleted=0 AND d.confirmation_status_code='CONFIRMED' A
     }
 
     public String version(String tenant) {
-        List<String> parts = new ArrayList<>(List.of("goods-order-payable-v3"));
+        List<String> parts = new ArrayList<>(List.of("goods-order-payable-v4"));
         for (String table :
                 List.of(
                         "erp_procurement_order",
@@ -199,40 +200,59 @@ WHERE d.tenant_id=? AND d.deleted=0 AND d.confirmation_status_code='CONFIRMED' A
                                 number(r, "line_id"))));
     }
 
-    public String reconcileLegacy(String tenant, String raw) {
-        var data = (ObjectNode) json.readTree(raw);
-        if ("PROCUREMENT_FREIGHT".equals(data.path("typeCode").asText())) return raw;
-        var id = data.path("goods").path("purchaseOrderId");
-        if (!id.isNumber()) return raw;
-        Integer count =
-                jdbc.queryForObject(
-                        "SELECT COUNT(*) FROM erp_procurement_order WHERE tenant_id=? AND id=? AND"
-                                + " deleted=0 AND confirmation_status_code='CONFIRMED'",
-                        Integer.class,
-                        tenant,
-                        id.asLong());
-        if (count != null && count > 0) {
-            data.put("_costTreatment", "REFERENCE");
-            data.put("_costTreatmentReason", "已有已确认采购单货款来源；原人工采购记录保留待核对，不重复计入货款");
-            return json.writeValueAsString(data);
+    @Override
+    public void reconcileLegacy(String tenant, List<Map<String, String>> ledgerRows) {
+        record LinkedGoods(Map<String, String> row, ObjectNode data, long orderId) {}
+
+        List<LinkedGoods> linked = new ArrayList<>();
+        Set<Long> orderIds = new LinkedHashSet<>();
+        for (var row : ledgerRows) {
+            if (!"PURCHASE".equals(row.get("category_code"))
+                    || "PROCUREMENT_FREIGHT".equals(row.get("type_code"))
+                    || row.get("data_json") == null
+                    || !(json.readTree(row.get("data_json")) instanceof ObjectNode data)
+                    || "PROCUREMENT_FREIGHT".equals(data.path("typeCode").asText())) continue;
+            var orderId = data.path("goods").path("purchaseOrderId");
+            if (!orderId.isIntegralNumber() || !orderId.canConvertToLong()) continue;
+            linked.add(new LinkedGoods(row, data, orderId.asLong()));
+            orderIds.add(orderId.asLong());
         }
-        return raw;
+        if (orderIds.isEmpty()) return;
+
+        List<Object> args = new ArrayList<>();
+        args.add(tenant);
+        args.addAll(orderIds);
+        var published =
+                jdbc.queryForList(
+                                ORDER_SELECT + " AND d.id IN ("
+                                        + String.join(",", Collections.nCopies(orderIds.size(), "?"))
+                                        + ")",
+                                args.toArray())
+                        .stream()
+                        .filter(row -> goodsIssue(row) == null)
+                        .map(row -> number(row, "order_id"))
+                        .collect(Collectors.toSet());
+        for (var item : linked) {
+            if (!published.contains(item.orderId())) continue;
+            item.data().put("_costTreatment", "REFERENCE");
+            item.data().put("_costTreatmentReason", "已有计入成本的采购单整单货款；原人工采购记录保留追溯");
+            item.row().put("data_json", json.writeValueAsString(item.data()));
+        }
+    }
+
+    private static String goodsIssue(Map<String, Object> row) {
+        return ProcurementGoodsSourceRules.issue(
+                Objects.toString(row.get("source_system_code"), "SYSTEM"),
+                Optional.ofNullable(number(row, "line_count")).orElse(0L),
+                Optional.ofNullable(number(row, "unknown_prices")).orElse(0L),
+                (BigDecimal) row.get("order_goods_amount"),
+                (BigDecimal) row.get("goods_amount"));
     }
 
     private Map<String, String> fact(Map<String, Object> r) {
         BigDecimal price = (BigDecimal) r.get("unit_price");
         String system = Objects.toString(r.get("source_system_code"), "SYSTEM");
-        String issue =
-                ProcurementGoodsSourceRules.issue(
-                        system,
-                        r.get("line_count") == null
-                                ? 0L
-                                : ((Number) r.get("line_count")).longValue(),
-                        r.get("unknown_prices") == null
-                                ? 0L
-                                : ((Number) r.get("unknown_prices")).longValue(),
-                        (BigDecimal) r.get("order_goods_amount"),
-                        (BigDecimal) r.get("goods_amount"));
+        String issue = goodsIssue(r);
         boolean unknown = issue != null;
         boolean orderLevel = r.get("line_id") == null;
         BigDecimal amount =

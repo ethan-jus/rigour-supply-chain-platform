@@ -46,6 +46,8 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                 "CREATE TABLE order_logistics_cost(tenant_id VARCHAR(36),carrier_code"
                         + " VARCHAR(40),tracking_no VARCHAR(100))");
         jdbc.execute(
+                "CREATE TABLE order_logistics_cost_guard(tenant_id VARCHAR(36) PRIMARY KEY,version BIGINT)");
+        jdbc.execute(
                 "CREATE TABLE order_logistics_cost_audit(tenant_id VARCHAR(36),entry_id"
                         + " VARCHAR(36),action_code VARCHAR(40),actor_id VARCHAR(36),reason"
                         + " VARCHAR(500),snapshot_json CLOB)");
@@ -202,9 +204,6 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
         jdbc.execute("ALTER TABLE order_logistics_cost ADD amount_manually_edited INT DEFAULT 0");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD sources_json CLOB DEFAULT '[]'");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD updated_time TIMESTAMP");
-        jdbc.execute(
-                "CREATE TABLE order_logistics_cost_guard(tenant_id VARCHAR(36) PRIMARY KEY,version"
-                        + " BIGINT)");
         jdbc.execute("CREATE ALIAS JSON_SET FOR '" + getClass().getName() + ".costJsonSet'");
         jdbc.update(
                 "INSERT INTO"
@@ -288,6 +287,34 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                 .isEqualTo(changed.revision());
         assertThat(store.receive("T1", "SYSTEM", api("45.00", "b")).syncOutcome())
                 .isEqualTo("UNCHANGED");
+    }
+
+    @Test
+    void paymentOnlyChangeInvalidatesAnalyticsWithoutChangingTheAcceptedBill() {
+        jdbc.update("INSERT INTO order_logistics_cost_guard VALUES('T1',0)");
+        var json = JsonMapper.builder().build();
+        var initial = (tools.jackson.databind.node.ObjectNode) json.valueToTree(api("25.71", "a").order());
+        initial.put("paidAmount", BigDecimal.ZERO);
+        initial.withObject("facts").put("unpaidAmount", new BigDecimal("25.71"));
+        var unpaid =
+                store.receive(
+                        "T1",
+                        "SYSTEM",
+                        new ApiSource("connector", "a".repeat(64), json.treeToValue(initial, CarrierOrder.class)));
+        store.generated("T1", unpaid.id(), unpaid.revision(), "C1");
+        var before = store.byCost("T1", "C1").orElseThrow();
+
+        var after = store.receive("T1", "SYSTEM", api("25.71", "b"));
+        assertThat(after.sourceDifference()).isFalse();
+        assertThat(after.revision()).isEqualTo(before.revision());
+        assertThat(after.order().paidAmount()).isEqualByComparingTo("0");
+        assertThat(after.latestOrder().paidAmount()).isEqualByComparingTo("25.71");
+        assertThat(jdbc.queryForObject("SELECT version FROM order_logistics_cost_guard", Long.class))
+                .isEqualTo(1L);
+
+        store.receive("T1", "SYSTEM", api("25.71", "b"));
+        assertThat(jdbc.queryForObject("SELECT version FROM order_logistics_cost_guard", Long.class))
+                .isEqualTo(1L);
     }
 
     @Test
@@ -612,9 +639,6 @@ CREATE TABLE order_logistics_import_order(id VARCHAR(36) PRIMARY KEY,tenant_id V
                                 "a".repeat(64),
                                 json.treeToValue(tree, CarrierOrder.class)));
         store.generated("T1", first.id(), first.revision(), "C1");
-        jdbc.execute(
-                "CREATE TABLE order_logistics_cost_guard(tenant_id VARCHAR(36) PRIMARY KEY, version"
-                        + " BIGINT)");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD amount DECIMAL(18,2)");
         jdbc.execute("ALTER TABLE order_logistics_cost ADD status_code VARCHAR(20)");
         jdbc.update(

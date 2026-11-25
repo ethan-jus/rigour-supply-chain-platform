@@ -168,6 +168,21 @@ class CostSourceNormalizerTest {
     }
 
     @Test
+    void unsupportedOrNonOrderTransportPaymentValuesRemainUnknown() {
+        var row = row();
+        row.put("payer_code", "COMPANY");
+        row.put("payment_status_code", "PARTIAL_PAID");
+        assertThat(normalizer.normalize("ERP", row, cities, Map.of()).payment())
+                .isEqualTo("UNKNOWN");
+        row.put("payment_status_code", "invalid");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of()).payment())
+                .isEqualTo("UNKNOWN");
+        row.remove("payment_status_code");
+        assertThat(normalizer.normalize("ORDER", row, cities, Map.of()).payment())
+                .isEqualTo("UNKNOWN");
+    }
+
+    @Test
     void courierReimbursementKeepsShippingDetailsAndTrackingNumberAsText() {
         var row = row();
         row.put("category_code", "EXPENSE");

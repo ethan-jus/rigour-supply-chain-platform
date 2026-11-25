@@ -138,6 +138,10 @@ public record CostFact(
         return "CONFIRMED".equals(status) && amount != null && "DIRECT".equals(treatment());
     }
 
+    public boolean needsReview() {
+        return "CONFIRMED".equals(status) && "REVIEW".equals(treatment());
+    }
+
     public String treatment() {
         return dimensions.containsKey("costTreatment")
                 ? dimension("costTreatment").key()

@@ -89,6 +89,7 @@ final class CostLedgerPartitions {
                                         bucket.owner(),
                                         row.get("city_code"),
                                         bucket.feeType(),
+                                        null,
                                         unknown.contains(bucket) ? null : amount)));
         return result;
     }
@@ -134,11 +135,20 @@ final class CostLedgerPartitions {
                         delivery
                                 ? link.path("departmentId").asText("")
                                 : Objects.toString(row.get("department_id"), "");
-                var bucket = new Bucket(city + "|" + department + "|" + employee, types.get(fee));
+                String employeeRole =
+                        delivery && "SALES_ORDER".equals(link.path("orderTypeCode").asText())
+                                        && !employee.isBlank()
+                                ? "SALES"
+                                : "OWNER";
+                var bucket =
+                        new Bucket(
+                                city + "|" + department + "|" + employee + "|" + employeeRole,
+                                types.get(fee));
                 Map<String, String> attributes = new HashMap<>();
                 attributes.put("city", city);
                 attributes.put("department_id", department.isBlank() ? null : department);
                 attributes.put("owner_employee_code", employee.isBlank() ? null : employee);
+                attributes.put("employeeRole", employeeRole);
                 attributes.put(
                         "department_name",
                         delivery
@@ -181,6 +191,7 @@ final class CostLedgerPartitions {
                                     month,
                                     attributes == null ? bucket.owner() : attributes.get("city"),
                                     bucket.feeType(),
+                                    attributes == null ? "OWNER" : attributes.get("employeeRole"),
                                     unknown ? null : amount);
                     if (attributes != null)
                         for (String key :
@@ -202,19 +213,20 @@ final class CostLedgerPartitions {
             String month,
             String city,
             String feeType,
+            String employeeRole,
             BigDecimal amount) {
         Map<String, String> result = new LinkedHashMap<>(row);
         ObjectNode data = original.deepCopy();
         data.put("_ledgerRootId", row.get("id"));
         data.put("_ledgerPartition", key);
         data.put("_ledgerFeeType", feeType);
+        if (employeeRole != null) data.put("_transportEmployeeRole", employeeRole);
         data.put("costMonth", month);
         result.put(
                 "id",
                 UUID.nameUUIDFromBytes((row.get("id") + ":" + key).getBytes(StandardCharsets.UTF_8))
                         .toString());
         result.put("amount", amount == null ? null : amount.toPlainString());
-        result.put("cost_date", month + "-01");
         result.put("city_code", city);
         result.put("data_json", json.writeValueAsString(data));
         return result;
