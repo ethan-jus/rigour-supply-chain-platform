@@ -4,6 +4,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.CheckInCommand;
 import com.rigour.sales.api.v1.model.SalesWorkApiModels.ResumeWorkCommand;
@@ -58,6 +62,9 @@ class SalesWorkReopenAndTrackIntegrationTests {
 
     @DynamicPropertySource
     static void databaseProperties(DynamicPropertyRegistry registry) {
+        registry.add("rigour.workbench.releases.android.latest-build", () -> 226);
+        registry.add("rigour.workbench.releases.android.minimum-build", () -> 225);
+        registry.add("rigour.workbench.releases.android.install-url", () -> "https://example.org/install");
         registry.add("spring.datasource.url", () -> utcJdbcUrl(MYSQL));
         registry.add("spring.datasource.username", MYSQL::getUsername);
         registry.add("spring.datasource.password", MYSQL::getPassword);
@@ -269,6 +276,22 @@ class SalesWorkReopenAndTrackIntegrationTests {
         UUID visit=UUID.randomUUID();
         jdbc.update("INSERT INTO sales_visit(id,tenant_id,work_day_id,sales_profile_id,target_type,crm_store_id,visit_policy_version_id,status,checked_in_at,result_note,created_at,updated_at) VALUES(?,?,?,?,'STORE',?,?,'CHECKED_OUT',?,'原始拜访说明',UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",bin(visit),bin(tenantId),day,bin(profile),store,bin(policy),Timestamp.valueOf(date+" "+time));
         return visit;
+    }
+
+    @Autowired private org.springframework.web.context.WebApplicationContext web;
+
+    @Test
+    void oldBuildCanReadReleaseAndFinishWorkButCannotStartANewVisit() throws Exception {
+        var mvc = org.springframework.test.web.servlet.setup.MockMvcBuilders.webAppContextSetup(web).build();
+        mvc.perform(get("/api/v1/sales/me/mobile-release/android"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.minimumBuild").value(225));
+        mvc.perform(post("/api/v1/sales/work/store-visits")
+                        .header("X-Workbench-Platform", "android").header("X-Workbench-Build", "224"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value("CONFLICT"));
+        // An empty completion reaches normal request validation with the same old client headers.
+        mvc.perform(post("/api/v1/sales/work-days/{id}/check-out", UUID.randomUUID())
+                        .header("X-Workbench-Platform", "android").header("X-Workbench-Build", "224"))
+                .andExpect(status().isBadRequest());
     }
 
     @BeforeEach

@@ -24,7 +24,8 @@ class StoreVisitCaptureServiceTest {
     final SalesWorkVisitRepository visits=mock(SalesWorkVisitRepository.class);
     final StoreVisitCaptureStore store=mock(StoreVisitCaptureStore.class);
     final CrmStoreVisitClient crm=mock(CrmStoreVisitClient.class);
-    final StoreVisitCaptureService service=new StoreVisitCaptureService(context,days,store,crm,Clock.fixed(now,ZoneOffset.UTC),visits);
+    final WorkbenchAdmission admission=mock(WorkbenchAdmission.class);
+    final StoreVisitCaptureService service=new StoreVisitCaptureService(context,days,store,crm,Clock.fixed(now,ZoneOffset.UTC),visits,admission);
     final LocationEvidence location=new LocationEvidence(new BigDecimal("120.1"),new BigDecimal("30.1"),BigDecimal.ONE,"GPS");
     final StoreVisitCaptureService.Command command=new StoreVisitCaptureService.Command("capture_request_12345","100","200",day,location,null);
 
@@ -55,6 +56,12 @@ class StoreVisitCaptureServiceTest {
         assertThat(retry.captureId()).isEqualTo(first.captureId());assertThat(first.visitId()).isEqualTo("300");
         verify(store,times(2)).create(eq(tenant),eq(profile),eq(day),eq(first.captureId()),argThat(c->c.checkedInAt().equals(now)&&c.storeId().equals("100")),eq(location),isNull());
     }
+    @Test void missingVoiceLeavesCrmAndVisitCaptureUntouched() {
+        doThrow(new StateConflictException("先登记")).when(admission).checkVoice(tenant,profile,"E232");
+        assertThatThrownBy(()->service.create(command)).hasMessageContaining("先登记");
+        verifyNoInteractions(crm);
+        verify(store,never()).create(any(),any(),any(),any(),any(),any(),any());
+    }
     @Test void existingActiveVisitRejectsBeforeCreatingCrmFact() {
         var active=mock(SalesWorkVisitRepository.VisitSnapshot.class);when(active.id()).thenReturn(UUID.randomUUID());
         when(visits.findActiveVisit(tenant,profile)).thenReturn(Optional.of(active));
@@ -63,7 +70,7 @@ class StoreVisitCaptureServiceTest {
     }
     @Test void expiredBusinessDayRejectsBeforeCreatingCrmFact() {
         var expired=new StoreVisitCaptureService(context,days,store,crm,
-                Clock.fixed(Instant.parse("2026-10-28T22:00:00Z"),ZoneOffset.UTC),visits);
+                Clock.fixed(Instant.parse("2026-10-28T22:00:00Z"),ZoneOffset.UTC),visits,admission);
         assertThatThrownBy(()->expired.create(command)).isInstanceOf(StateConflictException.class)
                 .hasMessageContaining("上一作业日已截止");
         verifyNoInteractions(crm,store);

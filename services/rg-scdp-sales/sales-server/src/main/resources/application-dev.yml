@@ -41,6 +41,8 @@ spring:
 rocketmq:
   name-server: "192.168.12.7:19876"
 rigour:
+  workbench:
+    voice-default-required: true
   context:
     trust:
       active-key-id: "v1"

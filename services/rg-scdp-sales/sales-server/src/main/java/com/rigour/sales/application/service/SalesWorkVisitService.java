@@ -88,6 +88,7 @@ public class SalesWorkVisitService {
     private final AuditSink auditSink;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final WorkbenchAdmission admission;
     private final StoreVisitCaptureService crmCapture;
 
     public SalesWorkVisitService(SalesWorkContextService contextService,
@@ -101,7 +102,8 @@ public class SalesWorkVisitService {
                                  OutboxStore outboxStore,
                                  AuditSink auditSink,
                                  ObjectMapper objectMapper,
-                                 Clock clock,StoreVisitCaptureService crmCapture) {
+                                 Clock clock,StoreVisitCaptureService crmCapture, WorkbenchAdmission admission) {
+        this.admission = admission;
         this.contextService = contextService;
         this.attendanceRepository = attendanceRepository;
         this.visitRepository = visitRepository;
@@ -164,6 +166,7 @@ public class SalesWorkVisitService {
         }
         throwIfNotReserved(reservation);
 
+        admission.checkVoice(caller.tenantId(), identity.profile().id(), identity.profile().employeeCode());
         VisitPlanRow requestedPlan = command.visitPlanId() == null ? null
                 : requireExecutablePlan(caller, identity, command.visitPlanId(), workDay.businessDate(),
                 policy, receivedAt, false);

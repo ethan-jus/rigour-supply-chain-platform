@@ -17,7 +17,7 @@ class SalesTrackMetricsTest {
         return new LocationPointRow(BigDecimal.valueOf(116),BigDecimal.valueOf(latitude),BigDecimal.valueOf(10),BASE.plusSeconds(seconds),BASE.plusSeconds(3600),"APP_NATIVE",quality,session);
     }
     @Test void anIsolatedCoarseFixIsNeverAVertexButDoesNotSplitACorroboratedRoute() {
-        for (String source : List.of("APP_IOS_LOCATION", "APP_GPS")) {
+        for (String source : List.of("APP_IOS_LOCATION", "APP_HARMONY_LOCATION", "APP_GPS")) {
             var rows = new java.util.ArrayList<LocationPointRow>();
             for (int i = 0; i <= 7; i++) {
                 var lat = BigDecimal.valueOf(40 + i * .0004);

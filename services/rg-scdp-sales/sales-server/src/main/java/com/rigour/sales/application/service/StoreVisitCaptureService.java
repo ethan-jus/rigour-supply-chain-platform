@@ -15,7 +15,8 @@ public class StoreVisitCaptureService {
     public record Command(String requestId,String storeId,String ownershipId,UUID workDayId,LocationEvidence location,UUID visitPlanId){}
     public record Created(String visitId,UUID captureId,String storeId,String ownershipId){}
     private final SalesWorkContextService context;private final SalesWorkAttendanceRepository days;private final StoreVisitCaptureStore store;private final CrmStoreVisitClient crm;private final Clock clock;private final SalesWorkVisitRepository visits;
-    public StoreVisitCaptureService(SalesWorkContextService context,SalesWorkAttendanceRepository days,StoreVisitCaptureStore store,CrmStoreVisitClient crm,Clock clock,SalesWorkVisitRepository visits){this.context=context;this.days=days;this.store=store;this.crm=crm;this.clock=clock;this.visits=visits;}
+    private final WorkbenchAdmission admission;
+    public StoreVisitCaptureService(SalesWorkContextService context,SalesWorkAttendanceRepository days,StoreVisitCaptureStore store,CrmStoreVisitClient crm,Clock clock,SalesWorkVisitRepository visits,WorkbenchAdmission admission){this.admission=admission;this.context=context;this.days=days;this.store=store;this.crm=crm;this.clock=clock;this.visits=visits;}
     public Created create(Command c){
         AuthorizationContext.requirePermission("sales:visit:own:write");var actor=AuthorizationContext.requireCurrent();
         if(c==null||c.requestId()==null||!c.requestId().matches("[A-Za-z0-9_-]{16,64}")||c.storeId()==null||!c.storeId().matches("[1-9][0-9]{0,18}")||c.ownershipId()==null||!c.ownershipId().matches("[1-9][0-9]{0,18}")||c.workDayId()==null||c.location()==null||c.location().longitude()==null||c.location().latitude()==null||c.location().accuracyMeters()==null)throw new RequestValidationException("新门店拜访参数无效");
@@ -26,6 +27,8 @@ public class StoreVisitCaptureService {
         UUID capture=UUID.nameUUIDFromBytes((actor.tenantId()+":crm-capture:"+c.requestId()).getBytes(StandardCharsets.UTF_8));
         var active=visits.findActiveVisit(actor.tenantId(),identity.profile().id());
         if(active.isPresent()&&!capture.equals(active.get().id()))throw new StateConflictException("请先结束当前进行中的拜访");
+        if(active.isEmpty() && store.link(actor.tenantId(),capture)==null)
+            admission.checkVoice(actor.tenantId(),identity.profile().id(),identity.profile().employeeCode());
         var v=crm.checkIn(c.storeId(),new CheckIn(c.requestId(),c.ownershipId(),c.location().longitude(),c.location().latitude(),"GCJ02",c.location().accuracyMeters(),capture.toString()));
         var snapshot=crm.context(c.storeId(),v.id());
         if(!Objects.equals(snapshot.employeeCode(),identity.profile().employeeCode())||!capture.toString().equals(snapshot.captureRef())||!"GCJ02".equals(snapshot.coordinateSystem()))throw new StateConflictException("采集人与CRM拜访不一致");

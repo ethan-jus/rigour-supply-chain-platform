@@ -124,7 +124,7 @@ final class SalesTrackMetrics {
         for (var witness : rows) {
             if (!valid(witness) || witness.accuracyMeters().doubleValue() > 25) {
                 if (!"APP_NETWORK".equals(witness.source())) rejected++;
-                boolean coarseVertex = ("APP_GPS".equals(witness.source()) || "APP_IOS_LOCATION".equals(witness.source()))
+                boolean coarseVertex = isRouteSource(witness.source())
                         && witness.accuracyMeters() != null && (valid(witness) && witness.accuracyMeters().doubleValue() > 25
                         || "LOW_ACCURACY".equals(witness.qualityStatus()));
                 if (vertex != null && coarseVertex && !skippedCoarse && !interrupted) {
@@ -152,7 +152,7 @@ final class SalesTrackMetrics {
             }
             previous = witness;
             interrupted = false;
-            if ("APP_GPS".equals(witness.source()) || "APP_IOS_LOCATION".equals(witness.source())) {
+            if (isRouteSource(witness.source())) {
                 eligible.put(witness.deviceEventId(), witness);
             }
             if (witness.routePath().isEmpty()) continue;
@@ -192,6 +192,10 @@ final class SalesTrackMetrics {
             if (elapsed <= 0 || elapsed > maxGapMs || confirmedDistance(a, b) * 1000 > 55 * elapsed) return false;
         }
         return true;
+    }
+
+    private static boolean isRouteSource(String source) {
+        return "APP_GPS".equals(source) || "APP_IOS_LOCATION".equals(source) || "APP_HARMONY_LOCATION".equals(source);
     }
 
     private static boolean resting(LocationPointRow point) { return "APP_GPS_STILL".equals(point.source()); }
