@@ -119,7 +119,7 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
         String originalAmount = "originalZero".equals(scenario) ? "0" : "216";
         if (!"new".equals(scenario)) order(1, 1, "nonzero".equals(scenario) ? "210" : "0", "0", "24");
         cancellationColumns();
-        db.execute("ALTER TABLE order_sales_order ADD original_amount DECIMAL(24,6) DEFAULT 0, ADD discount_amount DECIMAL(24,6) DEFAULT 0, MODIFY deleted INT DEFAULT 0, MODIFY revision INT DEFAULT 1");
+        db.execute("ALTER TABLE order_sales_order ADD original_amount DECIMAL(24,6) DEFAULT 0, ADD discount_amount DECIMAL(24,6) DEFAULT 0, ADD total_quantity DECIMAL(24,6) DEFAULT 0, MODIFY deleted INT DEFAULT 0, MODIFY revision INT DEFAULT 1");
         db.execute("ALTER TABLE order_sales_order_line ADD line_no INT, ADD product_code_snapshot VARCHAR(128), ADD sku_code_snapshot VARCHAR(128), ADD unit_price DECIMAL(24,6), ADD discount_amount DECIMAL(24,6), ADD remark VARCHAR(1000), ADD source_line_id VARCHAR(128), MODIFY deleted INT DEFAULT 0");
         if (!"new".equals(scenario)) {
             db.update("UPDATE order_sales_order SET source_system_code='DINGHUOBAO',source_order_no='ZERO',deleted=1 WHERE id=1");
@@ -137,6 +137,7 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
                 .isEqualByComparingTo("nonzero".equals(scenario) ? "210" : originalAmount);
         org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT order_status_code FROM order_sales_order", String.class)).isEqualTo("CANCELLED");
         org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT deleted FROM order_sales_order", Integer.class)).isZero();
+        org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT total_quantity FROM order_sales_order", java.math.BigDecimal.class)).isEqualByComparingTo("24");
         org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT COUNT(*) FROM order_sales_order_line WHERE deleted=0", Integer.class)).isEqualTo(1);
         org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT SUM(line_amount) FROM order_sales_order_line WHERE deleted=0", java.math.BigDecimal.class)).isEqualByComparingTo(originalAmount);
         org.assertj.core.api.Assertions.assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();

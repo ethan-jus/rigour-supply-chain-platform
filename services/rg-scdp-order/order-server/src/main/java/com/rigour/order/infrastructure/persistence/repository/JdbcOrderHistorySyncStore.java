@@ -509,7 +509,6 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         ts(c.sourceUpdatedAt()), ts(c.sourceUpdatedAt()));
             }
         }
-        restoreCancelledOrderDetails(t, actor, c);
         // 同版本重放也补齐早期取消分支遗漏的快照；已有归属及历史飞书主体保持不变。
         var fields = new LinkedHashMap<String, Object>();
         fields.put("customer_name_snapshot", c.customerName());
@@ -541,6 +540,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                     + " WHERE tenant_id=? AND source_system_code='DINGHUOBAO' AND source_order_no=? AND order_status_code=?"
                     + " AND (" + String.join(" OR ", missing) + ")", args.toArray());
         }
+        restoreCancelledOrderDetails(t, actor, c);
         if (jdbc.queryForObject("SELECT COUNT(*) FROM order_dhb_projection_change_audit WHERE tenant_id=?"
                 + " AND connector_id=? AND object_type='ORDER_LIFECYCLE' AND source_no=?"
                 + " AND JSON_UNQUOTE(JSON_EXTRACT(source_json,'$.orderStatusCode'))=?", Long.class,
@@ -564,8 +564,19 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
             long orderId = num(order, "id");
             var lines = jdbc.queryForList("SELECT * FROM order_sales_order_line WHERE tenant_id=? AND order_id=? AND deleted=0", t, orderId);
             boolean missingAmount = money(order, "payable_amount").signum() == 0 && c.amount().signum() > 0;
-            if (!missingAmount && !lines.isEmpty()) continue;
+            BigDecimal quantity = lines.isEmpty()
+                    ? c.originalLines().stream().map(line -> line.quantity()).reduce(BigDecimal.ZERO, BigDecimal::add)
+                    : lines.stream().map(l -> money(l, "quantity")).reduce(BigDecimal.ZERO, BigDecimal::add);
+            boolean missingQuantity = money(order, "total_quantity").signum() == 0 && quantity.signum() > 0;
+            boolean complete = "来源失效订单，仅保留已知信息".equals(text(order, "data_quality_message"))
+                    && order.get("customer_id") != null && order.get("order_date") != null
+                    && text(order, "region_code") != null && text(order, "owner_employee_code") != null;
+            if (!missingAmount && !missingQuantity && !complete && !lines.isEmpty()) continue;
             auditChange(t, c.connectorId(), "CANCELLED_ORDER_DETAILS", c.sourceNo(), Map.of("order", order, "lines", lines), c);
+            if (missingQuantity) jdbc.update("UPDATE order_sales_order SET total_quantity=?,revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
+                    quantity, actor, t, orderId);
+            if (complete) jdbc.update("UPDATE order_sales_order SET data_quality_status_code='COMPLETE',data_quality_message=NULL,revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
+                    actor, t, orderId);
             if (missingAmount) jdbc.update("UPDATE order_sales_order SET original_amount=?,payable_amount=?,discount_amount=0,"
                     + "revision=revision+1,updated_by=?,updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND id=?",
                     c.amount(), c.amount(), actor, t, orderId);
