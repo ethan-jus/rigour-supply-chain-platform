@@ -1477,7 +1477,7 @@ SELECT COUNT(*) FROM crm_contact c
     }
 
     @Test
-    void syncMatchesOnlyUniqueSameCityNameAndPreservesHistoricalCreation() {
+    void syncMatchesOnlyUniqueSameOwnerNameAndPreservesHistoricalCreation() {
         for (String scenario : List.of("different-city", "unique", "multiple", "account-conflict")) {
             UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID(), actor=UUID.randomUUID();
             var run=start(tenant,connector,actor,CrmMasterDataObjectType.CUSTOMER);
@@ -1485,6 +1485,7 @@ SELECT COUNT(*) FROM crm_contact c
             queryStore.createCustomerArea(tenant,"LEGACY-CITY",new com.rigour.merchant.api.v1.model.CrmCustomerAreaCommand(city,null,"ACTIVE",0,1),actor);
             for (int i=0;i<("multiple".equals(scenario)?2:1);i++)
                 jdbcTemplate.update("INSERT INTO crm_customer(tenant_id,customer_code,customer_name,region_code,source_system_code,status_code,revision,created_time,updated_time,business_created_at,business_created_by_name,owner_management_mode,owner_employee_code) VALUES(?,?,?,?, 'FEISHU','ACTIVE',0,'2026-04-01 01:02:03','2026-04-01 01:02:03','2026-04-01 01:02:03','历史创建人','LOCAL','OLD-OWNER')",tenant.toString(),"LEGACY-"+i,"同城匹配门店","LEGACY-CITY");
+            if (!"different-city".equals(scenario)) jdbcTemplate.update("UPDATE crm_customer SET owner_employee_code='EMP-PRIMARY' WHERE tenant_id=?",tenant.toString());
             if ("account-conflict".equals(scenario))
                 jdbcTemplate.update("INSERT INTO crm_customer(tenant_id,customer_code,customer_name,login_account,status_code,revision,created_time,updated_time) VALUES(?,'OTHER','其他客户','customer001','ACTIVE',0,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))",tenant.toString());
             var typeRun=start(tenant,connector,actor,CrmMasterDataObjectType.CUSTOMER_TYPE);
@@ -1664,12 +1665,42 @@ SELECT COUNT(*) FROM crm_contact c
         assertThat(internalCustomerStore.creators(UUID.randomUUID().toString())).isEmpty();
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"true,false", "true,true", "false,false", "false,true"})
+    void sameNameCustomersFollowEmployeeIdentityAndRetryIdempotently(boolean sameOwner, boolean alreadyPending) {
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID(), actor = UUID.randomUUID();
+        var type = CrmMasterDataObjectType.CUSTOMER; var run = start(tenant, connector, actor, type);
+        var first = customerRecord("业务员门店规则");
+        assertThat(store.importRecord(tenant, connector, run, type, first).created()).isEqualTo(1);
+        var original = jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=?", tenant.toString());
+        var fields = new LinkedHashMap<String,Object>(first.sourceFields());
+        fields.put("clientGUID", "SECOND"); fields.put("clientNO", "SECOND"); fields.put("clientAccount", "second-account");
+        fields.put("clientCity", "西安市"); fields.put("clientPhone", "13999999999");
+        if (!sameOwner) fields.put("_employeeBySourceId", Map.of("STAFF-PRIMARY", Map.of("employeeCode", "EMP-SECOND", "employeeName", "另一员工")));
+        var second = new SourceRecord("SECOND", "SECOND", first.sourceName(), "T", first.sourceCreatedAt(), first.sourceUpdatedAt(), fields);
+        if (alreadyPending) {
+            var missing = new LinkedHashMap<String,Object>(fields); missing.remove("_employeeBySourceId");
+            assertThat(store.importRecord(tenant, connector, run, type,
+                    new SourceRecord("SECOND", "SECOND", first.sourceName(), "T", first.sourceCreatedAt(), first.sourceUpdatedAt(), missing)).unmapped()).isEqualTo(1);
+        }
+        var result = store.importRecord(tenant, connector, run, type, second);
+        assertThat(sameOwner ? result.repaired() : result.created()).isEqualTo(1);
+        assertThat(store.importRecord(tenant, connector, run, type, second).duplicates()).isEqualTo(1);
+        assertThat(jdbcTemplate.queryForObject("SELECT COUNT(*) FROM crm_customer WHERE tenant_id=?", Integer.class, tenant.toString())).isEqualTo(sameOwner ? 1 : 2);
+        assertThat(jdbcTemplate.queryForMap("SELECT * FROM crm_customer WHERE tenant_id=? AND id=?", tenant.toString(), original.get("id"))).usingRecursiveComparison().isEqualTo(original);
+        var binding = jdbcTemplate.queryForMap("SELECT primary_customer_source_id,independent_confirmed,independence_evidence FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND source_object_id='SECOND'", tenant.toString());
+        assertThat(binding.get("independence_evidence").toString()).contains(sameOwner ? "业务员相同" : "业务员不同");
+        assertThat(binding.get("primary_customer_source_id")).isEqualTo(sameOwner ? "CLIENT-GUID-1" : null);
+        assertThat(store.externalObjectMappings(tenant, connector, run, type)).hasSize(2);
+    }
+
     @Test
     void confirmedIndependentSourcesAllowSameCityNameButNotSharedLoginAccounts() {
         UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID(), actor=UUID.randomUUID();
         var type=CrmMasterDataObjectType.CUSTOMER; var run=start(tenant,connector,actor,type);
         var original=customerRecord("同名独立门店");
         assertThat(store.importRecord(tenant,connector,run,type,original).created()).isEqualTo(1);
+        jdbcTemplate.update("UPDATE crm_customer SET owner_employee_code=NULL WHERE tenant_id=?",tenant.toString());
         var f=new LinkedHashMap<String,Object>(original.sourceFields());
         f.put("clientGUID","SECOND"); f.put("clientNO","SECOND"); f.put("clientAccount","independent-login");
         var second=new SourceRecord("SECOND","SECOND",original.sourceName(),"T",original.sourceCreatedAt(),original.sourceUpdatedAt(),f);
@@ -1685,6 +1716,7 @@ SELECT COUNT(*) FROM crm_contact c
         assertThat(store.importRecord(tenant,connector,run,type,second).duplicates()).isEqualTo(1);
         assertThat(jdbcTemplate.queryForObject("SELECT COUNT(DISTINCT target_id) FROM crm_source_binding WHERE tenant_id=UUID_TO_BIN(?) AND source_object_type='CUSTOMER'",Integer.class,tenant.toString())).isEqualTo(2);
         f.put("clientGUID","THIRD");f.put("clientNO","THIRD");
+        f.put("_employeeBySourceId",Map.of("STAFF-PRIMARY",Map.of("employeeCode","OTHER-EMP","employeeName","不同业务员")));
         var third=new SourceRecord("THIRD","THIRD",original.sourceName(),"T",original.sourceCreatedAt(),original.sourceUpdatedAt(),f);
         assertThat(store.importRecord(tenant,connector,run,type,third).unmapped()).isEqualTo(1);
         store.confirmIndependentCustomer(tenant,connector,"THIRD",sourceRevision(tenant,"THIRD"),false,"独立但不能复用登录账号",actor);

@@ -609,6 +609,7 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         SourceRecord snapshot = snapshot(binding, record);
         String json = json(storageSourceFields(snapshot.sourceFields()));
         String hash = sha256(json);
+        boolean bindingCreated = binding == null;
         boolean sourceChanged = binding == null || !hash.equals(binding.sourcePayloadHash);
         if (type == CrmMasterDataObjectType.CUSTOMER
                 && (binding != null && "CUSTOMER_MANUALLY_EXCLUDED".equals(binding.resolutionErrorCode)
@@ -658,7 +659,44 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         List<InternalCustomerEntity> matches = type == CrmMasterDataObjectType.CUSTOMER
                 && ownershipProblem == null && (binding == null || binding.targetId == null)
                 && (binding == null || !Boolean.TRUE.equals(binding.independentConfirmed))
-                ? sameCityCustomers(tenantId, connectorId, snapshot) : List.of();
+                ? sameNameCustomers(tenantId, snapshot) : List.of();
+        if (!matches.isEmpty()) {
+            var owner = staffRefs(snapshot.sourceFields()).primary();
+            String employeeCode = clean(employee(snapshot.sourceFields(), owner.sourceId(), owner.name()).employeeCode());
+            var sameOwner = employeeCode == null ? List.<InternalCustomerEntity>of() : matches.stream()
+                    .filter(c -> employeeCode.equals(clean(c.getOwnerEmployeeCode()))).toList();
+            if (employeeCode != null && sameOwner.isEmpty()
+                    && matches.stream().allMatch(c -> clean(c.getOwnerEmployeeCode()) != null)) {
+                if (binding == null) binding = newBinding(tenantId, connectorId, type, record.sourceId(), now);
+                binding.independentConfirmed = true;
+                binding.independenceEvidence = "同名门店所属业务员不同，按业务规则独立建档：" + employeeCode;
+                binding.independenceActor = SYSTEM_ACTOR;
+                binding.independenceConfirmedAt = now;
+                matches = List.of();
+            } else if (!sameOwner.isEmpty()) {
+                matches = sameOwner;
+                if (sameOwner.size() == 1 && sameOwner.getFirst().getPartyId() != null) {
+                    var matched = sameOwner.getFirst();
+                    var primaries = bindingMapper.selectList(Wrappers.<SourceBindingEntity>query()
+                            .eq("tenant_id", bytes(tenantId)).eq("connector_id", bytes(connectorId))
+                            .eq("source_system", SOURCE_SYSTEM).eq("source_object_type", "CUSTOMER")
+                            .eq("target_id", matched.getPartyId()).eq("binding_status", "RESOLVED")
+                            .eq("source_presence", "PRESENT").eq("deleted", 0).isNull("primary_customer_source_id"));
+                    if (primaries.size() == 1 && !record.sourceId().equals(primaries.getFirst().sourceObjectId)
+                            && customerIdentityConflict(tenantId, connectorId, binding, snapshot, matched) == null) {
+                        if (binding == null) binding = newBinding(tenantId, connectorId, type, record.sourceId(), now);
+                        binding.primaryCustomerSourceId = primaries.getFirst().sourceObjectId;
+                        binding.independenceEvidence = "同名门店所属业务员相同，按业务规则关联原门店：" + employeeCode;
+                        binding.independenceActor = SYSTEM_ACTOR;
+                        binding.independenceConfirmedAt = now;
+                        saveBinding(binding, runId, snapshot, Target.resolved("PARTY", uuid(matched.getPartyId())),
+                                json, hash, now, bindingCreated);
+                        aliases(tenantId, connectorId, binding, type, snapshot, now);
+                        return ImportResult.repairedOne();
+                    }
+                }
+            }
+        }
         // Customer counts describe actual CRM rows, not whether a source binding was previously saved.
         boolean createsCustomer = type == CrmMasterDataObjectType.CUSTOMER && matches.isEmpty()
                 && (binding == null || binding.targetId == null
@@ -680,8 +718,8 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                                     sourceChanged,
                                     addressProjectionBatch);
                 };
-        boolean created = binding == null;
-        if (created) binding = newBinding(tenantId, connectorId, type, record.sourceId(), now);
+        boolean created = bindingCreated;
+        if (binding == null) binding = newBinding(tenantId, connectorId, type, record.sourceId(), now);
         boolean repaired =
                 !created
                         && (hash.equals(binding.sourcePayloadHash)
@@ -851,19 +889,13 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                 "UNRESOLVED", code, message);
     }
 
-    /** 同租户、同城市、完整名称唯一时复用原客户；保留原 ID 和历史创建事实。 */
-    private List<InternalCustomerEntity> sameCityCustomers(UUID tenantId, UUID connectorId, SourceRecord record) {
-        String city = sourceCity(tenantId, connectorId, record);
+    /** 同名来源按员工编码识别门店，已有绑定与人工独立确认保持不变。 */
+    private List<InternalCustomerEntity> sameNameCustomers(UUID tenantId, SourceRecord record) {
         String name = first(value(record.sourceFields(), "clientCompanyName"), record.sourceName());
         if (clean(name) == null) return List.of();
         return internalCustomerMapper.selectList(Wrappers.<InternalCustomerEntity>query()
                 .eq("tenant_id", tenantId.toString()).eq("deleted", 0).eq("customer_name", name)
-                .last("FOR UPDATE")).stream()
-                .filter(c -> {
-                    String existingCity = identities.cityKey(tenantId.toString(), c.getCityName(), c.getRegionCode());
-                    return city == null || existingCity == null || city.equals(existingCity);
-                })
-                .toList();
+                .last("FOR UPDATE"));
     }
 
     private String sourceCity(UUID tenantId, UUID connectorId, SourceRecord record) {
@@ -886,7 +918,10 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
         if (matched != null) {
             String city = sourceCity(tenantId, connectorId, record);
             String existingCity = identities.cityKey(tenantId.toString(), matched.getCityName(), matched.getRegionCode());
-            if (city == null || existingCity == null)
+            var owner = staffRefs(record.sourceFields()).primary();
+            String employeeCode = clean(employee(record.sourceFields(), owner.sourceId(), owner.name()).employeeCode());
+            if ((city == null || existingCity == null)
+                    && (employeeCode == null || !employeeCode.equals(clean(matched.getOwnerEmployeeCode()))))
                 return Target.unresolved("CUSTOMER_IDENTITY_REVIEW_REQUIRED", "存在同名客户，地区尚未核实，请确认是否为同一门店");
         }
         UUID partyId = matched != null && matched.getPartyId() != null ? uuid(matched.getPartyId()) : targetId(binding);
@@ -2190,6 +2225,11 @@ public class MybatisPlusCrmRepository implements CrmMasterDataStore, CrmCustomer
                             .set("source_status", binding.sourceStatus)
                             .set("target_type", binding.targetType)
                             .set("target_id", binding.targetId)
+                            .set("primary_customer_source_id", binding.primaryCustomerSourceId)
+                            .set("independent_confirmed", binding.independentConfirmed)
+                            .set("independence_evidence", binding.independenceEvidence)
+                            .set("independence_actor", binding.independenceActor)
+                            .set("independence_confirmed_at", binding.independenceConfirmedAt)
                             .set("binding_status", binding.bindingStatus)
                             .set("resolution_error_code", binding.resolutionErrorCode)
                             .set("resolution_error_message", binding.resolutionErrorMessage)
