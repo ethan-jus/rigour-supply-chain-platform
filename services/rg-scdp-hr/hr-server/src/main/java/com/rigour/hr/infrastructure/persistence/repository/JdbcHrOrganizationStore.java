@@ -109,7 +109,7 @@ WHERE e.tenant_id=? AND e.employee_code=? AND e.deleted=0
     public List<HrDepartmentView> departments(String tenant) {
         return jdbc.query(
                 """
-                SELECT d.*, e.employee_name AS current_leader_name
+                SELECT d.*, e.employee_name AS current_leader_name, e.mobile AS current_leader_phone
                   FROM hr_department d LEFT JOIN hr_employee e ON e.tenant_id=d.tenant_id
                    AND e.employee_code=d.leader_employee_code AND e.deleted=0
                   WHERE d.tenant_id=? AND d.deleted=0 ORDER BY d.sort_order,d.id
@@ -127,7 +127,7 @@ WHERE e.tenant_id=? AND e.employee_code=? AND e.deleted=0
                 rs.getInt("sort_order"),
                 rs.getString("status_code"),
                 rs.getInt("revision"),
-                rs.getString("current_leader_name"), rs.getString("contact_phone"),
+                rs.getString("current_leader_name"), rs.getString("current_leader_phone"),
                 rs.getObject("established_date", java.time.LocalDate.class),
                 rs.getTimestamp("created_time").toInstant(), rs.getString("created_by"), rs.getString("created_by_name"),
                 rs.getTimestamp("updated_time").toInstant(), rs.getString("updated_by"), rs.getString("updated_by_name"), rs.getString("leader_employee_code"));
@@ -197,15 +197,15 @@ SELECT COUNT(*) FROM hr_employee e JOIN hr_department_closure c
                         jdbc.update(
                                 """
 INSERT INTO hr_department(tenant_id,department_code,parent_id,department_name,sort_order,status_code,
- leader_name,leader_employee_code,contact_phone,established_date,created_by,created_by_name,updated_by,updated_by_name,created_time,updated_time)
-VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
+ leader_name,leader_employee_code,established_date,created_by,created_by_name,updated_by,updated_by_name,created_time,updated_time)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
 """,
                                 tenant,
                                 code,
                                 c.parentId(),
                                 c.departmentName(),
                                 c.sortOrder(),
-                                c.statusCode(), leaderName, c.leaderEmployeeCode(), c.contactPhone(), c.establishedDate(),
+                                c.statusCode(), leaderName, c.leaderEmployeeCode(), c.establishedDate(),
                                 actor, actorName, actor, actorName);
                         target =
                                 jdbc.queryForObject(
@@ -218,13 +218,13 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,UTC_TIMESTAMP(6),UTC_TIMESTAMP(6))
                         jdbc.update(
                                 """
 UPDATE hr_department SET parent_id=?,department_name=?,sort_order=?,status_code=?,
-       leader_name=?,leader_employee_code=?,contact_phone=?,established_date=?,updated_by=?,updated_by_name=?,
+       leader_name=?,leader_employee_code=?,established_date=?,updated_by=?,updated_by_name=?,
        revision=revision+1,updated_time=UTC_TIMESTAMP(6) WHERE tenant_id=? AND id=? AND revision=?
 """,
                                 c.parentId(),
                                 c.departmentName(),
                                 c.sortOrder(),
-                                c.statusCode(), leaderName, c.leaderEmployeeCode(), c.contactPhone(), c.establishedDate(), actor, actorName,
+                                c.statusCode(), leaderName, c.leaderEmployeeCode(), c.establishedDate(), actor, actorName,
                                 tenant,
                                 target,
                                 c.revision());

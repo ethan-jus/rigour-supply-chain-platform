@@ -419,17 +419,24 @@ class HrApplicationTests {
     @Test
     void departmentDetailsKeepCreationAuditAndReplaceOnlyModificationAudit() {
         String tenant = java.util.UUID.randomUUID().toString();
-        jdbcTemplate.update("INSERT INTO hr_employee(tenant_id,employee_code,employee_name,employment_status) VALUES(?,'EMPTEST1','张三','ACTIVE'),(?,'EMPTEST2','李四','ACTIVE')",tenant,tenant);
+        jdbcTemplate.update("""
+                INSERT INTO hr_employee(tenant_id,employee_code,employee_name,employment_status,mobile)
+                VALUES(?,'EMPTEST1','张三','ACTIVE','13800000001'),(?,'EMPTEST2','李四','ACTIVE','13800000002')
+                """, tenant, tenant);
         var created = organizations.saveDepartment(tenant, null,
             new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "杭州销售部", 3, "ACTIVE", 0,
                 "EMPTEST1", "0571-12345678", java.time.LocalDate.of(2020, 5, 6)), "creator-a");
         assertThat(created.leaderName()).isEqualTo("张三");
-        assertThat(created.contactPhone()).isEqualTo("0571-12345678");
+        assertThat(created.contactPhone()).isEqualTo("13800000001");
         assertThat(created.establishedDate()).isEqualTo(java.time.LocalDate.of(2020, 5, 6));
         assertThat(created.createdBy()).isEqualTo("creator-a");
         assertThat(created.updatedBy()).isEqualTo("creator-a");
         assertThat(created.createdTime()).isNotNull();
         assertThat(created.updatedTime()).isEqualTo(created.createdTime());
+        jdbcTemplate.update("UPDATE hr_department SET contact_phone='0571-12345678' WHERE tenant_id=? AND id=?", tenant, created.id());
+        jdbcTemplate.update("UPDATE hr_employee SET mobile='13800000003' WHERE tenant_id=? AND employee_code='EMPTEST1'", tenant);
+        assertThat(organizations.departments(tenant)).singleElement()
+                .extracting(com.rigour.hr.api.v1.model.HrDepartmentView::contactPhone).isEqualTo("13800000003");
         var changed = organizations.saveDepartment(tenant, created.id(),
             new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "杭州销售部", 4, "ACTIVE", created.revision(),
                 "EMPTEST2", null, java.time.LocalDate.of(2021, 1, 1)), "editor-b");
@@ -437,10 +444,14 @@ class HrApplicationTests {
         assertThat(changed.createdTime()).isEqualTo(created.createdTime());
         assertThat(changed.updatedBy()).isEqualTo("editor-b");
         assertThat(changed.updatedTime()).isAfterOrEqualTo(created.updatedTime());
-        assertThat(changed.contactPhone()).isNull();
+        assertThat(changed.contactPhone()).isEqualTo("13800000002");
         assertThat(changed.leaderName()).isEqualTo("李四");
         assertThat(changed.establishedDate()).isEqualTo(java.time.LocalDate.of(2021, 1, 1));
         assertThat(organizations.departments(tenant)).containsExactly(changed);
+        var withoutLeader = organizations.saveDepartment(tenant, created.id(),
+            new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "杭州销售部", 4, "ACTIVE", changed.revision(),
+                null, null, changed.establishedDate()), "editor-b");
+        assertThat(withoutLeader.contactPhone()).isNull();
     }
 
     @Test

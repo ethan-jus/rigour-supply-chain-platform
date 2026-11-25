@@ -56,7 +56,7 @@ public class HrOrganizationService {
                         c.statusCode(),
                         c.revision(),
                         text(c.leaderEmployeeCode(), 50),
-                        text(c.contactPhone(), 32),
+                        null, // Retain the legacy request field for older clients; contact comes from the leader.
                         c.establishedDate());
         return store.saveDepartment(
                 actor.tenantId().toString(), id, normalized, actor.principalId().toString());

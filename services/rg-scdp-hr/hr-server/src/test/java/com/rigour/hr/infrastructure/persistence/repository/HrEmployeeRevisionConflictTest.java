@@ -25,7 +25,7 @@ class HrEmployeeRevisionConflictTest {
         var jdbc = new JdbcTemplate(dataSource);
         try (var connection = dataSource.getConnection()) {
             jdbc.execute("CREATE TABLE hr_organization_state(tenant_id VARCHAR(50) PRIMARY KEY,version BIGINT DEFAULT 0)");
-            jdbc.execute("CREATE TABLE hr_employee(tenant_id VARCHAR(50),employee_code VARCHAR(50),employee_name VARCHAR(50),deleted INT)");
+            jdbc.execute("CREATE TABLE hr_employee(tenant_id VARCHAR(50),employee_code VARCHAR(50),employee_name VARCHAR(50),mobile VARCHAR(32),deleted INT)");
             jdbc.execute("CREATE TABLE hr_department(id BIGINT,tenant_id VARCHAR(50),parent_id BIGINT,"
                     + "department_code VARCHAR(50),department_name VARCHAR(50),sort_order INT,status_code VARCHAR(20),"
                     + "revision INT,leader_employee_code VARCHAR(50),contact_phone VARCHAR(50),established_date DATE,"
