@@ -4,6 +4,7 @@ import com.rigour.order.api.v1.OrderCostSourceApi;
 import com.rigour.order.api.v1.model.OrderCollectionSourceView;
 import com.rigour.order.api.v1.model.OrderCommissionSourceLineView;
 import com.rigour.order.api.v1.model.OrderDeliveryCostSourceView;
+import com.rigour.order.api.v1.model.OrderPayrollSettlementView;
 import com.rigour.order.application.service.OrderCostSourceService;
 import com.rigour.shared.core.api.ApiResponse;
 
@@ -48,5 +49,11 @@ public final class OrderCostSourceController implements OrderCostSourceApi {
     public ApiResponse<List<com.rigour.order.api.v1.model.OrderPayrollLineView>> payrollLines(
             String employeeCode, String cityCode, LocalDate through) {
         return ApiResponse.success(service.payrollLines(employeeCode, cityCode, through));
+    }
+
+    @Override
+    public ApiResponse<List<OrderPayrollSettlementView>> payrollSettlements(
+            String employeeCode, LocalDate from, LocalDate to) {
+        return ApiResponse.success(service.payrollSettlements(employeeCode, from, to));
     }
 }

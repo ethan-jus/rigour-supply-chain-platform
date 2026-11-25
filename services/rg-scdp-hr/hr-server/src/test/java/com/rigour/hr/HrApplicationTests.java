@@ -2,6 +2,8 @@ package com.rigour.hr;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.rigour.hr.application.port.out.HrPayrollStore;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -11,6 +13,9 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+
+import java.util.List;
+import java.util.UUID;
 
 @SpringBootTest
 @org.springframework.test.context.ActiveProfiles("test")
@@ -47,6 +52,47 @@ class HrApplicationTests {
     @Autowired private com.rigour.hr.application.port.out.HrPositionStore positionStore;
 
     @Autowired private com.rigour.hr.application.port.out.HrEmployeeStore employeeResolution;
+
+    @Autowired private HrPayrollStore payroll;
+
+    @Test
+    void looksUpOnlyTenantLockedSalesSettlementEvidenceAcrossMonths() {
+        String tenant = UUID.randomUUID().toString();
+        insertPayrollEvidence(tenant, "A", "2026-10", "CONFIRMED", "SALES", "FULLY_PAID", "FULL:1");
+        insertPayrollEvidence(tenant, "B", "2026-11", "PAID", "SALES", "FULLY_PAID", "FULL:2");
+        insertPayrollEvidence(tenant, "C", "2026-12", "READY", "SALES", "FULLY_PAID", "FULL:3");
+        insertPayrollEvidence(tenant, "D", "2026-11", "PAID", "CITY_MANAGER", "FULLY_PAID", "FULL:4");
+        insertPayrollEvidence(tenant, "A", "2026-08", "PAID", "SALES", "PARTIAL", "FULL:5");
+        insertPayrollEvidence(tenant, "A", "2026-09", "PAID", "SALES", "FULLY_PAID", "FULL:1");
+        insertPayrollEvidence(UUID.randomUUID().toString(), "A", "2026-11", "PAID", "SALES", "FULLY_PAID", "FULL:6");
+        insertPayrollEvidence(tenant, "E", "2026-11", "CONFIRMED", "SALES", "FULLY_PAID", "FULL:7");
+        jdbcTemplate.update("""
+                UPDATE hr_payroll SET calculation_json = JSON_REMOVE(
+                    JSON_SET(calculation_json, '$.performanceDetail',
+                        JSON_OBJECT('sources', JSON_EXTRACT(calculation_json, '$.settledOrders'))),
+                    '$.settledOrders')
+                WHERE tenant_id = ? AND employee_code = 'E'
+                """, tenant);
+
+        assertThat(payroll.lockedSalesSettlementIds(tenant, "A", "2026-11",
+                List.of("FULL:1", "FULL:2", "FULL:3", "FULL:4", "FULL:5", "FULL:6", "FULL:7")))
+                .containsExactlyInAnyOrder("FULL:1", "FULL:2", "FULL:7");
+        assertThat(payroll.lockedSalesSettlementIds(tenant, "B", "2026-11", List.of("FULL:2")))
+                .isEmpty();
+        assertThat(payroll.lockedSalesSettlementIds(tenant, "B", "2026-11", List.of())).isEmpty();
+    }
+
+    private void insertPayrollEvidence(String tenant, String employee, String month, String status,
+            String role, String kind, String sourceId) {
+        jdbcTemplate.update("""
+                INSERT INTO hr_payroll (id, tenant_id, employee_code, employee_name, payroll_month,
+                    status_code, calculation_json, created_by, updated_by)
+                VALUES (?, ?, ?, ?, ?, ?, JSON_OBJECT(
+                    'scheme', JSON_OBJECT('scheme', JSON_OBJECT('definition', JSON_OBJECT('role', ?))),
+                    'settledOrders', JSON_ARRAY(JSON_OBJECT('sourceId', ?, 'kind', ?))
+                ), 'HR', 'HR')
+                """, UUID.randomUUID().toString(), tenant, employee, employee, month, status, role, sourceId, kind);
+    }
 
     @Test
     void mobileResolutionUsesScopedBindingNotDuplicateNameOrEmploymentStatus() {

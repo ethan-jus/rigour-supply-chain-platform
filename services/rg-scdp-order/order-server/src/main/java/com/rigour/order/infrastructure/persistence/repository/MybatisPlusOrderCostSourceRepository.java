@@ -4,15 +4,21 @@ import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.rigour.order.api.v1.model.OrderCollectionSourceView;
 import com.rigour.order.api.v1.model.OrderCommissionSourceLineView;
 import com.rigour.order.api.v1.model.OrderDeliveryCostSourceView;
+import com.rigour.order.api.v1.model.OrderPayrollSettlementView;
 import com.rigour.order.application.port.out.OrderCostSourceStore;
 import com.rigour.order.infrastructure.persistence.entity.InternalSalesOrderEntity;
 import com.rigour.order.infrastructure.persistence.mapper.OrderCostSourceMapper;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Repository
 public class MybatisPlusOrderCostSourceRepository implements OrderCostSourceStore {
@@ -108,5 +114,41 @@ public class MybatisPlusOrderCostSourceRepository implements OrderCostSourceStor
                         tenant, employee, city, through.plusDays(1).atStartOfDay().minusHours(8));
         if (rows.size() > 20000) throw new IllegalStateException("付清订单来源超过上限，请分期核对");
         return rows;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<OrderPayrollSettlementView> payrollSettlements(
+            String tenant, String employee, LocalDate from, LocalDate to) {
+        var settlements =
+                mapper.payrollSettlements(
+                        tenant, employee, from.atStartOfDay().minusHours(8),
+                        to.plusDays(1).atStartOfDay().minusHours(8));
+        if (settlements.isEmpty()) return List.of();
+        requireSettlementLimit(settlements.size());
+        var products = mapper.payrollProductLines(
+                tenant, settlements.stream().map(OrderCostSourceMapper.PayrollSettlement::orderId).toList());
+        requireSettlementLimit(products.size());
+        Map<Long, List<OrderPayrollSettlementView.ProductLine>> linesByOrder = new HashMap<>();
+        for (var product : products) {
+            linesByOrder.computeIfAbsent(product.orderId(), ignored -> new ArrayList<>())
+                    .add(new OrderPayrollSettlementView.ProductLine(
+                            product.lineId(), product.productId(), product.productVariantId(),
+                            product.productName(), product.unit(), product.quantity(), product.lineAmount()));
+        }
+        return settlements.stream()
+                .map(settlement -> new OrderPayrollSettlementView(
+                        Long.toString(settlement.orderId()), settlement.orderNo(), settlement.originalEmployeeCode(),
+                        settlement.paymentId(), settlement.paymentNo(), settlement.paymentOwnerCode(),
+                        settlement.paymentOwnerName(), settlement.paymentOwnerEvidence(),
+                        settlement.fullyPaidDate(), settlement.actualCashDate(), settlement.orderAmount(),
+                        settlement.refundedAmount(), settlement.qualityStatus(),
+                        List.copyOf(linesByOrder.getOrDefault(settlement.orderId(), List.of()))))
+                .toList();
+    }
+
+    private static void requireSettlementLimit(int count) {
+        if (count > 20000)
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "回款核算来源超过上限，请分期核对", List.of());
     }
 }

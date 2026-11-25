@@ -88,6 +88,10 @@ public interface HrPayrollStore {
     Map<String, PayrollCommissionDetailView> confirmedSalesCommissions(
             String tenant, Set<String> employees, Set<String> lineIds, String throughMonth);
 
+    /** 已锁定销售工资中的整单结清依据，排除正在核算或预览的员工当月工资单。 */
+    Set<String> lockedSalesSettlementIds(
+            String tenant, String employee, String month, List<String> collectionSourceIds);
+
     Optional<PayrollDetailView> byMonth(String tenant, String employee, String month);
 
     PayrollDetailView saveCalculation(

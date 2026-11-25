@@ -3,17 +3,21 @@ package com.rigour.order.infrastructure.persistence.repository;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.rigour.order.api.v1.model.OrderRegisterModels.HistoryCoverage;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterLineView;
 import com.rigour.order.api.v1.model.OrderRegisterModels.OrderRegisterPage;
 import com.rigour.order.application.port.out.OrderRegisterStore.LineCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.OrderCriteria;
 import com.rigour.order.application.port.out.OrderRegisterStore.PaymentCriteria;
+import com.rigour.order.infrastructure.persistence.mapper.OrderCostSourceMapper;
 import com.rigour.shared.context.TestAuthorizationContext;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.testcontainers.junit.jupiter.Container;
@@ -23,6 +27,7 @@ import org.testcontainers.mysql.MySQLContainer;
 import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -133,6 +138,71 @@ class JdbcOrderRegisterStoreMySqlTest {
             assertThat(store.lines(tenant,0,20,new LineCriteria(null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,Map.of(),code)).total()).isZero();
         }
         assertThat(store.findOrder(tenant,"PAY-OWNER-B").orElseThrow().paymentOwnerNames()).isEmpty();
+    }
+
+    @Test
+    void payrollUsesTheVerifiedClosingReceiptBehindTheOrderListOwners() throws Exception {
+        String tenant = UUID.randomUUID().toString();
+        String connector = UUID.randomUUID().toString();
+        long orderId = order(tenant, "PAYROLL-OWNER", 1L, "C1", "交接客户", "HZ",
+                "A", "录入人员", "2026-09-01T00:00:00Z", 10000, 0);
+        jdbc.update("UPDATE order_sales_order SET order_status_code='SUBMITTED',data_quality_status_code='COMPLETE' WHERE id=?",
+                orderId);
+        insertLine(tenant, orderId, 1, "台呢", "10000");
+        insertPayment(tenant, "PAYROLL-A", orderId, "2026-09-20T04:00:00Z", 9000, "CHECKED", null);
+        insertPayment(tenant, "PAYROLL-UNCHECKED", orderId, "2026-09-25T04:00:00Z", 2000, "RECEIVED", null);
+        insertPayment(tenant, "PAYROLL-B", orderId, "2026-10-01T17:30:00Z", 1000, "RECEIVED", null);
+        insertPayment(tenant, "PAYROLL-LATE", orderId, "2026-10-03T04:00:00Z", 300, "CHECKED", null);
+        jdbc.update(
+                """
+                UPDATE order_payment_record
+                SET payment_owner_code='A',payment_owner_name='张三',payment_owner_evidence='人工核实'
+                WHERE tenant_id=? AND payment_no IN ('PAYROLL-A','PAYROLL-UNCHECKED','PAYROLL-LATE')
+                """, tenant);
+        jdbc.update(
+                """
+                INSERT INTO order_sync_receipt(tenant_id,connector_id,receipt_no,source_order_no,customer_id,
+                                               amount,occurred_at,source_status,checksum,state)
+                VALUES (?,?,'SOURCE-B','PAYROLL-OWNER',1,1000,'2026-10-01 17:30:00','CONFIRMED','source-b','CONFIRMED')
+                """, tenant, connector);
+        jdbc.update(
+                """
+                UPDATE order_payment_record
+                SET connector_id=?,source_document_no='SOURCE-B',payment_owner_code='B',
+                    payment_owner_name='李四',payment_owner_evidence='首次同步客户归属'
+                WHERE tenant_id=? AND payment_no='PAYROLL-B'
+                """, connector, tenant);
+        assertThat(store.findOrder(tenant, "PAYROLL-OWNER").orElseThrow().paymentOwnerNames())
+                .containsExactlyInAnyOrder("张三", "李四");
+
+        var config = new MybatisConfiguration();
+        config.addMapper(OrderCostSourceMapper.class);
+        var factory = new MybatisSqlSessionFactoryBean();
+        factory.setDataSource(jdbc.getDataSource());
+        factory.setConfiguration(config);
+        var mapper = new SqlSessionTemplate(factory.getObject()).getMapper(OrderCostSourceMapper.class);
+        var repository = new MybatisPlusOrderCostSourceRepository(mapper, null);
+        var october = LocalDate.of(2026, 10, 1);
+        var octoberEnd = october.plusMonths(1).minusDays(1);
+        assertThat(repository.payrollSettlements(tenant, "A", october.minusMonths(1), october.minusDays(1)))
+                .isEmpty();
+        assertThat(repository.payrollSettlements(tenant, "A", october, octoberEnd)).isEmpty();
+        assertThat(repository.payrollSettlements(TENANT, "B", october, octoberEnd)).isEmpty();
+        assertThat(repository.payrollSettlements(tenant, "B", october, octoberEnd))
+                .singleElement()
+                .satisfies(
+                        settlement -> {
+                            assertThat(settlement.orderAmount()).isEqualByComparingTo("10000");
+                            assertThat(settlement.originalEmployeeCode()).isEqualTo("A");
+                            assertThat(settlement.paymentOwnerCode()).isEqualTo("B");
+                            assertThat(settlement.paymentOwnerName()).isEqualTo("李四");
+                            assertThat(settlement.paymentOwnerEvidence()).isEqualTo("首次同步客户归属");
+                            assertThat(settlement.paymentNo()).isEqualTo("PAYROLL-B");
+                            assertThat(settlement.fullyPaidDate()).isEqualTo(LocalDate.of(2026, 10, 2));
+                            assertThat(settlement.qualityStatus()).isEqualTo("COMPLETE");
+                            assertThat(settlement.lines()).singleElement()
+                                    .satisfies(line -> assertThat(line.productName()).isEqualTo("台呢"));
+                        });
     }
 
     @Test

@@ -28,6 +28,12 @@ public class ConfiguredPayrollService {
     private HrPayrollComponentService components;
     private TargetSettingsStore targetStore;
     private PayrollRuleResolver rules;
+    private PayrollSettlementAttribution settlementAttribution;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void setSettlementAttribution(PayrollSettlementAttribution settlementAttribution) {
+        this.settlementAttribution = settlementAttribution;
+    }
 
     @org.springframework.beans.factory.annotation.Autowired
     void setRules(PayrollRuleResolver rules) {
@@ -255,28 +261,46 @@ public class ConfiguredPayrollService {
                         .sorted(Comparator.comparing(OrderPayrollLineView::lineId))
                         .toList();
         var own = facts.stream().filter(f -> e.employeeCode().equals(f.employeeCode())).toList();
-        BigDecimal achievement =
-                ordersRequired && ordersAvailable
-                        ? achievement(own, month.atDay(1), month.atEndOfMonth(), issues)
-                        : null;
+        boolean usesSettlementOwner = "SALES".equals(definition.role())
+                && settlementAttribution != null && settlementAttribution.applies(month);
+        var settlement = usesSettlementOwner
+                ? settlementAttribution.calculate(tenant, e.employeeCode(), month) : null;
+        BigDecimal achievement;
+        List<PayrollCollectionEvidenceView> collectionSources;
+        if (settlement != null) {
+            achievement = settlement.amount();
+            collectionSources = settlement.evidence();
+            issues.addAll(settlement.issues());
+        } else {
+            achievement = ordersRequired && ordersAvailable
+                    ? achievement(own, month.atDay(1), month.atEndOfMonth(), issues) : null;
+            collectionSources = collectionEvidence(own, month);
+        }
         if (ordersRequired
                 && (input.baseOverride() == null || input.performanceOverride() == null)) {
+            Set<String> historyEmployees = new LinkedHashSet<>();
+            historyEmployees.add(e.employeeCode());
+            if (settlement != null)
+                settlement.rows().stream()
+                        .map(row -> row.originalEmployeeCode())
+                        .filter(code -> code != null && !code.isBlank())
+                        .forEach(historyEmployees::add);
             var legacyOrders =
-                    payroll
-                            .commissionHistory(
-                                    tenant, e.employeeCode(), month.minusMonths(1).toString())
-                            .stream()
+                    historyEmployees.stream()
+                            .flatMap(code -> payroll.commissionHistory(
+                                    tenant, code, month.minusMonths(1).toString()).stream())
                             .map(PayrollDetailView::calculation)
-                            .filter(c -> c.scheme() == null && c.performanceDetail() != null)
+                            .filter(c -> c.scheme() == null && c.performanceDetail() != null
+                                    && c.performanceDetail().sources() != null)
                             .flatMap(c -> c.performanceDetail().sources().stream())
                             .map(PayrollCollectionEvidenceView::orderNo)
                             .collect(java.util.stream.Collectors.toSet());
-            if (own.stream()
-                    .anyMatch(
-                            f ->
-                                    f.fullyPaidDate() != null
-                                            && YearMonth.from(f.fullyPaidDate()).equals(month)
-                                            && legacyOrders.contains(f.orderNo())))
+            boolean previouslyAssessed = settlement != null
+                    ? collectionSources.stream().anyMatch(f -> legacyOrders.contains(f.orderNo()))
+                    : own.stream().anyMatch(f -> f.fullyPaidDate() != null
+                            && YearMonth.from(f.fullyPaidDate()).equals(month)
+                            && legacyOrders.contains(f.orderNo()));
+            if (previouslyAssessed)
                 issues.add("存在旧规则已考核部分回款的存量订单，请核定本月底薪和绩效，避免切换后重复考核");
         }
         BigDecimal performanceBase =
@@ -597,7 +621,7 @@ public class ConfiguredPayrollService {
                                                                     d.deduction(),
                                                                     d.evidenceComplete()))
                                             .toList(),
-                                    collectionEvidence(own, month),
+                                    collectionSources,
                                     calculated.issues(),
                                     processOverride);
                 }
@@ -990,26 +1014,27 @@ public class ConfiguredPayrollService {
                         .filter(key -> relevantLines.contains(key.split("\\|", 2)[0]))
                         .sorted()
                         .toList();
-        String fingerprint =
-                hash(
-                        Arrays.asList(
-                                selected,
-                                monthly,
-                                input,
-                                facts,
-                                evidence,
-                                allAssignments,
-                                relevantReleases,
-                                corrections,
-                                e,
-                                actualDays,
-                                expectedDays,
-                                commission,
-                                base,
-                                performance,
-                                allowance,
-                                achievement,
-                                metricResults));
+        var fingerprintInputs = Arrays.asList(
+                selected,
+                monthly,
+                input,
+                facts,
+                evidence,
+                allAssignments,
+                relevantReleases,
+                corrections,
+                e,
+                actualDays,
+                expectedDays,
+                commission,
+                base,
+                performance,
+                allowance,
+                achievement,
+                metricResults);
+        String fingerprint = settlement == null
+                ? hash(fingerprintInputs)
+                : hash(List.of(fingerprintInputs, settlement));
         return new PayrollCalculationView(
                 base,
                 performance,
@@ -1029,7 +1054,7 @@ public class ConfiguredPayrollService {
                 correctionAmount,
                 corrections,
                 snapshot,
-                collectionEvidence(own, month));
+                collectionSources);
     }
 
     private boolean requiresOrderSource(

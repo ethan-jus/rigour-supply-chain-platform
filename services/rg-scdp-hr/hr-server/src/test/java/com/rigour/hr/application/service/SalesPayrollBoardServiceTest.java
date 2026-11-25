@@ -7,6 +7,7 @@ import com.rigour.hr.api.v1.model.*;
 import com.rigour.hr.application.port.out.*;
 import com.rigour.hr.infrastructure.persistence.repository.SalesStatementPublications;
 import com.rigour.order.api.v1.model.OrderPayrollLineView;
+import com.rigour.order.api.v1.model.OrderPayrollSettlementView;
 import com.rigour.shared.context.*;
 import com.rigour.tenant.iam.api.v1.model.SupplyAuthorizationView;
 import com.rigour.tenant.iam.client.SupplyAuthorizationClient;
@@ -134,6 +135,48 @@ class SalesPayrollBoardServiceTest {
     }
 
     @Test
+    void teamAwardsTheWholeOrderOnlyToTheClosingPaymentOwner() {
+        var tenant = UUID.randomUUID();
+        var user = UUID.randomUUID();
+        var action = "hr:payroll:read";
+        TestAuthorizationContext.set(new CallerIdentity(
+                "TENANT", user, tenant, user, null, UUID.randomUUID(), 0, 0, 0,
+                Set.of(), Set.of(action)));
+        var month = YearMonth.of(2026, 11);
+        var source = mock(HrPayrollSource.class);
+        var store = mock(HrPayrollStore.class);
+        var attribution = new PayrollSettlementAttribution(source, store, month.toString());
+        var closing = new OrderPayrollSettlementView(
+                "1", "SO-1", "A", "P-2", "RC-2", "B", "回款人乙", "MANUAL",
+                month.atDay(4), month.atDay(3), new BigDecimal("10000"), BigDecimal.ZERO,
+                "COMPLETE", List.of());
+        when(source.payrollSettlements(tenant.toString(), "B", month.atDay(1), month.atEndOfMonth()))
+                .thenReturn(List.of(closing));
+        when(store.employees(tenant.toString(), action))
+                .thenReturn(List.of(salesperson("A"), salesperson("B")));
+        var service = new SalesPayrollBoardService(
+                store, source, mock(SupplyAuthorizationClient.class),
+                mock(SalesStatementPublications.class), mock(HrAttendanceStore.class), attribution);
+
+        var rows = service.team(month.toString()).employees();
+        assertThat(rows).hasSize(2);
+        assertThat(rows.getFirst().basis()).isZero();
+        assertThat(rows.getFirst().orders()).isEmpty();
+        assertThat(rows.getLast().basis()).isEqualByComparingTo("10000");
+        assertThat(rows.getLast().orders()).singleElement().satisfies(order -> {
+            assertThat(order.orderNo()).isEqualTo("SO-1");
+            assertThat(order.settlementPaymentNo()).isEqualTo("RC-2");
+            assertThat(order.paymentOwnerCode()).isEqualTo("B");
+        });
+        verify(source, never()).payrollLines(anyString(), any(), any(), any());
+    }
+
+    private static PayrollEmployeeView salesperson(String employeeCode) {
+        return new PayrollEmployeeView(
+                employeeCode, employeeCode, 1L, "销售部", null, null, null, "SALES");
+    }
+
+    @Test
     void personalReadsUseOnlyBoundEmployeeAndExplicitPublication() {
         String action = "hr:payroll:self";
         var tenant = UUID.randomUUID();
@@ -164,7 +207,8 @@ class SalesPayrollBoardServiceTest {
         var store = mock(HrPayrollStore.class);
         var published = mock(SalesStatementPublications.class);
         var service =
-                new SalesPayrollBoardService(store, mock(HrPayrollSource.class), iam, published,mock(com.rigour.hr.application.port.out.HrAttendanceStore.class));
+                new SalesPayrollBoardService(store, mock(HrPayrollSource.class), iam, published,
+                        mock(HrAttendanceStore.class), mock(PayrollSettlementAttribution.class));
         assertThat(service.personal("2026-10").employees()).isEmpty();
         verify(published).published(tenant.toString(), "A", "2026-10");
         verifyNoInteractions(store);

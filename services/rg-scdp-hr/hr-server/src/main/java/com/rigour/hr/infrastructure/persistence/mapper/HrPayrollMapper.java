@@ -72,6 +72,33 @@ reason=VALUES(reason),allowance_override=VALUES(allowance_override),department_o
             @Param("employee") String employee,
             @Param("month") String month);
 
+    @Select("""
+            <script>
+            SELECT DISTINCT settlement.source_id
+            FROM hr_payroll p
+            JOIN JSON_TABLE(
+                CASE WHEN JSON_TYPE(JSON_EXTRACT(p.calculation_json, '$.settledOrders'))='ARRAY'
+                     THEN JSON_EXTRACT(p.calculation_json, '$.settledOrders')
+                     ELSE COALESCE(JSON_EXTRACT(p.calculation_json, '$.performanceDetail.sources'), JSON_ARRAY())
+                END, '$[*]' COLUMNS (
+                source_id VARCHAR(80) PATH '$.sourceId',
+                evidence_kind VARCHAR(24) PATH '$.kind'
+            )) settlement ON settlement.evidence_kind='FULLY_PAID'
+            WHERE p.tenant_id=#{tenant} AND p.status_code IN ('CONFIRMED','PAID')
+              AND (p.employee_code != #{employee} OR p.payroll_month != #{month})
+              AND JSON_UNQUOTE(JSON_EXTRACT(p.calculation_json, '$.scheme.scheme.definition.role'))='SALES'
+              AND settlement.source_id IN
+              <foreach collection="collectionSourceIds" item="id" open="(" separator="," close=")">
+                  #{id}
+              </foreach>
+            </script>
+            """)
+    List<String> lockedSalesSettlementIds(
+            @Param("tenant") String tenant,
+            @Param("employee") String employee,
+            @Param("month") String month,
+            @Param("collectionSourceIds") List<String> collectionSourceIds);
+
     @Insert(
             "INSERT INTO"
                 + " hr_payroll_commission_release(tenant_id,source_line_id,recipient_role_code,payroll_id,amount)"

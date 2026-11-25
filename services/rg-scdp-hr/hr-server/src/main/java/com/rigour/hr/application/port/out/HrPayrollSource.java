@@ -4,6 +4,7 @@ import com.rigour.erp.api.v1.model.ErpPayrollCategoryView;
 import com.rigour.erp.api.v1.model.ErpPayrollProductView;
 import com.rigour.order.api.v1.model.OrderCollectionSourceView;
 import com.rigour.order.api.v1.model.OrderCommissionSourceLineView;
+import com.rigour.order.api.v1.model.OrderPayrollSettlementView;
 import com.rigour.sales.api.v1.model.SalesPayrollEvidenceView;
 
 import java.time.LocalDate;
@@ -47,5 +48,10 @@ public interface HrPayrollSource {
     default List<com.rigour.order.api.v1.model.OrderPayrollLineView> payrollLines(
             String tenant, String employee, String city, LocalDate through) {
         throw new UnsupportedOperationException("整单付清来源尚未接入");
+    }
+
+    default List<OrderPayrollSettlementView> payrollSettlements(
+            String tenant, String employee, LocalDate from, LocalDate to) {
+        throw new UnsupportedOperationException("回款人整单付清来源尚未接入");
     }
 }

@@ -12,6 +12,8 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
@@ -164,4 +166,136 @@ ORDER BY o.id,l.id LIMIT 20001
             @Param("employee") String employee,
             @Param("city") String city,
             @Param("until") LocalDateTime until);
+
+    // 候选订单必须保留其他回款人的核销记录，才能找到首次达到整单应收金额的那笔。
+    @Select(
+"""
+WITH scoped AS (
+    SELECT o.*,COALESCE(a.employee_code,o.owner_employee_code) AS original_employee_code
+    FROM order_sales_order o
+    LEFT JOIN order_attribution_snapshot a ON a.tenant_id=o.tenant_id AND a.order_id=o.id AND a.state='FROZEN'
+    WHERE o.tenant_id=#{tenant} AND o.deleted=0 AND o.order_date<#{until}
+      AND o.order_status_code NOT IN ('DRAFT','CANCELLED','DELETED') AND o.payable_amount>0
+      AND (COALESCE(a.employee_code,o.owner_employee_code)=#{employee} OR EXISTS (
+          SELECT 1 FROM order_verified_payment_v p
+          WHERE p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.payment_owner_code=#{employee}
+            AND p.allocation_effective_at<#{until} AND p.actual_cash_at<#{until}
+      ))
+), payments AS (
+    SELECT p.tenant_id,p.order_id,p.id,p.payment_no,p.paid_amount,p.actual_cash_at,
+           NULLIF(TRIM(p.payment_owner_code),'') AS owner_code,
+           NULLIF(TRIM(p.payment_owner_name),'') AS owner_name,
+           NULLIF(TRIM(p.payment_owner_evidence),'') AS owner_evidence,
+           GREATEST(p.allocation_effective_at,p.actual_cash_at) AS payment_time
+    FROM order_verified_payment_v p
+    JOIN scoped o ON o.tenant_id=p.tenant_id AND o.id=p.order_id
+    WHERE p.tenant_id=#{tenant} AND p.allocation_effective_at<#{until} AND p.actual_cash_at<#{until}
+), running AS (
+    SELECT p.*,SUM(p.paid_amount) OVER (
+        PARTITION BY p.tenant_id,p.order_id ORDER BY p.payment_time,p.id ROWS UNBOUNDED PRECEDING
+    ) AS cumulative
+    FROM payments p
+), crossings AS (
+    SELECT r.*,ROW_NUMBER() OVER (PARTITION BY r.tenant_id,r.order_id ORDER BY r.payment_time,r.id) AS settlement_rank
+    FROM running r
+    JOIN scoped o ON o.tenant_id=r.tenant_id AND o.id=r.order_id
+    WHERE r.cumulative-COALESCE((
+        SELECT SUM(f.refund_amount)
+        FROM order_refund_record f
+        WHERE f.tenant_id=o.tenant_id AND f.order_id=o.id AND f.deleted=0
+          AND f.refund_status_code='CONFIRMED' AND f.refund_time<=r.payment_time
+    ),0)>=o.payable_amount
+)
+SELECT o.id AS orderId,o.order_no AS orderNo,o.original_employee_code AS originalEmployeeCode,
+       CAST(p.id AS CHAR) AS paymentId,p.payment_no AS paymentNo,
+       CASE WHEN p.owner_evidence IS NOT NULL THEN p.owner_code END AS paymentOwnerCode,
+       CASE WHEN p.owner_evidence IS NOT NULL AND p.owner_code IS NOT NULL THEN p.owner_name END AS paymentOwnerName,
+       p.owner_evidence AS paymentOwnerEvidence,
+       DATE(CONVERT_TZ(p.payment_time,'+00:00','+08:00')) AS fullyPaidDate,
+       DATE(CONVERT_TZ(p.actual_cash_at,'+00:00','+08:00')) AS actualCashDate,
+       o.payable_amount AS orderAmount,
+       COALESCE((
+           SELECT SUM(f.refund_amount)
+           FROM order_refund_record f
+           WHERE f.tenant_id=o.tenant_id AND f.order_id=o.id AND f.deleted=0
+             AND f.refund_status_code='CONFIRMED' AND f.refund_time<#{until}
+       ),0) AS refundedAmount,
+       CASE
+           WHEN p.owner_code IS NULL OR p.owner_evidence IS NULL THEN 'PAYMENT_OWNER_PENDING'
+           WHEN EXISTS (
+               SELECT 1 FROM order_attribution_adjustment a
+               WHERE a.tenant_id=o.tenant_id AND a.order_id=o.id AND a.status='PENDING'
+           ) THEN 'ATTRIBUTION_PENDING'
+           WHEN EXISTS (
+               SELECT 1 FROM order_financial_event e
+               WHERE e.tenant_id=o.tenant_id AND e.order_id=o.id AND e.deleted=0
+                 AND e.event_type IN ('CREDIT_NOTE','WRITE_OFF') AND e.effective_at<#{until}
+           ) THEN 'NON_CASH_SETTLEMENT'
+           WHEN EXISTS (
+                 SELECT 1 FROM order_attribution_snapshot a
+                 WHERE a.tenant_id=o.tenant_id AND a.order_id=o.id AND a.state='REVIEW'
+           ) THEN 'ATTRIBUTION_PENDING'
+           ELSE o.data_quality_status_code
+       END AS qualityStatus
+FROM scoped o
+JOIN crossings p ON p.tenant_id=o.tenant_id AND p.order_id=o.id AND p.settlement_rank=1
+WHERE p.payment_time>=#{from}
+  AND (
+      p.owner_code=#{employee}
+      OR (
+          (p.owner_code IS NULL OR p.owner_evidence IS NULL)
+          AND (o.original_employee_code=#{employee} OR EXISTS (
+              SELECT 1 FROM payments own
+              WHERE own.tenant_id=p.tenant_id AND own.order_id=p.order_id AND own.owner_code=#{employee}
+                AND (own.payment_time<p.payment_time OR (own.payment_time=p.payment_time AND own.id<p.id))
+          ))
+      )
+  )
+ORDER BY p.payment_time,p.id,o.id LIMIT 20001
+""")
+    List<PayrollSettlement> payrollSettlements(
+            @Param("tenant") String tenant,
+            @Param("employee") String employee,
+            @Param("from") LocalDateTime from,
+            @Param("until") LocalDateTime until);
+
+    @Select(
+"""
+<script>
+SELECT l.order_id AS orderId,CAST(l.id AS CHAR) AS lineId,l.product_id AS productId,
+       l.product_variant_id AS productVariantId,l.product_name_snapshot AS productName,
+       l.unit_code AS unit,l.quantity,l.line_amount AS lineAmount
+FROM order_sales_order_line l
+WHERE l.tenant_id=#{tenant} AND l.deleted=0
+  AND l.order_id IN <foreach collection="orderIds" item="id" open="(" separator="," close=")">#{id}</foreach>
+ORDER BY l.order_id,l.id LIMIT 20001
+</script>
+""")
+    List<PayrollProductLine> payrollProductLines(
+            @Param("tenant") String tenant, @Param("orderIds") List<Long> orderIds);
+
+    record PayrollSettlement(
+            long orderId,
+            String orderNo,
+            String originalEmployeeCode,
+            String paymentId,
+            String paymentNo,
+            String paymentOwnerCode,
+            String paymentOwnerName,
+            String paymentOwnerEvidence,
+            LocalDate fullyPaidDate,
+            LocalDate actualCashDate,
+            BigDecimal orderAmount,
+            BigDecimal refundedAmount,
+            String qualityStatus) {}
+
+    record PayrollProductLine(
+            long orderId,
+            String lineId,
+            Long productId,
+            Long productVariantId,
+            String productName,
+            String unit,
+            BigDecimal quantity,
+            BigDecimal lineAmount) {}
 }

@@ -13,6 +13,7 @@ import java.time.YearMonth;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /** 业绩报表读取领域 API，不用提成明细替代销售或整单付清业绩，不保存、重算工资。 */
 @Service
@@ -22,14 +23,17 @@ public final class HrPayrollPerformanceExportService {
     private final TargetSettingsStore targets;
     private final com.rigour.hr.application.port.out.HrPayrollStore payroll;
     private final com.rigour.hr.application.port.out.HrAttendanceStore attendance;
+    private final PayrollSettlementAttribution settlementAttribution;
     public HrPayrollPerformanceExportService(HrPayrollWorkflowService workflow, HrPayrollSource source, TargetSettingsStore targets,
             com.rigour.hr.application.port.out.HrPayrollStore payroll,
-            com.rigour.hr.application.port.out.HrAttendanceStore attendance) {
+            com.rigour.hr.application.port.out.HrAttendanceStore attendance,
+            PayrollSettlementAttribution settlementAttribution) {
         this.workflow = workflow;
         this.source = source;
         this.targets = targets;
         this.payroll = payroll;
         this.attendance = attendance;
+        this.settlementAttribution = settlementAttribution;
     }
 
     public List<PayrollPerformanceExportView> export(PayrollQuery query) {
@@ -48,27 +52,94 @@ public final class HrPayrollPerformanceExportService {
         var result = new ArrayList<PayrollPerformanceExportView>();
         for (var row : rows) {
             var month = YearMonth.parse(row.month());
+            var employee = payroll.employee(tenant, row.employeeCode(), "hr:payroll:read");
             var lines = source.payrollLines(tenant, row.employeeCode(), null, month.atEndOfMonth());
             if (lines.size() >= 20001) throw HrPayrollService.bad("订单来源超过完整读取上限，请缩小导出范围");
-            var missing = lines.stream().map(OrderPayrollLineView::productVariantId)
+            var receipts = receiptFacts(tenant, month, row, employee, lines);
+            var receiptVariants = receipts == null ? Stream.<Long>empty() : receipts.orders().stream()
+                    .flatMap(order -> Stream.ofNullable(order.productLines()).flatMap(List::stream))
+                    .map(PayrollCollectionEvidenceView.ProductLine::productVariantId);
+            var missing = Stream.concat(lines.stream().map(OrderPayrollLineView::productVariantId), receiptVariants)
                     .filter(Objects::nonNull).filter(id -> !products.containsKey(id)).distinct().toList();
             for (int begin = 0; begin < missing.size(); begin += 100)
                 source.productsByVariants(tenant, missing.subList(begin, Math.min(begin + 100, missing.size())))
                         .forEach(p -> products.put(p.productVariantId(), p));
-            var report = summarize(row, lines, products, categories,
+            var report = summarize(row, lines, receipts, products, categories,
                     row.calculation().performanceDetail() != null && row.calculation().performanceDetail().collectionTarget() != null
                             ? row.calculation().performanceDetail().collectionTarget()
                             : monthlyTargets.get(row.employeeCode() + ":FULLY_PAID_RECEIPT_BASIS"),
                     monthlyTargets.get(row.employeeCode() + ":SALES_AMOUNT"));
-            var employee = payroll.employee(tenant, row.employeeCode(), "hr:payroll:read");
             var confirmed = attendance.employee(tenant, month, row.employeeCode(), "hr:payroll:read").confirmation();
             result.add(PayrollPerformanceReportFacts.enrich(row, report, employee, confirmed, allTargets, subjects));
         }
         return List.copyOf(result);
     }
 
+    private ReceiptFacts receiptFacts(
+            String tenant, YearMonth month, PayrollDetailView row, PayrollEmployeeView employee,
+            List<OrderPayrollLineView> lines) {
+        if (!"SALES".equals(SalesPayrollBoardService.payrollRole(row, employee.payrollCategory())))
+            return null;
+        if (Set.of("CONFIRMED", "PAID").contains(row.statusCode()))
+            return archivedReceipts(month, row, lines);
+        if (!settlementAttribution.applies(month)) return null;
+        var result = settlementAttribution.calculate(tenant, row.employeeCode(), month);
+        return new ReceiptFacts(result.amount(), result.evidence(), result.issues());
+    }
+
+    static ReceiptFacts archivedReceipts(
+            YearMonth month, PayrollDetailView row, List<OrderPayrollLineView> lines) {
+        var calculation = row.calculation();
+        var performance = calculation.performanceDetail();
+        var evidence = calculation.settledOrders();
+        if (evidence == null && performance != null && performance.sources() != null
+                && performance.sources().stream().anyMatch(s -> "FULLY_PAID".equals(s.kind())))
+            evidence = performance.sources();
+        if (evidence == null)
+            evidence = SalesPayrollBoardService.employee(month, row, null, List.of()).orders().stream()
+                    .map(o -> new PayrollCollectionEvidenceView(
+                            o.id(), o.orderNo(), o.settledOn(), o.basis(), "FULLY_PAID"))
+                    .toList();
+        var salesOrders = lines.stream()
+                .collect(Collectors.groupingBy(OrderPayrollLineView::orderId));
+        var issues = new LinkedHashSet<String>();
+        var orders = new LinkedHashMap<String, PayrollCollectionEvidenceView>();
+        for (var order : evidence) {
+            if (!"FULLY_PAID".equals(order.kind()) || order.date() == null
+                    || !month.equals(YearMonth.from(order.date()))) continue;
+            var orderId = order.sourceId().startsWith("FULL:") ? order.sourceId().substring(5) : order.sourceId();
+            if (order.productLines() != null) {
+                orders.putIfAbsent(orderId, order);
+                continue;
+            }
+            var historicalLines = salesOrders.getOrDefault(orderId, List.of());
+            if (!historicalLines.isEmpty()) issues.add("部分历史工资的回款品类、数量及退款依据当前可查订单展示");
+            var refunds = order.refundedAmount() == null && !historicalLines.isEmpty()
+                    ? historicalLines.getFirst().refundedAmount() : order.refundedAmount();
+            orders.putIfAbsent(orderId, new PayrollCollectionEvidenceView(
+                    order.sourceId(), order.orderNo(), order.date(), order.amount(), order.kind(),
+                    order.settlementPaymentId(), order.settlementPaymentNo(), order.paymentOwnerCode(),
+                    order.paymentOwnerName(), order.paymentOwnerEvidence(), order.actualCashDate(),
+                    refunds,
+                    historicalLines.stream().map(line -> new PayrollCollectionEvidenceView.ProductLine(
+                            line.lineId(), line.productId(), line.productVariantId(), line.productName(),
+                            line.unitCode(), line.quantity(), line.lineAmount())).toList()));
+        }
+        var total = orders.values().stream().map(PayrollCollectionEvidenceView::amount).filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (orders.isEmpty() && calculation.settledOrders() == null)
+            total = performance == null ? null : performance.collections();
+        return new ReceiptFacts(total, List.copyOf(orders.values()), List.copyOf(issues));
+    }
+
     static PayrollPerformanceExportView summarize(PayrollDetailView row, List<OrderPayrollLineView> lines,
             Map<Long, ErpPayrollProductView> products,
+            Map<Long, ErpPayrollCategoryView> categories, BigDecimal collectionTarget, BigDecimal salesTarget) {
+        return summarize(row, lines, null, products, categories, collectionTarget, salesTarget);
+    }
+
+    static PayrollPerformanceExportView summarize(PayrollDetailView row, List<OrderPayrollLineView> lines,
+            ReceiptFacts receipts, Map<Long, ErpPayrollProductView> products,
             Map<Long, ErpPayrollCategoryView> categories, BigDecimal collectionTarget, BigDecimal salesTarget) {
         var month = YearMonth.parse(row.month());
         var issues = new LinkedHashSet<String>();
@@ -86,7 +157,8 @@ public final class HrPayrollPerformanceExportService {
             var orderLines = entry.getValue();
             var first = orderLines.getFirst();
             boolean soldThisMonth = first.orderDate() != null && YearMonth.from(first.orderDate()).equals(month);
-            boolean paidThisMonth = first.fullyPaidDate() != null && YearMonth.from(first.fullyPaidDate()).equals(month);
+            boolean paidThisMonth = receipts == null && first.fullyPaidDate() != null
+                    && YearMonth.from(first.fullyPaidDate()).equals(month);
             if (!soldThisMonth && !paidThisMonth) continue;
             for (var line : orderLines) {
                 if (!seenLines.add(line.lineId())) throw HrPayrollService.bad("销售订单行重复，无法完整导出");
@@ -127,6 +199,23 @@ public final class HrPayrollPerformanceExportService {
                 if (first.refundedAmount() != null) refunds = refunds.add(first.refundedAmount());
             }
         }
+        if (receipts != null) {
+            issues.addAll(receipts.issues());
+            for (var order : receipts.orders()) {
+                if (order.refundedAmount() != null) refunds = refunds.add(order.refundedAmount());
+                if (order.amount() == null) continue;
+                addReceipt(order, products, categories, buckets, quantities, issues);
+                totalReceipts = totalReceipts.add(order.amount());
+            }
+            if (receipts.amount() != null && receipts.amount().compareTo(totalReceipts) != 0) {
+                var other = buckets.get("OTHER");
+                other.receipts = other.receipts.add(receipts.amount().subtract(totalReceipts));
+                issues.add("历史工资未保留完整结清商品明细，品类未分配金额列入其他品类");
+            }
+            totalReceipts = receipts.amount();
+            if (totalReceipts == null)
+                issues.add("回款总额待核，品类回款及台呢数量仅包含已核定订单");
+        }
         for (var detail : row.calculation().details()) {
             var product = detail.trace() == null ? null : detail.trace().product();
             String code = product == null ? "OTHER" : category(product.categoryId(), categories);
@@ -150,9 +239,42 @@ public final class HrPayrollPerformanceExportService {
                         money(e.getValue().sales), money(e.getValue().receipts), e.getValue().commissionPending ? null : money(e.getValue().commission))).toList(),
                 cloth.entrySet().stream().map(e -> new PayrollPerformanceExportView.ClothSales(e.getKey(), clothName(e.getKey()), money(e.getValue()),
                         quantities.get(e.getKey()).entrySet().stream().map(q -> new PayrollPerformanceExportView.UnitQuantity(q.getKey(), q.getValue())).toList())).toList(),
-                money(totalSales), money(totalReceipts), money(refunds), collectionTarget, salesTarget, row.calculation().commission(), List.copyOf(issues),
+                money(totalSales), totalReceipts == null ? null : money(totalReceipts), money(refunds), collectionTarget, salesTarget, row.calculation().commission(), List.copyOf(issues),
                 null, null, null, null, null, List.of(), null);
     }
+
+    private static void addReceipt(PayrollCollectionEvidenceView order, Map<Long, ErpPayrollProductView> products,
+            Map<Long, ErpPayrollCategoryView> categories, Map<String, Amounts> buckets,
+            Map<String, Map<String, BigDecimal>> quantities, Set<String> issues) {
+        var lines = order.productLines();
+        boolean invalidLines = lines == null || lines.isEmpty()
+                || lines.stream().anyMatch(l -> l.lineAmount() == null || l.lineAmount().signum() < 0);
+        if (invalidLines || lines.stream().allMatch(l -> l.lineAmount().signum() == 0)) {
+            var other = buckets.get("OTHER");
+            other.receipts = other.receipts.add(order.amount());
+            issues.add(order.orderNo() + " 结清商品行缺失或金额异常，回款列入其他品类");
+            return;
+        }
+        var paid = allocate(order.amount(), lines.stream().map(PayrollCollectionEvidenceView.ProductLine::lineAmount).toList());
+        for (int i = 0; i < lines.size(); i++) {
+            var line = lines.get(i);
+            var product = line.productVariantId() == null ? null : products.get(line.productVariantId());
+            var code = category(product == null ? null : product.categoryId(), categories);
+            buckets.get(code).receipts = buckets.get(code).receipts.add(paid.get(i));
+            if (product == null) issues.add("部分商品未关联ERP分类，计入其他品类");
+            if (!"CLOTH".equals(code)) continue;
+            var group = clothGroup(product.productName(), product.specification());
+            if (group == null) {
+                issues.add("台呢含其他型号，销售及整单付清业绩包含该部分，未计入三组数量");
+            } else if (line.quantity() == null || line.quantity().signum() < 0 || line.unit() == null || line.unit().isBlank()) {
+                issues.add(order.orderNo() + " 整单付清台呢的数量或单位缺失，数量待核");
+            } else {
+                quantities.get(group).merge(line.unit(), line.quantity(), BigDecimal::add);
+            }
+        }
+    }
+
+    record ReceiptFacts(BigDecimal amount, List<PayrollCollectionEvidenceView> orders, List<String> issues) {}
 
     /** Cumulative cent allocation preserves each order/receipt total, including small amounts. */
     static List<BigDecimal> allocate(BigDecimal amount, List<BigDecimal> weights) {

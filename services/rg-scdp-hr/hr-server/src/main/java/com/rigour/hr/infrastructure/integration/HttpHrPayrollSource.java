@@ -5,6 +5,7 @@ import com.rigour.erp.api.v1.model.ErpPayrollProductView;
 import com.rigour.hr.application.port.out.HrPayrollSource;
 import com.rigour.order.api.v1.model.OrderCollectionSourceView;
 import com.rigour.order.api.v1.model.OrderCommissionSourceLineView;
+import com.rigour.order.api.v1.model.OrderPayrollSettlementView;
 import com.rigour.sales.api.v1.model.SalesPayrollEvidenceView;
 import com.rigour.settings.client.EffectiveDictionaryClient;
 import com.rigour.shared.context.OutboundContextHeaders;
@@ -242,6 +243,39 @@ public final class HttpHrPayrollSource implements HrPayrollSource {
                                                                 .OrderPayrollLineView>>>() {});
         if (response == null || !"OK".equals(response.code()) || response.data() == null)
             throw new IllegalStateException("提成来源暂不可用");
+        return response.data();
+    }
+
+    @Override
+    public List<OrderPayrollSettlementView> payrollSettlements(
+            String tenant, String employee, LocalDate from, LocalDate to) {
+        var uri =
+                UriComponentsBuilder.fromUriString(order)
+                        .path("/api/v1/orders/cost-sources/payroll-settlements")
+                        .queryParam("employeeCode", employee)
+                        .queryParam("from", from)
+                        .queryParam("to", to)
+                        .build()
+                        .encode()
+                        .toUri();
+        var headers =
+                OutboundContextHeaders.service(
+                        signer,
+                        "GET",
+                        uri,
+                        "rigour-hr-payroll-service",
+                        tenant,
+                        "order:payroll:source-read");
+        var response =
+                client.get()
+                        .uri(uri)
+                        .headers(h -> headers.forEach(h::set))
+                        .retrieve()
+                        .body(
+                                new ParameterizedTypeReference<
+                                        ApiResponse<List<OrderPayrollSettlementView>>>() {});
+        if (response == null || !"OK".equals(response.code()) || response.data() == null)
+            throw new IllegalStateException("回款人整单付清来源暂不可用");
         return response.data();
     }
 

@@ -3,13 +3,17 @@ package com.rigour.order.application.service;
 import com.rigour.order.api.v1.model.OrderCollectionSourceView;
 import com.rigour.order.api.v1.model.OrderCommissionSourceLineView;
 import com.rigour.order.api.v1.model.OrderDeliveryCostSourceView;
+import com.rigour.order.api.v1.model.OrderPayrollSettlementView;
 import com.rigour.order.application.port.out.OrderCostSourceStore;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
+import com.rigour.shared.core.api.ErrorCode;
+import com.rigour.shared.core.exception.BusinessException;
 
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 
 @Service
@@ -78,6 +82,21 @@ public final class OrderCostSourceService {
                 || through == null) throw new IllegalArgumentException("请选择员工或城市之一，并提供核算日期");
         return store.payrollLines(
                 tenant("order:payroll:source-read"), employeeCode, cityCode, through);
+    }
+
+    public List<OrderPayrollSettlementView> payrollSettlements(
+            String employeeCode, LocalDate from, LocalDate to) {
+        String tenant = tenant("order:payroll:source-read");
+        if (employeeCode == null
+                || employeeCode.isBlank()
+                || employeeCode.length() > 50
+                || from == null
+                || to == null
+                || to.isBefore(from)
+                || ChronoUnit.DAYS.between(from, to) > 365) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "员工或回款核算期间无效", List.of());
+        }
+        return store.payrollSettlements(tenant, employeeCode.trim(), from, to);
     }
 
     public List<OrderDeliveryCostSourceView> deliveries(
