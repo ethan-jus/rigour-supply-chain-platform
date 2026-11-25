@@ -741,7 +741,10 @@ public final class DhbSyncOrchestrationService {
         if (previous != null && previous.plus(Duration.ofDays(1)).isAfter(end)) return;
         progress.accept("正在核对历史付款确认及作废状态（每日全量补查）");
         try {
-            var result = orderSyncService.runOrderPull(protectHistory(caller), bucket.orderTarget.taskId(),
+            var statusCaller = new CallerIdentity(caller.principalScope(), caller.principalId(),
+                    caller.tenantId(), null, null, caller.sessionId(), 0, 0, 0,
+                    Set.of("DHB_SYNC_ORCHESTRATOR", "DHB_PROTECT_HISTORY", "DHB_PAYMENT_STATUS_ONLY"), caller.permissions());
+            var result = orderSyncService.runOrderPull(statusCaller, bucket.orderTarget.taskId(),
                     new SyncRunCommand(Instant.parse("2000-01-01T00:00:00Z"), end, null, null, null, "PAYMENT"), pages, progress);
             steps.add(orderPackageStep(scope, result));
             if ("SUCCEEDED".equals(result.status()) || "DHB_DURABLE_PROJECTION_PENDING".equals(result.errorCode()))

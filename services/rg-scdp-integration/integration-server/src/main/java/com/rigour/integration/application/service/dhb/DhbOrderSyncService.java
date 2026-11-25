@@ -517,7 +517,7 @@ public final class DhbOrderSyncService {
             detailExecutor = newDetailExecutor();
             Set<String> retriedShipments = Set.of();
             if (replayTarget == null) {
-                if (incrementalWork != null
+                if (incrementalWork != null && !paymentStatusOnly(caller)
                         // 发货页按所选窗口先留存来源事实，不能先扫描窗口外历史失败项。
                         // 当前窗口保存后再自动复核历史依赖；仍缺资料的原工作项继续保留。
                         && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT_LOGISTICS")
@@ -669,7 +669,7 @@ public final class DhbOrderSyncService {
                                 sourceOrderLocks));
             }
 
-            if (voucherBackfillEnabled
+            if (voucherBackfillEnabled && !paymentStatusOnly(caller)
                     && replayTarget == null
                     && (selectedScope == null || "PAYMENT".equals(selectedScope))) {
                 try {
@@ -693,7 +693,7 @@ public final class DhbOrderSyncService {
             }
 
             boolean durable =
-                    incrementalWork != null
+                    incrementalWork != null && !paymentStatusOnly(caller)
                             && replayTarget == null
                             && Set.of("SALES_ORDER", "RECEIPT", "PAYMENT", "SHIPMENT", "SHIPMENT_LOGISTICS")
                                     .contains(selectedScope == null ? "" : selectedScope);
@@ -1767,9 +1767,13 @@ public final class DhbOrderSyncService {
                 pages++;
                 counts.fetched += page.items().size();
                 var items = workItems(page.items());
-                var applied = stageWork(caller, task, "PAYMENT", items);
+                var applied = paymentStatusOnly(caller) ? Set.<String>of() : stageWork(caller, task, "PAYMENT", items);
                 for (Payment payment : page.items()) {
                     var item = items.get(workId(payment));
+                    if (paymentStatusOnly(caller)) {
+                        counts.add(projectPayment(caller, task, runId, payment));
+                        continue;
+                    }
                     counts.add(
                             applied.contains(item.id())
                                     ? ProjectionOutcome.DUPLICATE
@@ -3329,7 +3333,7 @@ public final class DhbOrderSyncService {
 
         RawObjectPersistResult raw = null;
         try {
-            if (protectHistory(caller)) {
+            if (protectHistory(caller) || paymentStatusOnly(caller)) {
                 Instant business =
                         sourceBusinessTime(
                                 "DHB_PAYMENT_BUSINESS_TIME_MISSING",
@@ -3337,7 +3341,7 @@ public final class DhbOrderSyncService {
                                 "sourcePaymentNo",
                                 sourcePaymentNo,
                                 payment.transactionAt());
-                if (business.isBefore(HISTORY_CUTOVER)) {
+                if (paymentStatusOnly(caller) || business.isBefore(HISTORY_CUTOVER)) {
                     String status = verifiedReceiptStatus(payment.status());
                     var refreshed = orderProjectionClient.syncHistoricalPaymentStatus(orderServiceCaller(caller.tenantId()),
                             new com.rigour.order.api.v1.model.HistorySyncModels.FundPaymentStatus(task.connectorId(),
@@ -3345,7 +3349,9 @@ public final class DhbOrderSyncService {
                                             : "CANCELLED".equals(status) ? "CANCELLED" : "PENDING"));
                     if (refreshed == null || !Set.of("SYNCED", "MANUAL_PROTECTED").contains(refreshed.state()))
                         throw new IllegalStateException("历史付款状态尚未核对成功");
-                    syncPaymentVouchers(caller, task, payment, sourcePaymentNo, attributes);
+                    // 每日状态检查不重新下载旧图片，也不将付款完整投影的工作项标记为完成。
+                    if (!paymentStatusOnly(caller) || "CANCELLED".equals(status))
+                        syncPaymentVouchers(caller, task, payment, sourcePaymentNo, attributes);
                     return ProjectionOutcome.DUPLICATE;
                 }
             }
@@ -8784,6 +8790,10 @@ public final class DhbOrderSyncService {
             if (value != null) return value;
         }
         return null;
+    }
+
+    private static boolean paymentStatusOnly(CallerIdentity caller) {
+        return caller != null && caller.roles() != null && caller.roles().contains("DHB_PAYMENT_STATUS_ONLY");
     }
 
     private static boolean protectHistory(CallerIdentity caller) {

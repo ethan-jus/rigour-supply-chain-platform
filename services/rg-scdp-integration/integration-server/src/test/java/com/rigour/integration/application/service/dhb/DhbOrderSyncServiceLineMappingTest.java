@@ -1784,4 +1784,40 @@ class DhbOrderSyncServiceLineMappingTest {
         verify(projection).updateFundDocument(any(), any(), any());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"2026-08-20T00:00:00Z", "2026-11-20T00:00:00Z"})
+    void dailyPaymentStatusDoesNotDownloadHistoricalOrRecentImages(String date) throws Exception {
+        var client = mock(DhbClient.class); var projection = mock(OrderSalesOrderProjectionClient.class);
+        var store = mock(DhbSyncStore.class);
+        var service = new DhbOrderSyncService(store, client, projection, proxy(HrDhbStaffSyncClient.class));
+        UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID();
+        var task=new DhbSyncStore.SyncTaskContext(tenant,UUID.randomUUID(),connector,"orders","ORDER","ACTIVE","https://example.test","secret","ACTIVE",100,1,0,true);
+        var caller=new com.rigour.shared.context.CallerIdentity("SERVICE",UUID.randomUUID(),tenant,null,null,UUID.randomUUID(),0,0,0,java.util.Set.of("DHB_PROTECT_HISTORY","DHB_PAYMENT_STATUS_ONLY"),java.util.Set.of("order:write"));
+        Instant time=Instant.parse(date);
+        var payment=new DhbClient.Payment("FP1","FP1","FR1","D1","C1",null,null,null,BigDecimal.TEN,"pend_receipted",time,time,time,null,null,null,null,null,
+                Map.of("resource",List.of(Map.of("file_url","https://expired.test/slow-image.png"))));
+        when(projection.syncHistoricalPaymentStatus(any(),any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED",null,null));
+        var method=DhbOrderSyncService.class.getDeclaredMethod("projectPayment",com.rigour.shared.context.CallerIdentity.class,DhbSyncStore.SyncTaskContext.class,UUID.class,DhbClient.Payment.class);method.setAccessible(true);
+        assertThat(method.invoke(service,caller,task,UUID.randomUUID(),payment)).isEqualTo(DhbOrderSyncService.ProjectionOutcome.DUPLICATE);
+        verify(projection).syncHistoricalPaymentStatus(any(),argThat(c -> c.sourcePaymentNo().equals("FP1") && c.sourceOrderNo().equals("D1") && c.sourceStatus().equals("CONFIRMED")));
+        org.mockito.Mockito.verifyNoMoreInteractions(projection); org.mockito.Mockito.verifyNoInteractions(client,store);
+        var work = mock(com.rigour.integration.application.port.out.DhbIncrementalWorkStore.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "incrementalWork", work);
+        org.mockito.Mockito.clearInvocations(projection);
+        when(client.getPayments(any(),any())).thenAnswer(call -> {
+            DhbClient.PaymentQuery q=call.getArgument(1);
+            return new DhbClient.Page<>(q.page(), "pend_receipted".equals(q.status()) ? 1 : 0,
+                    "pend_receipted".equals(q.status()) ? List.of(payment) : List.of());
+        });
+        var scan=DhbOrderSyncService.class.getDeclaredMethod("syncPayments",com.rigour.shared.context.CallerIdentity.class,
+                DhbSyncStore.SyncTaskContext.class,UUID.class,Class.forName(DhbOrderSyncService.class.getName()+"$Window"),
+                int.class,int.class,DhbOrderSyncService.Counts.class,java.util.function.Consumer.class);scan.setAccessible(true);
+        var counts=new DhbOrderSyncService.Counts();
+        scan.invoke(service,caller,task,UUID.randomUUID(),null,100,100,counts,(java.util.function.Consumer<String>) ignored -> {});
+        assertThat(counts.fetched).isEqualTo(1);assertThat(counts.duplicate).isEqualTo(1);
+        org.mockito.Mockito.verifyNoInteractions(work);
+        verify(projection).syncHistoricalPaymentStatus(any(),any());
+        org.mockito.Mockito.verifyNoMoreInteractions(projection);
+    }
+
 }

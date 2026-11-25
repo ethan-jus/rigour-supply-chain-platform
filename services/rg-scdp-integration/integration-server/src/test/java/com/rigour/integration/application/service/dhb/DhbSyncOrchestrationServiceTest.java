@@ -137,7 +137,7 @@ class DhbSyncOrchestrationServiceTest {
             SyncRunCommand command = call.getArgument(2);
             if (command.from().isBefore(Instant.parse("2026-09-03T16:00:00Z"))) {
                 assertThat(command.syncScope()).isEqualTo("PAYMENT");
-                assertThat(((CallerIdentity)call.getArgument(0)).roles()).contains("DHB_PROTECT_HISTORY");
+                assertThat(((CallerIdentity)call.getArgument(0)).roles()).contains("DHB_PROTECT_HISTORY", "DHB_PAYMENT_STATUS_ONLY");
                 if (failed) throw new IllegalStateException("未完成分页");
             }
             return orderResult();
