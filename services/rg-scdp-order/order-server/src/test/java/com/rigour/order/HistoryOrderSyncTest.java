@@ -246,6 +246,22 @@ class HistoryOrderSyncTest {
     }
 
     @Test
+    void cancelledSourceVouchersRemainArchivedWithoutCreatingOrMislinkingPayments() {
+        intake("D1", 1, "78", "1");
+        db.execute("CREATE TABLE order_payment_voucher_source(tenant_id VARCHAR(36),connector_id VARCHAR(36),source_payment_no VARCHAR(128),payment_id BIGINT)");
+        db.update("INSERT INTO order_sync_receipt(tenant_id,connector_id,receipt_no,source_order_no,customer_id,amount,checksum,state)"
+                + " VALUES(?,?,'R1','D1',1,78,'h1','BASELINE_COVERED')", tenant, connector.toString());
+        var command = new ReceiptVouchers(connector, "R1", "FP1", "D1", "PENDING", List.of(tenant + "/proof"));
+        assertThat(tx.execute(s -> store.receiptVouchers(tenant, "SYSTEM", command)).state()).isEqualTo("PENDING_MAPPING");
+        db.update("UPDATE order_sync_source SET state='CANCELLED'");
+        assertThat(tx.execute(s -> store.receiptVouchers(tenant, "SYSTEM", command)).state()).isEqualTo("ORDER_CANCELLED");
+        db.update("UPDATE order_sync_receipt SET pending_checksum='unresolved'");
+        assertThat(tx.execute(s -> store.receiptVouchers(tenant, "SYSTEM", command)).state()).isEqualTo("PENDING_MAPPING");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_voucher_source", Integer.class)).isZero();
+    }
+
+    @Test
     void protectionIsTenantAndConnectorScopedAndNormalOrdersStillIntake() {
         protect("D1", 1);
         assertThat(tx.execute(s -> store.sourceOrder("another-tenant", source("D1", 1, "78", "1"))).state()).isNotEqualTo("MANUAL_PROTECTED");

@@ -152,7 +152,16 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                     + " OR EXISTS (SELECT 1 FROM order_sync_allocation a WHERE a.tenant_id=p.tenant_id AND a.payment_id=p.id"
                     + " AND a.connector_id=? AND a.receipt_no=?)) ORDER BY p.id FOR UPDATE",
                     tenant, connector, c.receiptNo(), c.receiptNo(), connector, c.receiptNo());
-            if (targets.isEmpty()) return new Intake("PENDING_MAPPING", null, "未找到该收款单的有效回款，凭证未关联");
+            if (targets.isEmpty()) {
+                if (old.isEmpty() && c.sourceOrderNo() != null && jdbc.queryForObject(
+                        "SELECT COUNT(*) FROM order_sync_source s JOIN order_sync_receipt r"
+                                + " ON r.tenant_id=s.tenant_id AND r.connector_id=s.connector_id AND r.source_order_no=s.source_no"
+                                + " WHERE s.tenant_id=? AND s.connector_id=? AND s.source_no=? AND r.receipt_no=?"
+                                + " AND s.state IN ('CANCELLED','DELETED') AND r.pending_checksum IS NULL",
+                        Long.class, tenant, connector, c.sourceOrderNo(), c.receiptNo()) == 1)
+                    return new Intake("ORDER_CANCELLED", null, "已取消订单无有效回款，凭证仅保留来源归档");
+                return new Intake("PENDING_MAPPING", null, "未找到该收款单的有效回款，凭证未关联");
+            }
             // 同一来源不能悄悄迁移到另一批回款；保留原关联等待核对。
             var targetIds = targets.stream().map(r -> num(r, "id")).toList();
             require(old.stream().allMatch(r -> targetIds.contains(num(r, "payment_id"))), "凭证来源回款关联已变化，需人工核对");

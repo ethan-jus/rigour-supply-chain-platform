@@ -128,6 +128,7 @@ class DhbScheduledHistoryProtectionTest {
             verify(projection).knownSourceOrders(argThat(c -> tenant.equals(c.tenantId())
                     && "SERVICE".equals(c.principalScope())), eq(task.connectorId()), eq("D1"));
         }
+        if (object.equals("payment")) verify(store).resolveProjectionIssues(tenant, actor.userId(), "FUND_PAYMENT", "P1");
         verifyNoMoreInteractions(store);
         if (object.equals("payment")) verify(projection).syncHistoricalPaymentStatus(any(), argThat(c -> "P1".equals(c.sourcePaymentNo()) && "CANCELLED".equals(c.sourceStatus())));
         if (object.equals("payment")) verify(projection).syncReceiptVouchers(any(), argThat(c -> c.sourceStatus().equals("CANCELLED") && c.objectKeys().isEmpty()));

@@ -68,8 +68,10 @@ class DhbOrderSyncServiceLineMappingTest {
     }
 
     @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {"listCancelled", "detailCancelled", "zeroSettlement", "listDeleted", "detailDeleted"})
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"listCancelled", "detailCancelled", "zeroSettlement", "zeroSettlementGift", "listDeleted", "detailDeleted"})
     void retainsInactiveSourceWithoutRequiringCustomerOrProductMapping(String scenario) throws Exception {
+        boolean zero = scenario.startsWith("zeroSettlement");
+        boolean gift = "zeroSettlementGift".equals(scenario);
         boolean cancelledInList = "listCancelled".equals(scenario) || "listDeleted".equals(scenario);
         String terminal = scenario.endsWith("Deleted") ? "DELETED" : "CANCELLED";
         UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
@@ -86,9 +88,21 @@ class DhbOrderSyncServiceLineMappingTest {
                 BigDecimal.ONE, Instant.now(), Instant.now(), null, null, Map.of());
         var raw = new DhbSyncStore.RawObjectPersistResult(UUID.randomUUID(), "hash", true);
         when(store.persistRawObject(any(), any(), any(), any(), any(), any(), any(), any(), any())).thenReturn(raw);
-        when(client.getOrderContent(any(), eq("D1"))).thenReturn(new DhbClient.OrderDetail("D1", "zeroSettlement".equals(scenario) ? "finished" : terminal,
-                BigDecimal.ONE, Map.of("DiscountTotal", "zeroSettlement".equals(scenario) ? "0.0000" : "1.00",
-                        "OrderTotal", "216", "ClientName", "取消门店", "StaffName", "业务员", "AdminUser", "制单人")));
+        Map<String, Object> content = new HashMap<>(Map.of("DiscountTotal", zero ? "0.0000" : "1.00",
+                "OrderTotal", "216", "ClientName", "取消门店", "StaffName", "业务员", "AdminUser", "制单人"));
+        if (gift) {
+            var sale = new HashMap<>(orderProductRow("SALE", "P1", "SKU1", "2", "108"));
+            sale.put("conType", "c"); sale.put("DiscountAmount", "216");
+            var present = new HashMap<>(orderProductRow("GIFT", "P1", "SKU1", "1", "108"));
+            present.put("conType", "g");
+            content.put("body", List.of(sale, present));
+            when(store.findActiveMapping(tenant, connector, "PRODUCT_SPU", "P1"))
+                    .thenReturn(mapping("PRODUCT_SPU", "P1", "P1", "ERP", "PRODUCT", 10L, "P1"));
+            when(store.findActiveMapping(tenant, connector, "PRODUCT_SKU", "P1::SKU1"))
+                    .thenReturn(mapping("PRODUCT_SKU", "P1::SKU1", "SKU1", "ERP", "PRODUCT_VARIANT", 11L, "SKU1"));
+        }
+        when(client.getOrderContent(any(), eq("D1"))).thenReturn(new DhbClient.OrderDetail("D1", zero ? "finished" : terminal,
+                BigDecimal.ONE, content));
         when(projection.cancelSourceOrder(any(), any())).thenReturn(
                 new com.rigour.order.api.v1.model.HistorySyncModels.Intake(terminal, null, null));
         var method = DhbOrderSyncService.class.getDeclaredMethod("projectOrder",
@@ -100,7 +114,10 @@ class DhbOrderSyncServiceLineMappingTest {
         verify(projection).cancelSourceOrder(any(), argThat(c -> c.connectorId().equals(connector) && c.sourceNo().equals("D1") && c.orderStatusCode().equals(terminal)
                 && c.customerName().equals("取消门店") && c.attribution().ownerEmployeeName().equals("业务员")
                 && c.attribution().sourceCreatorName().equals("制单人")
-                && (!"zeroSettlement".equals(scenario) || c.amount().compareTo(new BigDecimal("216")) == 0)));
+                && (!zero || c.amount().compareTo(new BigDecimal("216")) == 0)
+                && (!gift || c.originalLines().size() == 2
+                    && c.originalLines().stream().map(l -> l.quantity().multiply(l.unitPrice())).reduce(BigDecimal.ZERO, BigDecimal::add).compareTo(new BigDecimal("216")) == 0
+                    && c.originalLines().stream().filter(l -> "GIFT".equals(l.sourceLineId())).allMatch(l -> l.unitPrice().signum() == 0))));
         org.mockito.Mockito.verifyNoMoreInteractions(projection);
         if (cancelledInList) verify(client).getOrderContent(any(), eq("D1"));
         verify(store).markRawProcessed(tenant, raw.rawLandingId());
@@ -1600,8 +1617,9 @@ class DhbOrderSyncServiceLineMappingTest {
     private record MappingKey(UUID tenantId, UUID connectorId,
                               String sourceObjectType, String sourceObjectId) {
     }
-    @Test
-    void officialPaymentResourcesAreOwnedDistinctAndFailClosed() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"SYNCED", "MANUAL_PROTECTED", "ORDER_CANCELLED"})
+    void officialPaymentResourcesAreOwnedDistinctAndFailClosed(String targetState) throws Exception {
         UUID tenant=UUID.randomUUID(), connector=UUID.randomUUID();
         var client=mock(DhbClient.class); var storage=mock(ProductMediaStorage.class);
         var projection=mock(OrderSalesOrderProjectionClient.class);
@@ -1615,7 +1633,7 @@ class DhbOrderSyncServiceLineMappingTest {
         var attributes=Map.<String,Object>of("resource",List.of(Map.of("old_name","a.png","file_url","https://example.test/a?sign=1"),Map.of("old_name","b.png","file_url","https://example.test/b?sign=2")));
         when(client.downloadAttachment(any(),eq("https://example.test/a?sign=1"))).thenReturn(new DhbClient.DownloadedFile(new byte[]{1},"image/png"));
         when(client.downloadAttachment(any(),eq("https://example.test/b?sign=2"))).thenReturn(new DhbClient.DownloadedFile(new byte[]{2},"image/png"));
-        when(projection.syncReceiptVouchers(any(),any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake("SYNCED",null,null));
+        when(projection.syncReceiptVouchers(any(),any())).thenReturn(new com.rigour.order.api.v1.model.HistorySyncModels.Intake(targetState,null,null));
         var payment=new DhbClient.Payment("FP1","FP1","FR1","DH1","C1",null,null,null,java.math.BigDecimal.TEN,"pend_receipted",null,null,null,null,null,null,null,null,attributes);
         method.invoke(service,caller,task,payment,"FP1",attributes);
         var captor=org.mockito.ArgumentCaptor.forClass(com.rigour.order.api.v1.model.HistorySyncModels.ReceiptVouchers.class);

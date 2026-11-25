@@ -1585,11 +1585,16 @@ public final class DhbOrderSyncService {
         List<SalesOrderLineCommand> originalLines = null;
         if (zeroSettlement) {
             amount = decimal(firstObject(content, "OrderTotal"));
-            if (!rows(content, "OrderProduct", "OrderProducts", "OrderGoods", "Goods", "Products", "list", "body").isEmpty()) {
+            var sourceLines = rows(content, "OrderProduct", "OrderProducts", "OrderGoods", "Goods", "Products", "list", "body");
+            var giftLineIds = sourceLines.stream().filter(row -> "g".equalsIgnoreCase(first(row, "conType")))
+                    .map(row -> first(row, "orders_list_id", "OrdersListId", "OrderProductId", "id", "Id", "ID"))
+                    .filter(java.util.Objects::nonNull).collect(java.util.stream.Collectors.toSet());
+            if (!sourceLines.isEmpty()) {
                 originalLines = salesOrderLines(caller.tenantId(), task.connectorId(), sourceOrderNo, content).stream()
                         .map(line -> new SalesOrderLineCommand(line.productId(), line.productVariantId(),
                                 line.productCodeSnapshot(), line.skuCodeSnapshot(), line.productNameSnapshot(),
-                                line.specificationSnapshot(), line.unitCode(), line.quantity(), line.unitPrice(),
+                                line.specificationSnapshot(), line.unitCode(), line.quantity(),
+                                giftLineIds.contains(line.sourceLineId()) ? BigDecimal.ZERO : line.unitPrice(),
                                 null, BigDecimal.ZERO, line.remark(), line.sourceLineId())).toList();
             }
         }
@@ -3324,7 +3329,7 @@ public final class DhbOrderSyncService {
                                         ? "CANCELLED"
                                         : "CONFIRMED".equals(status) ? "CONFIRMED" : "PENDING",
                                 keys));
-        if (result == null || !"SYNCED".equals(result.state()))
+        if (result == null || !Set.of("SYNCED", "MANUAL_PROTECTED", "ORDER_CANCELLED").contains(result.state()))
             throw new ProjectionRejected(
                     "DHB_VOUCHER_RECEIPT_MAPPING_PENDING",
                     "凭证已保存至自有存储，等待来源收款单关联后重试",
@@ -3373,6 +3378,7 @@ public final class DhbOrderSyncService {
                     // 每日状态检查不重新下载旧图片，也不将付款完整投影的工作项标记为完成。
                     if (!paymentStatusOnly(caller) || "CANCELLED".equals(status))
                         syncPaymentVouchers(caller, task, payment, sourcePaymentNo, attributes);
+                    if (!paymentStatusOnly(caller)) resolveProjectionIssues(caller, SOURCE_OBJECT_FUND_PAYMENT, sourcePaymentNo);
                     return ProjectionOutcome.DUPLICATE;
                 }
             }
