@@ -13,6 +13,33 @@ import org.springframework.web.client.RestClient;
 
 class HttpHrEmployeeDisplayClientTest {
     @Test
+    void selectsTheAssignmentEffectiveAtTheSaleIncludingTheTransferBoundary() {
+        var builder=RestClient.builder();
+        var server=MockRestServiceServer.bindTo(builder).build();
+        var tenant=UUID.randomUUID();
+        server.expect(requestTo("https://hr.test/api/v1/hr/employees?begin=0&step=2&employeeCode=ZS"))
+                .andExpect(header(RequestHeaders.TENANT_ID,tenant.toString()))
+                .andRespond(withSuccess("""
+                        {"code":"OK","data":{"total":1,"items":[{"id":7,"employeeCode":"ZS"}]}}
+                        """,MediaType.APPLICATION_JSON));
+        server.expect(requestTo("https://hr.test/api/v1/hr/employees/7/assignments"))
+                .andRespond(withSuccess("""
+                        {"code":"OK","data":[
+                          {"id":1,"departmentId":10,"departmentName":"苏州","effectiveFrom":"2026-01-01T00:00:00Z","effectiveTo":"2026-11-01T00:00:00Z"},
+                          {"id":2,"departmentId":20,"departmentName":"无锡","effectiveFrom":"2026-11-01T00:00:00Z","effectiveTo":null}]}
+                        """,MediaType.APPLICATION_JSON));
+        var properties=new ContextTrustProperties();
+        properties.setActiveKeyId("v1");
+        properties.setKeysBase64(Map.of("v1",Base64.getEncoder().encodeToString(new byte[32])));
+        var client=new HttpHrEmployeeDisplayClient(builder,new TrustedContextSigner(properties),"https://hr.test");
+        var caller=new CallerIdentity("SERVICE",UUID.randomUUID(),tenant,null,null,UUID.randomUUID(),0,0,0,Set.of(),Set.of("hr:employee:read"));
+        var assignment=client.assignmentAt(caller,"ZS",java.time.Instant.parse("2026-11-01T00:00:00Z"));
+        assertThat(assignment.departmentId()).isEqualTo(20);
+        assertThat(assignment.id()).isEqualTo(2);
+        server.verify();
+    }
+
+    @Test
     void expandsDepartmentsUsingEmployeeReadEndpointAndTenantSignature() {
         var builder = RestClient.builder();
         var server = MockRestServiceServer.bindTo(builder).build();

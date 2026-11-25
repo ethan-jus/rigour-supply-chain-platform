@@ -21,7 +21,7 @@ class JdbcPaymentVoucherStoreTest {
         jdbc.execute("ALTER TABLE order_payment_voucher_transaction ADD payee VARCHAR(255)");
         jdbc.execute("ALTER TABLE order_payment_voucher_transaction ADD payment_result VARCHAR(24)");
         var scopes = org.mockito.Mockito.mock(OrderDataScope.class);
-        org.mockito.Mockito.when(scopes.predicate("order:read", "o.", null))
+        org.mockito.Mockito.when(scopes.registerPredicate(com.rigour.order.application.service.sales.RegisterPage.PAYMENTS))
                 .thenReturn(new OrderDataScope.Predicate("1=1", java.util.List.of()));
         var store = new JdbcPaymentVoucherStore(jdbc, scopes);
         jdbc.execute("ALTER TABLE order_payment_record ADD voucher_keys_json VARCHAR(2000)");
@@ -38,7 +38,7 @@ class JdbcPaymentVoucherStoreTest {
         assertThat(store.vouchers("b", 11)).isEmpty();
         jdbc.update("UPDATE order_payment_record SET transaction_no=NULL WHERE tenant_id='a' AND id=11");
         assertThat(store.transactionMatches("a", "TXN")).hasSize(2);
-        org.mockito.Mockito.when(scopes.predicate("order:read", "o.", null))
+        org.mockito.Mockito.when(scopes.registerPredicate(com.rigour.order.application.service.sales.RegisterPage.PAYMENTS))
                 .thenReturn(new OrderDataScope.Predicate("o.id=?", java.util.List.of(2L)));
         assertThat(store.transactionMatches("a", "TXN")).hasSize(1);
         assertThat(store.vouchers("a", 11)).isEmpty();
