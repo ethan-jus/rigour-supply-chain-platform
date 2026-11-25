@@ -444,11 +444,11 @@ class SalesWorkReopenAndTrackIntegrationTests {
     void cutoffStopsCaptureWithoutManufacturingCheckoutAndAdjustmentRespectsOriginalRule() {
         var location=new LocationEvidence(BigDecimal.TEN,BigDecimal.ONE,BigDecimal.ONE,"APP_NATIVE");
         var day=attendanceService.checkIn(new CheckInCommand("cutoff-in","client",Instant.now(),location,null,null));
-        var previous=day.businessDate().minusDays(1);
+        var previous=day.businessDate().minusDays(2);
         jdbc.update("UPDATE sales_work_day SET business_date=? WHERE id=?",previous,bin(day.id()));
-        jdbc.update("UPDATE sales_work_day SET checked_in_at=DATE_SUB(checked_in_at,INTERVAL 1 DAY) WHERE id=?",bin(day.id()));
-        jdbc.update("UPDATE sales_punch_event SET server_received_at=DATE_SUB(server_received_at,INTERVAL 1 DAY) WHERE work_day_id=?",bin(day.id()));
-        jdbc.update("UPDATE sales_location_session SET started_at=DATE_SUB(started_at,INTERVAL 1 DAY) WHERE work_day_id=?",bin(day.id()));
+        jdbc.update("UPDATE sales_work_day SET checked_in_at=DATE_SUB(checked_in_at,INTERVAL 2 DAY) WHERE id=?",bin(day.id()));
+        jdbc.update("UPDATE sales_punch_event SET server_received_at=DATE_SUB(server_received_at,INTERVAL 2 DAY) WHERE work_day_id=?",bin(day.id()));
+        jdbc.update("UPDATE sales_location_session SET started_at=DATE_SUB(started_at,INTERVAL 2 DAY) WHERE work_day_id=?",bin(day.id()));
         expiry.expireOwn(tenantId,profileId);
         var expired=attendanceService.workDay(previous);
         assertThat(expired.status()).isEqualTo("MISSING_CHECK_OUT");assertThat(expired.checkedOutAt()).isNull();

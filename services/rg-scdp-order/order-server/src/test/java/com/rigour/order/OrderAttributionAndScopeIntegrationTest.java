@@ -70,6 +70,51 @@ class OrderAttributionAndScopeIntegrationTest {
 
     @Autowired com.rigour.order.infrastructure.persistence.mapper.OrderCostSourceMapper payrollSource;
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"#C21-2", "#DATE2", "#V20261009-2", "#F20261009-2"})
+    void historicalSplitPaymentsShareCashSourceWithoutCountingItTwice(String suffix) {
+        String connector = UUID.randomUUID().toString();
+        String otherConnector = UUID.randomUUID().toString();
+        String otherTenant = UUID.randomUUID().toString();
+        jdbc.update("""
+            INSERT INTO order_sales_order(tenant_id,order_no,order_status_code,order_date,payable_amount)
+            VALUES (?,'HISTORY-SPLIT','CONFIRMED','2026-09-01',100)
+            """, tenant);
+        long order = jdbc.queryForObject("SELECT id FROM order_sales_order WHERE tenant_id=?",
+                Long.class, tenant);
+        jdbc.update("""
+            INSERT INTO order_sync_receipt(tenant_id,connector_id,receipt_no,amount,occurred_at,source_status,checksum,state)
+            VALUES (?,?,'FR.SPLIT',100,'2026-09-01','CONFIRMED','local','BASELINE_COVERED'),
+                   (?,?,'FR.SPLIT',200,'2026-09-01','CONFIRMED','other','BASELINE_COVERED')
+            """, tenant, connector, otherTenant, connector);
+        jdbc.update("""
+            INSERT INTO order_payment_record(tenant_id,payment_no,order_id,connector_id,source_system_code,
+                source_record_id,source_document_no,payment_time,paid_amount,payment_status_code)
+            VALUES (?,'PART-1',?,?,'DINGHUOBAO','FR.SPLIT','FR.SPLIT','2026-09-01',60,'CHECKED'),
+                   (?,'PART-2',?,?,'DINGHUOBAO','FR.SPLIT',?,'2026-09-01',40,'CHECKED'),
+                   (?,'OTHER-CONNECTOR',?,?,'DINGHUOBAO','FR.SPLIT','FR.SPLIT#C21-3','2026-09-01',7,'CHECKED'),
+                   (?,'OTHER-SYSTEM',?,?,'LOCAL','FR.SPLIT','FR.SPLIT#C21-4','2026-09-01',3,'CHECKED')
+            """, tenant, order, connector, tenant, order, connector, "FR.SPLIT" + suffix,
+                tenant, order, otherConnector, tenant, order, connector);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_cash_application_v WHERE tenant_id=? AND has_source=1",
+                Integer.class, tenant)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM order_cash_receipt_v WHERE tenant_id=?",
+                java.math.BigDecimal.class, tenant)).isEqualByComparingTo("110");
+        assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM order_cash_receipt_v WHERE tenant_id=?",
+                java.math.BigDecimal.class, otherTenant)).isEqualByComparingTo("200");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_verified_payment_v WHERE tenant_id=?",
+                Integer.class, tenant)).isEqualTo(4);
+
+        jdbc.update("UPDATE order_sync_receipt SET state='CANCELLED' WHERE tenant_id=? AND connector_id=?",
+                tenant, connector);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM order_cash_application_v WHERE tenant_id=?",
+                Integer.class, tenant)).isEqualTo(2);
+        assertThat(jdbc.queryForObject("SELECT SUM(amount) FROM order_cash_receipt_v WHERE tenant_id=?",
+                java.math.BigDecimal.class, tenant)).isEqualByComparingTo("10");
+        assertThat(jdbc.queryForObject("SELECT SUM(paid_amount) FROM order_payment_record WHERE tenant_id=?",
+                java.math.BigDecimal.class, tenant)).isEqualByComparingTo("110");
+    }
+
     @Test
     void receivableOpeningSubtractsOnlyVerifiedApplicationsThroughBaseline() {
         jdbc.update("""

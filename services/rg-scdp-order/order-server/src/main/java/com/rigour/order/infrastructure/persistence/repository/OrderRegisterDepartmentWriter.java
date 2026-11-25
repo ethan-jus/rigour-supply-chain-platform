@@ -34,7 +34,7 @@ public class OrderRegisterDepartmentWriter {
                 UUID.fromString(tenant),null,null,UUID.randomUUID(),0,0,0,Set.of(),Set.of("hr:employee:read"));
         var assignment=hr.assignmentAt(caller,code,at);
         if (assignment!=null) jdbc.update("UPDATE order_sales_order SET register_assignment_id=?,register_department_id=?,"
-                + "register_department_name=?,register_employee_code=?,register_order_date=?"
+                + "register_department_name=?,register_employee_code=?,register_order_date=?,updated_time=updated_time"
                 + " WHERE tenant_id=? AND id=? AND owner_employee_code=? AND order_date=?",
                 assignment.id(),assignment.departmentId(),assignment.departmentName(),code,date,tenant,id,code,date);
     }

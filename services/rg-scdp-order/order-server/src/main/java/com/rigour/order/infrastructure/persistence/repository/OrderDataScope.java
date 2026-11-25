@@ -88,7 +88,9 @@ public final class OrderDataScope {
     public Predicate registerPredicate(RegisterPage page) {
         String action = page.permission();
         if (page == RegisterPage.PAYMENTS)
-            return predicate(policy(action),action,"o.",null,null,false,"p.payment_owner_code","p.payment_owner_department_id");
+            return predicate(policy(action),action,"o.",null,null,false,
+                    "CASE WHEN p.payment_owner_evidence IS NOT NULL THEN p.payment_owner_code END",
+                    "CASE WHEN p.payment_owner_evidence IS NOT NULL THEN p.payment_owner_department_id END");
         return predicate(policy(action), action, "o.", null, null, true,
                 "COALESCE(snap.employee_code,o.owner_employee_code)",
                 "COALESCE(snap.department_id," + recordedDepartment("o.", false) + ")");

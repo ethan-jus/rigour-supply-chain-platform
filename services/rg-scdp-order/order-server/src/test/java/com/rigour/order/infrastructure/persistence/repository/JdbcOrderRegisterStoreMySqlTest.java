@@ -81,7 +81,7 @@ class JdbcOrderRegisterStoreMySqlTest {
                 + "register_order_date=order_date,register_department_id=CASE WHEN id=? THEN 20 ELSE 10 END WHERE tenant_id=?",sale,tenant);
         insertPayment(tenant,"LS-COLLECT",sale,"2026-10-03T00:00:00Z",50,"CHECKED",null);
         insertPayment(tenant,"ZS-COLLECT",other,"2026-10-03T00:00:00Z",60,"CHECKED",null);
-        jdbc.update("UPDATE order_payment_record SET payment_owner_code=CASE WHEN order_id=? THEN 'LS' ELSE 'ZS' END,"
+        jdbc.update("UPDATE order_payment_record SET payment_owner_evidence='已核实',payment_owner_code=CASE WHEN order_id=? THEN 'LS' ELSE 'ZS' END,"
                 + "payment_owner_department_id=CASE WHEN order_id=? THEN 10 ELSE 20 END WHERE tenant_id=?",sale,sale,tenant);
         var user=UUID.randomUUID();
         var caller=new com.rigour.shared.context.CallerIdentity("TENANT",user,UUID.fromString(tenant),user,null,
@@ -1020,7 +1020,7 @@ class JdbcOrderRegisterStoreMySqlTest {
     }
 
     @Test
-    void missingPaymentDepartmentDoesNotUseCurrentEmployeeDepartment() {
+    void missingHistoricalDepartmentsDoNotUseCurrentEmployeeDepartment() {
         String tenant = UUID.randomUUID().toString();
         long a = order(tenant,"DEPT-A",1L,"C1","部门甲","HZ","E1","张三","2026-09-01T00:00:00Z",100,0);
         long b = order(tenant,"DEPT-B",2L,"C2","部门乙","HZ","E2","李四","2026-09-01T00:00:00Z",200,0);
@@ -1033,9 +1033,9 @@ class JdbcOrderRegisterStoreMySqlTest {
         var lc = new LineCriteria(null,null,null,null,null,null,ids,null,null,null,null,null,null,null,null,null,null,null,null,null,null,codes);
         var pc = new PaymentCriteria(null,null,null,null,null,null,ids,null,null,null,null,null,null,null,null,null,null,null,null,null,null,codes);
         var orders=store.orders(tenant,0,20,oc); var lines=store.lines(tenant,0,20,lc); var payments=store.payments(tenant,0,20,pc);
-        assertThat(orders.total()).isEqualTo(1); assertThat(lines.total()).isEqualTo(1); assertThat(payments.total()).isZero();
-        assertThat(orders.totals().get("payableAmount")).isEqualByComparingTo("100");
-        assertThat(lines.totals().get("orderAmount")).isEqualByComparingTo("100");
+        assertThat(orders.total()).isZero(); assertThat(lines.total()).isZero(); assertThat(payments.total()).isZero();
+        assertThat(orders.totals().get("payableAmount")).isZero();
+        assertThat(lines.totals().get("orderAmount")).isZero();
         assertThat(payments.totals().get("receivedAmount")).isZero();
         var restricted = org.mockito.Mockito.mock(OrderDataScope.class);
         org.mockito.Mockito.when(restricted.registerPredicate(org.mockito.ArgumentMatchers.any())).thenReturn(new OrderDataScope.Predicate("o.owner_employee_code=?",List.of("E2")));

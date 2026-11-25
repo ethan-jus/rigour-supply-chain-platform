@@ -445,7 +445,10 @@ public final class OrderSalesOrderService {
 
     public SalesOrderDetailView registerDetail(Long id,RegisterPage page) {
         var actor=actor(page.permission());
-        return withDetailEnrichment(actor,store.registerDetail(actor.tenantId().toString(),requireId(id,"销售订单ID无效"),page));
+        var detail=store.registerDetail(actor.tenantId().toString(),requireId(id,"销售订单ID无效"),page);
+        // 回款凭证由回款台账逐笔授权，订单页面仅返回订单本身的明细。
+        var visible=copySalesOrderDetail(detail,detail.regionName(),detail.ownerEmployeeNameSnapshot(),List.of(),List.of());
+        return withRegionName(actor,withEmployeeName(actor,visible));
     }
 
     public SalesOrderDetailView salesOrder(Long id) {
@@ -975,6 +978,11 @@ public final class OrderSalesOrderService {
             String regionName,
             String ownerEmployeeName,
             List<FundDocumentAttachmentView> paymentAttachments) {
+        return copySalesOrderDetail(detail,regionName,ownerEmployeeName,detail.paymentVoucherKeys(),paymentAttachments);
+    }
+
+    private SalesOrderDetailView copySalesOrderDetail(SalesOrderDetailView detail,String regionName,
+            String ownerEmployeeName,List<String> voucherKeys,List<FundDocumentAttachmentView> paymentAttachments) {
         return new SalesOrderDetailView(
                 detail.id(),
                 detail.orderNo(),
@@ -1019,7 +1027,7 @@ public final class OrderSalesOrderService {
                 detail.createdTime(),
                 detail.updatedBy(),
                 detail.updatedTime(),
-                detail.paymentVoucherKeys(),
+                voucherKeys,
                 paymentAttachments,
                 detail.lines());
     }

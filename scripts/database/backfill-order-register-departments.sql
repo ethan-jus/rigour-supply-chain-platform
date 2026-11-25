@@ -10,5 +10,5 @@ LEFT JOIN rigour_order.order_attribution_snapshot s
   ON s.tenant_id=o.tenant_id AND s.order_id=o.id AND s.state='FROZEN'
 SET o.register_assignment_id=a.id,o.register_employee_code=o.owner_employee_code,
     o.register_order_date=o.order_date,o.register_department_id=a.department_id,
-    o.register_department_name=a.department_name_snapshot
+    o.register_department_name=a.department_name_snapshot,o.updated_time=o.updated_time
 WHERE o.deleted=0 AND o.register_assignment_id IS NULL AND other.id IS NULL AND s.order_id IS NULL;
