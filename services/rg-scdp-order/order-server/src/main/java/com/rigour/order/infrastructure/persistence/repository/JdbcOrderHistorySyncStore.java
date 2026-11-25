@@ -1194,17 +1194,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
         if ("CANCELLED".equals(c.status()) && c.updatedAt() != null
                 && money(old, "amount").compareTo(c.amount()) == 0
                 && Objects.equals(text(old, "source_order_no"), c.sourceOrderNo())) {
-            var funds = jdbc.queryForList("SELECT * FROM order_fund_document WHERE tenant_id=? AND connector_id=?"
-                    + " AND source_system_code='DINGHUOBAO' AND direction_code='RECEIPT' AND source_document_no=?"
-                    + " AND deleted=0 FOR UPDATE", t, c.connectorId().toString(), c.receiptNo());
-            for (var fund : funds) {
-                if (!Objects.equals(text(fund, "source_order_no"), c.sourceOrderNo())
-                        || money(fund, "amount").compareTo(c.amount()) != 0
-                        || "CANCELLED".equals(text(fund, "document_status_code"))) continue;
-                auditChange(t, c.connectorId(), "FUND_RECEIPT", c.receiptNo(), fund, c);
-                jdbc.update("UPDATE order_fund_document SET document_status_code='CANCELLED',revision=revision+1,"
-                        + "updated_by='SYSTEM',updated_time=? WHERE tenant_id=? AND id=?", ts(Instant.now()), t, num(fund, "id"));
-            }
+            cancelReceiptFund(t, c);
             if ("CANCELLED".equals(text(old, "state")) && "CANCELLED".equals(text(old, "source_status"))
                     && Objects.equals(old.get("customer_id"), c.customerId())) {
                 jdbc.update("UPDATE order_sync_receipt SET checksum=?,source_updated_at=?,pending_payload=NULL,"
@@ -1257,6 +1247,20 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                     + " WHERE tenant_id=? AND connector_id=? AND receipt_no=?", JSON.writeValueAsString(c),
                     c.checksum(), t, c.connectorId().toString(), c.receiptNo());
         return new Intake("SOURCE_CHANGED_REVIEW", group, "历史回款金额、关联或状态需核对，已保留原日期及入账事实");
+    }
+
+    private void cancelReceiptFund(String t, Receipt c) {
+        var funds = jdbc.queryForList("SELECT * FROM order_fund_document WHERE tenant_id=? AND connector_id=?"
+                + " AND source_system_code='DINGHUOBAO' AND direction_code='RECEIPT' AND source_document_no=?"
+                + " AND deleted=0 FOR UPDATE", t, c.connectorId().toString(), c.receiptNo());
+        for (var fund : funds) {
+            if (!Objects.equals(text(fund, "source_order_no"), c.sourceOrderNo())
+                    || money(fund, "amount").compareTo(c.amount()) != 0
+                    || "CANCELLED".equals(text(fund, "document_status_code"))) continue;
+            auditChange(t, c.connectorId(), "FUND_RECEIPT", c.receiptNo(), fund, c);
+            jdbc.update("UPDATE order_fund_document SET document_status_code='CANCELLED',revision=revision+1,"
+                    + "updated_by='SYSTEM',updated_time=? WHERE tenant_id=? AND id=?", ts(Instant.now()), t, num(fund, "id"));
+        }
     }
 
     @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
@@ -1339,28 +1343,38 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                     && c.updatedAt() != null
                     && c.updatedAt().isBefore(instant(v.get("source_updated_at"))))
                 return new Intake("STALE", text(v, "group_id"), "旧版本响应已忽略");
+            if ("CANCELLED".equals(c.status()) && c.updatedAt() != null
+                    && money(v, "amount").compareTo(c.amount()) == 0
+                    && Objects.equals(text(v, "source_order_no"), c.sourceOrderNo()))
+                cancelReceiptFund(t, c);
+            // 映射补齐可接续同一笔未归属来源款；金额、日期、订单和状态必须一致。
+            boolean mappingRecovered = "MAPPING_PENDING".equals(text(v, "state"))
+                    && "NEW".equals(state) && group == null && text(v, "group_id") == null
+                    && Objects.equals(text(v, "source_order_no"), c.sourceOrderNo())
+                    && money(v, "amount").compareTo(c.amount()) == 0
+                    && Objects.equals(instant(v.get("occurred_at")), c.occurredAt())
+                    && Objects.equals(text(v, "source_status"), c.status())
+                    && (v.get("customer_id") == null || Objects.equals(v.get("customer_id"), customer))
+                    && ((v.get("pending_payload") == null && v.get("pending_checksum") == null)
+                        || c.checksum().equals(text(v, "pending_checksum")));
+            if (mappingRecovered) {
+                jdbc.update("INSERT INTO order_sync_receipt_revision"
+                        + "(tenant_id,connector_id,receipt_no,revision,payload,created_at) VALUES(?,?,?,?,?,?)",
+                        t, c.connectorId().toString(), c.receiptNo(), revision,
+                        JSON.writeValueAsString(v), ts(Instant.now()));
+                jdbc.update("UPDATE order_sync_receipt SET customer_id=?,state='NEW',revision=?,checksum=?,"
+                        + "source_updated_at=?,pending_payload=NULL,pending_checksum=NULL"
+                        + " WHERE tenant_id=? AND connector_id=? AND receipt_no=?",
+                        customer, revision, c.checksum(), ts(c.updatedAt()), t, c.connectorId().toString(), c.receiptNo());
+                resolveOwner(t, c, customer);
+                return receiptResult(t, c, "NEW", group);
+            }
             if (c.checksum().equals(text(v, "checksum"))
                     && Objects.equals(group, text(v, "group_id"))
                     && Objects.equals(instant(v.get("occurred_at")), c.occurredAt())
                     && Objects.equals(text(v, "source_status"), c.status())) {
-                // 同一来源数据未变，客户或订单映射补齐后仍需落下真实状态，不能只返回 NEW。
-                boolean mappingRecovered = "MAPPING_PENDING".equals(text(v, "state"))
-                        && "NEW".equals(state)
-                        && Objects.equals(text(v, "source_order_no"), c.sourceOrderNo())
-                        && money(v, "amount").compareTo(c.amount()) == 0
-                        && (v.get("customer_id") == null || Objects.equals(v.get("customer_id"), customer))
-                        && v.get("pending_payload") == null && v.get("pending_checksum") == null;
-                if (mappingRecovered) {
-                    jdbc.update("INSERT INTO order_sync_receipt_revision"
-                            + "(tenant_id,connector_id,receipt_no,revision,payload,created_at) VALUES(?,?,?,?,?,?)",
-                            t, c.connectorId().toString(), c.receiptNo(), revision,
-                            JSON.writeValueAsString(v), ts(Instant.now()));
-                    jdbc.update("UPDATE order_sync_receipt SET customer_id=?,state='NEW',revision=?"
-                            + " WHERE tenant_id=? AND connector_id=? AND receipt_no=?",
-                            customer, revision, t, c.connectorId().toString(), c.receiptNo());
-                }
                 resolveOwner(t, c, customer);
-                return receiptResult(t, c, mappingRecovered ? "NEW" : text(v, "state"), group);
+                return receiptResult(t, c, text(v, "state"), group);
             }
             // 金额、付款日或关联门店变更不能静默挪动既有归属和核销。
             boolean changed =
@@ -1470,7 +1484,8 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                         t,
                         c.connectorId().toString(),
                         c.receiptNo());
-                refresh(t, num(a, "order_id"));
+                if (jdbc.queryForObject("SELECT COUNT(*) FROM order_sales_order WHERE tenant_id=? AND id=? AND deleted=0",
+                        Long.class, t, num(a, "order_id")) > 0) refresh(t, num(a, "order_id"));
             }
             if (newSource) {
                 for (var p :
@@ -1583,9 +1598,10 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                     && Objects.equals(instant(p.get("payment_time")), instant(old.get("occurred_at")))
                     && !Objects.equals(instant(p.get("payment_time")), HistorySyncRules.businessDate(
                         "DINGHUOBAO", c.occurredAt(), instant(p.get("payment_time")))))) return false;
-        var o = order(t, orderId);
-        BigDecimal beforeTotal = rows.stream().map(p -> money(p, "paid_amount")).reduce(BigDecimal.ZERO, BigDecimal::add);
         boolean cancelled = "CANCELLED".equals(c.status());
+        var o = cancelled ? one("SELECT * FROM order_sales_order WHERE tenant_id=? AND id=? FOR UPDATE", t, orderId)
+                : order(t, orderId);
+        BigDecimal beforeTotal = rows.stream().map(p -> money(p, "paid_amount")).reduce(BigDecimal.ZERO, BigDecimal::add);
         boolean amountChanged = money(old, "amount").compareTo(c.amount()) != 0;
         // 人工校准过的净回款可能包含退款红冲，不能用原始收款额抹掉已确认的冲减。
         if (!cancelled && amountChanged && beforeTotal.compareTo(money(old, "amount")) != 0) return false;
@@ -1630,6 +1646,7 @@ public class JdbcOrderHistorySyncStore implements OrderHistorySyncStore {
                 + "pending_payload=NULL,pending_checksum=NULL WHERE tenant_id=? AND connector_id=? AND receipt_no=?",
                 c.amount(), ts(c.occurredAt()), ts(c.updatedAt()), c.status(), c.checksum(), state, revision,
                 t, c.connectorId().toString(), c.receiptNo());
+        if (cancelled && num(o, "deleted") != 0) return true;
         if (group != null) {
             if (allocations.isEmpty() || "BASELINE_COVERED".equals(text(old, "state"))) {
                 BigDecimal afterConfirmed = receivedReceipt(c.status()) ? target : BigDecimal.ZERO;

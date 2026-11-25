@@ -3730,7 +3730,8 @@ public final class DhbOrderSyncService {
                     orderProjectionClient.salesPayment(serviceCaller, existing.internalObjectId());
         }
         SalesPaymentRecordCommand command =
-                withRevision(prepared.command(), current == null ? null : current.revision());
+                withRevision(prepared.command(), current == null ? null : current.revision(),
+                        current == null ? List.of() : current.voucherKeys());
         return current == null
                 ? orderProjectionClient.createSalesPayment(serviceCaller, command)
                 : orderProjectionClient.updateSalesPayment(serviceCaller, current.id(), command);
@@ -3746,8 +3747,20 @@ public final class DhbOrderSyncService {
             current =
                     orderProjectionClient.fundDocument(serviceCaller, existing.internalObjectId());
         }
+        // 已由来源状态接口作废的资金单无需重新关联可能已删除的父订单。
+        var expected = prepared.command();
+        if (current != null && "CANCELLED".equals(current.documentStatusCode())
+                && "CANCELLED".equals(expected.documentStatusCode())
+                && Objects.equals(current.connectorId(), expected.connectorId())
+                && Objects.equals(current.sourceSystemCode(), expected.sourceSystemCode())
+                && Objects.equals(current.directionCode(), expected.directionCode())
+                && Objects.equals(current.sourceDocumentNo(), expected.sourceDocumentNo())
+                && Objects.equals(current.sourceOrderNo(), expected.sourceOrderNo())
+                && Objects.equals(current.relatedOrderId(), expected.relatedOrderId())
+                && current.amount().compareTo(expected.amount()) == 0) return current;
         FundDocumentCommand command =
-                withRevision(prepared.command(), current == null ? null : current.revision());
+                withRevision(prepared.command(), current == null ? null : current.revision(),
+                        current == null ? List.of() : current.voucherKeys());
         return current == null
                 ? orderProjectionClient.createFundDocument(serviceCaller, command)
                 : orderProjectionClient.updateFundDocument(serviceCaller, current.id(), command);
@@ -7695,8 +7708,15 @@ public final class DhbOrderSyncService {
                 source.syncedAt());
     }
 
+    private static List<String> mergedVouchers(List<String> existing, List<String> incoming) {
+        var keys = new LinkedHashSet<String>();
+        if (existing != null) keys.addAll(existing);
+        if (incoming != null) keys.addAll(incoming);
+        return List.copyOf(keys);
+    }
+
     private static SalesPaymentRecordCommand withRevision(
-            SalesPaymentRecordCommand source, Integer revision) {
+            SalesPaymentRecordCommand source, Integer revision, List<String> existingVouchers) {
         return new SalesPaymentRecordCommand(
                 source.connectorId(),
                 source.sourceSystemCode(),
@@ -7707,7 +7727,7 @@ public final class DhbOrderSyncService {
                 source.paymentTime(),
                 source.paymentMethodCode(),
                 source.paidAmount(),
-                source.voucherKeys(),
+                mergedVouchers(existingVouchers, source.voucherKeys()),
                 source.remark(),
                 revision,
                 source.sourceCreatedAt(),
@@ -7721,7 +7741,8 @@ public final class DhbOrderSyncService {
                 source.sourceCheckedAt());
     }
 
-    private static FundDocumentCommand withRevision(FundDocumentCommand source, Integer revision) {
+    private static FundDocumentCommand withRevision(
+            FundDocumentCommand source, Integer revision, List<String> existingVouchers) {
         return new FundDocumentCommand(
                 source.connectorId(),
                 source.sourceSystemCode(),
@@ -7750,7 +7771,7 @@ public final class DhbOrderSyncService {
                 source.submittedAt(),
                 source.confirmedAt(),
                 source.sourceAttachmentKeys(),
-                source.voucherKeys(),
+                mergedVouchers(existingVouchers, source.voucherKeys()),
                 source.remark(),
                 revision);
     }

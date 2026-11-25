@@ -92,6 +92,9 @@ class HistoryOrderSyncTest {
         db.execute("ALTER TABLE order_payment_record ADD checked_at TIMESTAMP");
         db.execute("ALTER TABLE order_sync_receipt ADD confirmed_by VARCHAR(50)");
         db.execute("ALTER TABLE order_sync_receipt ADD confirmed_at TIMESTAMP");
+        db.execute("CREATE TABLE order_fund_document(id BIGINT,tenant_id VARCHAR(36),connector_id VARCHAR(36),"
+                + "source_system_code VARCHAR(32),direction_code VARCHAR(20),source_document_no VARCHAR(128),source_order_no VARCHAR(128),"
+                + "document_status_code VARCHAR(32),amount DECIMAL(20,2),occurred_time TIMESTAMP,revision INT,updated_by VARCHAR(50),updated_time TIMESTAMP,deleted INT,related_order_id BIGINT)");
         salesOrders = mock(com.rigour.order.application.service.sales.OrderSalesOrderService.class);
         store =
                 new JdbcOrderHistorySyncStore(
@@ -285,7 +288,6 @@ class HistoryOrderSyncTest {
         db.execute("ALTER TABLE order_sales_order_line ADD updated_time TIMESTAMP");
         for (String table : List.of("order_refund_record", "order_financial_event", "order_fulfillment_execution"))
             db.execute("CREATE TABLE " + table + "(tenant_id VARCHAR(36),order_id BIGINT)");
-        db.execute("CREATE TABLE order_fund_document(tenant_id VARCHAR(36),related_order_id BIGINT)");
         for (String table : List.of("order_sales_shipment", "order_invoice"))
             db.execute("CREATE TABLE " + table + "(tenant_id VARCHAR(36),sales_order_id BIGINT)");
         db.execute("CREATE TABLE order_number_mapping(tenant_id VARCHAR(36),internal_order_no VARCHAR(50),deleted INT)");
@@ -616,9 +618,6 @@ class HistoryOrderSyncTest {
 
     @Test
     void cancelledUnlinkedReceiptCannotBeRestoredByNormalOrHistoricalReplay() {
-        db.execute("CREATE TABLE order_fund_document(id BIGINT,tenant_id VARCHAR(36),connector_id VARCHAR(36),"
-                + "source_system_code VARCHAR(32),direction_code VARCHAR(20),source_document_no VARCHAR(128),source_order_no VARCHAR(128),"
-                + "document_status_code VARCHAR(32),amount DECIMAL(20,2),occurred_time TIMESTAMP,revision INT,updated_by VARCHAR(50),updated_time TIMESTAMP,deleted INT)");
         var cancelled=new Receipt(connector,"VOID-1","MISSING-ORDER",1L,new BigDecimal("78"),
                 date,"CANCELLED",date,"cancelled");
         assertThat(pay(cancelled).state()).isEqualTo("CANCELLED");
@@ -952,11 +951,7 @@ class HistoryOrderSyncTest {
         db.update("UPDATE order_sync_receipt SET occurred_at=?,source_status='PENDING',state='STATUS_REVIEW'", java.sql.Timestamp.from(date));
         db.update("UPDATE order_payment_record SET payment_time=?,payment_status_code='PENDING'", java.sql.Timestamp.from(date.minusSeconds(86400)));
         db.update("UPDATE order_sales_order SET paid_amount=0,unpaid_amount=1000");
-        db.execute("CREATE TABLE order_fund_document(id BIGINT,tenant_id VARCHAR(36),connector_id VARCHAR(36),"
-                + "source_system_code VARCHAR(32),direction_code VARCHAR(20),source_document_no VARCHAR(128),"
-                + "document_status_code VARCHAR(32),amount DECIMAL(20,2),occurred_time TIMESTAMP,"
-                + "revision INT,updated_by VARCHAR(50),updated_time TIMESTAMP,deleted INT)");
-        db.update("INSERT INTO order_fund_document VALUES(1,?,?,'DINGHUOBAO','RECEIPT','R1','PENDING',300,?,0,NULL,NULL,0)",
+        db.update("INSERT INTO order_fund_document(id,tenant_id,connector_id,source_system_code,direction_code,source_document_no,document_status_code,amount,occurred_time,revision,updated_by,updated_time,deleted) VALUES(1,?,?,'DINGHUOBAO','RECEIPT','R1','PENDING',300,?,0,NULL,NULL,0)",
                 tenant, connector.toString(), java.sql.Timestamp.from(date));
     }
 
@@ -973,7 +968,6 @@ class HistoryOrderSyncTest {
     @org.junit.jupiter.params.provider.ValueSource(strings = {"CANCELLED", "BASELINE_COVERED"})
     void historicalCancelledReceiptReconcilesFundWithoutRewritingBaseline(String state) {
         pendingHistoricalReceipt();
-        db.execute("ALTER TABLE order_fund_document ADD source_order_no VARCHAR(128)");
         db.update("UPDATE order_fund_document SET source_order_no='D1',document_status_code='CONFIRMED'");
         db.update("UPDATE order_sync_source SET state='CANCELLED'");
         db.update("UPDATE order_sync_receipt SET state=?,source_status=?", state,
@@ -991,6 +985,22 @@ class HistoryOrderSyncTest {
         var stale = new Receipt(connector, "R1", "D1", 1L, new BigDecimal("300"), date, "CONFIRMED", date, "stale");
         assertThat(syncHistorical(stale).state()).isEqualTo("STALE");
         assertThat(db.queryForList("SELECT * FROM order_fund_document")).isEqualTo(funds);
+    }
+
+    @Test
+    void normalBaselineCancellationUpdatesOnlyMatchingFundAndRetainsReview() {
+        pendingHistoricalReceipt();
+        db.update("UPDATE order_fund_document SET source_order_no='D1',document_status_code='CONFIRMED'");
+        db.update("DELETE FROM order_payment_record");
+        db.update("UPDATE order_sync_source SET state='CANCELLED'");
+        db.update("UPDATE order_sync_receipt SET occurred_at=?,source_status='CONFIRMED',state='BASELINE_COVERED'",
+                java.sql.Timestamp.from(paidAt));
+        var command = receipt("R1", "D1", "300", "CANCELLED", "cancelled-source");
+        assertThat(pay(command).state()).isEqualTo("SOURCE_CHANGED_REVIEW");
+        assertThat(db.queryForObject("SELECT document_status_code FROM order_fund_document", String.class)).isEqualTo("CANCELLED");
+        assertThat(db.queryForObject("SELECT state FROM order_sync_receipt", String.class)).isEqualTo("BASELINE_COVERED");
+        assertThat(db.queryForObject("SELECT source_status FROM order_sync_receipt", String.class)).isEqualTo("CONFIRMED");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();
     }
 
     @Test
@@ -1332,6 +1342,48 @@ class HistoryOrderSyncTest {
         assertThat(db.queryForObject("SELECT state FROM order_sync_receipt WHERE receipt_no='R1'", String.class)).isEqualTo("SYNCED");
         assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isEqualTo(1);
         assertThat(db.queryForMap("SELECT * FROM order_payment_record WHERE id=100")).isEqualTo(beforePayment);
+    }
+
+    @Test
+    void recoveredMappingClearsOnlyMatchingPendingVersionWithoutChangingCashFacts() {
+        pay(new Receipt(connector, "R1", "D1", null, new BigDecimal("156"),
+                paidAt, "CONFIRMED", paidAt, "old-fingerprint"));
+        intake("D1", 1, "156", "1");
+        db.update("UPDATE order_sync_source SET state='NEW'");
+        var replay = receipt("R1", "D1", "156", "CONFIRMED", "new-fingerprint");
+        db.update("UPDATE order_sync_receipt SET pending_payload=?,pending_checksum=?",
+                JsonMapper.builder().build().writeValueAsString(replay), replay.checksum());
+        assertThat(pay(replay).state()).isEqualTo("NEW");
+        assertThat(pay(replay).state()).isEqualTo("NEW");
+        var saved = db.queryForMap("SELECT * FROM order_sync_receipt");
+        assertThat(saved.get("customer_id")).isEqualTo(1L);
+        assertThat(saved.get("checksum")).isEqualTo("new-fingerprint");
+        assertThat(saved.get("pending_payload")).isNull();
+        assertThat(saved.get("pending_checksum")).isNull();
+        assertThat(saved.get("revision")).isEqualTo(1);
+        assertThat((BigDecimal) saved.get("amount")).isEqualByComparingTo("156");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record", Integer.class)).isZero();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void receiptCancellationRetainsDeletedOrderAndCancelsFund(boolean paymentAlreadyDeleted) {
+        order(1, 1, "1000", "0", "10");
+        intake("D1", 1, "1000", "10");
+        bind(List.of("D1"), List.of(base(1, "0")));
+        pay(receipt("R1", "D1", "300", "CONFIRMED", "h1"));
+        db.update("UPDATE order_sales_order SET deleted=1");
+        if (paymentAlreadyDeleted) db.update("UPDATE order_payment_record SET deleted=1");
+        db.update("INSERT INTO order_fund_document(id,tenant_id,connector_id,source_system_code,direction_code,"
+                + "source_document_no,source_order_no,amount,document_status_code,revision,deleted)"
+                + " VALUES(1,?,?,'DINGHUOBAO','RECEIPT','R1','D1',300,'CONFIRMED',0,0)", tenant, connector.toString());
+        var before = db.queryForMap("SELECT * FROM order_sales_order");
+        pay(receipt("R1", "D1", "300", "CANCELLED", "h2"));
+        assertThat(db.queryForObject("SELECT document_status_code FROM order_fund_document", String.class)).isEqualTo("CANCELLED");
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_payment_record WHERE deleted=0", Integer.class)).isZero();
+        assertThat(db.queryForMap("SELECT * FROM order_sales_order")).isEqualTo(before);
+        pay(receipt("R1", "D1", "300", "CANCELLED", "h2"));
+        assertThat(db.queryForObject("SELECT revision FROM order_fund_document", Integer.class)).isEqualTo(1);
     }
 
     @Test

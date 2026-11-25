@@ -1732,4 +1732,56 @@ class DhbOrderSyncServiceLineMappingTest {
         org.mockito.Mockito.verifyNoInteractions(client);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void receiptReplayRetainsExistingVoucherKeys(boolean fund) throws Exception {
+        var projection = mock(OrderSalesOrderProjectionClient.class);
+        var service = new DhbOrderSyncService(mock(DhbSyncStore.class), mock(DhbClient.class), projection, proxy(HrDhbStaffSyncClient.class));
+        UUID tenant = UUID.randomUUID();
+        Class<?> commandType = fund ? FundDocumentCommand.class : com.rigour.order.api.v1.model.SalesPaymentRecordCommand.class;
+        Class<?> detailType = fund ? com.rigour.order.api.v1.model.FundDocumentDetailView.class : com.rigour.order.api.v1.model.SalesPaymentRecordDetailView.class;
+        Object command = mock(commandType), current = mock(detailType);
+        if (fund) {
+            var c = (FundDocumentCommand) command;
+            var d = (com.rigour.order.api.v1.model.FundDocumentDetailView) current;
+            when(c.voucherKeys()).thenReturn(List.of("incoming", "shared"));
+            when(d.voucherKeys()).thenReturn(List.of("manual", "shared")); when(d.id()).thenReturn(1L); when(d.revision()).thenReturn(7);
+        } else {
+            var c = (com.rigour.order.api.v1.model.SalesPaymentRecordCommand) command;
+            var d = (com.rigour.order.api.v1.model.SalesPaymentRecordDetailView) current;
+            when(c.voucherKeys()).thenReturn(List.of());
+            when(d.voucherKeys()).thenReturn(List.of("manual", "source")); when(d.id()).thenReturn(1L); when(d.revision()).thenReturn(7);
+        }
+        Class<?> preparedType = Class.forName(DhbOrderSyncService.class.getName() + (fund ? "$PreparedFundDocument" : "$PreparedSalesPayment"));
+        var constructor = preparedType.getDeclaredConstructor(String.class, String.class, commandType); constructor.setAccessible(true);
+        var method = DhbOrderSyncService.class.getDeclaredMethod(fund ? "upsertFundDocument" : "upsertSalesPayment", UUID.class, ExternalObjectMapping.class, detailType, preparedType); method.setAccessible(true);
+        method.invoke(service, tenant, null, current, constructor.newInstance("FR1", "D1", command));
+        if (fund) verify(projection).updateFundDocument(any(), eq(1L), argThat(c -> c.revision() == 7 && c.voucherKeys().equals(List.of("manual", "shared", "incoming"))));
+        else verify(projection).updateSalesPayment(any(), eq(1L), argThat(c -> c.revision() == 7 && c.voucherKeys().equals(List.of("manual", "source"))));
+    }
+
+    @Test
+    void alreadyCancelledFundDoesNotRebindRetiredParentOrder() throws Exception {
+        var projection = mock(OrderSalesOrderProjectionClient.class);
+        var service = new DhbOrderSyncService(mock(DhbSyncStore.class), mock(DhbClient.class), projection, proxy(HrDhbStaffSyncClient.class));
+        UUID tenant = UUID.randomUUID(), connector = UUID.randomUUID();
+        var c = mock(FundDocumentCommand.class); var d = mock(com.rigour.order.api.v1.model.FundDocumentDetailView.class);
+        when(c.connectorId()).thenReturn(connector); when(d.connectorId()).thenReturn(connector);
+        when(c.sourceSystemCode()).thenReturn("DINGHUOBAO"); when(d.sourceSystemCode()).thenReturn("DINGHUOBAO");
+        when(c.directionCode()).thenReturn("RECEIPT"); when(d.directionCode()).thenReturn("RECEIPT");
+        when(c.documentStatusCode()).thenReturn("CANCELLED"); when(d.documentStatusCode()).thenReturn("CANCELLED");
+        when(c.sourceDocumentNo()).thenReturn("FR1"); when(d.sourceDocumentNo()).thenReturn("FR1");
+        when(c.sourceOrderNo()).thenReturn("D1"); when(d.sourceOrderNo()).thenReturn("D1");
+        when(c.relatedOrderId()).thenReturn(1L); when(d.relatedOrderId()).thenReturn(1L);
+        when(c.amount()).thenReturn(BigDecimal.TEN); when(d.amount()).thenReturn(BigDecimal.TEN);
+        Class<?> prepared = Class.forName(DhbOrderSyncService.class.getName() + "$PreparedFundDocument");
+        var constructor = prepared.getDeclaredConstructor(String.class, String.class, FundDocumentCommand.class); constructor.setAccessible(true);
+        var method = DhbOrderSyncService.class.getDeclaredMethod("upsertFundDocument", UUID.class, ExternalObjectMapping.class, com.rigour.order.api.v1.model.FundDocumentDetailView.class, prepared); method.setAccessible(true);
+        assertThat(method.invoke(service, tenant, null, d, constructor.newInstance("FR1", "D1", c))).isSameAs(d);
+        org.mockito.Mockito.verifyNoInteractions(projection);
+        when(c.amount()).thenReturn(BigDecimal.ONE);
+        method.invoke(service, tenant, null, d, constructor.newInstance("FR1", "D1", c));
+        verify(projection).updateFundDocument(any(), any(), any());
+    }
+
 }

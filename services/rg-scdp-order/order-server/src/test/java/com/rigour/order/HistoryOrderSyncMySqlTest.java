@@ -90,11 +90,8 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
 
     @org.junit.jupiter.api.Test
     void historicalPaymentStatusPreservesMoneyDatesIdentityAndManualProtection() {
-        db.execute("CREATE TABLE order_fund_document(id BIGINT,tenant_id VARCHAR(36),connector_id VARCHAR(36),"
-                + "source_system_code VARCHAR(32),direction_code VARCHAR(20),source_document_no VARCHAR(128),source_order_no VARCHAR(128),"
-                + "document_status_code VARCHAR(32),amount DECIMAL(20,2),occurred_time TIMESTAMP,revision INT,updated_by VARCHAR(50),updated_time TIMESTAMP,deleted INT)");
         db.execute("CREATE TABLE order_payment_voucher_source(tenant_id VARCHAR(36),connector_id VARCHAR(36),source_payment_no VARCHAR(128),payment_id BIGINT)");
-        for (int id = 1; id <= 3; id++) db.update("INSERT INTO order_fund_document VALUES(?,?,?,'DINGHUOBAO',?,'FP1','D1','PENDING',27,?,0,NULL,NULL,0)",
+        for (int id = 1; id <= 3; id++) db.update("INSERT INTO order_fund_document(id,tenant_id,connector_id,source_system_code,direction_code,source_document_no,source_order_no,document_status_code,amount,occurred_time,revision,updated_by,updated_time,deleted) VALUES(?,?,?,'DINGHUOBAO',?,'FP1','D1','PENDING',27,?,0,NULL,NULL,0)",
                 id, id == 2 ? java.util.UUID.randomUUID().toString() : tenant, connector.toString(),
                 id == 3 ? "RECEIPT" : "PAYMENT", java.sql.Timestamp.from(date));
         var facts = db.queryForList("SELECT id,tenant_id,connector_id,source_document_no,source_order_no,amount,occurred_time,deleted FROM order_fund_document ORDER BY id");
@@ -169,7 +166,6 @@ class HistoryOrderSyncMySqlTest extends HistoryOrderSyncTest {
         db.update("INSERT INTO order_payment_record(id,tenant_id,order_id,payment_no,source_system_code,source_document_no,source_record_id,paid_amount,payment_time,collector_staff_code,payment_status_code,revision,deleted) VALUES(100,?,1,'PAY100','FEISHU','F100','F100',156,?,'EMP1','RECEIVED',0,0)", tenant, java.time.LocalDateTime.ofInstant(date, java.time.ZoneOffset.UTC));
         for (String table : java.util.List.of("order_refund_record", "order_financial_event", "order_fulfillment_execution"))
             db.execute("CREATE TABLE " + table + "(tenant_id VARCHAR(36),order_id BIGINT)");
-        db.execute("CREATE TABLE order_fund_document(tenant_id VARCHAR(36),related_order_id BIGINT,deleted INT)");
         for (String table : java.util.List.of("order_sales_shipment", "order_invoice"))
             db.execute("CREATE TABLE " + table + "(tenant_id VARCHAR(36),sales_order_id BIGINT)");
         try (var connection = db.getDataSource().getConnection()) {
