@@ -87,6 +87,15 @@ public class TransportRecordService {
                 shipmentRecords(List.of(id)).getOrDefault(id, List.of()));
     }
 
+    @Transactional
+    public Detail reconcileShipmentOrders(String id) {
+        AuthorizationContext.requirePermission("order:logistics-cost:write");
+        costs.entry("logistics", id);
+        shipments.reconcileShipmentOrders(
+                tenant(), AuthorizationContext.requireCurrent().principalId().toString(), id);
+        return detail(id);
+    }
+
     private Map<String, List<ShipmentTransportModels.Source>> shipmentRecords(List<String> ids) {
         return shipments == null ? Map.of() : shipments.byCosts(tenant(), ids);
     }

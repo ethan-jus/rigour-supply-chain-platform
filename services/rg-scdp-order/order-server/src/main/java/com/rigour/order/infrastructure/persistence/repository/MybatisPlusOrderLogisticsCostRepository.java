@@ -228,6 +228,14 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                     + " AND JSON_UNQUOTE(JSON_EXTRACT(s.latest_json,'$.sourceStatus')) IN ('receivedin','received')";
 
     private static final String HAS_VERIFIED_SHIPMENT_SALES = "EXISTS(SELECT 1" + VERIFIED_SHIPMENT_SALES;
+    private static final String SHIPMENT_SALES_REFERENCE =
+            "EXISTS(SELECT 1 FROM order_transport_shipment_source s"
+                    + " WHERE s.tenant_id=order_logistics_cost.tenant_id COLLATE utf8mb4_general_ci"
+                    + " AND s.cost_id=order_logistics_cost.id COLLATE utf8mb4_general_ci"
+                    + " AND s.platform_code='DHB'"
+                    + " AND JSON_UNQUOTE(JSON_EXTRACT(s.latest_json,'$.sourceStatus')) IN ('receivedin','received')"
+                    + " AND EXISTS(SELECT 1" + JdbcShipmentTransportStore.SHIPMENT_REFERENCE.formatted(
+                            "order_logistics_cost.tenant_id COLLATE utf8mb4_general_ci");
 
     /**
      * Batch source references under the same tenant, city and complete warehouse policy as the cost
@@ -334,7 +342,7 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                         + " order_logistics_transport_link l ON l.tenant_id=i.tenant_id AND"
                         + " l.source_id=i.id WHERE i.tenant_id=order_logistics_cost.tenant_id AND"
                         + " i.cost_id=order_logistics_cost.id) OR COALESCE(JSON_LENGTH(sources_json),0)>0 OR "
-                        + HAS_VERIFIED_SHIPMENT_SALES + "))";
+                        + HAS_VERIFIED_SHIPMENT_SALES + ") OR " + SHIPMENT_SALES_REFERENCE + ")))";
             q.apply(("UNLINKED".equals(filter.relationState()) ? "NOT " : "") + condition);
         }
         String platformSource =
@@ -381,7 +389,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                             + "COALESCE(JSON_EXTRACT(sources_json,'$[*].orderCode'),JSON_ARRAY()),"
                             + "COALESCE(JSON_EXTRACT(sources_json,'$[*].documentNo'),JSON_ARRAY())) END),"
                             + " 'one',{0}) IS NOT NULL OR " + HAS_VERIFIED_SHIPMENT_SALES
-                            + " AND LOCATE({1},so.order_no)>0))",
+                            + " AND LOCATE({1},so.order_no)>0) OR "
+                            + SHIPMENT_SALES_REFERENCE + " AND LOCATE({1},d.sales_order_no_snapshot)>0)))",
                     "%" + pattern + "%", filter.businessOrderNo().strip());
         }
         if (text(filter.platformOrderNo()))

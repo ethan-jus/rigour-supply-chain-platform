@@ -111,6 +111,11 @@ public class TransportRecordController {
         return ApiResponse.success(service.detail(id));
     }
 
+    @PostMapping("/{id}/reconcile-shipment-orders")
+    public ApiResponse<Detail> reconcileShipmentOrders(@PathVariable String id) {
+        return ApiResponse.success(service.reconcileShipmentOrders(id));
+    }
+
     @PostMapping
     public ApiResponse<Detail> create(@RequestBody Draft draft) {
         return ApiResponse.success(service.save(null, draft));

@@ -6,12 +6,20 @@ import static org.mockito.Mockito.*;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.rigour.order.api.v1.model.LogisticsCostQuery;
+import com.rigour.order.api.v1.model.ShipmentTransportModels.Source;
+import com.rigour.order.application.port.out.OrderLogisticsReferences;
+import com.rigour.order.application.port.out.PlatformTransportStore;
+import com.rigour.order.application.service.cost.OrderLogisticsCostService;
+import com.rigour.order.application.service.cost.TransportRecordService;
 import com.rigour.order.infrastructure.persistence.mapper.*;
+import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.context.TestAuthorizationContext;
 
 import org.junit.jupiter.api.*;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.SingleConnectionDataSource;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.mysql.MySQLContainer;
@@ -44,7 +52,8 @@ public class LogisticsCostFilterTest {
         jdbc = new JdbcTemplate(ds);
         jdbc.execute(
                 "DROP TABLE IF EXISTS order_logistics_cost, order_logistics_import_order,"
-                        + " order_logistics_transport_link, order_transport_shipment_source, order_sales_order");
+                        + " order_logistics_transport_link, order_transport_shipment_source, order_sales_order,"
+                        + " order_sales_shipment, order_logistics_cost_attachment");
         String ddl =
                 Files.readString(
                         Path.of("src/main/resources/db/migration/V54__order_logistics_cost.sql"));
@@ -61,12 +70,14 @@ public class LogisticsCostFilterTest {
         jdbc.execute("ALTER TABLE order_logistics_cost ADD COLUMN tracking_no VARCHAR(100)");
         jdbc.execute(
                 "CREATE TABLE order_logistics_import_order(id VARCHAR(50) PRIMARY KEY, tenant_id"
-                        + " VARCHAR(50),cost_id VARCHAR(50),source_json LONGTEXT,latest_source_json"
+                        + " VARCHAR(50),cost_id VARCHAR(50),carrier_order_no VARCHAR(80),source_json LONGTEXT,latest_source_json"
                         + " LONGTEXT,source_channel VARCHAR(16) DEFAULT 'API',business_json JSON)"
                         + " DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
         jdbc.execute(
                 "CREATE TABLE order_transport_shipment_source(tenant_id VARCHAR(50),cost_id"
-                        + " VARCHAR(50),latest_json LONGTEXT,platform_code VARCHAR(32) DEFAULT 'DHB',"
+                        + " VARCHAR(50),id VARCHAR(50),connector_id VARCHAR(36),source_shipment_no VARCHAR(128),"
+                        + " updated_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,"
+                        + " latest_json LONGTEXT,platform_code VARCHAR(32) DEFAULT 'DHB',"
                         + " sales_order_id BIGINT,issue VARCHAR(500),difference_pending TINYINT DEFAULT 0)"
                         + " DEFAULT CHARSET=utf8mb4"
                         + " COLLATE=utf8mb4_general_ci");
@@ -74,6 +85,20 @@ public class LogisticsCostFilterTest {
                 CREATE TABLE order_sales_order(id BIGINT PRIMARY KEY,tenant_id VARCHAR(64),
                     order_no VARCHAR(50),deleted INT,order_status_code VARCHAR(32))
                 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                """);
+        jdbc.execute("""
+                CREATE TABLE order_sales_shipment(
+                    tenant_id VARCHAR(64),connector_id VARCHAR(36),source_system_code VARCHAR(32),
+                    source_document_no VARCHAR(128),sales_order_no_snapshot VARCHAR(50),
+                    shipment_status_code VARCHAR(64),logistics_company VARCHAR(120),
+                    tracking_no VARCHAR(120),source_payload_json JSON,deleted INT DEFAULT 0,
+                    UNIQUE KEY shipment_origin(tenant_id,connector_id,source_system_code,source_document_no))
+                DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                """);
+        jdbc.execute("""
+                CREATE TABLE order_logistics_cost_attachment(
+                    tenant_id VARCHAR(50),entry_id VARCHAR(50),deleted INT DEFAULT 0)
+                DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
                 """);
         jdbc.execute("""
                 CREATE TABLE order_logistics_transport_link(tenant_id VARCHAR(50),source_id VARCHAR(50))
@@ -358,6 +383,107 @@ public class LogisticsCostFilterTest {
                 """);
         assertThat(transportIds("\"businessOrderNo\":\"MODERN-ORDER\"")).containsExactly("good");
         assertThat(transportIds("\"businessOrderNo\":\"LEGACY-ORDER\"")).containsExactly("good");
+    }
+
+    @Test
+    void snapshotOnlySalesOrderIsListedAndExportedWithoutBecomingACanonicalLink() {
+        UUID tenant = UUID.randomUUID();
+        String tenantId = tenant.toString();
+        String connector = UUID.randomUUID().toString();
+        String waybill = "HLL-WAY-001";
+        String orderNo = "DHB-ORDER_123";
+        insert("snapshot", tenantId, "SNAPSHOT", 7L);
+        insert("invalid-snapshot", tenantId, "INVALID", 7L);
+        jdbc.update("""
+                UPDATE order_logistics_cost
+                SET sources_json='[]',type_code='DELIVERY',source_system='HUOLALA',
+                    source_warehouse_id=warehouse_id
+                WHERE tenant_id=?
+                """, tenantId);
+        jdbc.update("""
+                INSERT INTO order_logistics_import_order(id,tenant_id,cost_id,carrier_order_no,source_json)
+                VALUES('platform-reference',?,'snapshot',?,'{}'),
+                    ('platform-invalid',?,'invalid-snapshot','HLL-WAY-002','{}')
+                """, tenantId, waybill, tenantId);
+        insertShipmentReference(tenantId, connector, "snapshot", "FH-1", orderNo,
+                waybill, waybill, "SIGNED");
+        insertShipmentReference(tenantId, connector, "invalid-snapshot", "FH-2", "DHB-STALE",
+                "HLL-WAY-002", "HLL-WAY-002-NEW", "SIGNED");
+        insertShipmentReference(tenantId, connector, "invalid-snapshot", "FH-3", "DHB-CANCELLED",
+                "HLL-WAY-002", "HLL-WAY-002", "CANCELLED");
+
+        var refs = mock(OrderLogisticsReferences.class);
+        var platform = mock(PlatformTransportStore.class);
+        var transport = new TransportRecordService(
+                new OrderLogisticsCostService(store, refs), null, refs, platform, null);
+        ReflectionTestUtils.invokeMethod(
+                transport, "shipmentStore", new JdbcShipmentTransportStore(jdbc, JSON, platform, store));
+        UUID actor = UUID.randomUUID();
+        TestAuthorizationContext.set(new CallerIdentity("TENANT", actor, tenant, actor, null,
+                UUID.randomUUID(), 0, 0, 0, Set.of(),
+                Set.of("order:logistics-cost:read", "order:logistics-cost:export")));
+        try {
+            for (String term : List.of(orderNo, "ORDER_12")) {
+                var query = transportQuery(Map.of("businessOrderNo", term));
+                for (boolean export : List.of(false, true)) {
+                    var page = transport.page(query, export);
+                    assertThat(page.page().total()).isOne();
+                    assertThat(page.page().items()).extracting(row -> row.id()).containsExactly("snapshot");
+                    assertThat(page.shipmentRecords().get("snapshot"))
+                            .allMatch(source -> source.salesOrderNo() == null)
+                            .extracting(Source::sourceSalesOrderNo).containsExactly(orderNo);
+                }
+            }
+            for (String ignored : List.of("DHB-STALE", "DHB-CANCELLED", "ORDERX123")) {
+                var query = transportQuery(Map.of("businessOrderNo", ignored));
+                assertThat(transport.page(query, false).page().total()).isZero();
+                assertThat(transport.page(query, true).page().total()).isZero();
+            }
+            var linked = transport.page(transportQuery(Map.of("relationState", "LINKED")), false);
+            assertThat(linked.page().items()).extracting(row -> row.id()).containsExactly("snapshot");
+            var unlinked = transport.page(transportQuery(Map.of("relationState", "UNLINKED")), false);
+            assertThat(unlinked.page().items()).extracting(row -> row.id()).containsExactly("invalid-snapshot");
+            assertThat(unlinked.shipmentRecords().get("invalid-snapshot"))
+                    .allMatch(source -> source.sourceSalesOrderNo() == null);
+            var selected = transport.selected(List.of("snapshot"));
+            assertThat(selected.getFirst().shipments()).extracting(Source::sourceSalesOrderNo)
+                    .containsExactly(orderNo);
+            assertThat(selected.getFirst().orderAllocations()).isEmpty();
+        } finally {
+            TestAuthorizationContext.clear();
+        }
+
+        assertThat(store.sourceUsage(tenantId, List.of(orderNo), "cost:read")).isEmpty();
+        assertThat(store.linkedSales(tenantId, orderNo, "cost:read")).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT sources_json FROM order_logistics_cost WHERE id='snapshot'",
+                String.class)).isEqualTo("[]");
+    }
+
+    private void insertShipmentReference(String tenant, String connector, String cost, String shipment,
+            String order, String associatedTracking, String latestTracking, String shipmentStatus) {
+        jdbc.update("""
+                INSERT INTO order_transport_shipment_source(
+                    id,tenant_id,connector_id,cost_id,source_shipment_no,latest_json)
+                VALUES(?,?,?,?,?,JSON_OBJECT('sourceStatus','received','connectorId',?,
+                    'shipmentNo',?,'trackingNumbers',JSON_ARRAY(?)))
+                """, shipment, tenant, connector, cost, shipment, connector, shipment,
+                associatedTracking);
+        jdbc.update("""
+                INSERT INTO order_sales_shipment(tenant_id,connector_id,source_system_code,
+                    source_document_no,sales_order_no_snapshot,shipment_status_code,
+                    logistics_company,tracking_no,source_payload_json)
+                VALUES(?,?,'DINGHUOBAO',?,?,?,'货拉拉',?,
+                    JSON_OBJECT('detail',JSON_OBJECT('type_id',10,'ships_num',?,
+                        'orders_num',?,'express_num',?)))
+                """, tenant, connector, shipment, order, shipmentStatus, latestTracking,
+                shipment, order, latestTracking);
+    }
+
+    private static LogisticsCostQuery transportQuery(Map<String, Object> filter) {
+        var fields = new HashMap<>(filter);
+        fields.put("begin", 0);
+        fields.put("step", 20);
+        return JSON.convertValue(fields, LogisticsCostQuery.class);
     }
 
     private void insertShipment(String tenant, String cost, long sale, String status, String issue, boolean difference) {

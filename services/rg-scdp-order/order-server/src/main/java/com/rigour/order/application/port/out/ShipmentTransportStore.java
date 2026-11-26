@@ -18,6 +18,8 @@ public interface ShipmentTransportStore {
 
     void reconcileHuolala(String tenant, String actor, String orderNo, String costId);
 
+    int reconcileShipmentOrders(String tenant, String actor, String costId);
+
     int backfillCarrier(String tenant, String actor, CarrierBackfill command);
 
     Map<String, List<Source>> byCosts(String tenant, List<String> costIds);

@@ -89,7 +89,13 @@ public final class ShipmentTransportModels {
 
     public record Source(
             String id, String costId, Command latest, String issue, boolean differencePending,
-            String salesOrderNo) {
+            String salesOrderNo, String sourceSalesOrderNo) {
+        public Source(
+                String id, String costId, Command latest, String issue, boolean differencePending,
+                String salesOrderNo) {
+            this(id, costId, latest, issue, differencePending, salesOrderNo, null);
+        }
+
         public Source(String id, String costId, Command latest, String issue, boolean differencePending) {
             this(id, costId, latest, issue, differencePending, null);
         }

@@ -28,6 +28,17 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
     private static final String AWAITING_HUOLALA_DETAIL = "等待货拉拉订单详情，核实收货点后自动关联";
     private static final String EMPLOYEE_DELIVERY_REASON = "员工配送，无外部运费";
     private static final String ALLOCATION_CONFLICT = "已有费用明细或多个收货点，请核对后关联销售订单";
+    private static final String AWAITING_SALES = "同一快递单号已有运输记录，请核对后关联原销售单";
+    static final String SHIPMENT_REFERENCE =
+            " FROM order_sales_shipment d JOIN order_logistics_import_order h"
+                    + " ON h.tenant_id=s.tenant_id AND h.cost_id=s.cost_id AND h.source_channel='API'"
+                    + " AND HEX(d.tracking_no)=HEX(h.carrier_order_no)"
+                    + " WHERE d.tenant_id=%s AND d.deleted=0 AND d.source_system_code='DINGHUOBAO'"
+                    + " AND HEX(d.connector_id)=HEX(s.connector_id)"
+                    + " AND HEX(d.source_document_no)=HEX(s.source_shipment_no)"
+                    + " AND d.shipment_status_code IN ('SHIPPED','SIGNED') AND d.logistics_company='货拉拉'"
+                    + " AND s.sales_order_id IS NULL AND s.issue IS NULL AND s.difference_pending=0"
+                    + " AND NULLIF(TRIM(d.sales_order_no_snapshot),'') IS NOT NULL";
     private static final String ACTIVE_SALES_ORDER =
             "o.deleted=0 AND o.order_status_code IN ('SUBMITTED','COMPLETED')";
     private final JdbcTemplate jdbc;
@@ -304,7 +315,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                 issue = TRACKING_CONFLICT;
                 difference = true;
             } else if (match != null && order == null) {
-                issue = "同一快递单号已有运输记录，请核对后关联原销售单";
+                issue = AWAITING_SALES;
                 difference = true;
             } else if (match != null) {
                 issue = attachPlatformOrder(tenant, actor, match.costId(), command, order, transport);
@@ -575,6 +586,8 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
 
     private record PendingAssociation(LogisticsCostSourceView order, LogisticsCostCommand transport) {}
 
+    private record ShipmentSnapshot(Command shipment, String salesOrderNo) {}
+
     private boolean hasOtherShipments(String tenant, String costId, String sourceId) {
         return jdbc.queryForObject(
                 "SELECT EXISTS(SELECT 1 FROM order_transport_shipment_source"
@@ -604,6 +617,130 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
     private static boolean eligibleForHuolala(Command shipment) {
         return !"SELF".equals(shipment.deliveryModeCode())
                 && ("HLL".equals(shipment.carrierCode()) || carrierNotProvided(shipment));
+    }
+
+    @Override
+    public int reconcileShipmentOrders(String tenant, String actor, String costId) {
+        platform.lockTenant(tenant);
+        var cost = costs.entry(tenant, "LOGISTICS", costId, "order:logistics-cost:write");
+        var record = platform.detail(tenant, costId);
+        if (!"ACTIVE".equals(cost.statusCode()) || !delivery(cost.data().typeCode())
+                || cost.data().ledger() != null && !delivery(cost.data().ledger().transportPurposeCode())
+                || record == null || !"API".equals(record.source().sourceChannel())
+                || record.draft() != null && !delivery(record.draft().transportType()))
+            throw bad("仅支持从有效的货拉拉配送记录补齐发货关联");
+        var order = record.source().latestOrder() == null ? record.source().order() : record.source().latestOrder();
+        if (order == null || order.orderNo() == null || !"已完成".equals(order.status())
+                || order.raw() == null || !"DETAIL".equals(order.raw().get("详情状态"))
+                || order.facts() == null || order.facts().stops().size() <= 2)
+            throw bad("需要已完成的货拉拉多收货点详情");
+        var numbers = JdbcTransportTrackingLookup.numbers(List.of(order.orderNo()));
+        var matches = tracking.find(tenant, numbers);
+        if (matches.size() != 1 || !costId.equals(matches.getFirst().costId())
+                || !matches.getFirst().huolalaOrder())
+            throw bad("运单号无法唯一匹配当前运输记录，请核对重复费用单");
+
+        var shipments = jdbc.query("""
+                SELECT connector_id,source_document_no,sales_order_no_snapshot,shipment_status_code,ship_time,
+                       source_updated_at,source_payload_json
+                FROM order_sales_shipment
+                WHERE tenant_id=? AND tracking_no=? AND deleted=0 AND source_system_code='DINGHUOBAO'
+                  AND connector_id IS NOT NULL AND source_document_no IS NOT NULL
+                  AND shipment_status_code IN ('SHIPPED','SIGNED') AND logistics_company='货拉拉'
+                  AND ship_time IS NOT NULL AND source_payload_json IS NOT NULL
+                ORDER BY connector_id,source_document_no FOR UPDATE
+                """, (rs, index) -> {
+                    var detail = json.readTree(rs.getString("source_payload_json")).path("detail");
+                    String shipmentId = detail.path("ships_id").asString("").strip();
+                    String shipmentNo = rs.getString("source_document_no");
+                    String salesNo = rs.getString("sales_order_no_snapshot");
+                    if (shipmentId.isEmpty() || shipmentId.length() > 128 || salesNo == null || salesNo.isBlank()
+                            || detail.path("type_id").asInt() != 10
+                            || !shipmentNo.equals(detail.path("ships_num").asString(""))
+                            || !salesNo.equals(detail.path("orders_num").asString(""))
+                            || !numbers.equals(JdbcTransportTrackingLookup.numbers(
+                                    List.of(detail.path("express_num").asString(""))))) return null;
+                    var changedAt = rs.getTimestamp("source_updated_at");
+                    var shipment = new Command(
+                            UUID.fromString(rs.getString("connector_id")), shipmentId, shipmentNo, null, null,
+                            "SIGNED".equals(rs.getString("shipment_status_code")) ? "received" : "receivedin",
+                            rs.getTimestamp("ship_time").toInstant(), changedAt == null ? null : changedAt.toInstant(),
+                            "HLL", "货拉拉", "THIRD_PARTY", "快递", numbers, null, Map.of(), List.of());
+                    return new ShipmentSnapshot(shipment, salesNo);
+                }, tenant, order.orderNo()).stream().filter(Objects::nonNull).toList();
+        var connectors = new HashSet<>(jdbc.queryForList(
+                "SELECT connector_id FROM order_transport_shipment_source"
+                        + " WHERE tenant_id=? AND cost_id=? AND platform_code='DHB'",
+                String.class, tenant, costId));
+        shipments.forEach(snapshot -> connectors.add(snapshot.shipment().connectorId().toString()));
+        if (connectors.size() > 1)
+            throw bad("相同运单号出现在不同订货宝接入，请核对后处理");
+        if (shipments.stream().map(snapshot -> snapshot.shipment().shipmentId()).distinct().count()
+                != shipments.size())
+            throw bad("来源发货身份重复，请核对后处理");
+
+        int linked = 0;
+        var touched = new ArrayList<String>();
+        for (var snapshot : shipments) {
+            var shipment = snapshot.shipment();
+            var found = jdbc.queryForList("""
+                    SELECT * FROM order_transport_shipment_source
+                    WHERE tenant_id=? AND platform_code='DHB' AND connector_id=?
+                      AND (source_shipment_id=? OR source_shipment_no=?) FOR UPDATE
+                    """, tenant, shipment.connectorId().toString(), shipment.shipmentId(), shipment.shipmentNo());
+            if (found.isEmpty()) {
+                insertShipmentReference(tenant, actor, costId, shipment);
+            } else {
+                if (found.size() != 1) continue;
+                var row = found.getFirst();
+                var source = source(row);
+                var prior = source.latest();
+                Long salesId = row.get("sales_order_id") == null
+                        ? null : ((Number) row.get("sales_order_id")).longValue();
+                if (!shipment.shipmentNo().equals(prior.shipmentNo())
+                        || !(shipment.shipmentId().equals(prior.shipmentId())
+                                || prior.shipmentId().equals(prior.shipmentNo()))
+                        || source.costId() != null || !shipped(prior) || !eligibleForHuolala(prior)
+                        || !Objects.equals(salesId, prior.salesOrderId())
+                        || !numbers.equals(JdbcTransportTrackingLookup.numbers(prior.trackingNumbers()))
+                        || source.issue() != null && !ALLOCATION_CONFLICT.equals(source.issue())
+                                && !AWAITING_SALES.equals(source.issue())
+                                && !AWAITING_HUOLALA_DETAIL.equals(source.issue())
+                                && !AWAITING_HUOLALA.equals(source.issue())
+                        || salesId != null
+                                && !canAssociateShipment(tenant, cost, record, prior, snapshot.salesOrderNo())) continue;
+                jdbc.update("""
+                        UPDATE order_transport_shipment_source
+                        SET cost_id=?,issue=NULL,difference_pending=0,awaiting_huolala_no=NULL,awaiting_huolala_data=NULL,
+                            updated_by=?,updated_time=CURRENT_TIMESTAMP(6)
+                        WHERE tenant_id=? AND id=?
+                        """, costId, actor, tenant, source.id());
+            }
+            linked++;
+            touched.add(shipment.shipmentNo());
+        }
+        if (!touched.isEmpty())
+            changed(tenant, costId, actor, "SOURCE_SYNC", "按本地订货宝发货事实补齐同运单关联",
+                    Map.of("platformOrderNo", order.orderNo(), "shipmentNos", touched));
+        return linked;
+    }
+
+    private void insertShipmentReference(String tenant, String actor, String costId, Command shipment) {
+        String id = UUID.randomUUID().toString();
+        String body = json.writeValueAsString(shipment);
+        String fingerprint = fingerprint(body);
+        jdbc.update("""
+                INSERT INTO order_transport_shipment_source
+                    (id,tenant_id,platform_code,connector_id,source_shipment_id,source_shipment_no,cost_id,
+                     latest_json,fingerprint,created_by,updated_by)
+                VALUES (?,?,'DHB',?,?,?,?,?,?,?,?)
+                """, id, tenant, shipment.connectorId().toString(), shipment.shipmentId(), shipment.shipmentNo(),
+                costId, body, fingerprint, actor, actor);
+        jdbc.update("""
+                INSERT INTO order_transport_shipment_history
+                    (id,tenant_id,platform_code,source_id,fingerprint,source_json,created_by)
+                VALUES (?,?,'DHB',?,?,?,?)
+                """, UUID.randomUUID().toString(), tenant, id, fingerprint, body, actor);
     }
 
     @Override
@@ -938,13 +1075,16 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
     public Map<String, List<Source>> byCosts(String tenant, List<String> ids) {
         if (ids.isEmpty()) return Map.of();
         var params = new ArrayList<Object>();
-        // Bind the tenant on both tables because old Order schemas can use different collations.
+        // Bind the tenant on each table because old Order schemas can use different collations.
+        params.add(tenant);
         params.add(tenant);
         params.add(tenant);
         params.addAll(ids);
         var rows =
                 jdbc.queryForList(
-                        "SELECT s.*,o.order_no AS linked_order_no FROM order_transport_shipment_source s"
+                        "SELECT s.*,o.order_no AS linked_order_no,"
+                                + " (SELECT d.sales_order_no_snapshot" + SHIPMENT_REFERENCE.formatted("?")
+                                + " LIMIT 1) AS source_order_no FROM order_transport_shipment_source s"
                                 + " LEFT JOIN order_sales_order o ON o.tenant_id=? AND o.id=s.sales_order_id"
                                 + " AND " + ACTIVE_SALES_ORDER + " AND s.platform_code='DHB'"
                                 + " AND s.issue IS NULL AND s.difference_pending=0"
@@ -984,7 +1124,8 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
                 latest,
                 Objects.toString(row.get("issue"), null),
                 JdbcFlags.isSet(row.get("difference_pending")),
-                shipped(latest) ? Objects.toString(row.get("linked_order_no"), null) : null);
+                shipped(latest) ? Objects.toString(row.get("linked_order_no"), null) : null,
+                shipped(latest) ? Objects.toString(row.get("source_order_no"), null) : null);
     }
 
     private String fingerprint(String s) {
