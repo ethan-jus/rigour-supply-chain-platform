@@ -1007,6 +1007,28 @@ class BiSupplyScopeIntegrationTest {
                 .andExpect(jsonPath("$.data.citySalesRanking[0].dimensionCode").value("SZ-DEPT"))
                 .andExpect(jsonPath("$.data.citySalesRanking[1].dimensionCode").value("WX-DEPT"));
         }
+        jdbc.update("INSERT INTO bi_sales_contact_city_dim(tenant_id,region_code,city_name,department_id,department_path) VALUES(?,'OTHER','其他战区',30,JSON_ARRAY(1,30))", tenant);
+        var managed = policy(List.of(new SupplyAuthorizationView.Clause(
+                UUID.randomUUID(), "ANALYTICS", "DEPARTMENT", specified("5"), all(), none(), true)), all(), all());
+        when(iam.authorization(any(),any())).thenReturn(managed);
+        try (var context=SupplyAuthorizationContext.open(iam,actor,managed)) {
+            var mvc=MockMvcBuilders.standaloneSetup(supplyDashboard, salesDashboard, paymentRisk).build();
+            mvc.perform(get("/api/v1/analytics/supply/dashboard/department-filters"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.defaultDepartmentCode").value("GROUP"))
+                .andExpect(jsonPath("$.data.departments[?(@.code == 'SZ-DEPT')].parentCode").value("GROUP"))
+                .andExpect(jsonPath("$.data.departments[?(@.code == 'WX-DEPT')].parentCode").value("GROUP"))
+                .andExpect(jsonPath("$.data.departments[?(@.code == 'OTHER')]").isEmpty());
+            var risk = get("/api/v1/analytics/supply/dashboard/payment-risk").param("regionCode","GROUP")
+                    .param("from","2026-11-01T00:00:00Z").param("to","2026-11-30T23:59:59Z");
+            mvc.perform(risk).andExpect(status().isOk()).andExpect(jsonPath("$.data.orders.length()").value(2));
+            for (String projection : List.of("OPERATING", "SALES", "CITY")) {
+                mvc.perform(get("/api/v1/analytics/supply/dashboard/overview").param("projection",projection)
+                        .param("regionCode","GROUP").param("from","2026-11-01T00:00:00Z").param("to","2026-11-30T23:59:59Z"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.metrics[?(@.metricCode == 'sales_amount')].value").value(org.hamcrest.Matchers.contains(30000.0)));
+            }
+        }
         var restricted = policy(List.of(clause("DEPARTMENT",specified("20"),all(),none())),all(),all());
         when(iam.authorization(any(),any())).thenReturn(restricted);
         try (var context=SupplyAuthorizationContext.open(iam,actor,restricted)) {

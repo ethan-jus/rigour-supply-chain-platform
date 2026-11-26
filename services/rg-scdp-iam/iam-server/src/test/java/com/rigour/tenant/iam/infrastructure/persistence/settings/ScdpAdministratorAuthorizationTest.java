@@ -258,7 +258,26 @@ class ScdpAdministratorAuthorizationTest {
         assertThat(snapshot.clauses()).singleElement().satisfies(clause -> {
             assertThat(clause.scopeMode()).isEqualTo("DEPARTMENT");
             assertThat(clause.departments().references()).containsExactly("6");
+            assertThat(clause.includeDescendants()).isFalse();
         });
+        when(employee.employee(ordinary.tenantId(), "CITY-EMPLOYEE")).thenReturn(
+                new AppEmployeeClient.Employee(1, "CITY-EMPLOYEE", "城市负责人", "ACTIVE",
+                        6L, "测试城市", "CITY", "城市负责人", java.util.List.of(1L, 5L, 6L),
+                        0, 1, 0, true, null, java.util.List.of(5L)));
+        assertThat(authorization.proposed(ordinary, "analytics:dashboard:read").clauses())
+                .singleElement().satisfies(clause -> {
+                    assertThat(clause.departments().references()).containsExactly("5");
+                    assertThat(clause.includeDescendants()).isTrue();
+                });
+        jdbc.update("UPDATE iam_app_role SET data_scope_mode='SELF' WHERE tenant_id=? AND id=?", tenant, assignedRole);
+        settings.bump(ordinary);
+        assertThat(authorization.proposed(ordinary, "analytics:dashboard:read").clauses())
+                .singleElement().satisfies(clause -> {
+                    assertThat(clause.scopeMode()).isEqualTo("SELF");
+                    assertThat(clause.includeDescendants()).isFalse();
+                });
+        jdbc.update("UPDATE iam_app_role SET data_scope_mode='DEPARTMENT' WHERE tenant_id=? AND id=?", tenant, assignedRole);
+        settings.bump(ordinary);
         // 本部门来自登录人当前 HR 部门，而不是固定城市或角色名。
         when(employee.employee(ordinary.tenantId(), "CITY-EMPLOYEE")).thenReturn(
                 new AppEmployeeClient.Employee(1, "CITY-EMPLOYEE", "城市负责人", "ACTIVE",

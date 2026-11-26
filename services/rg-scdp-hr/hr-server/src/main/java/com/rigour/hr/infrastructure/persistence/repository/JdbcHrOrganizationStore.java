@@ -579,11 +579,19 @@ INSERT INTO hr_employee_assignment(tenant_id,employee_code,department_id,departm
 SELECT e.id,e.employee_code,e.employee_name,e.employment_status,e.department_id,e.primary_position_code,
        e.revision,e.access_version,e.entry_date,e.leave_date,d.department_name,d.status_code department_status,d.deleted department_deleted,
        p.position_name,p.status_code position_status,p.deleted position_deleted,
-       COALESCE(s.version,0) organization_version,c.ancestor_id
+       COALESCE(s.version,0) organization_version,c.ancestor_id,managed.id managed_department_id
   FROM hr_employee e LEFT JOIN hr_department d ON d.tenant_id=e.tenant_id AND d.id=e.department_id
   LEFT JOIN hr_position p ON p.tenant_id=e.tenant_id AND p.position_code=e.primary_position_code
   LEFT JOIN hr_organization_state s ON s.tenant_id=e.tenant_id
   LEFT JOIN hr_department_closure c ON c.tenant_id=e.tenant_id AND c.descendant_id=e.department_id
+  LEFT JOIN hr_department managed ON managed.tenant_id=e.tenant_id
+       AND managed.leader_employee_code=e.employee_code AND managed.deleted=0 AND managed.status_code='ACTIVE'
+       AND NOT EXISTS (
+           SELECT 1 FROM hr_department_closure tree
+           JOIN hr_department parent ON parent.tenant_id=tree.tenant_id AND parent.id=tree.ancestor_id
+           WHERE tree.tenant_id=managed.tenant_id AND tree.descendant_id=managed.id AND tree.depth>0
+                 AND parent.leader_employee_code=e.employee_code AND parent.deleted=0 AND parent.status_code='ACTIVE'
+       )
  WHERE e.tenant_id=? AND e.employee_code=? AND e.deleted=0
  ORDER BY c.depth DESC
 """,
@@ -591,6 +599,7 @@ SELECT e.id,e.employee_code,e.employee_name,e.employment_status,e.department_id,
                             Long departmentId = rs.getObject("department_id", Long.class);
                             Long ancestorId = rs.getObject("ancestor_id", Long.class);
                             List<Long> ancestors = ancestorId == null ? List.of() : List.of(ancestorId);
+                            Long managedDepartmentId = rs.getObject("managed_department_id", Long.class);
                             String reason = null;
                             Instant now = Instant.now();
                             if (!"ACTIVE".equals(rs.getString("employment_status")))
@@ -621,7 +630,8 @@ SELECT e.id,e.employee_code,e.employee_name,e.employment_status,e.department_id,
                                     rs.getLong("organization_version"),
                                     rs.getLong("access_version"),
                                     reason == null,
-                                    reason);
+                                    reason,
+                                    managedDepartmentId == null ? List.of() : List.of(managedDepartmentId));
                         },
                         tenant,
                         code);
@@ -629,9 +639,11 @@ SELECT e.id,e.employee_code,e.employee_name,e.employment_status,e.department_id,
         return rows.stream().findFirst().map(first -> new HrEmployeeIdentityView(
                 first.id(), first.employeeCode(), first.employeeName(), first.employmentStatus(),
                 first.departmentId(), first.departmentName(), first.positionCode(), first.positionName(),
-                rows.stream().flatMap(row -> row.departmentAncestorIds().stream()).toList(),
+                rows.stream().flatMap(row -> row.departmentAncestorIds().stream()).distinct().toList(),
                 first.employeeRevision(), first.organizationVersion(), first.accessVersion(),
-                first.usable(), first.unavailableReason()));
+                first.usable(), first.unavailableReason(), first.usable()
+                        ? rows.stream().flatMap(row -> row.managedDepartmentIds().stream()).distinct().sorted().toList()
+                        : List.of()));
     }
 
     @Override

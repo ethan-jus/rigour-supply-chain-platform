@@ -19,7 +19,21 @@ public interface AppEmployeeClient {
             long organizationVersion,
             long accessVersion,
             boolean usable,
-            String unavailableReason) {}
+            String unavailableReason,
+            List<Long> managedDepartmentIds) {
+        public Employee {
+            managedDepartmentIds = managedDepartmentIds == null ? List.of() : List.copyOf(managedDepartmentIds);
+        }
+
+        public Employee(long id, String employeeCode, String employeeName, String employmentStatus,
+                Long departmentId, String departmentName, String positionCode, String positionName,
+                List<Long> departmentAncestorIds, long employeeRevision, long organizationVersion, long accessVersion,
+                boolean usable, String unavailableReason) {
+            this(id, employeeCode, employeeName, employmentStatus, departmentId, departmentName, positionCode,
+                    positionName, departmentAncestorIds, employeeRevision, organizationVersion, accessVersion,
+                    usable, unavailableReason, List.of());
+        }
+    }
 
     record Page(long total, int begin, int step, List<Employee> items) {}
 

@@ -760,6 +760,30 @@ class HrApplicationTests {
     }
 
     @Test
+    void identityReportsOnlyTheHighestActiveDepartmentsActuallyManagedByTheEmployee() {
+        String tenant = java.util.UUID.randomUUID().toString();
+        jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);
+        var parent = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "苏州战区", 0, "ACTIVE", 0, null, null, null), "admin");
+        var home = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(parent.id(), "苏州市", 0, "ACTIVE", 0, null, null, null), "admin");
+        var other = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "独立区域", 0, "ACTIVE", 0, null, null, null), "admin");
+        var disabled = organizations.saveDepartment(tenant, null,
+                new com.rigour.hr.api.v1.model.HrDepartmentCommand(null, "已停用区域", 0, "INACTIVE", 0, null, null, null), "admin");
+        long id = organizations.saveEmployee(tenant, null, employee("战区负责人", home.id(), "ACTIVE", 0), "admin");
+        String code = employeeStore.employee(tenant, id).orElseThrow().employeeCode();
+        jdbcTemplate.update("UPDATE hr_department SET leader_employee_code=? WHERE tenant_id=? AND id IN (?,?,?,?)",
+                code, tenant, parent.id(), home.id(), other.id(), disabled.id());
+        var identity = organizations.identity(tenant, code).orElseThrow();
+        assertThat(identity.departmentId()).isEqualTo(home.id());
+        assertThat(identity.managedDepartmentIds()).containsExactlyInAnyOrder(parent.id(), other.id());
+        jdbcTemplate.update("UPDATE hr_department SET leader_employee_code=NULL WHERE tenant_id=? AND id=?", tenant, parent.id());
+        assertThat(organizations.identity(tenant, code).orElseThrow().managedDepartmentIds())
+                .containsExactlyInAnyOrder(home.id(), other.id());
+    }
+
+    @Test
     void employeeDeletePreservesHistoryAndSourceTombstone() {
         String tenant = java.util.UUID.randomUUID().toString();
         jdbcTemplate.update("INSERT INTO hr_position(tenant_id,position_code,position_name,status_code) VALUES(?,'SALES','业务员','ACTIVE')", tenant);

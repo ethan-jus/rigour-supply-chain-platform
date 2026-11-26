@@ -17,8 +17,19 @@ public record HrEmployeeIdentityView(
         long organizationVersion,
         long accessVersion,
         boolean usable,
-        String unavailableReason) {
+        String unavailableReason,
+        List<Long> managedDepartmentIds) {
     public HrEmployeeIdentityView {
         departmentAncestorIds = List.copyOf(departmentAncestorIds);
+        managedDepartmentIds = managedDepartmentIds == null ? List.of() : List.copyOf(managedDepartmentIds);
+    }
+
+    public HrEmployeeIdentityView(Long id, String employeeCode, String employeeName, String employmentStatus,
+            Long departmentId, String departmentName, String positionCode, String positionName,
+            List<Long> departmentAncestorIds, int employeeRevision, long organizationVersion, long accessVersion,
+            boolean usable, String unavailableReason) {
+        this(id, employeeCode, employeeName, employmentStatus, departmentId, departmentName, positionCode,
+                positionName, departmentAncestorIds, employeeRevision, organizationVersion, accessVersion,
+                usable, unavailableReason, List.of());
     }
 }

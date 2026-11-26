@@ -235,6 +235,14 @@ public class JdbcAppAuthorizationStore implements AppAuthorizationStore {
                         com.rigour.tenant.iam.domain.model.settings.AppScopeRules.objectType(
                                 action);
                 if (scope == null || object == null) continue;
+                if ("analytics:dashboard:read".equals(action) && "DEPARTMENT".equals(scope.mode())
+                        && employee != null && employee.usable() && !employee.managedDepartmentIds().isEmpty()) {
+                    var managed = employee.managedDepartmentIds().stream().map(String::valueOf).toList();
+                    clauses.add(new Clause(role.id(), object, "DEPARTMENT",
+                            new Limit("SPECIFIED", managed), all, all, true));
+                    if (employee.departmentAncestorIds().stream().anyMatch(employee.managedDepartmentIds()::contains))
+                        continue;
+                }
                 Limit departments =
                         switch (scope.mode()) {
                             case "CUSTOM" -> new Limit("SPECIFIED", scope.departmentIds());
