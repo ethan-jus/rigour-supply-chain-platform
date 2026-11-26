@@ -44,7 +44,7 @@ public class LogisticsCostFilterTest {
         jdbc = new JdbcTemplate(ds);
         jdbc.execute(
                 "DROP TABLE IF EXISTS order_logistics_cost, order_logistics_import_order,"
-                        + " order_transport_shipment_source");
+                        + " order_logistics_transport_link, order_transport_shipment_source, order_sales_order");
         String ddl =
                 Files.readString(
                         Path.of("src/main/resources/db/migration/V54__order_logistics_cost.sql"));
@@ -66,8 +66,19 @@ public class LogisticsCostFilterTest {
                         + " DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci");
         jdbc.execute(
                 "CREATE TABLE order_transport_shipment_source(tenant_id VARCHAR(50),cost_id"
-                        + " VARCHAR(50),latest_json LONGTEXT) DEFAULT CHARSET=utf8mb4"
+                        + " VARCHAR(50),latest_json LONGTEXT,platform_code VARCHAR(32) DEFAULT 'DHB',"
+                        + " sales_order_id BIGINT,issue VARCHAR(500),difference_pending TINYINT DEFAULT 0)"
+                        + " DEFAULT CHARSET=utf8mb4"
                         + " COLLATE=utf8mb4_general_ci");
+        jdbc.execute("""
+                CREATE TABLE order_sales_order(id BIGINT PRIMARY KEY,tenant_id VARCHAR(64),
+                    order_no VARCHAR(50),deleted INT,order_status_code VARCHAR(32))
+                DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci
+                """);
+        jdbc.execute("""
+                CREATE TABLE order_logistics_transport_link(tenant_id VARCHAR(50),source_id VARCHAR(50))
+                DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci
+                """);
         var config = new MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(OrderLogisticsCostMapper.class);
@@ -168,7 +179,7 @@ public class LogisticsCostFilterTest {
                 "UPDATE order_logistics_cost SET"
                         + " source_warehouse_id=warehouse_id,cost_date='2026-11-16'");
         jdbc.update(
-                "INSERT INTO order_transport_shipment_source"
+                "INSERT INTO order_transport_shipment_source(tenant_id,cost_id,latest_json)"
                         + " VALUES('T1','dhb',?),('T1','dhb',?),('T2','manual',?)",
                 "{\"shipTime\":\"2026-11-15T17:00:00Z\"}",
                 "{\"shipTime\":\"2026-11-16T06:00:00Z\"}",
@@ -268,13 +279,15 @@ public class LogisticsCostFilterTest {
         assertThat(transportIds("\"orderPlacerDepartment\":\"平台部门\"")).isEmpty();
         assertThat(transportIds("\"orderPlacerEmployeeCode\":\"E4\",\"businessOrderNo\":\"XS_001\"")).isEmpty();
 
-        jdbc.update("INSERT INTO order_transport_shipment_source VALUES('T2','platform','{}')");
+        jdbc.update("INSERT INTO order_transport_shipment_source(tenant_id,cost_id,latest_json)"
+                + " VALUES('T2','platform','{}')");
         String salesFilters =
                 "\"orderPlacerEmployeeCode\":\"E1\",\"orderPlacerDepartment\":\"武汉销售部\","
                         + "\"businessOrderNo\":\"HLL-SALES-1\"";
         assertThat(transportIds(salesFilters)).isEmpty();
 
-        jdbc.update("INSERT INTO order_transport_shipment_source VALUES('T1','platform','{}')");
+        jdbc.update("INSERT INTO order_transport_shipment_source(tenant_id,cost_id,latest_json)"
+                + " VALUES('T1','platform','{}')");
         assertThat(transportIds(salesFilters)).containsExactly("platform");
         assertThat(transportIds(
                         "\"orderPlacerEmployeeCode\":\"E4\",\"orderPlacerDepartment\":\"本系统运营部\","
@@ -283,6 +296,75 @@ public class LogisticsCostFilterTest {
         assertThat(transportIds(
                         "\"orderPlacerEmployeeCode\":\"E1\",\"orderPlacerDepartment\":\"本系统运营部\""))
                 .isEmpty();
+    }
+
+    @Test
+    void verifiedShipmentSalesOrdersAreSearchableAndCountedOnceWithoutAStoredCostShare() {
+        jdbc.update("UPDATE order_logistics_cost SET sources_json='[]',type_code='DELIVERY'");
+        jdbc.update("""
+                INSERT INTO order_logistics_import_order(id,tenant_id,cost_id,business_json)
+                VALUES('platform','T1','good',JSON_OBJECT('orderCodes',JSON_ARRAY('EXISTING-COST-ORDER')))
+                """);
+        jdbc.update("""
+                INSERT INTO order_sales_order VALUES
+                    (1,'T1','DHB-A_1',0,'SUBMITTED'),(2,'T1','DHB-B',0,'COMPLETED'),
+                    (3,'T1','PENDING-LINK',0,'SUBMITTED'),(4,'T1','CANCELLED-SHIPMENT',0,'SUBMITTED'),
+                    (5,'T1','CANCELLED-SALE',0,'CANCELLED'),(6,'T2','OTHER-TENANT',0,'COMPLETED'),
+                    (7,'T1','DELETED-SALE',1,'SUBMITTED'),(8,'T1','REVIEW-LINK',0,'SUBMITTED')
+                """);
+        insertShipment("T1", "good", 1, "receivedin", null, false);
+        insertShipment("T1", "good", 1, "received", null, false);
+        insertShipment("T1", "good", 2, "received", null, false);
+        insertShipment("T1", "good", 3, "received", null, true);
+        insertShipment("T1", "good", 4, "cancelled", null, false);
+        insertShipment("T1", "good", 5, "received", null, false);
+        insertShipment("T1", "good", 6, "received", null, false);
+        insertShipment("T1", "good", 7, "received", null, false);
+        insertShipment("T1", "good", 8, "received", "需核对", false);
+        insertShipment("T2", "other", 6, "received", null, false);
+        insertShipment("T1", "hidden", 1, "received", null, false);
+
+        for (String orderNo : List.of("DHB-A_1", "DHB-B")) {
+            assertThat(transportIds("\"businessOrderNo\":\"" + orderNo + "\""))
+                    .containsExactly("good");
+            assertThat(store.linkedSales("T1", orderNo, "cost:read"))
+                    .extracting(row -> row.id()).containsExactly("good");
+        }
+        assertThat(transportIds("\"businessOrderNo\":\"EXISTING-COST-ORDER\""))
+                .containsExactly("good");
+        var ignored = List.of("PENDING-LINK", "CANCELLED-SHIPMENT", "CANCELLED-SALE",
+                "OTHER-TENANT", "DELETED-SALE", "REVIEW-LINK", "DHB-Ax1");
+        for (String orderNo : ignored) {
+            assertThat(transportIds("\"businessOrderNo\":\"" + orderNo + "\"")).isEmpty();
+            assertThat(store.linkedSales("T1", orderNo, "cost:read")).isEmpty();
+        }
+        var allOrderNos = new ArrayList<>(ignored);
+        allOrderNos.addAll(List.of("DHB-A_1", "DHB-B"));
+        assertThat(store.sourceUsage("T1", allOrderNos, "cost:read"))
+                .containsExactlyInAnyOrderEntriesOf(Map.of("DHB-A_1", 1, "DHB-B", 1));
+        assertThat(transportIds("\"relationState\":\"LINKED\"")).containsExactly("good");
+        assertThat(transportIds("\"relationState\":\"UNLINKED\"")).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT sources_json FROM order_logistics_cost WHERE id='good'", String.class))
+                .isEqualTo("[]");
+    }
+
+    @Test
+    void storedModernAndLegacyBusinessOrderNumbersRemainSearchable() {
+        jdbc.update("""
+                UPDATE order_logistics_cost SET sources_json=JSON_ARRAY(
+                    JSON_OBJECT('orderCode','MODERN-ORDER','orderTypeCode','SALES_ORDER'),
+                    JSON_OBJECT('documentNo','LEGACY-ORDER','sourceType','SALES_ORDER'))
+                WHERE id='good'
+                """);
+        assertThat(transportIds("\"businessOrderNo\":\"MODERN-ORDER\"")).containsExactly("good");
+        assertThat(transportIds("\"businessOrderNo\":\"LEGACY-ORDER\"")).containsExactly("good");
+    }
+
+    private void insertShipment(String tenant, String cost, long sale, String status, String issue, boolean difference) {
+        jdbc.update("""
+                INSERT INTO order_transport_shipment_source(tenant_id,cost_id,sales_order_id,latest_json,issue,difference_pending)
+                VALUES(?,?,?,JSON_OBJECT('sourceStatus',?),?,?)
+                """, tenant, cost, sale, status, issue, difference);
     }
 
     private List<String> transportIds(String filters) {

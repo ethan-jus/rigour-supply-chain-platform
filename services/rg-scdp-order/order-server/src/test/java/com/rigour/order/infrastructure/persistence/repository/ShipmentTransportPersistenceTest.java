@@ -113,6 +113,13 @@ class ShipmentTransportPersistenceTest {
                     source_document_no VARCHAR(128), logistics_overrides LONGTEXT, deleted INT DEFAULT 0
                 )
                 """);
+        db.execute("""
+                CREATE TABLE order_sales_order (
+                    id BIGINT, tenant_id VARCHAR(64), order_no VARCHAR(50),
+                    order_status_code VARCHAR(32), deleted INT DEFAULT 0,
+                    PRIMARY KEY(tenant_id,id)
+                )
+                """);
         db = new JdbcTemplate(ds);
         store = new JdbcShipmentTransportStore(db, json, platform, costs);
     }
@@ -677,6 +684,160 @@ class ShipmentTransportPersistenceTest {
         assertThat(links.get(1).path("allocations").get(0).path("cityCode").asText()).isEqualTo("SZ");
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void multiStopHuolalaLinksEveryShipmentWithoutChangingSavedLedger(boolean huolalaFirst) {
+        usePersistedCostDetails();
+        var expectedOrders = new ArrayList<String>();
+        for (int i = 1; i <= 8; i++) {
+            String orderNo = "SO00" + i;
+            expectedOrders.add(orderNo);
+            db.update("INSERT INTO order_sales_order(id,tenant_id,order_no,order_status_code) VALUES(?,'T',?,'SUBMITTED')",
+                    10L + i, orderNo);
+        }
+        db.update("INSERT INTO order_sales_order(id,tenant_id,order_no,order_status_code) VALUES(12,'OTHER','OTHER-SALE','SUBMITTED')");
+        var imports = new JdbcLogisticsImportStore(db, json);
+        var platformWriter = new JdbcPlatformTransportStore(db, json, imports);
+        var shipmentWriter = new JdbcShipmentTransportStore(db, json, platformWriter, costs);
+        var tracking = List.of("SF001");
+        if (!huolalaFirst) {
+            var dhb = transactions.execute(status -> syncShipment(
+                    shipmentWriter, "T", "1", tracking, "SO001", "100", "WH", 11L));
+            assertThat(dhb.costId()).isNotBlank();
+            var data = json.readValue(db.queryForObject(
+                    "SELECT data_json FROM order_logistics_cost WHERE id=?", String.class, dhb.costId()),
+                    LogisticsCostCommand.class);
+            var manual = TransportAllocationPlan.reprice(data, new BigDecimal("87.00"));
+            var manualJson = (tools.jackson.databind.node.ObjectNode) json.valueToTree(manual);
+            manualJson.put("paymentStatusCode", "PAID");
+            ((tools.jackson.databind.node.ObjectNode) manualJson.path("ledger").path("feeItems").get(0))
+                    .put("allocationMethodCode", "MANUAL");
+            db.update("UPDATE order_logistics_cost SET amount=87,amount_manually_edited=1,payment_status_code='PAID',data_json=?,sources_json=? WHERE id=?",
+                    json.writeValueAsString(manualJson), json.writeValueAsString(manual.ledger().sources()), dhb.costId());
+            assertThat(transactions.execute(status -> syncShipment(
+                    shipmentWriter, "T", "2", tracking, "SO002", "300", "SZ", 12L)).costId()).isNull();
+        }
+        var platformRow = transactions.execute(status -> {
+            platformWriter.lockTenant("T");
+            return receiveMultiStopHuolala(imports, platformWriter);
+        });
+        String id = platformRow.costId();
+        var before = financialSnapshot(id);
+        transactions.executeWithoutResult(status -> {
+            platformWriter.lockTenant("T");
+            shipmentWriter.reconcileHuolala("T", "U", "SF001", id);
+        });
+        for (int replay = 0; replay < 2; replay++) {
+            for (int i = 0; i < expectedOrders.size(); i++) {
+                String orderNo = expectedOrders.get(i);
+                long salesId = 11L + i;
+                var linked = transactions.execute(status -> syncShipment(
+                        shipmentWriter, "T", Long.toString(salesId - 10), tracking,
+                        orderNo, "100", salesId == 11L ? "WH" : "SZ", salesId));
+                assertThat(linked.costId()).isEqualTo(id);
+                assertThat(linked.issue()).isNull();
+            }
+        }
+        assertThat(financialSnapshot(id)).isEqualTo(before);
+        assertThat(db.queryForObject("SELECT COUNT(*) FROM order_logistics_cost", Integer.class)).isOne();
+        assertThat(shipmentWriter.byCosts("T", List.of(id)).get(id))
+                .extracting(Source::salesOrderNo).containsExactlyInAnyOrderElementsOf(expectedOrders);
+    }
+
+    @Test
+    void repeatedHuolalaSyncRelinksOnlyVerifiedHistoricalAllocationConflicts() {
+        usePersistedCostDetails();
+        db.update("""
+                INSERT INTO order_sales_order(id,tenant_id,order_no,order_status_code)
+                VALUES(11,'T','SO001','COMPLETED'),(12,'T','SO002','CANCELLED')
+                """);
+        var imports = new JdbcLogisticsImportStore(db, json);
+        var platformWriter = new JdbcPlatformTransportStore(db, json, imports);
+        var shipmentWriter = new JdbcShipmentTransportStore(db, json, platformWriter, costs);
+        var platformRow = transactions.execute(status -> {
+            platformWriter.lockTenant("T");
+            return receiveMultiStopHuolala(imports, platformWriter);
+        });
+        String id = platformRow.costId();
+        var before = financialSnapshot(id);
+        var prior = transactions.execute(status -> syncShipment(
+                shipmentWriter, "T", "1", List.of("SF001"), "SO001", "100", "WH", 11L));
+        String issue = "已有费用明细或多个收货点，请核对后关联销售订单";
+        db.update("UPDATE order_transport_shipment_source SET cost_id=NULL,issue=?,difference_pending=1 WHERE id=?",
+                issue, prior.id());
+        var conflicting = transactions.execute(status -> syncShipment(
+                shipmentWriter, "T", "2", List.of("SF001"), "SO002", "300", "SZ", 12L));
+        assertThat(conflicting.costId()).isNull();
+        assertThat(conflicting.issue()).isEqualTo(issue);
+        for (int replay = 0; replay < 2; replay++) {
+            transactions.executeWithoutResult(status -> {
+                platformWriter.lockTenant("T");
+                shipmentWriter.reconcileHuolala("T", "U", "SF001", id);
+            });
+        }
+        assertThat(db.queryForObject("SELECT cost_id FROM order_transport_shipment_source WHERE id=?",
+                String.class, prior.id())).isEqualTo(id);
+        assertThat(db.queryForObject("SELECT cost_id FROM order_transport_shipment_source WHERE id=?",
+                String.class, conflicting.id())).isNull();
+        assertThat(shipmentWriter.byCosts("T", List.of(id)).get(id))
+                .extracting(Source::salesOrderNo).containsExactly("SO001");
+        assertThat(financialSnapshot(id)).isEqualTo(before);
+    }
+
+    @Test
+    void listSnapshotCannotAllocateBeforeMultiStopHuolalaDetailArrives() {
+        usePersistedCostDetails();
+        db.update("INSERT INTO order_sales_order(id,tenant_id,order_no,order_status_code) VALUES(11,'T','SO001','COMPLETED')");
+        var imports = new JdbcLogisticsImportStore(db, json);
+        var platformWriter = new JdbcPlatformTransportStore(db, json, imports);
+        var shipmentWriter = new JdbcShipmentTransportStore(db, json, platformWriter, costs);
+        var summary = json.readValue("""
+                {"enterpriseId":"AC1","orderNo":"SF001","status":"已完成","line":0,
+                 "useTime":"2026-11-13 09:00:00","raw":{"详情状态":"LIST"},"facts":{"billAmount":120}}
+                """, CarrierOrder.class);
+        var platformRow = transactions.execute(status -> {
+            platformWriter.lockTenant("T");
+            return platformWriter.materialize("T", "U",
+                    imports.receive("T", "U", new ApiSource("HLL-CONNECTOR", "b".repeat(64), summary)));
+        });
+        String id = platformRow.costId();
+        var before = financialSnapshot(id);
+        var awaiting = transactions.execute(status -> syncShipment(
+                shipmentWriter, "T", "1", List.of("SF001"), "SO001", "100", "WH", 11L));
+        assertThat(awaiting.costId()).isNull();
+        assertThat(awaiting.issue()).contains("等待货拉拉订单详情");
+        transactions.executeWithoutResult(status -> {
+            platformWriter.lockTenant("T");
+            shipmentWriter.reconcileHuolala("T", "U", "SF001", id);
+        });
+        assertThat(db.queryForObject("SELECT awaiting_huolala_no FROM order_transport_shipment_source WHERE id=?",
+                String.class, awaiting.id())).isEqualTo("SF001");
+        assertThat(financialSnapshot(id)).isEqualTo(before);
+        transactions.executeWithoutResult(status -> {
+            platformWriter.lockTenant("T");
+            var detail = receiveMultiStopHuolala(imports, platformWriter);
+            assertThat(detail.costId()).isEqualTo(id);
+            shipmentWriter.reconcileHuolala("T", "U", "SF001", id);
+        });
+        assertThat(shipmentWriter.byCosts("T", List.of(id)).get(id))
+                .extracting(Source::salesOrderNo).containsExactly("SO001");
+        assertThat(db.queryForObject("SELECT awaiting_huolala_no FROM order_transport_shipment_source WHERE id=?",
+                String.class, awaiting.id())).isNull();
+        assertThat(financialSnapshot(id)).isEqualTo(before);
+    }
+
+    private String financialSnapshot(String id) {
+        return db.queryForObject("""
+                SELECT revision,status_code,amount,payment_status_code,carrier_code,delivery_mode_code,
+                       data_json,sources_json
+                FROM order_logistics_cost WHERE id=?
+                """, (row, index) -> json.writeValueAsString(Arrays.asList(
+                        row.getInt("revision"), row.getString("status_code"), row.getBigDecimal("amount"),
+                        row.getString("payment_status_code"), row.getString("carrier_code"),
+                        row.getString("delivery_mode_code"), row.getString("data_json"),
+                        row.getString("sources_json"))), id);
+    }
+
     private void usePersistedCostDetails() {
         when(costs.entry(eq("T"), eq("LOGISTICS"), anyString(), anyString()))
                 .thenAnswer(call -> {
@@ -710,9 +871,15 @@ class ShipmentTransportPersistenceTest {
 
     private Source syncShipment(JdbcShipmentTransportStore writer, String tenant, String suffix,
                                 List<String> tracking, String orderNo, String amount, String city) {
+        return syncShipment(writer, tenant, suffix, tracking, orderNo, amount, city, 11L);
+    }
+
+    private Source syncShipment(JdbcShipmentTransportStore writer, String tenant, String suffix,
+                                List<String> tracking, String orderNo, String amount, String city, long salesId) {
         var source = (tools.jackson.databind.node.ObjectNode) json.valueToTree(command("receivedin", 1));
         source.put("shipmentId", "D" + suffix);
         source.put("shipmentNo", "FH" + suffix);
+        source.put("salesOrderId", salesId);
         source.putNull("carrierName");
         source.set("trackingNumbers", json.valueToTree(tracking));
         var data = json.valueToTree(transport());
@@ -740,6 +907,17 @@ class ShipmentTransportPersistenceTest {
                 """.formatted(date, amount), CarrierOrder.class);
         return writer.materialize("T", "U",
                 imports.receive("T", "U", new ApiSource("HLL-CONNECTOR", hash.repeat(64), huolala)));
+    }
+
+    private Row receiveMultiStopHuolala(
+            JdbcLogisticsImportStore imports, JdbcPlatformTransportStore writer) {
+        var huolala = json.readValue("""
+                {"enterpriseId":"AC1","orderNo":"SF001","status":"已完成","line":0,
+                 "useTime":"2026-11-13 09:00:00","raw":{"详情状态":"DETAIL"},"facts":{"billAmount":120,
+                 "stops":[{"name":"发货仓"},{"name":"收货点一"},{"name":"收货点二"}]}}
+                """, CarrierOrder.class);
+        return writer.materialize("T", "U",
+                imports.receive("T", "U", new ApiSource("HLL-CONNECTOR", "a".repeat(64), huolala)));
     }
 
     @Test

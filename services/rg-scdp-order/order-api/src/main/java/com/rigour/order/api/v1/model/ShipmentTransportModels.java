@@ -88,5 +88,10 @@ public final class ShipmentTransportModels {
     }
 
     public record Source(
-            String id, String costId, Command latest, String issue, boolean differencePending) {}
+            String id, String costId, Command latest, String issue, boolean differencePending,
+            String salesOrderNo) {
+        public Source(String id, String costId, Command latest, String issue, boolean differencePending) {
+            this(id, costId, latest, issue, differencePending, null);
+        }
+    }
 }

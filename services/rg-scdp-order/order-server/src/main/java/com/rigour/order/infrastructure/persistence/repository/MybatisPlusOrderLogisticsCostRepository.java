@@ -30,7 +30,11 @@ import tools.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -214,6 +218,17 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
         return q;
     }
 
+    private static final String VERIFIED_SHIPMENT_SALES =
+            " FROM order_transport_shipment_source s JOIN order_sales_order so ON so.id=s.sales_order_id"
+                    + " AND so.tenant_id COLLATE utf8mb4_general_ci=s.tenant_id"
+                    + " AND so.deleted=0 AND so.order_status_code IN ('SUBMITTED','COMPLETED')"
+                    + " WHERE s.tenant_id=order_logistics_cost.tenant_id COLLATE utf8mb4_general_ci"
+                    + " AND s.cost_id=order_logistics_cost.id COLLATE utf8mb4_general_ci"
+                    + " AND s.platform_code='DHB' AND s.issue IS NULL AND s.difference_pending=0"
+                    + " AND JSON_UNQUOTE(JSON_EXTRACT(s.latest_json,'$.sourceStatus')) IN ('receivedin','received')";
+
+    private static final String HAS_VERIFIED_SHIPMENT_SALES = "EXISTS(SELECT 1" + VERIFIED_SHIPMENT_SALES;
+
     /**
      * Batch source references under the same tenant, city and complete warehouse policy as the cost
      * list.
@@ -221,7 +236,9 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
     public java.util.Map<String, Integer> sourceUsage(
             String tenant, java.util.List<String> documents, String action) {
         if (documents.isEmpty()) return java.util.Map.of();
-        var q = where(tenant, "LOGISTICS", action).ne("status_code", "VOID").select("sources_json");
+        var q = where(tenant, "LOGISTICS", action).ne("status_code", "VOID")
+                .select("sources_json", "(SELECT JSON_ARRAYAGG(so.order_no)"
+                        + VERIFIED_SHIPMENT_SALES + ") AS shipment_sales_order_nos");
         q.and(
                 w -> {
                     for (String document : documents)
@@ -231,17 +248,22 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                                         document.replace("\\", "\\\\")
                                                 .replace("%", "\\%")
                                                 .replace("_", "\\_"));
+                    bind(w.or(), HAS_VERIFIED_SHIPMENT_SALES + " AND so.order_no IN ("
+                            + String.join(",", Collections.nCopies(documents.size(), "?")) + "))",
+                            new ArrayList<>(documents));
                 });
-        var result = new java.util.HashMap<String, Integer>();
-        var keys = new java.util.HashSet<>(documents);
+        var result = new HashMap<String, Integer>();
+        var keys = new HashSet<>(documents);
         for (var row : mapper.selectMaps(q)) {
-            var counted = new java.util.HashSet<String>();
+            var counted = new HashSet<String>();
             for (var source :
                     json.readTree(java.util.Objects.toString(row.get("sources_json"), "[]"))) {
                 String code =
                         source.path("orderCode").asString(source.path("documentNo").asString(""));
                 if (keys.contains(code)) counted.add(code);
             }
+            for (var order : json.readTree(Objects.toString(row.get("shipment_sales_order_nos"), "[]")))
+                if (keys.contains(order.asText())) counted.add(order.asText());
             counted.forEach(code -> result.merge(code, 1, Integer::sum));
         }
         return result;
@@ -311,7 +333,8 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                     "(EXISTS(SELECT 1 FROM order_logistics_import_order i JOIN"
                         + " order_logistics_transport_link l ON l.tenant_id=i.tenant_id AND"
                         + " l.source_id=i.id WHERE i.tenant_id=order_logistics_cost.tenant_id AND"
-                        + " i.cost_id=order_logistics_cost.id) OR JSON_LENGTH(sources_json)>0)";
+                        + " i.cost_id=order_logistics_cost.id) OR COALESCE(JSON_LENGTH(sources_json),0)>0 OR "
+                        + HAS_VERIFIED_SHIPMENT_SALES + "))";
             q.apply(("UNLINKED".equals(filter.relationState()) ? "NOT " : "") + condition);
         }
         String platformSource =
@@ -350,13 +373,16 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
             String pattern = filter.businessOrderNo().strip()
                     .replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_");
             q.apply(
-                    "JSON_SEARCH(COALESCE((SELECT JSON_EXTRACT(i.business_json,'$.orderCodes')"
+                    "(JSON_SEARCH(COALESCE((SELECT JSON_EXTRACT(i.business_json,'$.orderCodes')"
                             + platformSource + " LIMIT 1),"
                             + " CASE WHEN COALESCE(JSON_LENGTH(JSON_EXTRACT(data_json,'$.ledger.sources')),0)>0"
                             + " THEN JSON_EXTRACT(data_json,'$.ledger.sources[*].orderCode')"
-                            + " ELSE JSON_EXTRACT(sources_json,'$[*].documentNo') END),"
-                            + " 'one',{0}) IS NOT NULL",
-                    "%" + pattern + "%");
+                            + " ELSE JSON_MERGE_PRESERVE("
+                            + "COALESCE(JSON_EXTRACT(sources_json,'$[*].orderCode'),JSON_ARRAY()),"
+                            + "COALESCE(JSON_EXTRACT(sources_json,'$[*].documentNo'),JSON_ARRAY())) END),"
+                            + " 'one',{0}) IS NOT NULL OR " + HAS_VERIFIED_SHIPMENT_SALES
+                            + " AND LOCATE({1},so.order_no)>0))",
+                    "%" + pattern + "%", filter.businessOrderNo().strip());
         }
         if (text(filter.platformOrderNo()))
             q.apply(
@@ -766,33 +792,18 @@ public class MybatisPlusOrderLogisticsCostRepository implements OrderLogisticsCo
                 .selectList(
                         where(tenant, "LOGISTICS", action)
                                 .apply(
-                                        "JSON_SEARCH(sources_json,'one',{0},NULL,'$[*].orderCode','$[*].documentNo')"
-                                            + " IS NOT NULL",
+                                        "((SELECT COUNT(*) FROM JSON_TABLE(COALESCE(sources_json,'[]'),"
+                                                + " '$[*]' COLUMNS(order_code VARCHAR(100) PATH '$.orderCode',"
+                                                + " document_no VARCHAR(100) PATH '$.documentNo',"
+                                                + " order_type VARCHAR(32) PATH '$.orderTypeCode',"
+                                                + " source_type VARCHAR(32) PATH '$.sourceType')) links"
+                                                + " WHERE (links.order_type='SALES_ORDER' AND BINARY links.order_code=BINARY {0})"
+                                                + " OR (links.source_type='SALES_ORDER' AND BINARY links.document_no=BINARY {0}))>0 OR "
+                                                + HAS_VERIFIED_SHIPMENT_SALES + " AND BINARY so.order_no=BINARY {0}))",
                                         orderNo)
                                 .orderByDesc("created_time"))
                 .stream()
                 .map(this::view)
-                .filter(
-                        r ->
-                                r.sources().stream()
-                                                .anyMatch(
-                                                        s ->
-                                                                orderNo.equals(s.documentNo())
-                                                                        && "SALES_ORDER"
-                                                                                .equals(
-                                                                                        s
-                                                                                                .sourceType()))
-                                        || r.data().ledger() != null
-                                                && r.data().ledger().sources().stream()
-                                                        .anyMatch(
-                                                                s ->
-                                                                        orderNo.equals(
-                                                                                        s
-                                                                                                .orderCode())
-                                                                                && "SALES_ORDER"
-                                                                                        .equals(
-                                                                                                s
-                                                                                                        .orderTypeCode())))
                 .toList();
     }
 
