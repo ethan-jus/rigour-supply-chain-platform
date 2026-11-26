@@ -1,6 +1,7 @@
 package com.rigour.integration.api.controller.dhb;
 
 import com.rigour.integration.api.v1.DhbOrderApi;
+import com.rigour.integration.api.v1.model.DhbApiModels.CachedOrderFacts;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
@@ -20,6 +21,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.WaitShipsView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
 import com.rigour.integration.application.service.dhb.DhbIntegrationService;
+import com.rigour.shared.core.api.ApiResponse;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -54,6 +56,13 @@ public final class DhbOrderController implements DhbOrderApi {
                                          @PathVariable("orderNumber") String orderNumber,
                                          @RequestBody(required = false) OrderContentCommand command) {
         return service.orderContent(connectorId, orderNumber, command);
+    }
+
+    @Override
+    @PostMapping("/{connectorId}/cached-facts")
+    public ApiResponse<List<CachedOrderFacts>> cachedOrderFacts(@PathVariable("connectorId") UUID connectorId,
+                                                               @RequestBody List<String> orderNumbers) {
+        return ApiResponse.success(service.cachedOrderFacts(connectorId, orderNumbers));
     }
 
     @Override

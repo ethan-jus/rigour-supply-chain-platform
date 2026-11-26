@@ -5,8 +5,12 @@ import static org.mockito.Mockito.*;
 
 import com.rigour.order.api.v1.model.*;
 import com.rigour.order.api.v1.model.LogisticsImportModels.*;
+import com.rigour.order.api.v1.model.ShipmentTransportModels.Command;
+import com.rigour.order.api.v1.model.ShipmentTransportModels.SalesOrderDetails;
+import com.rigour.order.api.v1.model.ShipmentTransportModels.Source;
 import com.rigour.order.api.v1.model.TransportRecordModels.*;
 import com.rigour.order.application.port.out.*;
+import com.rigour.order.application.port.out.OrderLogisticsReferences.DepartmentAt;
 import com.rigour.shared.context.*;
 
 import org.junit.jupiter.api.*;
@@ -117,6 +121,104 @@ class TransportRecordServiceTest {
                 UUID.randomUUID().toString(),
                 null,
                 null);
+    }
+
+    @Test
+    void transportDetailEnrichesLinkedOrdersWithoutChangingFeesOrAllocations() {
+        String tenantId = tenant.toString();
+        String read = "order:logistics-cost:read";
+        var shipments = mock(ShipmentTransportStore.class);
+        var orders = mock(OrderLedgerSourceStore.class);
+        var cached = mock(DhbCachedOrderFactsClient.class);
+        service.shipmentStore(shipments);
+        service.shipmentOrderDetails(new TransportShipmentOrderDetails(orders, cached, refs, shipments));
+        var savedCost = json.readValue("""
+                {"id":"C1","statusCode":"ACTIVE","revision":1,
+                 "data":{"amount":137.64,"paymentStatusCode":"UNPAID","ledger":{"schemaVersion":2,
+                    "sources":[{"orderTypeCode":"SALES_ORDER","orderCode":"SO1","linkRoleCode":"COST",
+                        "allocations":[{"amount":137.64}]}]}}}
+                """, LogisticsCostDetailView.class);
+        when(costs.entry("logistics", "C1")).thenReturn(savedCost);
+        var firstConnector = UUID.randomUUID();
+        var secondConnector = UUID.randomUUID();
+        var cancelled = shipment(secondConnector, "CANCELLED", "cancelled", null, null, null);
+        when(shipments.byCosts(tenantId, List.of("C1"))).thenReturn(Map.of("C1", List.of(
+                shipment(firstConnector, "FH1", "received", 1L, "SO1", null),
+                shipment(firstConnector, "FH2", "received", 2L, "SO2", null),
+                shipment(firstConnector, "FH3", "received", 3L, "SO3", null),
+                shipment(firstConnector, "FH4", "receivedin", 4L, "SO4", null),
+                shipment(firstConnector, "FH5", "received", null, null, "DHB-SHARED"),
+                shipment(secondConnector, "FH6", "received", null, null, "DHB-SHARED"),
+                shipment(firstConnector, "FH7", "received", null, null, "DHB-UNKNOWN"),
+                shipment(firstConnector, "FH8", "received", null, null, "DHB-MISSING"),
+                cancelled)));
+        var originalDate = LocalDate.of(2026, 11, 19);
+        var laterDate = originalDate.plusDays(1);
+        when(orders.salesByNos(tenantId, List.of("SO1", "SO2", "SO3", "SO4"), read, false))
+                .thenReturn(List.of(
+                        canonicalOrder(1, originalDate, 1L, "原单部门"),
+                        canonicalOrder(2, laterDate, null, null),
+                        canonicalOrder(3, laterDate, 3L, null),
+                        canonicalOrder(4, laterDate, 2L, null)));
+        when(cached.read(tenantId, firstConnector, List.of("DHB-SHARED", "DHB-UNKNOWN", "DHB-MISSING")))
+                .thenReturn(List.of(
+                        new DhbCachedOrderFactsClient.Facts("DHB-SHARED", "来源门店甲", "E2",
+                                "来源业务员甲", originalDate, new BigDecimal("234.00")),
+                        new DhbCachedOrderFactsClient.Facts("DHB-UNKNOWN", "来源门店金额未知", null,
+                                null, null, null),
+                        new DhbCachedOrderFactsClient.Facts("UNREQUESTED", "其他门店", null, null,
+                                originalDate, BigDecimal.ONE)));
+        when(cached.read(tenantId, secondConnector, List.of("DHB-SHARED")))
+                .thenReturn(List.of(new DhbCachedOrderFactsClient.Facts("DHB-SHARED", "来源门店乙",
+                        null, "来源业务员乙", laterDate, BigDecimal.ZERO)));
+        var historicEmployee = new DepartmentAt("E1", laterDate);
+        var sourceEmployee = new DepartmentAt("E2", originalDate);
+        when(refs.employeeDepartmentsAt(any(), eq(Set.of(historicEmployee, sourceEmployee)), eq(read)))
+                .thenReturn(Map.of(historicEmployee, new LogisticsCostEmployeeView("E1", "正式业务员",
+                        2L, "订单日期所属部门")));
+        var linkTime = Instant.parse("2026-11-24T00:00:00Z");
+        when(shipments.repairedShipmentLinkTimes(tenantId, "C1")).thenReturn(Map.of(
+                "FH2", linkTime, "FH5", linkTime, "FH8", linkTime, "CANCELLED", linkTime));
+
+        var detail = service.detail("C1");
+
+        assertThat(detail.record()).isSameAs(savedCost);
+        assertThat(detail.orderAllocations()).containsExactlyEntriesOf(Map.of("SO1", new BigDecimal("137.64")));
+        assertThat(detail.shipments()).extracting(Source::salesOrderDetails).containsExactly(
+                new SalesOrderDetails("正式门店1", "正式业务员", "原单部门", originalDate,
+                        new BigDecimal("234"), null),
+                new SalesOrderDetails("正式门店2", "正式业务员", "订单日期所属部门", laterDate,
+                        new BigDecimal("234"), linkTime),
+                new SalesOrderDetails("正式门店3", "正式业务员", null, laterDate,
+                        new BigDecimal("234"), null),
+                new SalesOrderDetails("正式门店4", "正式业务员", "订单日期所属部门", laterDate,
+                        new BigDecimal("234"), null),
+                new SalesOrderDetails("来源门店甲", "来源业务员甲", null, originalDate,
+                        new BigDecimal("234.00"), linkTime),
+                new SalesOrderDetails("来源门店乙", "来源业务员乙", null, laterDate, BigDecimal.ZERO, null),
+                new SalesOrderDetails("来源门店金额未知", null, null, null, null, null),
+                new SalesOrderDetails(null, null, null, null, null, linkTime),
+                null);
+        assertThat(detail.shipments().getLast()).isSameAs(cancelled);
+        verify(cached).read(tenantId, firstConnector, List.of("DHB-SHARED", "DHB-UNKNOWN", "DHB-MISSING"));
+        verify(cached).read(tenantId, secondConnector, List.of("DHB-SHARED"));
+        verifyNoMoreInteractions(cached);
+        verify(refs).employeeDepartmentsAt(any(), eq(Set.of(historicEmployee, sourceEmployee)), eq(read));
+        verify(costs, never()).save(any(), any(), any());
+    }
+
+    private static OrderDeliveryCostSourceView canonicalOrder(
+            long id, LocalDate date, Long departmentId, String departmentName) {
+        return new OrderDeliveryCostSourceView(id, "SO" + id, null, null, null, "正式门店" + id,
+                "COMPLETED", "DINGHUOBAO", null, date, null, "E1", "正式业务员",
+                departmentId, departmentName, null, null, new BigDecimal("234"));
+    }
+
+    private static Source shipment(
+            UUID connector, String number, String status, Long orderId, String orderNo, String sourceOrderNo) {
+        return new Source(number, "C1", new Command(connector, number, number, orderId, null, status,
+                Instant.parse("2026-11-21T00:00:00Z"), null, "HLL", "货拉拉", "THIRD_PARTY", null,
+                List.of("WAYBILL"), null, Map.of(), List.of()), null, false, orderNo, sourceOrderNo);
     }
 
     @Test

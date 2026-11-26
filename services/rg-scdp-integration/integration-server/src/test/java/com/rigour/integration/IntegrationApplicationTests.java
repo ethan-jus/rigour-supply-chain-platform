@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorCommand;
+import com.rigour.integration.api.v1.model.DhbApiModels.CachedOrderFacts;
 import com.rigour.integration.api.v1.model.DhbApiModels.ConnectorView;
 import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
@@ -23,6 +24,7 @@ import com.rigour.integration.application.port.out.DhbSyncStore;
 import com.rigour.integration.application.port.out.HrDhbStaffSyncClient;
 import com.rigour.integration.application.port.out.OrderSalesOrderProjectionClient;
 import com.rigour.integration.application.service.dhb.DhbOrderSyncService;
+import com.rigour.integration.application.service.dhb.DhbIntegrationService;
 import com.rigour.integration.infrastructure.media.ProductMediaSyncWorker;
 import com.rigour.integration.infrastructure.persistence.IntegrationUuidCodec;
 import com.rigour.integration.infrastructure.persistence.entity.DhbConnectorEntity;
@@ -59,6 +61,8 @@ import com.rigour.order.api.v1.model.SalesShipmentCommand;
 import com.rigour.order.api.v1.model.SalesShipmentDetailView;
 import com.rigour.order.api.v1.model.SalesShipmentLineView;
 import com.rigour.shared.context.CallerIdentity;
+import com.rigour.shared.context.AuthorizationContext;
+import com.rigour.shared.context.AuthorizationDeniedException;
 
 import org.flywaydb.core.Flyway;
 import org.junit.jupiter.api.BeforeEach;
@@ -74,6 +78,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
@@ -116,6 +121,8 @@ class IntegrationApplicationTests {
     @Autowired private DhbIntegrationStore store;
 
     @Autowired private DhbSyncStore syncStore;
+
+    @Autowired private DhbIntegrationService integrationService;
 
     @Autowired private DhbConnectorMapper connectorMapper;
 
@@ -815,6 +822,74 @@ class IntegrationApplicationTests {
         assertThat(orderMirrorCount(tenant, "DHB-SAME")).isEqualTo(2L);
         assertThat(orderMirrorConnectors(tenant, "DHB-SAME")).hasSize(2);
         assertThat(outboxEventCount(tenant, "DHB_ORDER_MIRROR_UPSERTED")).isEqualTo(2L);
+    }
+
+    @Test
+    void cachedOrderFactsUseExactScopedEvidenceAndDoNotTreatGrossMirrorAmountAsSettlement()
+            throws Exception {
+        UUID tenant = UUID.randomUUID(), otherTenant = UUID.randomUUID(), actor = UUID.randomUUID();
+        var connector = store.createConnector(tenant, actor,
+                new ConnectorCommand("DHB_CACHED", "缓存订单", "https://erp.dhb168.example/",
+                        "env://RIGOUR_DHB_TEST", "ACTIVE", 0));
+        var otherConnector = store.createConnector(tenant, actor,
+                new ConnectorCommand("DHB_OTHER", "另一个接入", "https://erp.dhb168.example/",
+                        "env://RIGOUR_DHB_TEST", "ACTIVE", 0));
+        var task = orderTaskFor(tenant, connector.id());
+        var runId = syncStore.beginRun(tenant, actor, task.id(), null, null).runId();
+        String first = "DH.20261119.0715", second = "DH.20261119.0716";
+        Instant mirrorTime = Instant.parse("2026-11-20T16:10:00Z");
+        syncStore.persistOrderPage(tenant, task.id(), runId, List.of(
+                new DhbClient.OrderSummary(second, second, "pending", new BigDecimal("234.00"),
+                        mirrorTime, mirrorTime, "CLIENT-2", "UNPAID", Map.of("OrderSN", second))),
+                mirrorTime);
+        syncStore.persistRawObject(tenant, connector.id(), runId, "ORDER_DETAIL", first, "1",
+                mirrorTime, Map.of("detail", Map.of("ClientName", "订单客户", "SalesmanID", "STAFF-1",
+                        "SalesmanName", "来源业务员", "OrderDate", "2026-11-19 23:30:00",
+                        "DiscountTotal", "196.36", "OrderTotal", "234.00")), mirrorTime);
+        syncStore.persistRawObject(tenant, connector.id(), runId, "ORDER_DETAIL", second, "1",
+                mirrorTime, Map.of("ClientName", "镜像日期客户", "SalesmanID", "STAFF-2",
+                        "SalesmanName", "未匹配业务员", "OrderTotal", "234.00"), mirrorTime);
+        syncStore.persistRawObject(tenant, otherConnector.id(), null, "ORDER_DETAIL", first, "1",
+                mirrorTime, Map.of("ClientName", "另一个接入客户", "DiscountTotal", "1.00"), mirrorTime);
+        syncStore.upsertExternalObjectMapping(tenant, actor,
+                new DhbSyncStore.ExternalObjectMappingWrite(connector.id(), "STAFF", "STAFF-1", null,
+                        "HR", "EMPLOYEE", 42L, "EMP-42", "ACTIVE", runId, mirrorTime,
+                        null, null, null));
+        syncStore.upsertExternalObjectMapping(tenant, actor,
+                new DhbSyncStore.ExternalObjectMappingWrite(otherConnector.id(), "STAFF", "STAFF-2", null,
+                        "HR", "EMPLOYEE", 43L, "EMP-OTHER", "ACTIVE", null, mirrorTime,
+                        null, null, null));
+
+        String permission = "integration:dhb:cached-order-facts:read";
+        var setCaller = AuthorizationContext.class.getDeclaredMethod("set", CallerIdentity.class);
+        var clearCaller = AuthorizationContext.class.getDeclaredMethod("clear");
+        setCaller.setAccessible(true);
+        clearCaller.setAccessible(true);
+        try {
+            setCaller.invoke(null, new CallerIdentity("SERVICE", actor, tenant, null, null,
+                    UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of(permission)));
+            assertThat(integrationService.cachedOrderFacts(connector.id(),
+                    List.of(first, second, first, first.toLowerCase(java.util.Locale.ROOT))))
+                    .containsExactly(
+                            new CachedOrderFacts(first, "订单客户", "EMP-42", "来源业务员",
+                                    LocalDate.of(2026, 11, 19), new BigDecimal("196.36")),
+                            new CachedOrderFacts(second, "镜像日期客户", null, "未匹配业务员",
+                                    LocalDate.of(2026, 11, 21), null));
+            setCaller.invoke(null, new CallerIdentity("SERVICE", actor, otherTenant, null, null,
+                    UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of(permission)));
+            assertThatThrownBy(() -> integrationService.cachedOrderFacts(connector.id(), List.of(first)))
+                    .isInstanceOf(AuthorizationDeniedException.class);
+            setCaller.invoke(null, new CallerIdentity("TENANT", actor, tenant, actor, null,
+                    UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of(permission)));
+            assertThatThrownBy(() -> integrationService.cachedOrderFacts(connector.id(), List.of(first)))
+                    .isInstanceOf(AuthorizationDeniedException.class);
+            setCaller.invoke(null, new CallerIdentity("SERVICE", actor, tenant, null, null,
+                    UUID.randomUUID(), 0, 0, 0, Set.of(), Set.of("integration:dhb:read")));
+            assertThatThrownBy(() -> integrationService.cachedOrderFacts(connector.id(), List.of(first)))
+                    .isInstanceOf(AuthorizationDeniedException.class);
+        } finally {
+            clearCaller.invoke(null);
+        }
     }
 
     @org.junit.jupiter.params.ParameterizedTest

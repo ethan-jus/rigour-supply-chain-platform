@@ -654,6 +654,44 @@ public class MybatisPlusDhbSyncStore implements DhbSyncStore {
                 text(attributes.get("ClientNO")), text(attributes.get("PayStatus")), attributes);
     }
 
+    @Override
+    public List<CachedOrderSnapshot> cachedOrderSnapshots(UUID tenantId, UUID connectorId,
+                                                          List<String> orderNumbers) {
+        if (orderNumbers.isEmpty()) return List.of();
+        var details = new LinkedHashMap<String, Map<String, Object>>();
+        rawLandingMapper.selectList(Wrappers.<IntegrationRawLandingEntity>query()
+                        .select("source_id", "payload_json")
+                        .eq("tenant_id", bin(tenantId))
+                        .eq("connector_id", bin(connectorId))
+                        .eq("source_system", SOURCE_SYSTEM)
+                        .eq("source_object_type", "ORDER_DETAIL")
+                        .in("source_id", orderNumbers)
+                        .orderByDesc("source_updated_at", "received_at", "id"))
+                .forEach(row -> details.computeIfAbsent(row.sourceId, key -> readJsonMap(row.payloadJson)));
+        var orderTimes = new LinkedHashMap<String, Instant>();
+        orderMirrorMapper.selectList(Wrappers.<IntegrationOrderMirrorEntity>query()
+                        .select("order_no", "order_time")
+                        .eq("tenant_id", bin(tenantId))
+                        .eq("connector_id", bin(connectorId))
+                        .in("order_no", orderNumbers)
+                        .orderByDesc("updated_at", "id"))
+                .forEach(row -> orderTimes.putIfAbsent(row.orderNo, instant(row.orderTime)));
+        // 用原始单号作为 Map 键再次精确匹配，不沿用数据库大小写宽松匹配结果。
+        return orderNumbers.stream()
+                .filter(no -> details.containsKey(no) || orderTimes.containsKey(no))
+                .map(no -> new CachedOrderSnapshot(no, orderTimes.get(no), details.getOrDefault(no, Map.of())))
+                .toList();
+    }
+
+    @Override
+    public String cachedEmployeeCode(UUID tenantId, UUID connectorId, String staffId) {
+        var staff = findActiveMappingRow(tenantId, connectorId, "STAFF", staffId);
+        if (staff == null || !staffId.equals(staff.sourceObjectId)
+                || !"HR".equals(staff.internalDomain) || !"EMPLOYEE".equals(staff.internalObjectType)
+                || staff.internalObjectId == null) return null;
+        return text(staff.internalObjectNo);
+    }
+
     private UUID upsertOrderMirror(UUID tenantId, UUID connectorId,
                                    OrderSummary order, UUID rawId) {
         IntegrationOrderMirrorEntity existing = findOrderMirrorRow(tenantId, connectorId, order.sourceId());

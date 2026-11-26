@@ -29,6 +29,7 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
     private static final String EMPLOYEE_DELIVERY_REASON = "员工配送，无外部运费";
     private static final String ALLOCATION_CONFLICT = "已有费用明细或多个收货点，请核对后关联销售订单";
     private static final String AWAITING_SALES = "同一快递单号已有运输记录，请核对后关联原销售单";
+    private static final String SHIPMENT_REPAIR_AUDIT = "按本地订货宝发货事实补齐同运单关联";
     static final String SHIPMENT_REFERENCE =
             " FROM order_sales_shipment d JOIN order_logistics_import_order h"
                     + " ON h.tenant_id=s.tenant_id AND h.cost_id=s.cost_id AND h.source_channel='API'"
@@ -720,9 +721,24 @@ public class JdbcShipmentTransportStore implements ShipmentTransportStore {
             touched.add(shipment.shipmentNo());
         }
         if (!touched.isEmpty())
-            changed(tenant, costId, actor, "SOURCE_SYNC", "按本地订货宝发货事实补齐同运单关联",
+            changed(tenant, costId, actor, "SOURCE_SYNC", SHIPMENT_REPAIR_AUDIT,
                     Map.of("platformOrderNo", order.orderNo(), "shipmentNos", touched));
         return linked;
+    }
+
+    @Override
+    public Map<String, Instant> repairedShipmentLinkTimes(String tenant, String costId) {
+        Map<String, Instant> result = new HashMap<>();
+        jdbc.query("""
+                SELECT snapshot_json, created_time FROM order_logistics_cost_audit
+                WHERE tenant_id=? AND entry_id=? AND action_code='SOURCE_SYNC' AND reason=?
+                ORDER BY id
+                """, rs -> {
+                    Instant at = rs.getTimestamp("created_time").toInstant();
+                    for (var no : json.readTree(rs.getString("snapshot_json")).path("shipmentNos"))
+                        if (no.isString()) result.putIfAbsent(no.asString(), at);
+                }, tenant, costId, SHIPMENT_REPAIR_AUDIT);
+        return result;
     }
 
     private void insertShipmentReference(String tenant, String actor, String costId, Command shipment) {

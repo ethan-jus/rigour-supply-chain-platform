@@ -28,6 +28,11 @@ public interface DhbSyncStore {
     /** 重放复用已落地的列表证据；没有镜像时返回 null，不从单号推断业务时间。 */
     OrderSummary findOrderSummary(UUID tenantId, UUID connectorId, String sourceOrderId);
 
+    List<CachedOrderSnapshot> cachedOrderSnapshots(UUID tenantId, UUID connectorId,
+                                                    List<String> orderNumbers);
+
+    String cachedEmployeeCode(UUID tenantId, UUID connectorId, String staffId);
+
     RawObjectPersistResult persistRawObject(UUID tenantId, UUID connectorId, UUID runId,
                                             String sourceObjectType, String sourceId,
                                             String sourceVersion, Instant sourceUpdatedAt,
@@ -100,6 +105,8 @@ public interface DhbSyncStore {
     record RawObjectPersistResult(UUID rawLandingId, String payloadChecksum,
                                   boolean inserted) {
     }
+
+    record CachedOrderSnapshot(String orderNo, Instant mirrorOrderTime, Map<String, Object> payload) {}
 
     record ExternalObjectMapping(UUID id, String sourceObjectType,
                                  String sourceObjectId, String sourceObjectNo,

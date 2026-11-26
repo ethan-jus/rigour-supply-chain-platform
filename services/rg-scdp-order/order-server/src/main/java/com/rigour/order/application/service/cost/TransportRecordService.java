@@ -24,10 +24,16 @@ public class TransportRecordService {
     private final CostAttachmentStorage attachments;
     private CostAttachmentService evidence;
     private ShipmentTransportStore shipments;
+    private TransportShipmentOrderDetails shipmentOrderDetails;
 
     @org.springframework.beans.factory.annotation.Autowired
     void shipmentStore(ShipmentTransportStore store) {
         this.shipments = store;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    void shipmentOrderDetails(TransportShipmentOrderDetails service) {
+        this.shipmentOrderDetails = service;
     }
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -81,10 +87,12 @@ public class TransportRecordService {
 
     public Detail detail(String id) {
         var row = costs.entry("logistics", id);
+        var sources = shipmentRecords(List.of(id)).getOrDefault(id, List.of());
+        if (shipmentOrderDetails != null) sources = shipmentOrderDetails.enrich(tenant(), id, sources);
         return TransportAllocationPlan.detail(
                 row,
                 platform.detail(tenant(), id),
-                shipmentRecords(List.of(id)).getOrDefault(id, List.of()));
+                sources);
     }
 
     @Transactional

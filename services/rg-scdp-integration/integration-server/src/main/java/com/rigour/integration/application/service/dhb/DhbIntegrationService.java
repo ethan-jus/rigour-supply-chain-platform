@@ -16,6 +16,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.FieldMappingView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
+import com.rigour.integration.api.v1.model.DhbApiModels.CachedOrderFacts;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderPageView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderQueryCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderView;
@@ -1469,6 +1470,22 @@ public final class DhbIntegrationService {
         CallerIdentity caller = requireReadCaller();
         return store.orderMirrors(
                 caller.tenantId(), Math.max(1, Math.min(limit, 200)), Math.max(0, offset));
+    }
+
+    public List<CachedOrderFacts> cachedOrderFacts(UUID connectorId, List<String> orderNumbers) {
+        CallerIdentity caller = AuthorizationContext.requireCurrent();
+        requireTenant(caller);
+        if (!"SERVICE".equals(caller.principalScope()) || caller.platformUserId() != null) {
+            throw new com.rigour.shared.context.AuthorizationDeniedException("service-caller");
+        }
+        AuthorizationContext.requirePermission("integration:dhb:cached-order-facts:read");
+        if (orderNumbers == null || orderNumbers.size() > 200 || orderNumbers.stream()
+                .anyMatch(no -> no == null || !no.matches("[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"))) {
+            throw new IllegalArgumentException("请提供最多200个完整的订货宝订单号");
+        }
+        store.connector(caller.tenantId(), connectorId);
+        return orderSyncService.cachedOrderFacts(caller.tenantId(), connectorId,
+                orderNumbers.stream().distinct().toList());
     }
 
     public List<SyncLogView> syncLogs(int limit) {

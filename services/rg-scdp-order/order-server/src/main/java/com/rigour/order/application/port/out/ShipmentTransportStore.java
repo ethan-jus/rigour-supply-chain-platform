@@ -20,6 +20,8 @@ public interface ShipmentTransportStore {
 
     int reconcileShipmentOrders(String tenant, String actor, String costId);
 
+    Map<String, java.time.Instant> repairedShipmentLinkTimes(String tenant, String costId);
+
     int backfillCarrier(String tenant, String actor, CarrierBackfill command);
 
     Map<String, List<Source>> byCosts(String tenant, List<String> costIds);

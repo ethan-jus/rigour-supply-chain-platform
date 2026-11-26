@@ -13,6 +13,7 @@ import com.rigour.erp.api.v1.model.InternalStockOutOrderDetailView;
 import com.rigour.erp.api.v1.model.InternalTransferOrderDetailView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
+import com.rigour.integration.api.v1.model.DhbApiModels.CachedOrderFacts;
 import com.rigour.integration.application.port.out.CrmCustomerAttributionClient;
 import com.rigour.integration.application.port.out.DhbClient;
 import com.rigour.integration.application.port.out.DhbClient.Connector;
@@ -3966,6 +3967,27 @@ public final class DhbOrderSyncService {
                             regions)
                     .command();
         };
+    }
+
+    List<CachedOrderFacts> cachedOrderFacts(UUID tenantId, UUID connectorId, List<String> orderNumbers) {
+        return store.cachedOrderSnapshots(tenantId, connectorId, orderNumbers).stream().map(snapshot -> {
+            var payload = snapshot.payload();
+            var detail = payload.get("detail") instanceof Map<?, ?>
+                    ? mapObject(payload.get("detail")) : payload;
+            var list = mapObject(payload.get("list"));
+            var customer = first(detail, list, "ClientName", "ClientCompanyName", "CustomerName", "client_name");
+            var staffId = first(detail, list, "SalesmanID", "SalesmanId", "salesman_id",
+                    "BusinessStaffID", "business_staff_id", "SellerID", "seller_id", "StaffID", "staff_id");
+            var name = first(detail, list, "SalesmanName", "salesman_name", "BusinessStaffName",
+                    "business_staff_name", "SellerName", "seller_name", "StaffName", "staff_name");
+            var employee = staffId == null ? null : store.cachedEmployeeCode(tenantId, connectorId, staffId);
+            var orderTime = firstInstant(detail, list, snapshot.mirrorOrderTime(), "OrderDate", "order_date");
+            // 技术镜像与 OrderTotal 都可能是折前金额，缺少明确结算额时保留为空。
+            var amount = decimal(firstObject(detail, "DiscountTotal"));
+            if (amount == null) amount = decimal(firstObject(list, "DiscountTotal"));
+            return new CachedOrderFacts(snapshot.orderNo(), customer, employee, name,
+                    orderTime == null ? null : orderTime.atZone(SOURCE_ZONE).toLocalDate(), amount);
+        }).toList();
     }
 
     static BigDecimal sourceSettlementAmount(OrderDetail detail, OrderSummary summary) {

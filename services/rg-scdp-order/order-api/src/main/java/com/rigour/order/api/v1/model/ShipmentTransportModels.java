@@ -89,7 +89,13 @@ public final class ShipmentTransportModels {
 
     public record Source(
             String id, String costId, Command latest, String issue, boolean differencePending,
-            String salesOrderNo, String sourceSalesOrderNo) {
+            String salesOrderNo, String sourceSalesOrderNo, SalesOrderDetails salesOrderDetails) {
+        public Source(
+                String id, String costId, Command latest, String issue, boolean differencePending,
+                String salesOrderNo, String sourceSalesOrderNo) {
+            this(id, costId, latest, issue, differencePending, salesOrderNo, sourceSalesOrderNo, null);
+        }
+
         public Source(
                 String id, String costId, Command latest, String issue, boolean differencePending,
                 String salesOrderNo) {
@@ -99,5 +105,14 @@ public final class ShipmentTransportModels {
         public Source(String id, String costId, Command latest, String issue, boolean differencePending) {
             this(id, costId, latest, issue, differencePending, null);
         }
+
+        public Source withSalesOrderDetails(SalesOrderDetails details) {
+            return new Source(id, costId, latest, issue, differencePending,
+                    salesOrderNo, sourceSalesOrderNo, details);
+        }
     }
+
+    public record SalesOrderDetails(
+            String receiverName, String employeeName, String departmentName,
+            java.time.LocalDate documentDate, java.math.BigDecimal documentAmount, Instant linkedAt) {}
 }

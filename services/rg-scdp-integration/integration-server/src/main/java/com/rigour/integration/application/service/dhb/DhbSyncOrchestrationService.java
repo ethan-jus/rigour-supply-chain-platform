@@ -1,6 +1,7 @@
 package com.rigour.integration.application.service.dhb;
 
 import com.rigour.erp.api.v1.model.ErpDataSyncResult;
+import com.rigour.integration.api.v1.model.DhbApiModels.CachedOrderFacts;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncTargetView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
@@ -196,6 +197,10 @@ public final class DhbSyncOrchestrationService {
     }
 
     /** 单任务/单对象入口也先刷新客户，避免绕过统一回款依赖。 */
+    List<CachedOrderFacts> cachedOrderFacts(UUID tenantId, UUID connectorId, List<String> orderNumbers) {
+        return orderSyncService.cachedOrderFacts(tenantId, connectorId, orderNumbers);
+    }
+
     public SyncRunView runTask(CallerIdentity actor, UUID taskId, SyncRunCommand command) {
         requireManualCaller(actor);
         var bucket = targets(actor.tenantId(), TargetSelection.CONFIGURED).values().stream()

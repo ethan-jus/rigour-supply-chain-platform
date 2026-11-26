@@ -857,9 +857,14 @@ class ShipmentTransportPersistenceTest {
         Integer repaired = transactions.execute(status -> shipmentWriter.reconcileShipmentOrders(
                 "T", "U", costId));
         assertThat(repaired).isEqualTo(7);
+        var repairTimes = shipmentWriter.repairedShipmentLinkTimes("T", costId);
+        assertThat(repairTimes).containsOnlyKeys("FH2", "FH3", "FH4", "FH5", "FH6", "FH7", "FH8");
+        assertThat(repairTimes.values()).doesNotContainNull();
+        assertThat(shipmentWriter.repairedShipmentLinkTimes("OTHER", costId)).isEmpty();
         Integer repeated = transactions.execute(status -> shipmentWriter.reconcileShipmentOrders(
                 "T", "U", costId));
         assertThat(repeated).isZero();
+        assertThat(shipmentWriter.repairedShipmentLinkTimes("T", costId)).isEqualTo(repairTimes);
 
         var sources = shipmentWriter.byCosts("T", List.of(costId)).get(costId);
         assertThat(sources).hasSize(8);

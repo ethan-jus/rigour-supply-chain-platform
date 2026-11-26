@@ -2,6 +2,7 @@ package com.rigour.integration.api.v1.model;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -186,6 +187,15 @@ public final class DhbApiModels {
                     errorMessage);
         }
     }
+
+    /** 本地订货宝订单证据；未落地或未匹配的字段保留为空。 */
+    public record CachedOrderFacts(
+            String orderNo,
+            String customerName,
+            String employeeCode,
+            String employeeName,
+            LocalDate documentDate,
+            BigDecimal orderAmount) {}
 
     public record OrderMirrorView(
             UUID id,

@@ -2,6 +2,7 @@ package com.rigour.integration.api.v1;
 
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderContentView;
+import com.rigour.integration.api.v1.model.DhbApiModels.CachedOrderFacts;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderMirrorView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderPageView;
 import com.rigour.integration.api.v1.model.DhbApiModels.OrderQueryCommand;
@@ -18,6 +19,7 @@ import com.rigour.integration.api.v1.model.DhbApiModels.ShipmentQueryCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.WaitShipsView;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunCommand;
 import com.rigour.integration.api.v1.model.DhbApiModels.SyncRunView;
+import com.rigour.shared.core.api.ApiResponse;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -32,6 +34,7 @@ public interface DhbOrderApi {
     String BASE_PATH = "/api/v1/integration/dhb/orders";
     String QUERY_PATH = BASE_PATH + "/{connectorId}/query";
     String CONTENT_PATH = BASE_PATH + "/{connectorId}/{orderNumber}/content";
+    String CACHED_ORDER_FACTS_PATH = BASE_PATH + "/{connectorId}/cached-facts";
     /** Integration 出库/发货单列表，内部调用订货宝 getShipsList。 */
     String SHIPMENT_QUERY_PATH = BASE_PATH + "/{connectorId}/shipments/query";
     /** Integration 出库/发货单详情，内部调用订货宝 getShipsContent。 */
@@ -56,6 +59,10 @@ public interface DhbOrderApi {
     OrderContentView orderContent(@PathVariable("connectorId") UUID connectorId,
                                   @PathVariable("orderNumber") String orderNumber,
                                   @RequestBody(required = false) OrderContentCommand command);
+
+    @PostMapping(CACHED_ORDER_FACTS_PATH)
+    ApiResponse<List<CachedOrderFacts>> cachedOrderFacts(@PathVariable("connectorId") UUID connectorId,
+                                                        @RequestBody List<String> orderNumbers);
 
     /** 查询出库/发货单列表；status、typeId等参数沿用订货宝官方值。 */
     @PostMapping(SHIPMENT_QUERY_PATH)
