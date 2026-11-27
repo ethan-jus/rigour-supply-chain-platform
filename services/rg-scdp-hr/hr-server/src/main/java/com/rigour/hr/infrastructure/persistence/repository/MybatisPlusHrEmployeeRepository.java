@@ -384,7 +384,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             getBaseMapper().insert(employee);
             getBaseMapper().recordCity(tenantId, employee.employeeCode, now, employee.cityName);
             organization.sourceEmployeeChanged(
-                    tenantId, employee.employeeCode, null, employee.employmentStatus, row.leaveDate(), actorId);
+                    tenantId, employee.employeeCode, null, employee.employmentStatus, row.leaveDate(), false, actorId);
             upsertBinding(
                     tenantId,
                     sourceSystem,
@@ -416,6 +416,8 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                     row.sourceEmployeeId(), employee.employeeCode, "UNCHANGED", "HR员工无变化");
         }
         String previousStatus = employee.employmentStatus;
+        var previousAssignment = new JdbcHrOrganizationStore.PreviousAssignment(
+                previousStatus, employee.leaveDate, employee.departmentId, employee.primaryPositionCode);
         boolean wasActive = "ACTIVE".equals(previousStatus);
         String previousCity = employee.cityName;
         copyEmployeeFields(employee, sourceSystem, row, primaryPosition);
@@ -472,9 +474,11 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
         organization.sourceEmployeeChanged(
                 tenantId,
                 employee.employeeCode,
-                previousStatus,
+                previousAssignment,
                 employee.employmentStatus,
                 row.leaveDate(),
+                !java.util.Objects.equals(previousAssignment.departmentId(), employee.departmentId)
+                        || !java.util.Objects.equals(previousAssignment.positionCode(), employee.primaryPositionCode),
                 actorId);
         upsertBinding(
                 tenantId,

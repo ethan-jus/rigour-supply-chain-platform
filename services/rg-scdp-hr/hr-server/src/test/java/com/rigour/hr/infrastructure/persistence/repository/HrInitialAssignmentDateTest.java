@@ -26,7 +26,7 @@ class HrInitialAssignmentDateTest {
 
     @Test
     void firstSourceImportUsesExistingEntryDateInsteadOfTheImportTimestamp() {
-        store.sourceEmployeeChanged("tenant", "employee", null, "ACTIVE", null, "actor");
+        store.sourceEmployeeChanged("tenant", "employee", null, "ACTIVE", null, false, "actor");
         var insert = mockingDetails(jdbc).getInvocations().stream()
                 .filter(i -> i.getArgument(0) instanceof String sql && sql.contains("INSERT INTO hr_employee_assignment"))
                 .findFirst().orElseThrow();
@@ -40,7 +40,7 @@ class HrInitialAssignmentDateTest {
 
     @Test
     void reactivationDoesNotBackdateTheNewTermToTheOriginalEntryDate() {
-        store.sourceEmployeeChanged("tenant", "employee", "LEFT", "ACTIVE", null, "actor");
+        store.sourceEmployeeChanged("tenant", "employee", previous("LEFT"), "ACTIVE", null, false, "actor");
         var insert = mockingDetails(jdbc).getInvocations().stream()
                 .filter(i -> i.getArgument(0) instanceof String sql && sql.contains("INSERT INTO hr_employee_assignment"))
                 .findFirst().orElseThrow();
@@ -50,7 +50,7 @@ class HrInitialAssignmentDateTest {
 
     @Test
     void firstPendingEmployeeAssignmentUsesEntryDate() {
-        store.sourceEmployeeChanged("tenant", "employee", "PENDING", "ACTIVE", null, "actor");
+        store.sourceEmployeeChanged("tenant", "employee", previous("PENDING"), "ACTIVE", null, false, "actor");
         var insert = mockingDetails(jdbc).getInvocations().stream()
                 .filter(i -> i.getArgument(0) instanceof String sql && sql.contains("INSERT INTO hr_employee_assignment"))
                 .findFirst().orElseThrow();
@@ -60,8 +60,8 @@ class HrInitialAssignmentDateTest {
     @Test
     void knownLeaveDateClosesAssignmentAtNextShanghaiMidnight() {
         store.sourceEmployeeChanged(
-                "tenant", "employee", "ACTIVE", "LEFT",
-                Instant.parse("2026-10-30T16:00:00Z"), "actor");
+                "tenant", "employee", previous("ACTIVE"), "LEFT",
+                Instant.parse("2026-10-30T16:00:00Z"), false, "actor");
 
         var end = LocalDateTime.parse("2026-10-31T16:00:00");
         verify(jdbc).update(contains("UPDATE hr_employee_assignment"), eq(end), eq("tenant"), eq("employee"), eq(end));
@@ -74,15 +74,40 @@ class HrInitialAssignmentDateTest {
                 eq(Integer.class), eq("tenant"), eq("employee"))).thenReturn(1);
 
         assertThatThrownBy(() -> store.sourceEmployeeChanged(
-                "tenant", "employee", "ACTIVE", "LEFT",
-                Instant.parse("2026-10-30T16:00:00Z"), "actor"))
+                "tenant", "employee", previous("ACTIVE"), "LEFT",
+                Instant.parse("2026-10-30T16:00:00Z"), false, "actor"))
                 .hasMessageContaining("任职结束时间必须晚于当前任职开始时间");
     }
 
     @Test
     void sameStatusDoesNotRecreateOrCloseAnAssignment() {
-        store.sourceEmployeeChanged("tenant", "employee", "ACTIVE", "ACTIVE", null, "actor");
+        store.sourceEmployeeChanged("tenant", "employee", previous("ACTIVE"), "ACTIVE", null, false, "actor");
         assertThat(mockingDetails(jdbc).getInvocations()).noneMatch(i ->
                 i.getArgument(0) instanceof String sql && sql.contains("hr_employee_assignment"));
+    }
+
+    private static JdbcHrOrganizationStore.PreviousAssignment previous(String status) {
+        return new JdbcHrOrganizationStore.PreviousAssignment(status, null, 1L, "SALES");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void sourceCancelsScheduledDepartureBeforeCreatingAnyActualTransfer(boolean transfer) {
+        var previous = new JdbcHrOrganizationStore.PreviousAssignment(
+                "LEFT", LocalDateTime.parse("2026-11-07T16:00:00"), 1L, "SALES");
+        var scheduledEnd = LocalDateTime.parse("2026-11-08T16:00:00");
+        when(jdbc.queryForList(
+                contains("ORDER BY effective_from DESC"), eq(Long.class), eq("tenant"), eq("employee")))
+                .thenReturn(java.util.List.of(7L));
+        when(jdbc.update(
+                contains("SET effective_to=NULL"), eq("tenant"), eq("employee"), eq(7L), eq(1L),
+                eq("SALES"), eq(scheduledEnd))).thenReturn(1);
+
+        store.sourceEmployeeChanged("tenant", "employee", previous, "ACTIVE", null, transfer, "actor");
+
+        var hasNewAssignment = mockingDetails(jdbc).getInvocations().stream()
+                .anyMatch(call -> call.getArgument(0) instanceof String sql
+                        && sql.contains("INSERT INTO hr_employee_assignment"));
+        assertThat(hasNewAssignment).isEqualTo(transfer);
     }
 }

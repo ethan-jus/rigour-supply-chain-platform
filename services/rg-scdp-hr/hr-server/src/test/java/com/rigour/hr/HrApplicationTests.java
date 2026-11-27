@@ -656,6 +656,51 @@ class HrApplicationTests {
         assertThat(terms.getLast().effectiveTo()).isEqualTo(endExclusive);
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void cancelFutureDeparturePreservesAssignmentUntilAnyActualTransfer(boolean transfer) {
+        String tenant = UUID.randomUUID().toString();
+        jdbcTemplate.update(
+                "INSERT INTO hr_position(tenant_id,position_code,position_name,status_code)"
+                    + " VALUES(?, 'SALES', '业务员', 'ACTIVE')", tenant);
+        var firstDepartment = organizations.saveDepartment(
+                tenant, null, new com.rigour.hr.api.v1.model.HrDepartmentCommand(
+                        null, "原部门", 0, "ACTIVE", 0, null, null, null), "admin");
+        var nextDepartment = organizations.saveDepartment(
+                tenant, null, new com.rigour.hr.api.v1.model.HrDepartmentCommand(
+                        null, "调入部门", 0, "ACTIVE", 0, null, null, null), "admin");
+        var entryDate = Instant.parse("2025-10-23T16:00:00Z");
+        var businessZone = java.time.ZoneId.of("Asia/Shanghai");
+        var leaveDate = java.time.LocalDate.now(businessZone).plusDays(5)
+                .atStartOfDay(businessZone).toInstant();
+        long employee = organizations.saveEmployee(
+                tenant, null, new com.rigour.hr.api.v1.model.HrEmployeeCommand(
+                        "预登记离职测试员工", firstDepartment.id(), "SALES", "ACTIVE", null, null,
+                        entryDate, null, null, 0, null, null), "admin");
+        organizations.saveEmployee(
+                tenant, employee, new com.rigour.hr.api.v1.model.HrEmployeeCommand(
+                        "预登记离职测试员工", firstDepartment.id(), "SALES", "LEFT", null, null,
+                        entryDate, leaveDate, null, 1, null, null), "admin");
+        var scheduled = organizations.assignments(tenant, employee).getFirst();
+        assertThat(scheduled.effectiveTo()).isAfter(Instant.now());
+
+        organizations.saveEmployee(
+                tenant, employee, new com.rigour.hr.api.v1.model.HrEmployeeCommand(
+                        "预登记离职测试员工", transfer ? nextDepartment.id() : firstDepartment.id(),
+                        "SALES", "ACTIVE", null, null, entryDate, null, null, 2, null, null), "admin");
+
+        var assignments = organizations.assignments(tenant, employee);
+        assertThat(assignments).hasSize(transfer ? 2 : 1);
+        assertThat(assignments.getLast().id()).isEqualTo(scheduled.id());
+        assertThat(assignments.getLast().effectiveFrom()).isEqualTo(entryDate);
+        assertThat(assignments.getFirst().effectiveTo()).isNull();
+        if (transfer) {
+            assertThat(assignments.getFirst().departmentId()).isEqualTo(nextDepartment.id());
+            assertThat(assignments.getLast().effectiveTo()).isEqualTo(assignments.getFirst().effectiveFrom());
+            assertThat(assignments.getLast().effectiveTo()).isBefore(scheduled.effectiveTo());
+        }
+    }
+
     @Test
     void employeeProfileIsDetailOnlyAndDepartmentFilterIncludesDescendantsBeforePaging() {
         String tenant=java.util.UUID.randomUUID().toString();

@@ -62,17 +62,25 @@ public class JdbcHrOrganizationStore implements HrOrganizationStore {
         lock(tenant);
     }
 
+    record PreviousAssignment(
+            String status, LocalDateTime leaveDate, Long departmentId, String positionCode) {}
+
     void sourceEmployeeChanged(
             String tenant,
             String employee,
-            String previousStatus,
+            PreviousAssignment previous,
             String currentStatus,
             Instant leaveDate,
+            boolean changedDepartmentOrPosition,
             String actor) {
+        String previousStatus = previous == null ? null : previous.status();
         if (!Objects.equals(previousStatus, currentStatus)) {
             var now = assignmentClock();
-            closeAssignment(tenant, employee, closingTime(currentStatus, leaveDate, now));
-            if ("ACTIVE".equals(currentStatus)) {
+            boolean active = "ACTIVE".equals(currentStatus);
+            boolean restored = active && restoreScheduledAssignment(tenant, employee, previous, now);
+            if (!restored || changedDepartmentOrPosition)
+                closeAssignment(tenant, employee, closingTime(currentStatus, leaveDate, now));
+            if (active && (!restored || changedDepartmentOrPosition)) {
                 boolean firstAssignment = isFirstAssignment(tenant, employee, previousStatus);
                 if (!firstAssignment) requireNonOverlappingStart(tenant, employee, now);
                 jdbc.update(
@@ -97,6 +105,31 @@ WHERE e.tenant_id=? AND e.employee_code=? AND e.deleted=0
                 previousStatus == null ? "EMPLOYEE_SOURCE_CREATE" : "EMPLOYEE_SOURCE_UPDATE",
                 employee,
                 actor);
+    }
+
+    private boolean restoreScheduledAssignment(
+            String tenant, String employee, PreviousAssignment previous, LocalDateTime now) {
+        if (previous == null || !"LEFT".equals(previous.status()) || previous.leaveDate() == null)
+            return false;
+        var expectedEnd = closingTime("LEFT", previous.leaveDate().toInstant(ZoneOffset.UTC), now);
+        if (!expectedEnd.isAfter(now) || hasOpenAssignment(tenant, employee)) return false;
+        var latest = jdbc.queryForList(
+                """
+SELECT id FROM hr_employee_assignment WHERE tenant_id=? AND employee_code=?
+ ORDER BY effective_from DESC,id DESC LIMIT 1
+""",
+                Long.class, tenant, employee);
+        if (latest.isEmpty()) return false;
+        // Match the scheduled closure on the original role and department without touching older terms.
+        return jdbc.update(
+                        """
+UPDATE hr_employee_assignment SET effective_to=NULL,revision=revision+1
+ WHERE tenant_id=? AND employee_code=? AND id=? AND department_id=? AND position_code=?
+   AND effective_to=?
+""",
+                        tenant, employee, latest.getFirst(), previous.departmentId(),
+                        previous.positionCode(), expectedEnd)
+                == 1;
     }
 
     private LocalDateTime assignmentClock() {
@@ -441,6 +474,15 @@ UPDATE hr_employee_assignment SET effective_to=UTC_TIMESTAMP(6),revision=revisio
                             }
                             if ((old == null ? 0 : old.employeeRevision()) != c.revision())
                                 throw new BusinessException(ErrorCode.CONFLICT, "员工已修改，请刷新", List.of());
+                            PreviousAssignment previous = null;
+                            if (old != null && "LEFT".equals(old.employmentStatus())
+                                    && "ACTIVE".equals(c.employmentStatus())) {
+                                var leaveDate = jdbc.queryForObject(
+                                        "SELECT leave_date FROM hr_employee WHERE tenant_id=? AND id=? AND deleted=0",
+                                        LocalDateTime.class, tenant, id);
+                                previous = new PreviousAssignment(
+                                        old.employmentStatus(), leaveDate, old.departmentId(), old.positionCode());
+                            }
                             if (old == null
                                     || !Objects.equals(old.departmentId(), c.departmentId())
                                     || !Objects.equals(old.positionCode(), c.positionCode()))
@@ -580,18 +622,22 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id_number=VA
                                     p.residentialAddress(),p.bankAccount(),p.bankName(),p.socialInsurance(),p.emergencyContact(),p.emergencyPhone(),
                                     p.graduationSchool(),p.major(),p.regularSalary(),p.probationSalary(),p.probationPeriod());
                             }
-                            boolean changedAssignment =
+                            boolean changedDepartmentOrPosition =
                                     old == null
                                             || !Objects.equals(old.departmentId(), department.id())
-                                            || !Objects.equals(old.positionCode(), c.positionCode())
+                                            || !Objects.equals(old.positionCode(), c.positionCode());
+                            boolean changedAssignment =
+                                    changedDepartmentOrPosition
                                             || !old.employmentStatus().equals(c.employmentStatus())
                                             || !hasOpenAssignment(tenant, code);
                             if (changedAssignment) {
                                 var now = assignmentClock();
-                                if (old != null)
+                                boolean restored = restoreScheduledAssignment(tenant, code, previous, now);
+                                if (old != null && (!restored || changedDepartmentOrPosition))
                                     closeAssignment(
                                             tenant, code, closingTime(c.employmentStatus(), c.leaveDate(), now));
-                                if ("ACTIVE".equals(c.employmentStatus())) {
+                                if ("ACTIVE".equals(c.employmentStatus())
+                                        && (!restored || changedDepartmentOrPosition)) {
                                     boolean firstAssignment = isFirstAssignment(
                                             tenant, code, old == null ? null : old.employmentStatus());
                                     var from = firstAssignment && c.entryDate() != null
