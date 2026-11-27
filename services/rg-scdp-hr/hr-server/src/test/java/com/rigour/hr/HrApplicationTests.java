@@ -14,6 +14,7 @@ import org.testcontainers.containers.MySQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -32,6 +33,8 @@ class HrApplicationTests {
     static {
         MYSQL.withCommand("--character-set-server=utf8mb4", "--collation-server=utf8mb4_general_ci");
         MYSQL.withUrlParam("connectionCollation", "utf8mb4_general_ci");
+        MYSQL.withUrlParam("connectionTimeZone", "UTC");
+        MYSQL.withUrlParam("forceConnectionTimeZoneToSession", "true");
     }
 
     @DynamicPropertySource
@@ -330,8 +333,14 @@ class HrApplicationTests {
                         code);
         assertThat(imported).isNotEqualTo(local);
         assertThat(organizations.identity(tenant, code).orElseThrow().usable()).isFalse();
+        Instant entryDate = Instant.parse("2025-10-24T05:52:47Z");
         organizations.saveEmployee(
-                tenant, imported, employee("张三", department.id(), "ACTIVE", 1), "admin");
+                tenant, imported, new com.rigour.hr.api.v1.model.HrEmployeeCommand(
+                        "张三", department.id(), "SALES", "ACTIVE", null, null,
+                        entryDate, null, null, 1, null, null), "admin");
+        assertThat(organizations.assignments(tenant, imported))
+                .singleElement().satisfies(term -> assertThat(term.effectiveFrom())
+                        .isEqualTo(Instant.parse("2025-10-23T16:00:00Z")));
         var initial = organizations.identity(tenant, code).orElseThrow();
         assertThat(initial.usable()).isTrue();
         var departed =
@@ -545,7 +554,9 @@ class HrApplicationTests {
                 "admin");
         var second = organizations.identity(tenant, code).orElseThrow();
         assertThat(second.departmentId()).isEqualTo(jh.id());
-        assertThat(organizations.assignments(tenant, employee)).hasSize(2);
+        var terms = organizations.assignments(tenant, employee);
+        assertThat(terms).hasSize(2);
+        assertThat(terms.getLast().effectiveTo()).isEqualTo(terms.getFirst().effectiveFrom());
         assertThat(
                         jdbcTemplate.queryForObject(
                                 "SELECT COUNT(*) FROM hr_employee_assignment WHERE tenant_id=? AND"
@@ -595,6 +606,54 @@ class HrApplicationTests {
                                                 hz.id(), "跨租户", 0, "ACTIVE", 0, null, null, null),
                                         "admin"))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void departureUsesLastBusinessDayAndKeepsPreviousTermsIntact() {
+        String tenant = UUID.randomUUID().toString();
+        jdbcTemplate.update(
+                "INSERT INTO hr_position(tenant_id,position_code,position_name,status_code)"
+                    + " VALUES(?, 'SALES', '业务员', 'ACTIVE')",
+                tenant);
+        var department = organizations.saveDepartment(
+                tenant, null, new com.rigour.hr.api.v1.model.HrDepartmentCommand(
+                        null, "离职日期测试部", 0, "ACTIVE", 0, null, null, null), "admin");
+        Instant entryDate = Instant.parse("2025-10-23T16:00:00Z");
+        Instant leaveDate = Instant.parse("2025-10-30T16:00:00Z");
+        long employee = organizations.saveEmployee(
+                tenant, null, new com.rigour.hr.api.v1.model.HrEmployeeCommand(
+                        "月底离职测试员工", department.id(), "SALES", "ACTIVE", null, null,
+                        entryDate, null, null, 0, null, null), "admin");
+        organizations.saveEmployee(
+                tenant, employee, new com.rigour.hr.api.v1.model.HrEmployeeCommand(
+                        "月底离职测试员工", department.id(), "SALES", "LEFT", null, null,
+                        entryDate, leaveDate, null, 1, null, null), "admin");
+
+        Instant endExclusive = Instant.parse("2025-10-31T16:00:00Z");
+        assertThat(organizations.assignments(tenant, employee)).singleElement().satisfies(term -> {
+            assertThat(term.effectiveFrom()).isEqualTo(entryDate);
+            assertThat(term.effectiveTo()).isEqualTo(endExclusive);
+        });
+        String employeeCode = jdbcTemplate.queryForObject(
+                "SELECT employee_code FROM hr_employee WHERE id=?", String.class, employee);
+        var lastDay = java.time.LocalDate.of(2025, 10, 31);
+        assertThat(payroll.departmentAt(tenant, employeeCode, lastDay)).isEqualTo(department.id());
+        assertThat(payroll.preparationDepartments(tenant, List.of(employeeCode), "2025-10", lastDay))
+                .containsEntry(employeeCode, department.id());
+        assertThat(payroll.departmentAt(tenant, employeeCode, lastDay.plusDays(1))).isNull();
+        assertThat(payroll.preparationDepartments(
+                tenant, List.of(employeeCode), "2025-11", lastDay.plusDays(1))).isEmpty();
+
+        organizations.saveEmployee(
+                tenant, employee, new com.rigour.hr.api.v1.model.HrEmployeeCommand(
+                        "月底离职测试员工", department.id(), "SALES", "ACTIVE", null, null,
+                        entryDate, null, null, 2, null, null), "admin");
+
+        var terms = organizations.assignments(tenant, employee);
+        assertThat(terms).hasSize(2);
+        assertThat(terms.getFirst().effectiveFrom()).isAfter(endExclusive);
+        assertThat(terms.getLast().effectiveFrom()).isEqualTo(entryDate);
+        assertThat(terms.getLast().effectiveTo()).isEqualTo(endExclusive);
     }
 
     @Test

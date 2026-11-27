@@ -37,6 +37,12 @@ public class HrAttendancePersistenceTest {
         return Timestamp.valueOf(LocalDateTime.now(ZoneOffset.UTC));
     }
 
+    public static Timestamp convertTz(Timestamp value, String from, String to) {
+        if (value == null) return null;
+        return Timestamp.valueOf(value.toLocalDateTime().atOffset(ZoneOffset.of(from))
+                .withOffsetSameInstant(ZoneOffset.of(to)).toLocalDateTime());
+    }
+
     @BeforeEach
     void setup() throws Exception {
         ds =
@@ -49,6 +55,9 @@ public class HrAttendancePersistenceTest {
         jdbc.execute(
                 "CREATE ALIAS UTC_TIMESTAMP FOR"
                     + " 'com.rigour.hr.infrastructure.persistence.repository.HrAttendancePersistenceTest.utc'");
+        jdbc.execute(
+                "CREATE ALIAS CONVERT_TZ FOR"
+                    + " 'com.rigour.hr.infrastructure.persistence.repository.HrAttendancePersistenceTest.convertTz'");
         jdbc.execute(
                 Files.readString(
                                 Path.of(
@@ -146,6 +155,23 @@ public class HrAttendancePersistenceTest {
         when(scope.employeePredicate(anyString(), eq("e.")))
                 .thenReturn(new HrDataScope.Predicate("e.employee_code=?", List.of("E1")));
         store = createStore(ds);
+    }
+
+    @Test
+    void payrollAttendanceUsesShanghaiMonthBoundaries() {
+        // Ends at October 1 midnight in Shanghai; must be included in October attendance.
+        jdbc.update("UPDATE hr_employee SET entry_date='2026-09-20 16:00:00',"
+                + " leave_date='2026-09-30 16:00:00' WHERE tenant_id='T1' AND employee_code='E1'");
+        var october = store.employee("T1", java.time.YearMonth.of(2026, 10), "E1");
+        assertThat(october.entry()).isEqualTo(java.time.LocalDate.of(2026, 9, 21));
+        assertThat(october.leave()).isEqualTo(java.time.LocalDate.of(2026, 10, 1));
+
+        jdbc.update("UPDATE hr_employee SET entry_date='2026-10-31 16:00:00',"
+                + " leave_date=NULL WHERE tenant_id='T1' AND employee_code='E1'");
+        assertThatThrownBy(() -> store.employee("T1", java.time.YearMonth.of(2026, 10), "E1"))
+                .isInstanceOf(com.rigour.shared.context.AuthorizationDeniedException.class);
+        assertThat(store.employee("T1", java.time.YearMonth.of(2026, 11), "E1").entry())
+                .isEqualTo(java.time.LocalDate.of(2026, 11, 1));
     }
 
     MybatisPlusHrAttendanceStore createStore(javax.sql.DataSource source) throws Exception {

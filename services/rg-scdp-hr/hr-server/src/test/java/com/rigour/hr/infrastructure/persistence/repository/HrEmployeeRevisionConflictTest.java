@@ -66,11 +66,12 @@ class HrEmployeeRevisionConflictTest {
                     + "employee_name VARCHAR(50),employment_status VARCHAR(20),department_id BIGINT,"
                     + "primary_position_code VARCHAR(50),revision INT,access_version BIGINT,entry_date TIMESTAMP,"
                     + "leave_date TIMESTAMP,deleted INT)");
-            jdbc.execute("CREATE TABLE hr_department(id BIGINT,tenant_id VARCHAR(50),department_name VARCHAR(50),status_code VARCHAR(20),deleted INT)");
+            jdbc.execute("CREATE TABLE hr_department(id BIGINT,tenant_id VARCHAR(50),department_name VARCHAR(50),"
+                    + "status_code VARCHAR(20),deleted INT,leader_employee_code VARCHAR(50))");
             jdbc.execute("CREATE TABLE hr_position(tenant_id VARCHAR(50),position_code VARCHAR(50),position_name VARCHAR(50),status_code VARCHAR(20),deleted INT)");
             jdbc.execute("CREATE TABLE hr_department_closure(tenant_id VARCHAR(50),descendant_id BIGINT,ancestor_id BIGINT,depth INT)");
             jdbc.update("INSERT INTO hr_employee VALUES(7,'T','E7','钱七','ACTIVE',26,'HRBP',3,0,'2026-09-01',NULL,0)");
-            jdbc.update("INSERT INTO hr_department VALUES(26,'T','运营部','ACTIVE',0)");
+            jdbc.update("INSERT INTO hr_department VALUES(26,'T','运营部','ACTIVE',0,NULL)");
             jdbc.update("INSERT INTO hr_position VALUES('T','HRBP','HRBP','ACTIVE',0)");
             jdbc.update("INSERT INTO hr_department_closure VALUES('T',26,26,0)");
             var names = mock(HrAuditActorNameResolver.class);

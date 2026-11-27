@@ -5,6 +5,7 @@ import static com.rigour.hr.application.service.HrPayrollService.*;
 import com.rigour.hr.api.v1.model.*;
 import com.rigour.hr.application.port.out.HrEmployeePayrollProfileStore;
 import com.rigour.hr.application.port.out.HrPayrollStore;
+import com.rigour.hr.domain.payroll.PayrollEmployment;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.function.Function;
@@ -85,69 +87,101 @@ public class HrPayrollWorkflowService {
                         .collect(
                                 Collectors.toMap(
                                         PayrollDetailView::employeeCode, Function.identity()));
-        var rows = new ArrayList<PayrollPreparationEmployeeView>();
         var employees = store.employees(tenant, "hr:payroll:read");
-        var eligibleEmployees =
+        var monthlyEmployees =
                 employees.stream()
                         .filter(
-                                e ->
-                                        e.entryDate() == null
-                                                || !e.entryDate().isAfter(m.atEndOfMonth()))
+                                e -> switch (employmentForMonth(e, m)) {
+                                    case NOT_STARTED, LEFT_BEFORE_MONTH -> false;
+                                    default -> true;
+                                })
                         .toList();
-        var departments =
-                ruleResolver == null
-                        ? Map.<String, Long>of()
-                        : store.preparationDepartments(
-                                tenant,
-                                eligibleEmployees.stream()
-                                        .map(PayrollEmployeeView::employeeCode)
-                                        .toList(),
-                                value);
+        var regularEmployees = monthlyEmployees.stream()
+                .filter(employee -> employmentForMonth(employee, m) == PayrollEmployment.REGULAR)
+                .toList();
+        var departments = new HashMap<String, Long>();
+        if (ruleResolver != null) {
+            var employeeCodesByDate = regularEmployees.stream().collect(Collectors.groupingBy(
+                    employee -> ConfiguredPayrollService.lastEmploymentDay(employee.leaveDate(), m),
+                    Collectors.mapping(PayrollEmployeeView::employeeCode, Collectors.toList())));
+            employeeCodesByDate.forEach((date, codes) ->
+                    departments.putAll(store.preparationDepartments(tenant, codes, value, date)));
+        }
         var matches =
                 ruleResolver == null
                         ? Map.<String, PayrollRuleMatch>of()
                         : ruleResolver.prepare(
                                 tenant,
-                                eligibleEmployees,
+                                regularEmployees,
                                 m,
                                 e -> departments.get(e.employeeCode()));
-        for (var e : employees) {
-            if (e.entryDate() != null && e.entryDate().isAfter(m.atEndOfMonth())) continue;
-            // 离职人员仍可结算后续付清的订单；生成时只计算提成及更正，不再发固定工资。
-            var issues = new ArrayList<String>();
-            if (e.entryDate() == null) issues.add("入职日期未维护");
-            var match = matches.get(e.employeeCode());
-            var ruleIssues = match == null ? List.<String>of() : match.issues();
-            var snapshot = match == null ? null : match.snapshot();
-            String salaryRole =
-                    snapshot == null ? e.payrollCategory() : snapshot.definition().role();
-            if (salaryRole == null) issues.add("薪资类别未维护，请在员工档案中设置");
-            var p = existing.get(e.employeeCode());
-            rows.add(
-                    new PayrollPreparationEmployeeView(
-                            e.employeeCode(),
-                            e.employeeName(),
-                            e.departmentId(),
-                            e.departmentName(),
-                            salaryRole,
-                            p == null ? null : p.statusCode(),
-                            p == null ? null : p.id(),
-                            p != null && Set.of("CONFIRMED", "PAID").contains(p.statusCode()),
-                            List.copyOf(issues),
-                            List.copyOf(ruleIssues),
-                            e.revision(),
-                            e.id(),
-                            null,
-                            null,
-                            null,
-                            e.entryDate() != null && salaryRole != null && ruleIssues.isEmpty(),
-                            true,
-                            snapshot == null ? null : snapshot.definition().name(),
-                            salaryRole,
-                            e.entryDate(),
-                            e.leaveDate()));
-        }
-        return new PayrollPreparationView(value, List.copyOf(rows));
+        boolean hasHistoricalDepartments = monthlyEmployees.stream().anyMatch(employee -> {
+            var department = departments.get(employee.employeeCode());
+            return department != null && !Objects.equals(department, employee.departmentId());
+        });
+        var departmentNames = hasHistoricalDepartments
+                ? store.departments(tenant, "hr:payroll:read").stream()
+                        .collect(Collectors.toMap(PayrollDepartmentView::id, PayrollDepartmentView::name))
+                : Map.<Long, String>of();
+        var rows = monthlyEmployees.stream()
+                .map(employee -> preparationEmployee(
+                        employee,
+                        m,
+                        existing.get(employee.employeeCode()),
+                        matches.get(employee.employeeCode()),
+                        departments.get(employee.employeeCode()),
+                        departmentNames))
+                .toList();
+        var formerEmployees = employees.stream()
+                .filter(employee -> employmentForMonth(employee, m) == PayrollEmployment.LEFT_BEFORE_MONTH)
+                .map(employee -> preparationEmployee(
+                        employee, m, existing.get(employee.employeeCode()), null, null, Map.of()))
+                .toList();
+        return new PayrollPreparationView(value, rows, formerEmployees);
+    }
+
+    private static PayrollPreparationEmployeeView preparationEmployee(
+            PayrollEmployeeView employee,
+            YearMonth month,
+            PayrollDetailView existing,
+            PayrollRuleMatch match,
+            Long matchedDepartment,
+            Map<Long, String> departmentNames) {
+        var employment = employmentForMonth(employee, month);
+        var issues = new ArrayList<String>();
+        if (employment == PayrollEmployment.MISSING_ENTRY_DATE) issues.add("入职日期未维护");
+        if (employment == PayrollEmployment.MISSING_LEAVE_DATE) issues.add("员工已标记离职但离职日期未维护");
+        if (employment == PayrollEmployment.INVALID_DATES) issues.add("离职日期早于入职日期");
+        var ruleIssues = match == null ? List.<String>of() : match.issues();
+        var snapshot = match == null ? null : match.snapshot();
+        String salaryRole = snapshot == null ? employee.payrollCategory() : snapshot.definition().role();
+        if (salaryRole == null) issues.add("薪资类别未维护，请在员工档案中设置");
+        Long departmentId = matchedDepartment == null ? employee.departmentId() : matchedDepartment;
+        String departmentName = Objects.equals(departmentId, employee.departmentId())
+                ? employee.departmentName()
+                : departmentNames.get(departmentId);
+        return new PayrollPreparationEmployeeView(
+                employee.employeeCode(),
+                employee.employeeName(),
+                departmentId,
+                departmentName,
+                salaryRole,
+                existing == null ? null : existing.statusCode(),
+                existing == null ? null : existing.id(),
+                existing != null && Set.of("CONFIRMED", "PAID").contains(existing.statusCode()),
+                List.copyOf(issues),
+                List.copyOf(ruleIssues),
+                employee.revision(),
+                employee.id(),
+                null,
+                null,
+                null,
+                employment == PayrollEmployment.REGULAR && salaryRole != null && ruleIssues.isEmpty(),
+                true,
+                snapshot == null ? null : snapshot.definition().name(),
+                salaryRole,
+                employee.entryDate(),
+                employee.leaveDate());
     }
 
     public List<PayrollPreviewView> preview(PayrollCalculateCommand c) {
@@ -168,6 +202,10 @@ public class HrPayrollWorkflowService {
             var saved = store.byMonth(tenant, code, c.month()).orElse(null);
             var calculated = payroll.calculation(tenant, e, m);
             var previous = saved == null ? null : saved.calculation();
+            boolean canGenerateFormerSettlement =
+                    (saved == null || !Set.of("CONFIRMED", "PAID").contains(saved.statusCode()))
+                            && employmentForMonth(e, m) == PayrollEmployment.LEFT_BEFORE_MONTH
+                            && hasSettlementEvidence(calculated);
             result.add(
                     new PayrollPreviewView(
                             code,
@@ -181,7 +219,8 @@ public class HrPayrollWorkflowService {
                             calculated.sourceFingerprint(),
                             saved == null ? null : saved.statusCode(),
                             calculated,
-                            previous));
+                            previous,
+                            canGenerateFormerSettlement));
         }
         return List.copyOf(result);
     }

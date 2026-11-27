@@ -20,6 +20,7 @@ import com.rigour.hr.api.v1.model.PayrollRuleView;
 import com.rigour.hr.api.v1.model.PayrollSummaryView;
 import com.rigour.hr.application.port.out.HrPayrollSource;
 import com.rigour.hr.application.port.out.HrPayrollStore;
+import com.rigour.hr.domain.payroll.PayrollEmployment;
 import com.rigour.shared.context.AuthorizationContext;
 import com.rigour.shared.context.AuthorizationDeniedException;
 import com.rigour.shared.context.CallerIdentity;
@@ -563,7 +564,9 @@ public class HrPayrollService {
             if (store.byMonth(t, code, c.month())
                     .map(p -> Set.of("CONFIRMED", "PAID").contains(p.statusCode()))
                     .orElse(false)) continue;
+            var employment = requireEmploymentDates(e, m);
             var value = calculation(t, e, m);
+            requireSettlementEvidence(employment, value);
             result.add(
                     store.saveCalculation(
                             t, code, c.month(), e, value, a.principalId().toString()));
@@ -571,8 +574,49 @@ public class HrPayrollService {
         return List.copyOf(result);
     }
 
+    static PayrollEmployment employmentForMonth(PayrollEmployeeView employee, YearMonth month) {
+        return PayrollEmployment.forMonth(
+                employee.entryDate(), employee.leaveDate(), employee.employmentStatus(), month);
+    }
+
+    private static PayrollEmployment requireEmploymentDates(
+            PayrollEmployeeView employee, YearMonth month) {
+        var employment = employmentForMonth(employee, month);
+        var reason = employmentIssue(employment);
+        if (reason != null) throw bad(reason);
+        return employment;
+    }
+
+    private static String employmentIssue(PayrollEmployment employment) {
+        return switch (employment) {
+            case NOT_STARTED -> "员工入职日期晚于核算月份，不能生成该月工资";
+            case MISSING_ENTRY_DATE -> "员工入职日期未维护，请核对员工档案";
+            case MISSING_LEAVE_DATE -> "员工已标记离职但离职日期未维护，请核对员工档案";
+            case INVALID_DATES -> "员工离职日期早于入职日期，请核对员工档案";
+            case REGULAR, LEFT_BEFORE_MONTH -> null;
+        };
+    }
+
+    private static void requireSettlementEvidence(
+            PayrollEmployment employment, PayrollCalculationView value) {
+        if (employment == PayrollEmployment.LEFT_BEFORE_MONTH && !hasSettlementEvidence(value))
+            throw bad(value.issues().isEmpty()
+                    ? "员工已在核算月前离职，所选月份没有可结算的提成或补差"
+                    : "员工离职后的结算依据待核对：" + String.join("；", value.issues()));
+    }
+
+    static boolean hasSettlementEvidence(PayrollCalculationView value) {
+        return value.details().stream()
+                        .anyMatch(detail -> detail.released() != null && detail.released().signum() != 0)
+                || value.corrections().stream()
+                        .anyMatch(correction -> "ACTIVE".equals(correction.statusCode())
+                                && correction.amount() != null && correction.amount().signum() != 0);
+    }
+
     PayrollCalculationView calculation(String t, PayrollEmployeeView e, YearMonth m) {
         if (configured == null) throw new IllegalStateException("薪资核算服务未初始化");
+        var reason = employmentIssue(employmentForMonth(e, m));
+        if (reason != null) return configured.pending(t, e, m, reason);
         long started = System.nanoTime();
         try {
             var result =
@@ -612,10 +656,13 @@ public class HrPayrollService {
                 .atEndOfMonth()
                 .isBefore(LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"))))
             throw bad("月份尚未结束，当前结果仅供预核算");
+        var employee = store.employee(t, old.employeeCode(), "hr:payroll:confirm");
+        var payrollMonth = month(old.month());
+        var employment = requireEmploymentDates(employee, payrollMonth);
         if (attendanceGate == null) throw new IllegalStateException("考勤发薪校验未初始化");
         attendanceGate.require(t, old, "hr:payroll:confirm");
-        var employee = store.employee(t, old.employeeCode(), "hr:payroll:confirm");
-        var fresh = calculation(t, employee, month(old.month()));
+        var fresh = calculation(t, employee, payrollMonth);
+        requireSettlementEvidence(employment, fresh);
         if (!fresh.issues().isEmpty()
                 || !fresh.sourceFingerprint().equals(old.calculation().sourceFingerprint()))
             throw new BusinessException(ErrorCode.CONFLICT, "规则、员工或订单回款已变化，请重新核算", List.of());

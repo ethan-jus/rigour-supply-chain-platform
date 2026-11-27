@@ -37,7 +37,8 @@ public interface HrAttendanceEmployeeMapper extends BaseMapper<HrEmployeeEntity>
     @Select(
             """
 SELECT e.employee_code code,e.employee_name name,e.department_id departmentId,
-       d.department_name departmentName,DATE(e.entry_date) entryDate,DATE(e.leave_date) leaveDate
+       d.department_name departmentName,DATE(CONVERT_TZ(e.entry_date,'+00:00','+08:00')) entryDate,
+       DATE(CONVERT_TZ(e.leave_date,'+00:00','+08:00')) leaveDate
 FROM hr_employee e LEFT JOIN hr_department d ON d.tenant_id=e.tenant_id AND d.id=e.department_id
 ${ew.customSqlSegment}
 """)

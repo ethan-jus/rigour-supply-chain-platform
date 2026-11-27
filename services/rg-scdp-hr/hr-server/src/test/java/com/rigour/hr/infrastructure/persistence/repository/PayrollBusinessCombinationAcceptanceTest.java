@@ -169,6 +169,59 @@ class PayrollBusinessCombinationAcceptanceTest {
                 .statusCode()).isEqualTo("CONFIRMED");
     }
 
+    @Test
+    void wrongMonthTrialExplainsTheHireDateWithoutReadingOrderFactsOrWritingPayroll() {
+        employee = new PayrollEmployeeView("E1", "李四", 1L, "销售部", null,
+                LocalDate.of(2026, 11, 1), null, "SALES");
+        var request = new PayrollCalculateCommand("2026-10", List.of("E1"));
+        var preview = workflow.preview(request).getFirst();
+        assertThat(preview.issues()).anyMatch(issue -> issue.contains("入职日期晚于核算月份"));
+        assertThat(preview.calculation().netPay()).isNull();
+        assertThatThrownBy(() -> service.calculate(request)).isInstanceOf(BusinessException.class)
+                .hasMessageContaining("入职日期晚于核算月份");
+        verify(source, never()).payrollLines(anyString(), any(), any(), any());
+        assertThat(database.payroll.byMonth(tenant, "E1", "2026-10")).isEmpty();
+    }
+
+    @Test
+    void formerSettlementExcludesRecurringItemsAndCanBeConfirmedAndPaidExactlyOnce() {
+        policy("SALES", "CALENDAR_DAYS", false, true);
+        permissions("hr:payroll:read", "hr:payroll:calculate", "hr:payroll:confirm", "hr:payroll:paid");
+        employee = new PayrollEmployeeView("E1", "李四", 1L, "销售部", null,
+                LocalDate.of(2026, 1, 1), LocalDate.of(2026, 9, 20), "SALES");
+        var order = order("0");
+        ObjectNode paidLater = json.valueToTree(order);
+        paidLater.put("fullyPaidDate", "2026-10-02");
+        when(source.payrollLines(eq(tenant), eq("E1"), isNull(), any())).thenReturn(
+                List.of(json.treeToValue(paidLater, OrderPayrollLineView.class)));
+        database.payroll.saveInput(tenant, "E1", "2026-10", new PayrollInputCommand(
+                0, new BigDecimal("6000"), new BigDecimal("1000"), BigDecimal.ZERO,
+                "存量核定值", new BigDecimal("750"), null), userId.toString());
+        var request = new PayrollCalculateCommand("2026-10", List.of("E1"));
+        var preview = workflow.preview(request).getFirst();
+        assertThat(preview.canGenerateFormerSettlement()).isTrue();
+        assertThat(preview.calculation().formerSettlement()).isTrue();
+        assertThat(preview.calculation().baseSalary()).isZero();
+        assertThat(preview.calculation().performance()).isZero();
+        assertThat(preview.calculation().allowance()).isZero();
+        assertThat(preview.calculation().settledOrders()).isEmpty();
+        assertThat(preview.calculation().netPay()).isEqualByComparingTo("40");
+        assertThat(database.payroll.byMonth(tenant, "E1", "2026-10")).isEmpty();
+
+        var calculated = service.calculate(request).getFirst();
+        var confirmed = service.confirm(calculated.id(),
+                new PayrollActionCommand(calculated.revision(), "核对离职后提成"));
+        assertThat(confirmed.statusCode()).isEqualTo("CONFIRMED");
+        assertThat(confirmed.calculation().formerSettlement()).isTrue();
+        assertThat(service.calculate(request)).isEmpty();
+        var payment = new PayrollPaymentCommand(UUID.randomUUID().toString(), confirmed.revision(), LocalDate.of(2026, 11, 1),
+                confirmed.calculation().netPay(), "BANK-FORMER", "离职提成发放");
+        var paid = workflow.pay(confirmed.id(), payment);
+        assertThat(paid.statusCode()).isEqualTo("PAID");
+        assertThat(workflow.pay(confirmed.id(), payment).payments()).hasSize(1);
+        assertThat(database.payroll.released(tenant)).containsExactly("LINE1|SALES");
+    }
+
     OrderPayrollLineView order(String refund) {
         return new OrderPayrollLineView("LINE1", "O1", "SO1", "E1", "WH", 1L, 1L, 1L,
                 "商品", "BOX", LocalDate.of(2026, 9, 2), BigDecimal.ONE,

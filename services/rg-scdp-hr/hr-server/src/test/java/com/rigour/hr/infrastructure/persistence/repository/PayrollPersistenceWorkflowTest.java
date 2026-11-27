@@ -765,11 +765,14 @@ class PayrollPersistenceWorkflowTest {
     void historicalDepartmentsReadOnlyTheEmployeesTenantAndEmploymentRange() {
         jdbc.execute("CREATE TABLE hr_employee_assignment(id BIGINT,tenant_id VARCHAR(36),employee_code VARCHAR(50),department_id BIGINT,effective_from TIMESTAMP,effective_to TIMESTAMP)");
         jdbc.update("INSERT INTO hr_employee_assignment VALUES"
-                + "(1,'T1','E1',1,'2026-08-31 16:00:00','2026-09-14 15:59:59'),"
+                + "(1,'T1','E1',1,'2026-08-31 16:00:00','2026-09-14 16:00:00'),"
                 + "(2,'T1','E1',9,'2026-09-14 16:00:00',NULL),"
                 + "(3,'T2','E1',99,'2026-08-31 16:00:00',NULL),"
                 + "(4,'T1','E2',88,'2026-08-31 16:00:00',NULL),"
-                + "(5,'T1','E1',77,'2026-09-30 16:00:00',NULL)");
+                + "(5,'T1','E1',77,'2026-09-30 16:00:00',NULL),"
+                + "(6,'T1','E1',9,'2026-09-15 12:00:00','2026-09-17 16:00:00')");
+        assertThat(payroll.departmentAt("T1", "E1", LocalDate.of(2026, 9, 15))).isEqualTo(9L);
+        assertThat(payroll.departmentAt("T1", "E1", LocalDate.of(2026, 9, 16))).isEqualTo(9L);
         assertThat(payroll.departmentsDuring("T1", "E1", LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 30)))
                 .containsExactlyInAnyOrder(1L, 9L);
         assertThat(payroll.departmentsDuring("T1", "E1", LocalDate.of(2026, 9, 15), LocalDate.of(2026, 9, 30)))

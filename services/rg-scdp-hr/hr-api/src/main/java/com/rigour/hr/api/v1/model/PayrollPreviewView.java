@@ -12,8 +12,9 @@ public record PayrollPreviewView(
         String currentFingerprint,
         String savedStatus,
         PayrollCalculationView calculation,
-        PayrollCalculationView previousCalculation) {
+        PayrollCalculationView previousCalculation,
+        Boolean canGenerateFormerSettlement) {
     public PayrollPreviewView(String employeeCode, String employeeName, List<String> issues) {
-        this(employeeCode, employeeName, issues, false, null, null, null, null, null);
+        this(employeeCode, employeeName, issues, false, null, null, null, null, null, false);
     }
 }

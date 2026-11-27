@@ -22,6 +22,9 @@ public class PayrollAttendanceGate {
 
     public String blockReason(String tenant, PayrollDetailView payroll, String action) {
         if ("PAID".equals(payroll.statusCode())) return null;
+        var calculation = payroll.calculation();
+        if (calculation != null && Boolean.TRUE.equals(calculation.formerSettlement())
+                && HrPayrollService.hasSettlementEvidence(calculation)) return null;
         var employee =
                 attendance.employee(
                         tenant, YearMonth.parse(payroll.month()), payroll.employeeCode(), action);

@@ -384,7 +384,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
             getBaseMapper().insert(employee);
             getBaseMapper().recordCity(tenantId, employee.employeeCode, now, employee.cityName);
             organization.sourceEmployeeChanged(
-                    tenantId, employee.employeeCode, null, employee.employmentStatus, actorId);
+                    tenantId, employee.employeeCode, null, employee.employmentStatus, row.leaveDate(), actorId);
             upsertBinding(
                     tenantId,
                     sourceSystem,
@@ -474,6 +474,7 @@ public class MybatisPlusHrEmployeeRepository extends ServiceImpl<HrEmployeeMappe
                 employee.employeeCode,
                 previousStatus,
                 employee.employmentStatus,
+                row.leaveDate(),
                 actorId);
         upsertBinding(
                 tenantId,

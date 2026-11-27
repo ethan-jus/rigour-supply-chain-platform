@@ -48,7 +48,7 @@ public class HrExpenseEmployeeCityTest {
                 "CREATE TABLE hr_employee(id BIGINT PRIMARY KEY,tenant_id VARCHAR(64),employee_code"
                     + " VARCHAR(64),employee_name VARCHAR(120),department_id BIGINT,city_name"
                     + " VARCHAR(120),entry_date TIMESTAMP,leave_date TIMESTAMP,payroll_category"
-                    + " VARCHAR(50),revision INT,deleted INT)");
+                    + " VARCHAR(50),revision INT,deleted INT,employment_status VARCHAR(20) DEFAULT 'ACTIVE')");
         jdbc.execute(
                 "CREATE TABLE hr_department(id BIGINT,tenant_id VARCHAR(64),department_name"
                     + " VARCHAR(120))");

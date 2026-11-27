@@ -286,9 +286,10 @@ public class MybatisPlusHrAttendanceStore implements HrAttendanceStore {
                         .eq("e.tenant_id", tenant)
                         .eq("e.deleted", 0)
                         .apply(
-                                "(e.entry_date IS NULL OR DATE(e.entry_date)<={0})",
-                                month.atEndOfMonth())
-                        .apply("(e.leave_date IS NULL OR DATE(e.leave_date)>={0})", month.atDay(1));
+                                "(e.entry_date IS NULL OR e.entry_date<{0})",
+                                month.plusMonths(1).atDay(1).atStartOfDay().minusHours(8))
+                        .apply("(e.leave_date IS NULL OR e.leave_date>={0})",
+                                month.atDay(1).atStartOfDay().minusHours(8));
         var predicate = scope.employeePredicate(action, "e.");
         StringBuilder sql = new StringBuilder();
         int i = 0;

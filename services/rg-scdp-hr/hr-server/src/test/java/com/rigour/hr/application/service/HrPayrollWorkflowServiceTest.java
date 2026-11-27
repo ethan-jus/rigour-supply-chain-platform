@@ -173,7 +173,89 @@ class HrPayrollWorkflowServiceTest {
     }
 
     @Test
-    void preparationKeepsFormerEmployeeWithPendingCorrection() {
+    void preparationKeepsEmployeesThroughTheirLastDayAndFromTheirFirstDay() {
+        var entry = new PayrollEmployeeView("E1", "月末入职", 10L, "销售部", null,
+                LocalDate.of(2026, 10, 31), null, "SALES");
+        var leave = new PayrollEmployeeView("E2", "月初离职", 10L, "销售部", null,
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 10, 1), "SALES");
+        var priorLeave = new PayrollEmployeeView("E3", "上月离职", 10L, "销售部", null,
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 30), "SALES");
+        var nextEntry = new PayrollEmployeeView("E4", "下月入职", 10L, "销售部", null,
+                LocalDate.of(2026, 11, 1), null, "SALES");
+        when(store.employees(anyString(), anyString())).thenReturn(List.of(entry, leave, priorLeave, nextEntry));
+
+        assertThat(service.preparation("2026-10").employees())
+                .extracting(PayrollPreparationEmployeeView::employeeCode)
+                .containsExactly("E1", "E2");
+    }
+
+    @Test
+    void preparationUsesThePayrollMonthsDepartmentAndTheLastEmploymentDay() {
+        var ruleResolver = mock(PayrollRuleResolver.class);
+        service.setRuleResolver(ruleResolver);
+        var transferred = new PayrollEmployeeView("E1", "十一月转岗", 20L, "新部门", null,
+                LocalDate.of(2026, 9, 1), null, "SALES");
+        var departed = new PayrollEmployeeView("E2", "十月离职", 30L, "第三部门", null,
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 10, 15), "SALES");
+        when(store.employees(anyString(), anyString())).thenReturn(List.of(transferred, departed));
+        when(store.preparationDepartments(anyString(), eq(List.of("E1")), eq("2026-10"), eq(LocalDate.of(2026, 10, 31))))
+                .thenReturn(Map.of("E1", 10L));
+        when(store.preparationDepartments(anyString(), eq(List.of("E2")), eq("2026-10"), eq(LocalDate.of(2026, 10, 15))))
+                .thenReturn(Map.of("E2", 30L));
+        when(store.departments(anyString(), eq("hr:payroll:read")))
+                .thenReturn(List.of(new PayrollDepartmentView(10L, null, "原部门", 0)));
+
+        var rows = service.preparation("2026-10").employees();
+        assertThat(rows).extracting(PayrollPreparationEmployeeView::departmentId).containsExactly(10L, 30L);
+        assertThat(rows).extracting(PayrollPreparationEmployeeView::departmentName).containsExactly("原部门", "第三部门");
+    }
+
+    @Test
+    void importedDepartureWithNoLeaveDateIsOnlyDiagnostic() {
+        var imported = new PayrollEmployeeView("E1", "缺离职日期", 10L, "销售部", null,
+                LocalDate.of(2026, 9, 1), null, "SALES", 1, 1L, "LEFT");
+        when(store.employees(anyString(), anyString())).thenReturn(List.of(imported));
+        when(store.employee(anyString(), eq("E1"), eq("hr:payroll:calculate"))).thenReturn(imported);
+        var configured = mock(ConfiguredPayrollService.class);
+        var salary = new HrPayrollService(store, mock(HrPayrollSource.class), configured);
+
+        var preparation = service.preparation("2026-10");
+        assertThat(preparation.formerEmployees()).isEmpty();
+        assertThat(preparation.employees()).singleElement().satisfies(row -> {
+            assertThat(row.canCalculate()).isFalse();
+            assertThat(row.profileIssues()).containsExactly("员工已标记离职但离职日期未维护");
+        });
+        assertThatThrownBy(() -> salary.calculate(new PayrollCalculateCommand("2026-10", List.of("E1"))))
+                .hasMessageContaining("离职日期未维护");
+        verifyNoInteractions(configured);
+        assertThat(tools.jackson.databind.json.JsonMapper.builder().build().writeValueAsString(imported))
+                .doesNotContain("employmentStatus");
+    }
+
+    @Test
+    void calculateAndConfirmRejectTheWrongEmploymentMonthBeforeLoadingSalarySources() {
+        var configured = mock(ConfiguredPayrollService.class);
+        var salary = new HrPayrollService(store, mock(HrPayrollSource.class), configured);
+        var attendance = mock(PayrollAttendanceGate.class);
+        salary.setAttendanceGate(attendance);
+        var future = new PayrollEmployeeView("E1", "十一月入职", 10L, "销售部", null,
+                LocalDate.of(2026, 11, 1), null, "SALES");
+        when(store.employee(anyString(), eq("E1"), anyString())).thenReturn(future);
+        var saved = new PayrollDetailView("P1", "2026-09", "E1", "员工", 10L, "销售部", null,
+                "READY", 1, null, Instant.EPOCH);
+        when(store.detail(anyString(), eq("P1"), eq("hr:payroll:confirm"))).thenReturn(saved);
+
+        assertThatThrownBy(() -> salary.calculate(new PayrollCalculateCommand("2026-10", List.of("E1"))))
+                .hasMessageContaining("入职日期晚于核算月份");
+        assertThatThrownBy(() -> salary.confirm("P1", new PayrollActionCommand(1, "核对工资")))
+                .hasMessageContaining("入职日期晚于核算月份");
+        verifyNoInteractions(configured, attendance);
+        verify(store, never()).saveCalculation(anyString(), anyString(), anyString(), any(), any(), anyString());
+        verify(store, never()).transition(anyString(), anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
+    void preparationKeepsFormerEmployeesInASeparateRosterWithoutReadingSettlementSources() {
         when(store.employees(anyString(), anyString()))
                 .thenReturn(
                         List.of(
@@ -188,23 +270,78 @@ class HrPayrollWorkflowServiceTest {
                                         "SALES",
                                         1,
                                         1L)));
-        when(store.corrections(anyString(), eq("E1"), eq("2026-09")))
-                .thenReturn(
-                        List.of(
-                                new PayrollCorrectionView(
-                                        "C1",
-                                        "P0",
-                                        "2026-08",
-                                        "2026-09",
-                                        BigDecimal.TEN,
-                                        "补发",
-                                        "ACTIVE",
-                                        1,
-                                        Instant.EPOCH)));
-        var rows = service.preparation("2026-09").employees();
-        assertThat(rows).hasSize(1);
-        assertThat(rows.getFirst().profileIssues()).isEmpty();
-        assertThat(rows.getFirst().leaveDate()).isEqualTo(LocalDate.of(2026, 8, 31));
+        var preparation = service.preparation("2026-09");
+        assertThat(preparation.employees()).isEmpty();
+        assertThat(preparation.formerEmployees()).singleElement().satisfies(row -> {
+            assertThat(row.employeeCode()).isEqualTo("E1");
+            assertThat(row.canCalculate()).isFalse();
+            assertThat(row.leaveDate()).isEqualTo(LocalDate.of(2026, 8, 31));
+        });
+        verifyNoInteractions(payroll);
+        verify(store, never()).corrections(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void formerSettlementRequiresNonzeroEvidenceOnPreviewGenerationAndConfirmation() {
+        var employee = new PayrollEmployeeView("E1", "已离职", 10L, "销售部", null,
+                LocalDate.of(2026, 6, 1), LocalDate.of(2026, 9, 30), "SALES");
+        var configured = mock(ConfiguredPayrollService.class);
+        var salary = new HrPayrollService(store, mock(HrPayrollSource.class), configured);
+        salary.setAttendanceGate(mock(PayrollAttendanceGate.class));
+        var workflow = new HrPayrollWorkflowService(store, salary, profiles);
+        var command = new PayrollCalculateCommand("2026-10", List.of("E1"));
+        var month = YearMonth.of(2026, 10);
+        var zero = settlementCalculation(BigDecimal.ZERO, List.of());
+        var ready = new PayrollDetailView("P1", command.month(), "E1", "已离职", 10L, "销售部",
+                null, "READY", 1, zero, Instant.EPOCH);
+        when(store.employee(anyString(), eq("E1"), anyString())).thenReturn(employee);
+        when(store.detail(anyString(), eq("P1"), eq("hr:payroll:confirm"))).thenReturn(ready);
+        when(configured.calculateIfConfigured(anyString(), eq(employee), eq(month))).thenReturn(Optional.of(zero));
+
+        assertThat(workflow.preview(command).getFirst().canGenerateFormerSettlement()).isFalse();
+        assertThatThrownBy(() -> salary.calculate(command)).hasMessageContaining("没有可结算的提成或补差");
+        assertThatThrownBy(() -> salary.confirm("P1", new PayrollActionCommand(1, "核对离职结算")))
+                .hasMessageContaining("没有可结算的提成或补差");
+        verify(store, never()).saveCalculation(anyString(), anyString(), anyString(), any(), any(), anyString());
+        verify(store, never()).transition(anyString(), anyString(), any(), anyString(), anyString());
+
+        var correction = new PayrollCorrectionView("C1", "P0", "2026-09", "2026-10",
+                BigDecimal.valueOf(-4), "核对冲回", "ACTIVE", 1, Instant.EPOCH);
+        var signedCorrection = settlementCalculation(BigDecimal.ZERO, List.of(correction));
+        assertThat(HrPayrollService.hasSettlementEvidence(signedCorrection)).isTrue();
+        var due = settlementCalculation(BigDecimal.TEN, List.of(correction));
+        var calculated = new PayrollDetailView("P1", command.month(), "E1", "已离职", 10L, "销售部",
+                null, "READY", 2, due, Instant.EPOCH);
+        var confirmed = new PayrollDetailView("P1", command.month(), "E1", "已离职", 10L, "销售部",
+                null, "CONFIRMED", 3, due, Instant.EPOCH);
+        var confirmation = new PayrollActionCommand(2, "核对离职结算");
+        when(configured.calculateIfConfigured(anyString(), eq(employee), eq(month))).thenReturn(Optional.of(due));
+        when(store.saveCalculation(anyString(), eq("E1"), eq(command.month()), eq(employee), eq(due), anyString()))
+                .thenReturn(calculated);
+        when(store.detail(anyString(), eq("P1"), eq("hr:payroll:confirm"))).thenReturn(calculated);
+        when(store.transition(anyString(), eq("P1"), eq(confirmation), eq("CONFIRMED"), anyString()))
+                .thenReturn(confirmed);
+
+        assertThat(workflow.preview(command).getFirst().canGenerateFormerSettlement()).isTrue();
+        assertThat(salary.calculate(command)).containsExactly(calculated);
+        assertThat(salary.confirm("P1", confirmation)).isSameAs(confirmed);
+
+        when(store.byMonth(anyString(), eq("E1"), eq(command.month()))).thenReturn(Optional.of(confirmed));
+        assertThat(workflow.preview(command).getFirst().canGenerateFormerSettlement()).isFalse();
+        assertThat(salary.calculate(command)).isEmpty();
+        verify(store, times(1)).saveCalculation(anyString(), anyString(), anyString(), any(), any(), anyString());
+    }
+
+    private static PayrollCalculationView settlementCalculation(
+            BigDecimal commission, List<PayrollCorrectionView> corrections) {
+        var details = List.of(new PayrollCommissionDetailView("L1", "SALES", "SO1", "商品",
+                "件", BigDecimal.ONE, "R1", "提成", 1, commission, commission, "已付清", "E1"));
+        var adjustment = corrections.stream().map(PayrollCorrectionView::amount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        var total = commission.add(adjustment);
+        return new PayrollCalculationView(BigDecimal.ZERO, BigDecimal.ZERO, commission, BigDecimal.ZERO,
+                BigDecimal.ZERO, BigDecimal.ZERO, total, total, List.of(), details, List.of(), null,
+                "settlement-" + total, null, null, adjustment, corrections);
     }
 
     @Test

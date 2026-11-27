@@ -184,9 +184,8 @@ public class MybatisPlusHrPayrollRepository implements HrPayrollStore {
 
     @Override
     public Map<String, Long> preparationDepartments(
-            String tenant, List<String> employees, String month) {
+            String tenant, List<String> employees, String month, LocalDate date) {
         if (employees.isEmpty()) return Map.of();
-        var date = java.time.YearMonth.parse(month).atEndOfMonth();
         Map<String, Long> result = new java.util.HashMap<>();
         for (var row :
                 references.preparationDepartments(

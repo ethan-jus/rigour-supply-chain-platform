@@ -18,11 +18,16 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.*;
 
 /** HR 单库事务维护部门、员工主任职和历史；组织锁串行化树移动与任职变更。 */
 @Repository
 public class JdbcHrOrganizationStore implements HrOrganizationStore {
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Shanghai");
     private final JdbcTemplate jdbc;
     private final com.rigour.hr.infrastructure.persistence.mapper.HrEmployeeMapper employeeMapper;
     private final TransactionTemplate tx;
@@ -62,34 +67,88 @@ public class JdbcHrOrganizationStore implements HrOrganizationStore {
             String employee,
             String previousStatus,
             String currentStatus,
+            Instant leaveDate,
             String actor) {
         if (!Objects.equals(previousStatus, currentStatus)) {
-            jdbc.update(
-                    "UPDATE hr_employee_assignment SET"
-                        + " effective_to=UTC_TIMESTAMP(6),revision=revision+1 WHERE tenant_id=? AND"
-                        + " employee_code=? AND effective_to IS NULL",
-                    tenant,
-                    employee);
-            if ("ACTIVE".equals(currentStatus))
+            var now = assignmentClock();
+            closeAssignment(tenant, employee, closingTime(currentStatus, leaveDate, now));
+            if ("ACTIVE".equals(currentStatus)) {
+                boolean firstAssignment = isFirstAssignment(tenant, employee, previousStatus);
+                if (!firstAssignment) requireNonOverlappingStart(tenant, employee, now);
                 jdbc.update(
                         """
 INSERT INTO hr_employee_assignment(tenant_id,employee_code,department_id,department_name_snapshot,position_code,position_name_snapshot,effective_from,actor_id)
 SELECT e.tenant_id,e.employee_code,e.department_id,d.department_name,e.primary_position_code,p.position_name,
-       CASE WHEN ? THEN COALESCE(e.entry_date,UTC_TIMESTAMP(6)) ELSE UTC_TIMESTAMP(6) END,?
+       CASE WHEN ? THEN COALESCE(CONVERT_TZ(DATE(CONVERT_TZ(e.entry_date,'+00:00','+08:00')),'+08:00','+00:00'),?) ELSE ? END,?
 FROM hr_employee e JOIN hr_department d ON d.tenant_id=e.tenant_id AND d.id=e.department_id AND d.deleted=0 AND d.status_code='ACTIVE'
 JOIN hr_position p ON p.tenant_id=e.tenant_id AND p.position_code=e.primary_position_code AND p.deleted=0 AND p.status_code='ACTIVE'
 WHERE e.tenant_id=? AND e.employee_code=? AND e.deleted=0
 """,
-                        previousStatus == null,
+                        firstAssignment,
+                        now,
+                        now,
                         actor,
                         tenant,
                         employee);
+            }
         }
         change(
                 tenant,
                 previousStatus == null ? "EMPLOYEE_SOURCE_CREATE" : "EMPLOYEE_SOURCE_UPDATE",
                 employee,
                 actor);
+    }
+
+    private LocalDateTime assignmentClock() {
+        return jdbc.queryForObject("SELECT UTC_TIMESTAMP(6)", LocalDateTime.class);
+    }
+
+    private static LocalDateTime closingTime(String status, Instant leaveDate, LocalDateTime now) {
+        if (!"LEFT".equals(status) || leaveDate == null) return now;
+        // HR's last employed date is inclusive. Assignment periods store an exclusive end.
+        return utcBusinessDayStart(leaveDate.atZone(BUSINESS_ZONE).toLocalDate().plusDays(1));
+    }
+
+    private static LocalDateTime utcBusinessDayStart(LocalDate date) {
+        return LocalDateTime.ofInstant(
+                date.atStartOfDay(BUSINESS_ZONE).toInstant(), ZoneOffset.UTC);
+    }
+
+    private boolean isFirstAssignment(String tenant, String employee, String previousStatus) {
+        if (previousStatus == null) return true;
+        if (!Set.of("ACTIVE", "PENDING").contains(previousStatus)) return false;
+        return count(
+                        "SELECT COUNT(*) FROM hr_employee_assignment WHERE tenant_id=? AND employee_code=?",
+                        tenant,
+                        employee)
+                == 0;
+    }
+
+    private void closeAssignment(String tenant, String employee, LocalDateTime end) {
+        int changed = jdbc.update(
+                """
+UPDATE hr_employee_assignment SET effective_to=?,revision=revision+1
+ WHERE tenant_id=? AND employee_code=? AND effective_to IS NULL AND effective_from<?
+""",
+                end, tenant, employee, end);
+        if (changed == 0 && hasOpenAssignment(tenant, employee))
+            throw new BusinessException(
+                    ErrorCode.BAD_REQUEST, "任职结束时间必须晚于当前任职开始时间，请核对日期", List.of());
+    }
+
+    private boolean hasOpenAssignment(String tenant, String employee) {
+        return count(
+                        "SELECT COUNT(*) FROM hr_employee_assignment WHERE tenant_id=?"
+                                + " AND employee_code=? AND effective_to IS NULL",
+                        tenant, employee) > 0;
+    }
+
+    private void requireNonOverlappingStart(String tenant, String employee, LocalDateTime start) {
+        if (count(
+                        "SELECT COUNT(*) FROM hr_employee_assignment WHERE tenant_id=?"
+                                + " AND employee_code=? AND effective_to>?",
+                        tenant, employee, start) > 0)
+            throw new BusinessException(ErrorCode.BAD_REQUEST, "新任职开始时间与已有任职重叠，请核对日期", List.of());
     }
 
     void change(String tenant, String type, String ref, String actor) {
@@ -526,27 +585,23 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE id_number=VA
                                             || !Objects.equals(old.departmentId(), department.id())
                                             || !Objects.equals(old.positionCode(), c.positionCode())
                                             || !old.employmentStatus().equals(c.employmentStatus())
-                                            || count(
-                                                            "SELECT COUNT(*) FROM"
-                                                                + " hr_employee_assignment WHERE"
-                                                                + " tenant_id=? AND employee_code=?"
-                                                                + " AND effective_to IS NULL",
-                                                            tenant,
-                                                            code)
-                                                    == 0;
+                                            || !hasOpenAssignment(tenant, code);
                             if (changedAssignment) {
-                                jdbc.update(
-                                        """
-UPDATE hr_employee_assignment SET effective_to=UTC_TIMESTAMP(6),revision=revision+1
- WHERE tenant_id=? AND employee_code=? AND effective_to IS NULL
-""",
-                                        tenant,
-                                        code);
-                                if ("ACTIVE".equals(c.employmentStatus()))
+                                var now = assignmentClock();
+                                if (old != null)
+                                    closeAssignment(
+                                            tenant, code, closingTime(c.employmentStatus(), c.leaveDate(), now));
+                                if ("ACTIVE".equals(c.employmentStatus())) {
+                                    boolean firstAssignment = isFirstAssignment(
+                                            tenant, code, old == null ? null : old.employmentStatus());
+                                    var from = firstAssignment && c.entryDate() != null
+                                            ? utcBusinessDayStart(c.entryDate().atZone(BUSINESS_ZONE).toLocalDate())
+                                            : now;
+                                    if (!firstAssignment) requireNonOverlappingStart(tenant, code, from);
                                     jdbc.update(
                                             """
 INSERT INTO hr_employee_assignment(tenant_id,employee_code,department_id,department_name_snapshot,
-    position_code,position_name_snapshot,effective_from,actor_id) VALUES(?,?,?,?,?,?,COALESCE(?,UTC_TIMESTAMP(6)),?)
+    position_code,position_name_snapshot,effective_from,actor_id) VALUES(?,?,?,?,?,?,?,?)
 """,
                                             tenant,
                                             code,
@@ -554,8 +609,9 @@ INSERT INTO hr_employee_assignment(tenant_id,employee_code,department_id,departm
                                             department.departmentName(),
                                             c.positionCode(),
                                             positionNames.getFirst(),
-                                            old == null ? timestamp(c.entryDate()) : null,
+                                            from,
                                             actor);
+                                }
                             }
                             change(
                                     tenant,

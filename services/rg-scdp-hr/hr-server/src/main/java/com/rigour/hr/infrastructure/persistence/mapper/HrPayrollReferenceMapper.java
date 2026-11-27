@@ -20,7 +20,7 @@ public interface HrPayrollReferenceMapper extends BaseMapper<HrEmployeeEntity> {
     @Select(
             """
 SELECT e.employee_code employeeCode,e.employee_name employeeName,e.department_id departmentId,d.department_name departmentName,
-e.city_name cityName,DATE(CONVERT_TZ(e.entry_date,'+00:00','+08:00')) entryDate,DATE(CONVERT_TZ(e.leave_date,'+00:00','+08:00')) leaveDate,e.payroll_category payrollCategory, e.revision, e.id
+e.city_name cityName,DATE(CONVERT_TZ(e.entry_date,'+00:00','+08:00')) entryDate,DATE(CONVERT_TZ(e.leave_date,'+00:00','+08:00')) leaveDate,e.payroll_category payrollCategory, e.revision, e.id, e.employment_status employmentStatus
 FROM hr_employee e LEFT JOIN hr_department d ON d.tenant_id=e.tenant_id AND d.id=e.department_id
 ${ew.customSqlSegment}
 """)
@@ -40,9 +40,9 @@ WHERE e.tenant_id=#{tenant} AND e.employee_code=#{employee} AND e.deleted=0
             @Param("tenant") String tenant, @Param("employee") String employee);
 
     @Select(
-            "SELECT department_id FROM hr_employee_assignment WHERE tenant_id=#{tenant} AND"
+            "SELECT DISTINCT department_id FROM hr_employee_assignment WHERE tenant_id=#{tenant} AND"
                 + " employee_code=#{employee} AND effective_from<#{until} AND (effective_to IS NULL"
-                + " OR effective_to>=#{from}) ORDER BY effective_from")
+                + " OR effective_to>#{from})")
     List<Long> departmentsAt(
             @Param("tenant") String tenant,
             @Param("employee") String employee,
@@ -53,11 +53,11 @@ WHERE e.tenant_id=#{tenant} AND e.employee_code=#{employee} AND e.deleted=0
             """
 <script>
 SELECT e.employee_code employeeCode,
-       COALESCE(i.department_override_id, CASE WHEN COUNT(a.id)=1 THEN MAX(a.department_id) ELSE NULL END) departmentId
+       COALESCE(i.department_override_id, CASE WHEN COUNT(DISTINCT a.department_id)=1 THEN MAX(a.department_id) ELSE NULL END) departmentId
 FROM hr_employee e
 LEFT JOIN hr_payroll_input i ON i.tenant_id=e.tenant_id COLLATE utf8mb4_general_ci AND i.employee_code=e.employee_code COLLATE utf8mb4_general_ci AND i.payroll_month=#{month}
 LEFT JOIN hr_employee_assignment a ON a.tenant_id=e.tenant_id COLLATE utf8mb4_general_ci AND a.employee_code=e.employee_code COLLATE utf8mb4_general_ci
- AND a.effective_from &lt; #{until} AND (a.effective_to IS NULL OR a.effective_to &gt;= #{from})
+ AND a.effective_from &lt; #{until} AND (a.effective_to IS NULL OR a.effective_to &gt; #{from})
 WHERE e.tenant_id=#{tenant} AND e.deleted=0 AND e.employee_code IN
 <foreach collection="employees" item="code" open="(" separator="," close=")">#{code}</foreach>
 GROUP BY e.employee_code,i.department_override_id

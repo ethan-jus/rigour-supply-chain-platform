@@ -49,17 +49,14 @@ public interface HrPayrollStore {
 
     /** Only codes already selected through the caller's employee data scope may be supplied. */
     default Map<String, Long> preparationDepartments(
-            String tenant, List<String> employees, String month) {
+            String tenant, List<String> employees, String month, LocalDate date) {
         Map<String, Long> result = new java.util.HashMap<>();
         for (String employee : employees) {
             var input = input(tenant, employee, month);
             Long department =
                     input.departmentOverrideId() != null
                             ? input.departmentOverrideId()
-                            : departmentAt(
-                                    tenant,
-                                    employee,
-                                    java.time.YearMonth.parse(month).atEndOfMonth());
+                            : departmentAt(tenant, employee, date);
             if (department != null) result.put(employee, department);
         }
         return Map.copyOf(result);

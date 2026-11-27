@@ -73,7 +73,7 @@ public class ConfiguredPayrollService {
                 input.departmentOverrideId() != null
                         ? input.departmentOverrideId()
                         : payroll.departmentAt(
-                                tenant, employee.employeeCode(), month.atEndOfMonth());
+                                tenant, employee.employeeCode(), lastEmploymentDay(employee.leaveDate(), month));
         if (rules == null) throw new IllegalStateException("薪资规则匹配服务未初始化");
         var match = rules.resolve(tenant, employee, department, month);
         if (match.snapshot() == null)
@@ -81,7 +81,12 @@ public class ConfiguredPayrollService {
         return Optional.of(calculate(tenant, employee, month, match.snapshot(), versions));
     }
 
-    private PayrollCalculationView pending(
+    static LocalDate lastEmploymentDay(LocalDate leaveDate, YearMonth month) {
+        var end = month.atEndOfMonth();
+        return leaveDate != null && leaveDate.isBefore(end) ? leaveDate : end;
+    }
+
+    PayrollCalculationView pending(
             String tenant, PayrollEmployeeView e, YearMonth month, String issue) {
         return new PayrollCalculationView(
                 null,
@@ -111,14 +116,16 @@ public class ConfiguredPayrollService {
             PayrollSchemeVersionView selected,
             List<PayrollSchemeVersionView> versions) {
         var definition = selected.definition();
-        if (components != null && definition.ruleReferences() != null) {
+        var lastEmploymentDay = lastEmploymentDay(e.leaveDate(), month);
+        boolean formerSettlement = lastEmploymentDay.isBefore(month.atDay(1));
+        if (!formerSettlement && components != null && definition.ruleReferences() != null) {
             var override =
                     payroll.input(tenant, e.employeeCode(), month.toString())
                             .departmentOverrideId();
             var department =
                     override != null
                             ? override
-                            : payroll.departmentAt(tenant, e.employeeCode(), month.atEndOfMonth());
+                            : payroll.departmentAt(tenant, e.employeeCode(), lastEmploymentDay);
             var calendarVersion = components.calendar(tenant, department, month.atDay(1));
             if (calendarVersion.isEmpty()) return pending(tenant, e, month, "本月部门工作日历缺失，请在考勤规则中配置");
             definition =
@@ -142,7 +149,7 @@ public class ConfiguredPayrollService {
         }
         try {
             var calendar =
-                    new HrStatutoryCalendarResolver(source)
+                    formerSettlement ? definition.calendar() : new HrStatutoryCalendarResolver(source)
                             .resolve(tenant, definition.calendar(), month);
             if (calendar != definition.calendar()) {
                 definition =
@@ -211,11 +218,13 @@ public class ConfiguredPayrollService {
                 && e.entryDate().isAfter(firstEmploymentDay)
                 && !e.entryDate().isAfter(month.atEndOfMonth()))
             firstEmploymentDay = e.entryDate();
-        Long departmentBefore = payroll.departmentAt(tenant, e.employeeCode(), firstEmploymentDay);
-        Long departmentAfter = payroll.departmentAt(tenant, e.employeeCode(), month.atEndOfMonth());
-        if (input.departmentOverrideId() == null
-                && !Objects.equals(departmentBefore, departmentAfter))
-            issues.add("月内部门发生变化，请核定当月薪酬适用部门");
+        if (!formerSettlement && input.departmentOverrideId() == null) {
+            Long departmentBefore = payroll.departmentAt(tenant, e.employeeCode(), firstEmploymentDay);
+            Long departmentAfter = payroll.departmentAt(tenant, e.employeeCode(), lastEmploymentDay);
+            if (!Objects.equals(departmentBefore, departmentAfter)
+                    || payroll.departmentsDuring(tenant, e.employeeCode(), firstEmploymentDay, lastEmploymentDay).size() > 1)
+                issues.add("月内部门发生变化，请核定当月薪酬适用部门");
+        }
         var monthly = schemes.facts(tenant, e.employeeCode(), month.toString());
         var allAssignments =
                 payroll.rules(tenant).stream()
@@ -261,13 +270,16 @@ public class ConfiguredPayrollService {
                         .sorted(Comparator.comparing(OrderPayrollLineView::lineId))
                         .toList();
         var own = facts.stream().filter(f -> e.employeeCode().equals(f.employeeCode())).toList();
-        boolean usesSettlementOwner = "SALES".equals(definition.role())
+        boolean usesSettlementOwner = !formerSettlement && "SALES".equals(definition.role())
                 && settlementAttribution != null && settlementAttribution.applies(month);
         var settlement = usesSettlementOwner
                 ? settlementAttribution.calculate(tenant, e.employeeCode(), month) : null;
         BigDecimal achievement;
         List<PayrollCollectionEvidenceView> collectionSources;
-        if (settlement != null) {
+        if (formerSettlement) {
+            achievement = null;
+            collectionSources = List.of();
+        } else if (settlement != null) {
             achievement = settlement.amount();
             collectionSources = settlement.evidence();
             issues.addAll(settlement.issues());
@@ -276,7 +288,7 @@ public class ConfiguredPayrollService {
                     ? achievement(own, month.atDay(1), month.atEndOfMonth(), issues) : null;
             collectionSources = collectionEvidence(own, month);
         }
-        if (ordersRequired
+        if (!formerSettlement && ordersRequired
                 && (input.baseOverride() == null || input.performanceOverride() == null)) {
             Set<String> historyEmployees = new LinkedHashSet<>();
             historyEmployees.add(e.employeeCode());
@@ -318,7 +330,7 @@ public class ConfiguredPayrollService {
                                 ? List.of()
                                 : calendar.alternateWeekdays(),
                         calendar.alternateAnchor());
-        var employeeAttendance = attendance.employee(tenant, month, e.employeeCode());
+        var employeeAttendance = formerSettlement ? null : attendance.employee(tenant, month, e.employeeCode());
         var confirmed = employeeAttendance == null ? null : employeeAttendance.confirmation();
         var leavePeriods =
                 confirmed == null ? List.<AttendanceExceptionPeriod>of() : confirmed.exceptions();
@@ -328,7 +340,7 @@ public class ConfiguredPayrollService {
                         && processOverride.missingCheckins() != null
                         && processOverride.missingVisits() != null;
         BigDecimal actualDays = null, expectedDays = null;
-        if (List.of(
+        if (!formerSettlement && List.of(
                         definition.proration().base(),
                         definition.proration().performance(),
                         definition.proration().allowance())
@@ -344,7 +356,7 @@ public class ConfiguredPayrollService {
         }
         String tier = null;
         BigDecimal standardBase = definition.baseSalary().fixedAmount();
-        if ("TIERS".equals(definition.baseSalary().mode())) {
+        if (!formerSettlement && "TIERS".equals(definition.baseSalary().mode())) {
             boolean first = e.entryDate() != null && YearMonth.from(e.entryDate()).equals(month);
             var resolved =
                     SalarySchemeCalculator.salary(
@@ -377,7 +389,7 @@ public class ConfiguredPayrollService {
         }
         var personal = definition.personalPolicy();
         BigDecimal originalPerformanceBase = performanceBase;
-        if (personal != null) {
+        if (!formerSettlement && personal != null) {
             standardBase =
                     com.rigour.hr.domain.payroll.PersonalSalaryCalculator.average(
                             standardBase,
@@ -404,9 +416,9 @@ public class ConfiguredPayrollService {
                             workDays,
                             nominalProration.performance());
         }
-        BigDecimal base =
-                input.baseOverride() == null
-                        ? prorate(
+        var base = formerSettlement ? BigDecimal.ZERO : input.baseOverride();
+        if (base == null)
+            base = prorate(
                                 standardBase,
                                 definition.proration().base(),
                                 month,
@@ -415,9 +427,8 @@ public class ConfiguredPayrollService {
                                 actualDays,
                                 expectedDays,
                                 issues,
-                                "底薪")
-                        : input.baseOverride();
-        BigDecimal performance = input.performanceOverride();
+                                "底薪");
+        BigDecimal performance = formerSettlement ? BigDecimal.ZERO : input.performanceOverride();
         PayrollPerformanceResultView performanceDetail = null;
         List<PayrollMetricResultView> metricResults = new ArrayList<>();
         BigDecimal managerCoefficient = null, managerCompletion = null;
@@ -912,7 +923,7 @@ public class ConfiguredPayrollService {
                 default -> issues.add("绩效模式无效");
             }
         }
-        BigDecimal allowance = input.allowanceOverride();
+        BigDecimal allowance = formerSettlement ? BigDecimal.ZERO : input.allowanceOverride();
         if (allowance == null)
             allowance =
                     prorate(
@@ -1054,7 +1065,8 @@ public class ConfiguredPayrollService {
                 correctionAmount,
                 corrections,
                 snapshot,
-                collectionSources);
+                collectionSources,
+                formerSettlement);
     }
 
     private boolean requiresOrderSource(
